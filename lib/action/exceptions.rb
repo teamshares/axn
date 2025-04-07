@@ -33,6 +33,15 @@ module Action
   end
 
   class ContractViolation < StandardError
+    class ReservedAttributeError < ContractViolation
+      def initialize(name)
+        @name = name
+        super()
+      end
+
+      def message = "Cannot call expects or exposes with reserved field name: #{@name}"
+    end
+
     class MethodNotAllowed < ContractViolation; end
     class PreprocessingError < ContractViolation; end
 
