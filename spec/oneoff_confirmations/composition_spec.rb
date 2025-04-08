@@ -37,7 +37,7 @@ RSpec.describe "One-off confirmation" do
 
     subject { action.call(name: "name") }
 
-    it { is_expected.to be_success }
+    it { is_expected.to be_ok }
     it { expect(subject.greeting).to eq("hi, NAME") }
 
     context "via wrapper" do
@@ -64,7 +64,7 @@ RSpec.describe "One-off confirmation" do
 
       subject { action.call(name: "name", wrapper_thing: 1) }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
       it { expect(subject.greeting).to eq("hi, NAME") }
     end
   end

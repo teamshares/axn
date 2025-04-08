@@ -10,7 +10,7 @@ RSpec.describe Action do
       end
 
       it "is ok" do
-        is_expected.to be_success
+        is_expected.to be_ok
       end
     end
 
@@ -25,7 +25,7 @@ RSpec.describe Action do
 
       it "confirming call case" do
         result = action.call
-        expect(result).not_to be_success
+        expect(result).not_to be_ok
         expect(result.error).to eq("Something went wrong")
       end
 
@@ -46,7 +46,7 @@ RSpec.describe Action do
 
       it "confirming call case" do
         result = action.call
-        expect(result).not_to be_success
+        expect(result).not_to be_ok
         expect(result.error).to eq("User-facing error")
       end
 

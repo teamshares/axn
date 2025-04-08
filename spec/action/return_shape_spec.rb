@@ -8,7 +8,7 @@ RSpec.describe Action do
       let(:action) { build_action {} }
 
       it "is ok" do
-        is_expected.to be_success
+        is_expected.to be_ok
       end
     end
 
@@ -22,7 +22,7 @@ RSpec.describe Action do
       end
 
       it "is not ok" do
-        is_expected.not_to be_success
+        is_expected.not_to be_ok
         expect(subject.error).to eq("User-facing error")
         expect(subject.exception).to be_nil
       end
@@ -39,7 +39,7 @@ RSpec.describe Action do
 
       it "is not ok" do
         expect { subject }.not_to raise_error
-        is_expected.not_to be_success
+        is_expected.not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(RuntimeError)
         expect(subject.exception.message).to eq("Some internal issue!")

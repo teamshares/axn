@@ -18,7 +18,7 @@ RSpec.describe Action::Contract do
     subject(:result) { interactor.call(foo: 11, bar: 12, baz: 13) }
 
     it "creates accessor" do
-      is_expected.to be_success
+      is_expected.to be_ok
       is_expected.to be_a(Action::ContextFacade)
 
       # Defined on context and allowed by outbound facade
@@ -96,7 +96,7 @@ RSpec.describe Action::Contract do
       end
     end
 
-    it { is_expected.to be_success }
+    it { is_expected.to be_ok }
   end
 
   context "inbound defaults" do
@@ -110,7 +110,7 @@ RSpec.describe Action::Contract do
     end
 
     it "are set correctly" do
-      is_expected.to be_success
+      is_expected.to be_ok
       expect(subject.foo).to eq 99
     end
   end
@@ -125,7 +125,7 @@ RSpec.describe Action::Contract do
     end
 
     it "are set correctly" do
-      is_expected.to be_success
+      is_expected.to be_ok
       expect(subject.foo).to eq 99
     end
   end
@@ -145,7 +145,7 @@ RSpec.describe Action::Contract do
     end
 
     it "can expose" do
-      is_expected.to be_success
+      is_expected.to be_ok
       expect(subject.qux).to eq 99
     end
   end
@@ -161,7 +161,7 @@ RSpec.describe Action::Contract do
 
     context "when valid" do
       let(:foo) { 123 }
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "when invalid" do
@@ -190,7 +190,7 @@ RSpec.describe Action::Contract do
 
     context "when false" do
       let(:foo) { false }
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "when nil" do
@@ -219,7 +219,7 @@ RSpec.describe Action::Contract do
     end
 
     context "when set" do
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
   end
 
@@ -239,12 +239,12 @@ RSpec.describe Action::Contract do
 
     context "when not set" do
       let(:foo) { false }
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "when set" do
       let(:foo) { true }
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
   end
 
@@ -266,7 +266,7 @@ RSpec.describe Action::Contract do
       let(:input) { "2020-01-01" }
 
       it "modifies the context" do
-        is_expected.to be_success
+        is_expected.to be_ok
         expect(subject.date_as_date).to be_a(Date)
       end
     end
@@ -292,7 +292,7 @@ RSpec.describe Action::Contract do
     end
 
     context "when valid" do
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "when invalid" do
@@ -328,7 +328,7 @@ RSpec.describe Action::Contract do
       context "when valid" do
         let(:foo) { 1 }
         let(:bar) { 2 }
-        it { is_expected.to be_success }
+        it { is_expected.to be_ok }
       end
 
       context "when invalid" do
@@ -369,7 +369,7 @@ RSpec.describe Action::Contract do
       end
 
       context "when valid" do
-        it { is_expected.to be_success }
+        it { is_expected.to be_ok }
       end
 
       context "when invalid" do
