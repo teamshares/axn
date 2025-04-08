@@ -24,12 +24,28 @@ RSpec.describe "One-off confirmation: inheritance and contracts" do
 
   let(:version_b) do
     Class.new(base) do
-      expects :baz, default: 100
+      expects :baz
+      exposes :quz
+
+      def call
+        expose bar: baz
+        expose quz: 999
+      end
     end
   end
 
   it "does not modify other classes' configs when inheriting" do
     config_ids = [base, version_a, version_b].map(&:internal_field_configs).map(&:object_id)
     expect(config_ids.uniq.size).to eq(3)
+    expect(base.call(foo: 11).bar).to eq(110)
+
+    a = version_a.call(foo: 11)
+    expect(a).to be_success
+    expect(a.bar).to eq(110)
+
+    b = version_b.call(foo: 11, baz: 10)
+    expect(b).to be_success
+    expect(b.bar).to eq(10)
+    expect(b.quz).to eq(999)
   end
 end
