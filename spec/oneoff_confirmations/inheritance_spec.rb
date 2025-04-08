@@ -34,7 +34,7 @@ RSpec.describe "One-off confirmation: inheritance via explicit" do
     context "when valid" do
       subject { action.call(foo: 11) }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
       it { expect(subject.bar).to eq bar_value }
     end
 

@@ -11,7 +11,7 @@ RSpec.describe Action do
     context "success" do
       subject { action.call(foo: 11, bar: 5, baz: 1) }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "contract failure" do
@@ -42,7 +42,7 @@ RSpec.describe Action do
     context "success" do
       subject(:result) { action.call(foo: 10, bar: 11, baz: 1) }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
 
       it "exposes existing context" do
         expect(subject.bar).to eq(11)
@@ -101,7 +101,7 @@ RSpec.describe Action do
     context "success" do
       subject { action.call(foo: "a", bar: "b", baz: "c") }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "failure" do

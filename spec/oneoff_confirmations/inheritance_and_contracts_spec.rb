@@ -42,11 +42,11 @@ RSpec.describe "One-off confirmation: inheritance and contracts" do
     expect(base.call(foo: 11).bar).to eq(110)
 
     a = version_a.call(foo: 11)
-    expect(a).to be_success
+    expect(a).to be_ok
     expect(a.bar).to eq(110)
 
     b = version_b.call(foo: 11, baz: 10)
-    expect(b).to be_success
+    expect(b).to be_ok
     expect(b.bar).to eq(10)
     expect(b.quz).to eq(999)
 

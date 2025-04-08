@@ -29,7 +29,7 @@ RSpec.describe Action do
 
     subject { action.call(klass:) }
 
-    it { is_expected.to be_success }
+    it { is_expected.to be_ok }
     it { expect(subject.success).to eq("great news") }
     it { expect(subject.message).to eq("great news") }
 

@@ -21,7 +21,7 @@ RSpec.describe Action do
 
     it "logs" do
       expect(logger).to receive(:info).with("[Anonymous Class] Hello, World!")
-      is_expected.to be_success
+      is_expected.to be_ok
     end
 
     Action::Logging::LEVELS.each do |level|
@@ -30,7 +30,7 @@ RSpec.describe Action do
 
         it "delegates via #log" do
           expect(logger).to receive(level).with("[Anonymous Class] Hello, World!")
-          is_expected.to be_success
+          is_expected.to be_ok
         end
       end
     end
@@ -46,7 +46,7 @@ RSpec.describe Action do
         let(:targeted_for_debug_logging) { false }
         it "logs debug at debug level" do
           expect(logger).to receive(:debug).with("[Anonymous Class] Hello, World!")
-          is_expected.to be_success
+          is_expected.to be_ok
         end
       end
 
@@ -54,7 +54,7 @@ RSpec.describe Action do
         let(:targeted_for_debug_logging) { true }
         it "logs debug at info level" do
           expect(logger).to receive(:info).with("[Anonymous Class] Hello, World!")
-          is_expected.to be_success
+          is_expected.to be_ok
         end
       end
     end
