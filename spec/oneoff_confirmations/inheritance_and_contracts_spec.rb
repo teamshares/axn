@@ -11,8 +11,10 @@ RSpec.describe "One-off confirmation: inheritance and contracts" do
       exposes :bar, type: Numeric
 
       def call
-        expose bar: foo * 10
+        expose bar: base_thing
       end
+
+      def base_thing = foo * 10
     end
   end
 
@@ -47,5 +49,7 @@ RSpec.describe "One-off confirmation: inheritance and contracts" do
     expect(b).to be_success
     expect(b.bar).to eq(10)
     expect(b.quz).to eq(999)
+
+    expect(version_b.call(baz: 10)).not_to be_ok
   end
 end
