@@ -12,7 +12,7 @@ RSpec.describe Action do
 
         before do
           log "before"
-          ok!("some message") if early_return
+          success!("some message") if early_return
         end
 
         def call
@@ -26,7 +26,7 @@ RSpec.describe Action do
     end
 
     it "base case" do
-      is_expected.not_to be_success
+      is_expected.not_to be_ok
       expect(subject.error).to eq("Did not return early (early return skips after block)")
     end
 
@@ -34,7 +34,7 @@ RSpec.describe Action do
       let(:early_return) { true }
 
       it "returns early" do
-        is_expected.to be_success
+        is_expected.to be_ok
         expect(result.success).to eq("some message")
       end
     end

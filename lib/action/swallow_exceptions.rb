@@ -87,6 +87,7 @@ module Action
       def ok!(message = nil)
         throw :axn_early_return, message
       end
+      alias success! ok!
 
       def fail!(message = nil)
         @context.instance_variable_set("@failure", true)
