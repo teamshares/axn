@@ -11,7 +11,10 @@ module Action
         extend ClassMethods
 
         def run_with_exception_swallowing!
-          original_run!
+          early_return_msg = catch(:axn_early_return) do
+            original_run!
+          end
+          @context.success_from_user = early_return_msg if early_return_msg.present?
         rescue Action::Failure => e
           # Just re-raise these (so we don't hit the unexpected-error case below)
           raise e
@@ -80,6 +83,10 @@ module Action
 
     module InstanceMethods
       private
+
+      def ok!(message = nil)
+        throw :axn_early_return, message
+      end
 
       def fail!(message = nil)
         @context.instance_variable_set("@failure", true)

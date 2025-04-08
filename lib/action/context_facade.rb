@@ -60,6 +60,12 @@ module Action
       stringified(action._error_msg, exception: the_exception).presence || "Something went wrong"
     end
 
+    def determine_success_message
+      return @context.success_from_user if @context.success_from_user.present?
+
+      stringified(action._success_msg).presence || "Action completed successfully"
+    end
+
     def message_from_rescues
       Array(action._error_rescues).each do |(matcher, value)|
         matches = if matcher.respond_to?(:call)
@@ -129,7 +135,7 @@ module Action
     def success
       return unless ok?
 
-      stringified(action._success_msg).presence || "Action completed successfully"
+      determine_success_message
     end
 
     def ok = success
