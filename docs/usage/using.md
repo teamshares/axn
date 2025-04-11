@@ -7,11 +7,11 @@ outline: deep
 
 ## Common Case
 
-An action is usually executed via `#call`, and _always_ returns an instance of the `Action::Result` class.
+An action executed via `#call` _always_ returns an instance of the `Action::Result` class.
 
-This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/action-result)) as well as any variables that it `exposes`.  Remember any exceptions have been swallowed.
+This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/action-result)) as well as any variables that the action `exposes`.
 
-As a consumer, you usually want a conditional that surfaces `error` unless the result is `ok?`, and otherwise takes whatever success action is relevant.
+As a consumer, you usually want a conditional that surfaces `error` unless the result is `ok?` (remember that any exceptions have been swallowed), and otherwise takes whatever success action is relevant.
 
 For example:
 
@@ -23,9 +23,9 @@ class MessagesController < ApplicationController
       message: params[:message],
     )
 
-    if result.ok?  # [!code focus:2]
+    if result.ok?  # [!code focus:3]
       @thread_id = result.thread_id # Because `thread_id` was explicitly exposed
-      flash.now[:success] = "Sent the Slack message"
+      flash.now[:success] = result.success
     else
       flash[:alert] = result.error # [!code focus]
       redirect_to action: :new
@@ -34,21 +34,13 @@ class MessagesController < ApplicationController
 end
 ```
 
-<!-- TODO: replace manual flash success with result.success (here and in guide?) -->
-
-
 ## Advanced Usage
 
 ### `#call!`
 
-::: danger ALPHA
-* TODO - flesh out this section
-:::
+An action executed via `#call!` (note the `!`) does _not_ swallow exceptions -- a _successful_ action will return an `Action::Result` just like `call`, but any exceptions will bubble up uncaught (note: technically they _will_ be caught, your on_exception handler triggered, and then re-raised) and any explicit `fail!` calls will raise an `Action::Failure` exception with your custom message.
 
-
-* `call!`
-    * call! -- will raise any exceptions OR our own Action::Failure if user-facing error occurred (otherwise non-bang will never raise)
-    * note call! still logs completion even if failure (from configuration's on_exception)
+This is a much less common pattern, as you're giving up the benefits of error swallowing and the consistent return interface guarantee, but it can be useful in limited contexts (usually for smaller, one-off scripts where it's easier to just let a failure bubble up rather than worry about adding conditionals for error handling).
 
 
 ### `#enqueue`

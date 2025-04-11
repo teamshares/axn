@@ -26,12 +26,10 @@ export default defineConfig({
           { text: 'Setup', link: '/usage/setup' },
           { text: 'Writing Actions', link: '/usage/writing' },
           { text: 'Using Actions', link: '/usage/using' },
-          { text: 'Testing Actions', link: '/usage/testing' },
-          { text: 'Conventions', link: '/usage/conventions' },
         ]
       },
       {
-        text: 'Reference',
+        text: 'DSL Reference',
         items: [
           { text: 'Configuration', link: '/reference/configuration' },
           { text: 'Class Interface', link: '/reference/class' },
@@ -40,10 +38,18 @@ export default defineConfig({
         ]
       },
       {
-        text: 'Advanced Usage',
+        text: 'Recipes',
+        items: [
+          { text: 'Memoization', link: '/recipes/memoization' },
+          { text: 'Validating User Input', link: '/recipes/validating-user-input' },
+          { text: 'Testing Actions', link: '/recipes/testing' },
+        ]
+      },
+      {
+        text: 'Additional Notes',
         items: [
           { text: 'ROUGH NOTES', link: '/advanced/rough' },
-          { text: 'Validating User Input', link: '/advanced/validating-user-input' },
+          { text: 'Conventions', link: '/advanced/conventions' },
         ]
       },
     ],
