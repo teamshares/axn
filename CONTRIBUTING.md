@@ -23,7 +23,7 @@ For the best chance of having your changes merged, please:
 
 ## Bug Reports
 
-If you are experiencing unexpected behavior and, after having read [our documentation](https://teamshares.github.io/axn/guide/), are convinced this behavior is a bug, please:
+If you are experiencing unexpected behavior and, after having read [our documentation](https://teamshares.github.io/axn/), are convinced this behavior is a bug, please:
 
 1. [Search](https://github.com/teamshares/axn/issues) existing issues.
 2. Collect enough information to reproduce the issue:

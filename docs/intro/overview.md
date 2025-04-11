@@ -27,8 +27,6 @@ end
 
 ## Inputs and Outflows
 
-### Overview
-
 Most actions require inputs, and many return values to the caller; no need for any `def initialize` boilerplate, just add:
 
   * `expects :foo` to declare inputs the class expects to receive.
@@ -43,25 +41,14 @@ Most actions require inputs, and many return values to the caller; no need for a
 By design you _cannot access anything you do not explicitly `expose` from outside the action itself_.  Making the external interface explicit helps maintainability by ensuring you can refactor internals without breaking existing callsites.
 :::
 
-### Details
-Both `expects` and `exposes` support a variety of options:
-
-| Option | Example (same for `exposes`) | Meaning |
-| -- | -- | -- |
-| `sensitive` | `expects :password, sensitive: true` | Filters the fields value when logging, reporting errors, or calling `inspect`
-| `default` | `expects :foo, default: 123` | If `foo` isn't provided, it'll default to this value
-| `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank
-| `type` | `expects :foo, type: String` | Custom type validation -- fail unless `foo.is_a?(String)`
-| anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validate :foo, <...>` on an ActiveRecord model)
-
 ::: warning
-The declarative interface (`expects` and `exposes`) constitutes a contract you are making _with yourself_ (and your fellow developers). **This is _not_ for validating user input** -- [there's a Form Object pattern for that](/advanced/validating-user-input).
+The declarative interface (`expects` and `exposes`) constitutes a contract you are making _with yourself_ (and your fellow developers). **This is _not_ for validating user input** -- [there's a Form Object pattern for that](/recipes/validating-user-input).
 :::
 
-If any expectations fail, the action will fail early and set `error` to a generic error message (because a failed validation means _you_ called _your own_ service wrong; there's nothing the end user can do about that).
+If any declared expectations or exposures are _not_ met the action will fail, setting `error` to a generic error message (because a failed validation means _you_ called _your own_ service wrong; there's nothing the end user can do about that).
 
 
-### Putting it together
+### Example
 
 ```ruby
 class Actions::Slack::Post
@@ -88,23 +75,16 @@ end
 
 ## Return interface {#return-interface}
 
-### Overview
 
 The return value of an Action call is always an `Action::Result`, which provides a consistent interface:
 
-| Method | Description |
-| -- | -- |
-| `ok?` | `true` if the call succeeded, `false` if not.
-| `error` | Will _always_ be set to a safe-to-show-users string if not `ok?`
-| any `expose`d values | guaranteed to be set if `ok?` (since they have outgoing presence validations by default; any missing would have failed the action)
+* `ok?` will return a boolean (false if any errors or exceptions occurred, otherwise true)
+  * if OK, `success` will return a string that is _safe to show end users_
+  * if _not_ OK, `error` will return an error string that is _safe to show end users_
+* `message` is a helper to return the relevant message in either case (defined as `ok? ? success : error`)
 
-### Details
 
-::: danger ALPHA
-* TODO: link to a reference page for the full interface.
-:::
-
-### Putting it together
+### Example
 
 This interface yields a common usage pattern:
 
@@ -139,7 +119,7 @@ Note this simple pattern handles multiple levels of "failure" ([details below](#
 ::: tip BIG IDEA
 By design, `result.error` is always safe to show to the user.
 
-:star_struck: The calling code usually only cares about `ok?` and `error` -- no complex error handling needed.
+Calling code _usually_ only cares about `ok?` and `error` -- no complex error handling needed. :star_struck:
 :::
 
 
@@ -151,7 +131,6 @@ For _known_ failure modes, you can call `fail!("Some user-facing explanation")` 
 
 ### Internal errors (uncaught `raise`)
 
-Any exceptions will be swallowed and the action failed (i.e. _not_ `ok?`). `result.error` will be set to a generic error message ("Something went wrong" by default, but highly configurable).
-<!-- TODO: link to messaging configs -->
+Any exceptions will be swallowed and the action failed (i.e. _not_ `ok?`). `result.error` will be set to a generic error message ("Something went wrong" by default, but [highly configurable](/reference/class#messages)).
 
 The swallowed exception will be available on `result.exception` for your introspection, but it'll also be passed to your `on_exception` handler so, [with a bit of configuration](/usage/setup), you can trust that any exceptions have been logged to your error tracking service automatically (one more thing the dev doesn't need to think about).

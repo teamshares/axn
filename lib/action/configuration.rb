@@ -12,7 +12,7 @@ module Action
 
     def on_exception(e, action:, context: {})
       if @on_exception
-        # TODO: only pass action: or context: if requested
+        # TODO: only pass action: or context: if requested (and update documentation)
         @on_exception.call(e, action:, context:)
       else
         log("[#{action.class.name.presence || "Anonymous Action"}] Exception swallowed: #{e.class.name} - #{e.message}")

@@ -5,27 +5,15 @@ Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call
 
 ```ruby
   Action.configure do |c|
-    c.global_debug_logging = false
-
     c.on_exception = ...
 
     c.top_level_around_hook = ...
 
     c.additional_includes = []
-  end
-```
 
-## `global_debug_logging`
+    c.global_debug_logging = false
 
-By default, every `action.call` will emit _debug_ log lines when it is called (including the action class and any arguments it was provided) and after it completes (including the execution time and the outcome).
-
-You can bump the log level from `debug` to `info` for specific actions by including their class name (comma separated, if multiple) in a `SA_DEBUG_TARGETS` ENV variable.
-
-You can also turn this on _globally_ by setting `global_debug_logging = true`.
-
-```ruby
-  Action.configure do |c|
-    c.global_debug_logging = true
+    c.logger = ...
   end
 ```
 
@@ -42,7 +30,7 @@ For example, if you're using Honeybadger this could look something like:
       message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
 
       Rails.logger.warn(message)
-      Honeybadger.notify(message, context:)
+      Honeybadger.notify(message, context: { axn_context: context })
     end
   end
 ```
@@ -77,6 +65,10 @@ A couple notes:
   * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that outcome (`success`, `failure`, `exception`) of the action is reported so you can easily track e.g. success rates per action.
 
 
+## `logger`
+
+Defaults to `Rails.logger`, if present, otherwise falls back to `Logger.new($stdout)`.  But can be set to a custom logger as necessary.
+
 ## `additional_includes`
 
 This is much less critical than the preceding options, but on the off chance you want to add additional customization to _all_ your actions you can set additional modules to be included alongside `include Action`.
@@ -86,5 +78,26 @@ For example:
 ```ruby
   Action.configure do |c|
     c.additional_includes = [SomeFancyCustomModule]
+  end
+```
+
+For a practical example of this in practice, see [our 'memoization' recipe](/recipes/memoization).
+
+## `global_debug_logging`
+
+By default, every `action.call` will emit _debug_ log lines when it is called and after it completes:
+
+  ```
+    [YourCustomAction] About to execute with: {:foo=>"bar"}
+    [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
+  ```
+
+You can bump the log level from `debug` to `info` for specific actions by including their class name (comma separated, if multiple) in a `SA_DEBUG_TARGETS` ENV variable.
+
+You can also turn this on _globally_ by setting `global_debug_logging = true`.
+
+```ruby
+  Action.configure do |c|
+    c.global_debug_logging = true
   end
 ```
