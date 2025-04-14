@@ -29,4 +29,6 @@ features:
     details: Lorem ipsum dolor sit amet, consectetur adipiscing elit
 ---
 
-
+::: danger ALPHA RELEASE
+Axn is used in production at [Teamshares](https://teamshares.com/), but is still in alpha and is undergoing active development.
+:::
