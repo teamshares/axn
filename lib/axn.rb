@@ -15,7 +15,6 @@ require_relative "action/contract"
 require_relative "action/swallow_exceptions"
 require_relative "action/hoist_errors"
 
-require_relative "action/organizer"
 require_relative "action/enqueueable"
 
 module Action

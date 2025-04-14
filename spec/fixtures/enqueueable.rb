@@ -24,10 +24,3 @@ class AnotherEnqueueableInteractor
     puts "Another Interactor: #{foo}"
   end
 end
-
-class TestEnqueueableOrganizer
-  include Action::Organizer
-
-  queue_options queue: "high", retry: 2, retry_queue: "medium"
-  organize TestEnqueueableInteractor, AnotherEnqueueableInteractor
-end
