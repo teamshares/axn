@@ -8,7 +8,7 @@ This library provides a set of conventions for writing business logic in Rails (
 
   * Clear calling semantics: `Foo.call`
   * A declarative interface
-  * A [consistent return interface](./#return-interface)
+  * A [consistent return interface](/intro/overview#return-interface)
     * Exception swallowing + clear distinction between internal and user-facing errors
 
 ### Minimal example
