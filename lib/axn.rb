@@ -17,6 +17,8 @@ require_relative "action/hoist_errors"
 
 require_relative "action/enqueueable"
 
+require_relative "action/subactions"
+
 module Action
   def self.included(base)
     base.class_eval do
@@ -35,6 +37,8 @@ module Action
       include HoistErrors
 
       include Enqueueable
+
+      include Subactions
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
