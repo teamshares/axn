@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "../fixtures/date_organizer"
-
 # TODO: was used for manual testing -- clean up or remove when done
 
 RSpec.describe "One-off confirmation" do

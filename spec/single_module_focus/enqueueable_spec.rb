@@ -80,29 +80,4 @@ RSpec.describe Action::Enqueueable, type: :worker do
       end
     end
   end
-
-  context "Organizer" do
-    subject { TestEnqueueableOrganizer.enqueue(foo: "bar", name: "Joe", address: "123 Nope") }
-
-    around do |example|
-      Sidekiq::Testing.inline! do
-        example.run
-      end
-    end
-
-    describe "#enqueue" do
-      it "queues job to the given queue" do
-        expect(TestEnqueueableOrganizer.queue).to eq("high")
-      end
-
-      it "sets the options" do
-        expect(TestEnqueueableOrganizer.sidekiq_options_hash).to include("retry" => 2, "queue" => "high",
-                                                                         "retry_queue" => "medium")
-      end
-
-      it "sets the context with the passed-in hash args and calls all included Interactors" do
-        expect { subject }.to output(/Name: Joe\nAddress: 123 Nope.+?Another Interactor: bar\n/m).to_stdout
-      end
-    end
-  end
 end
