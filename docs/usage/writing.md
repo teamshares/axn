@@ -66,10 +66,39 @@ See [the reference doc](/reference/instance) for a few more handy helper methods
 
 ## Customizing messages
 
-::: danger ALPHA
-* TODO: document `messages` setup
-:::
+The default `error` and `success` message strings ("Something went wrong" / "Action completed successfully", respectively) _are_ technically safe to show users, but you'll often want to set them to something more useful.
 
+There's a `messages` declaration for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in).
+
+For instance, configuring the action like this:
+
+```ruby
+class Foo
+  include Action
+
+  expects :name, type: String
+  exposes :meaning_of_life
+
+  messages success: -> { "Revealed the secret of life to #{name}" }, # [!code focus:2]
+           error: ->(e) { "No secret of life for you: #{e.message}" }
+
+  def call
+    fail! "Douglas already knows the meaning" if name == "Doug"
+
+    msg = "Hello #{name}, the meaning of life is 42"
+    expose meaning_of_life: msg
+  end
+end
+```
+
+Would give us these outputs:
+
+```ruby
+Foo.call.error # => "No secret of life for you: Name can't be blank"
+Foo.call(name: "Doug").error # => "Douglas already knows the meaning"
+Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
+Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
+```
 
 ## Lifecycle methods
 
@@ -81,7 +110,7 @@ If you define a `#rollback` method, it'll be called (_before_ returning an `Acti
 
 ### Hooks
 
-`before`, `after`, and `around` hooks are also supported.
+`before` and `after` hooks are also supported. They can receive a block directly, or the symbol name of a local method.
 
 ### Concrete example
 
@@ -91,8 +120,8 @@ Given this series of methods and hooks:
 class Foo
   include Action
 
-  before { log("before hook") }
-  after { log("after hook") }
+  before { log("before hook") } # [!code focus:2]
+  after :log_after
 
   def call
     log("in call")
@@ -101,6 +130,12 @@ class Foo
 
   def rollback
     log("rolling back")
+  end
+
+  private
+
+  def log_after
+    log("after hook")
   end
 end
 ```

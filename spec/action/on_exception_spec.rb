@@ -28,7 +28,7 @@ RSpec.describe Action do
       expect(described_class.config).to receive(:on_exception).with(anything,
                                                                     action: action,
                                                                     context: filtered_context).and_call_original
-      is_expected.not_to be_success
+      is_expected.not_to be_ok
     end
   end
 
@@ -50,7 +50,7 @@ RSpec.describe Action do
 
     it "calls on_exception but doesn't fail action" do
       expect(described_class.config).to receive(:on_exception).once
-      is_expected.to be_success
+      is_expected.to be_ok
     end
 
     context "with an explicit fail!" do
@@ -58,7 +58,7 @@ RSpec.describe Action do
 
       it "allows the failure to bubble up" do
         expect(described_class.config).not_to receive(:on_exception)
-        is_expected.not_to be_success
+        is_expected.not_to be_ok
         expect(subject.error).to eq("allow intentional failure to bubble")
       end
     end

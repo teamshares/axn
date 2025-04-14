@@ -13,7 +13,7 @@ RSpec.describe Action do
     end
 
     it "is prevented" do
-      is_expected.not_to be_success
+      is_expected.not_to be_ok
       expect(subject.error).to eq("Something went wrong")
       expect(subject.exception).to be_a(Action::ContractViolation::MethodNotAllowed)
       expect(subject.exception.message).to eq "Call fail! directly rather than on the context"

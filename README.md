@@ -4,7 +4,7 @@ Just spinning this up -- not yet released (i.e. doc updates in flight).
 
 ## Installation & Usage
 
-See our [User Guide](https://teamshares.github.io/axn/guide/) for details.
+See our [User Guide](https://teamshares.github.io/axn/) for details.
 
 ## [!!] Inheritance Support
 

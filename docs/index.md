@@ -8,8 +8,14 @@ hero:
   tagline: "**ALPHA release -- everything subject to change**"
   actions:
     - theme: brand
-      text: User Guide
-      link: /guide
+      text: Overview
+      link: /intro/overview
+    - theme: alt
+      text: Usage
+      link: /usage/setup
+    - theme: alt
+      text: DSL Reference
+      link: /reference/class
     # - theme: alt
     #   text: API Examples
     #   link: /api-examples

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+RED="\e[31m"
+TEXT="\e[34m\e[107m"
+ENDCOLOR="\e[0m"
+
+say () {
+  printf "\n${TEXT} -- $1 -- ${ENDCOLOR}\n"
+}
+
+if [ -z "$(git status --porcelain)" ]; then
+  # Working directory clean
+  say "Pulling any changes down from git"
+  git pull origin
+
+  say "Updating ruby gems"
+  bundle check || bundle install
+else
+  # Uncommitted changes
+  printf "${RED}\t!! FAILED TO UPDATE -- you have uncommitted changes (check those into git, then rerun)${ENDCOLOR}\n"
+fi

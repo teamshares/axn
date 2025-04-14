@@ -6,8 +6,6 @@ outline: deep
 ## Installation
 
 Adding `axn` to your Gemfile is enough to start using `include Action`.
-<!-- todo bundler -->
-
 
 ## Global Configuration
 

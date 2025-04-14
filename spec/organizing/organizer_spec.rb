@@ -9,14 +9,14 @@ RSpec.describe "Organizing" do
     context "with valid date" do
       let(:date) { "2020-01-01" }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
       it { expect(subject.date).to eq(Date.new(2020, 1, 1)) }
     end
 
     context "with invalid date" do
       let(:date) { "2020-01-32" }
 
-      it { is_expected.not_to be_success }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("Parsing the date went poorly") }
       it { expect(subject.exception.class).to eq(Date::Error) }
       it { expect(subject.exception.message).to eq("invalid date") }
@@ -29,14 +29,14 @@ RSpec.describe "Organizing" do
     context "with date in 2020" do
       let(:date) { Date.new(2020, 1, 1) }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
       it { expect(subject.year).to eq(2020) }
     end
 
     context "with invalid date type" do
       let(:date) { "2020-01-01" }
 
-      it { is_expected.not_to be_success }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("Something went wrong") }
       it { expect(subject.exception.message).to eq("Date is not a Date") }
     end
@@ -75,7 +75,7 @@ RSpec.describe "Organizing" do
     context "with valid date" do
       let(:date) { "2020-01-01" }
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
       it { expect(subject.year).to eq(2020) }
 
       it "cannot access non-declared fields" do
@@ -86,14 +86,14 @@ RSpec.describe "Organizing" do
     context "with non-string date" do
       let(:date) { Date.parse("2020-01-01") }
 
-      it { is_expected.not_to be_success }
+      it { is_expected.not_to be_ok }
       it { expect(subject.exception.message).to eq("Date is not a String") }
     end
 
     context "with invalid date string" do
       let(:date) { "a string" }
 
-      it { is_expected.not_to be_success }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("Parsing the date went poorly") }
       it { expect(subject.exception.class).to eq(Date::Error) }
     end
