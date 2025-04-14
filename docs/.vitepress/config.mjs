@@ -9,7 +9,9 @@ export default defineConfig({
     // https://vitepress.dev/reference/default-theme-config
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'Overview', link: '/into/overview' }
+      { text: 'Overview', link: '/intro/overview' },
+      { text: 'Guide', link: '/usage/setup' },
+      { text: 'Reference', link: '/reference/configuration' }
     ],
 
     sidebar: [
@@ -21,9 +23,9 @@ export default defineConfig({
         ]
       },
       {
-        text: 'Getting Started',
+        text: 'Usage Guide',
         items: [
-          { text: 'Setup', link: '/usage/setup' },
+          { text: 'Getting Started', link: '/usage/setup' },
           { text: 'Writing Actions', link: '/usage/writing' },
           { text: 'Using Actions', link: '/usage/using' },
         ]
