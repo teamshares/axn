@@ -66,6 +66,21 @@ RSpec.describe Action do
           expect(result.value).to eq("aaaaa")
         end
       end
+
+      context "can handle early return via next" do
+        let(:subaction) do
+          lambda do |char:, length:|
+            next "it's an A" if char == "a"
+
+            char * length
+          end
+        end
+
+        it "exposes value automatically" do
+          result = client.foo(char: "a", length: 5)
+          expect(result.value).to eq("it's an A")
+        end
+      end
     end
 
     describe "defined from block with custom exposures" do
@@ -114,6 +129,31 @@ RSpec.describe Action do
           expect(client.foo(name: "name")).to be_ok
           expect(client.foo(name: 123)).not_to be_ok
         end
+      end
+    end
+
+    context "with Client class customization" do
+      before do
+        client.action(:foo, exposes: [:resp], &subaction)
+      end
+
+      let(:client) do
+        Class.new do
+          include Action
+
+          def self.awesome_thing = 123
+        end
+      end
+
+      let(:subaction) do
+        lambda do
+          expose :resp, "Hello #{self.class.awesome_thing}"
+        end
+      end
+
+      it "inherits from Client class" do
+        expect(client.foo).to be_ok
+        expect(client.foo.resp).to eq("Hello 123")
       end
     end
   end

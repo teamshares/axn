@@ -64,8 +64,9 @@ module Action
           expects[name] ||= {}
         end
 
-        Class.new do
-          include Action
+        # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
+        Class.new(self) do
+          include Action unless self < Action
 
           define_method(:call) do
             unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |name, hash|
