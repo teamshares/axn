@@ -16,7 +16,7 @@ module Action
         _log_before
 
         _configurable_around_wrapper do
-          (@outcome, @exception) = _call_and_return_outcome(hooked)
+          (@outcome, @exception) = _call_and_return_outcome(hooked).values_at(:outcome, :exception)
         end
 
         _log_after(timing_start:, outcome: @outcome)
@@ -50,13 +50,14 @@ module Action
 
       def _call_and_return_outcome(hooked)
         hooked.call
+        binding.pry
 
-        "success"
+        { outcome: "success" }
       rescue StandardError => e
-        [
-          e.is_a?(Action::Failure) ? "failure" : "exception",
-          e,
-        ]
+        {
+          outcome: e.is_a?(Action::Failure) ? "failure" : "exception",
+          exception: e,
+        }
       end
     end
   end
