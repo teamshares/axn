@@ -113,6 +113,17 @@ module Action
 
   # Outbound / External ContextFacade
   class Result < ContextFacade
+    # For ease of mocking return results in tests
+    class << self
+      def ok = Class.new { include(Action) }.call
+
+      def error(msg = "Something went wrong")
+        Class.new { include(Action) }.tap do |klass|
+          klass.define_method(:call) { fail!(msg) }
+        end.call
+      end
+    end
+
     # Poke some holes for necessary internal control methods
     delegate :called!, :rollback!, :each_pair, to: :context
 
