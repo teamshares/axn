@@ -128,7 +128,7 @@ module Action
     delegate :called!, :rollback!, :each_pair, to: :context
 
     # External interface
-    delegate :success?, :failure?, :exception, to: :context
+    delegate :success?, :exception, to: :context
     def ok? = success?
 
     def error

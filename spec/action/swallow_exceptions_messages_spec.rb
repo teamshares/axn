@@ -36,7 +36,7 @@ RSpec.describe Action do
     context "with RuntimeError" do
       let(:klass) { RuntimeError }
 
-      it { is_expected.to be_failure }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("RUN RUN RUN") }
       it { expect(subject.message).to eq("RUN RUN RUN") }
     end
@@ -44,7 +44,7 @@ RSpec.describe Action do
     context "with ArgumentError" do
       let(:klass) { ArgumentError }
 
-      it { is_expected.to be_failure }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("Bad args: Pretending something went wrong") }
       it { expect(subject.message).to eq("Bad args: Pretending something went wrong") }
     end
@@ -52,7 +52,7 @@ RSpec.describe Action do
     context "with other error" do
       let(:klass) { StandardError }
 
-      it { is_expected.to be_failure }
+      it { is_expected.not_to be_ok }
       it { expect(subject.error).to eq("baseline message") }
       it { expect(subject.message).to eq("baseline message") }
     end

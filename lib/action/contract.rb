@@ -60,7 +60,7 @@ module Action
       RESERVED_FIELD_NAMES = %w[
         declared_fields inspect fail!
         default_error
-        called! rollback! each_pair success? failure? exception ok ok? error success message
+        called! rollback! each_pair success? exception ok ok? error success message
       ].freeze
 
       def _parse_field_configs(*fields, allow_blank: false, default: nil, preprocess: nil, sensitive: false,

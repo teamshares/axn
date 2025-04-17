@@ -41,7 +41,7 @@ RSpec.describe "One-off confirmation: inheritance via explicit" do
     context "when invalid" do
       subject { action.call(foo: 1) }
 
-      it { is_expected.to be_failure }
+      it { is_expected.not_to be_ok }
       it { expect(subject.exception).to be_a(Action::InboundValidationError) }
     end
   end

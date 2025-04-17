@@ -18,7 +18,7 @@ RSpec.describe Action do
       subject { action.call(foo: 9, bar: 5, baz: 1) }
 
       it "fails" do
-        expect(subject).to be_failure
+        expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(Action::InboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
@@ -61,7 +61,7 @@ RSpec.describe Action do
       subject { action.call(foo: 10, bar: 9, baz: 1) }
 
       it "fails" do
-        expect(subject).to be_failure
+        expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(Action::OutboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
@@ -83,7 +83,7 @@ RSpec.describe Action do
       end
 
       it "fails" do
-        expect(subject).to be_failure
+        expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(Action::ContractViolation::UnknownExposure)
       end
@@ -108,7 +108,7 @@ RSpec.describe Action do
       subject { action.call(foo: 1, bar: 2, baz: 3) }
 
       it "fails" do
-        expect(subject).to be_failure
+        expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(Action::InboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
