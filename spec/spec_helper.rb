@@ -30,6 +30,8 @@ def build_action(&block)
   action
 end
 
+def build_axn(**kwargs, &) = Axn::Factory.build(**kwargs, &) # rubocop:disable Style/ArgumentsForwarding << not sure which ruby version that came in
+
 def build_interactor(*modules, &block)
   interactor = Class.new.send(:include, Interactor)
   modules.each { |mod| interactor = interactor.send(:include, mod) }
