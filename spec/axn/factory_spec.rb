@@ -17,6 +17,19 @@ RSpec.shared_examples "can build Axns from callables" do
     end
   end
 
+  context "setting expose_return_as" do
+    let(:kwargs) { { expose_return_as: :value } }
+
+    let(:callable) do
+      -> { 123 }
+    end
+
+    it "works correctly" do
+      expect(axn.call).to be_ok
+      expect(axn.call.value).to eq(123)
+    end
+  end
+
   context "setting messages, expects, exposes" do
     let(:kwargs) do
       {
