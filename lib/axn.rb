@@ -16,9 +16,10 @@ require_relative "action/core/hoist_errors"
 require_relative "action/core/enqueueable"
 
 require_relative "axn/factory"
-require_relative "action/ext/subactions"
 
-def Axn(callable, **kwargs)
+require_relative "action/attachable"
+
+def Axn(callable, **kwargs) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
 
   Axn::Factory.build(**kwargs, &callable)
@@ -43,7 +44,8 @@ module Action
 
       include Enqueueable
 
-      include Subactions
+      # --- Extensions ---
+      include Attachable
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
