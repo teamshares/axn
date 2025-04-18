@@ -6,17 +6,21 @@ module Action
       extend ActiveSupport::Concern
 
       class_methods do
-        def action(name, axn_klass = nil, **action_kwargs, &block)
-          axn_klass ||= axn_for_attachment(name:, axn_klass:, **action_kwargs, &block)
+        def _attachable_name(name:) = "_subaction_#{name}"
 
-          define_singleton_method(_new_action_name(name)) { axn_klass }
+        def action(name, axn_klass = nil, **action_kwargs, &block)
+          axn_klass = axn_for_attachment(name:, axn_klass:, **action_kwargs, &block)
+          internal_name = _attachable_name(name:)
+          raise ArgumentError, "#{attachment_type} cannot be added -- '#{name}' is already taken" if respond_to?(internal_name)
+
+          define_singleton_method(internal_name) { axn_klass }
 
           define_singleton_method(name) do |**kwargs|
-            send(_new_action_name(name)).call(**kwargs)
+            send(internal_name).call(**kwargs)
           end
 
           define_singleton_method("#{name}!") do |**kwargs|
-            send(_new_action_name(name)).call!(**kwargs)
+            send(internal_name).call!(**kwargs)
           end
         end
       end

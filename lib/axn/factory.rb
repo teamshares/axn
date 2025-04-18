@@ -3,7 +3,18 @@
 module Axn
   class Factory
     class << self
-      def build(superclass: nil, exposes: {}, expects: {}, &block) # rubocop:disable Metrics/CyclomaticComplexity TODO - simplify this once finalized
+      # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
+      def build(
+        superclass: nil,
+        exposes: {},
+        expects: {},
+        messages: {},
+        before: nil,
+        after: nil,
+        around: nil,
+        rollback: nil,
+        &block
+      )
         args = block.parameters.each_with_object(_hash_with_default_array) { |(type, name), hash| hash[type] << name }
 
         raise ArgumentError, "Cannot convert block to action: block expects positional arguments" if args[:req].present? || args[:rest].present?
@@ -42,10 +53,28 @@ module Axn
             axn.exposes(name, **opts)
           end
 
+          axn.messages(**messages) if messages.present?
+
+          # Hooks
+          axn.before(before) if before.present?
+          axn.after(after) if after.present?
+          axn.around(around) if around.present?
+
+          # Rollback
+          if rollback.present?
+            raise ArgumentError, "Rollback must be a callable" unless rollback.respond_to?(:call) && rollback.respond_to?(:arity)
+            raise ArgumentError, "Rollback must be a callable with no arguments" unless rollback.arity.zero?
+
+            axn.define_method(:rollback) do
+              instance_exec(&rollback)
+            end
+          end
+
           # Default value exposure
           axn.exposes(:value, allow_blank: true) if exposes.blank?
         end
       end
+      # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
 
       private
 
@@ -54,9 +83,7 @@ module Axn
       def _hydrate_hash(given)
         return given if given.is_a?(Hash)
 
-        raise ArgumentError, "Expected a Hash or an Array of keys" unless given.is_a?(Array)
-
-        given.each_with_object({}) do |key, acc|
+        Array(given).each_with_object({}) do |key, acc|
           acc[key] = {}
         end
       end

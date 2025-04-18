@@ -134,7 +134,7 @@ RSpec.describe Action do
 
     context "with Client class customization" do
       before do
-        client.action(:foo, exposes: [:resp], &subaction)
+        client.action(:foo, exposes: :resp, &subaction)
       end
 
       let(:client) do

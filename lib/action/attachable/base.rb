@@ -6,9 +6,7 @@ module Action
       extend ActiveSupport::Concern
 
       class_methods do
-        def _new_action_name(name) = "_subaction_#{name}"
-
-        def axn_for_attachment(attachment_type: "Action", name: nil, axn_klass: nil, exposes: {}, expects: {}, &block)
+        def axn_for_attachment(attachment_type: "Action", name: nil, axn_klass: nil, **kwargs, &block)
           raise ArgumentError, "#{attachment_type} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
           raise ArgumentError, "#{attachment_type} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
 
@@ -17,14 +15,21 @@ module Action
                   "#{attachment_type} '#{name}' was given both an existing action class and a block - only one is allowed"
           end
 
-          raise ArgumentError, "#{attachment_type} cannot be added -- '#{name}' is already taken" if respond_to?(_new_action_name(name))
+          if axn_klass
+            unless axn_klass.respond_to?(:<) && axn_klass < Action
+              raise ArgumentError,
+                    "#{attachment_type} '#{name}' was given an already-existing class #{axn_klass.name} that does NOT inherit from Action as expected"
+            end
 
-          if axn_klass && !(axn_klass.respond_to?(:<) && axn_klass < Action)
-            raise ArgumentError,
-                  "#{attachment_type} '#{name}' must be given a block or an already-existing Action class"
+            if kwargs.present?
+              raise ArgumentError, "#{attachment_type} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
+            end
+
+            return axn_klass
           end
 
-          Axn::Factory.build(superclass: self, exposes:, expects:, &block)
+          # TODO: CAREFUL ABOUT EXTENDING SELF WHEN THAT ALREADY HAS STEP INFO?!!
+          Axn::Factory.build(superclass: self, **kwargs, &block)
         end
       end
     end
