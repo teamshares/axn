@@ -5,13 +5,19 @@ module Axn
     class << self
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
+        # Builder-specific options
         superclass: nil,
+        expose_return_as: :nil,
+
+        # Expose standard class-level options
         exposes: {},
         expects: {},
         messages: {},
         before: nil,
         after: nil,
         around: nil,
+
+        # Allow dynamically assigning rollback method
         rollback: nil,
         &block
       )
@@ -41,8 +47,9 @@ module Axn
             unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |name, hash|
               hash[name] = public_send(name)
             end
-            value = instance_exec(**unwrapped_kwargs, &block)
-            expose(value:) if exposes.blank? # NOTE: only setting default value exposure if nothing explicitly passed in
+
+            retval = instance_exec(**unwrapped_kwargs, &block)
+            expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn| # rubocop: disable Style/MultilineBlockChain
           expects.each do |name, opts|
@@ -70,8 +77,8 @@ module Axn
             end
           end
 
-          # Default value exposure
-          axn.exposes(:value, allow_blank: true) if exposes.blank?
+          # Default exposure
+          axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?
         end
       end
       # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists

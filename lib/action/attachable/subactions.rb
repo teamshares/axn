@@ -19,6 +19,8 @@ module Action
             send(internal_name).call(**kwargs)
           end
 
+          # TODO: do we also need an instance-level version that auto-wraps in hoist_errors(label: name)?
+
           define_singleton_method("#{name}!") do |**kwargs|
             send(internal_name).call!(**kwargs)
           end
