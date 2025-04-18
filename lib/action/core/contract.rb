@@ -4,8 +4,8 @@ require "active_model"
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
-require "action/contract_validator"
-require "action/context_facade"
+require "action/core/contract_validator"
+require "action/core/context_facade"
 
 module Action
   module Contract
