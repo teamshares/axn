@@ -15,24 +15,7 @@ module Action
         def steps(*steps) = self._axn_steps += Array(steps).compact
 
         def step(name, axn_klass = nil, **kwargs, &block)
-          raise ArgumentError, "Step name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
-          raise ArgumentError, "Step '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
-          raise ArgumentError, "Step '#{name}' was given both an existing action class and a block - only one is allowed" if axn_klass && block_given?
-
-          new_action_name = "_step_#{name}"
-          raise ArgumentError, "Action cannot be added -- '#{name}' is already taken" if respond_to?(new_action_name)
-
-          if axn_klass && !(axn_klass.respond_to?(:<) && axn_klass < Action)
-            raise ArgumentError,
-                  "Action '#{name}' must be given a block or an already-existing Action class"
-          end
-
-          # TODO: CAREFUL ABOUT EXTENDING SELF WHEN THAT ALREADY HAS STEP INFO?!!
-          axn_klass ||= Axn::Factory.build(superclass: self, **kwargs, &block)
-
-          #
-          # --- Above here -- probably extractable ---
-          #
+          axn_klass = axn_for_attachment(name:, axn_klass:, attachment_type: "Step", **kwargs, &block)
 
           # Add the step to the list of steps
           _axn_steps << Entry.new(label: name, axn: axn_klass)
