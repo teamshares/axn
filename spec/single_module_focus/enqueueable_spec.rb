@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "sidekiq/testing"
+require "action/core/enqueueable"
 require_relative "../fixtures/enqueueable"
 
 RSpec.describe Action::Enqueueable, type: :worker do

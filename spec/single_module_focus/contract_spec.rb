@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "action/contract"
+require "action/core/contract"
 
 RSpec.describe Action::Contract do
   let(:interactor) do
