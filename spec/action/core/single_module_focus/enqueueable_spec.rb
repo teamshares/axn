@@ -2,7 +2,7 @@
 
 require "sidekiq/testing"
 require "action/core/enqueueable"
-require_relative "../fixtures/enqueueable"
+require "fixtures/enqueueable"
 
 RSpec.describe Action::Enqueueable, type: :worker do
   context "Interactor" do
