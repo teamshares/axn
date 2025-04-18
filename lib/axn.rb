@@ -17,7 +17,14 @@ require_relative "action/hoist_errors"
 
 require_relative "action/enqueueable"
 
+require_relative "axn/factory"
 require_relative "action/subactions"
+
+def Axn(callable, **kwargs)
+  return callable if callable.is_a?(Class) && callable < Action
+
+  Axn::Factory.build(**kwargs, &callable)
+end
 
 module Action
   def self.included(base)
