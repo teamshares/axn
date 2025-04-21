@@ -106,6 +106,10 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 ### `#rollback`
 
+::: danger ALPHA
+* ⚠️ `#rollback` is _expected_ to be added shortly, but is not yet functional!
+:::
+
 If you define a `#rollback` method, it'll be called (_before_ returning an `Action::Result` to the caller) whenever your action fails.
 
 ### Hooks
