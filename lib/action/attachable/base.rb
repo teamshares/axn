@@ -6,7 +6,7 @@ module Action
       extend ActiveSupport::Concern
 
       class_methods do
-        def axn_for_attachment(attachment_type: "Action", name: nil, axn_klass: nil, **kwargs, &block)
+        def axn_for_attachment(attachment_type: "Action", name: nil, axn_klass: nil, superclass: nil, **kwargs, &block)
           raise ArgumentError, "#{attachment_type} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
           raise ArgumentError, "#{attachment_type} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
 
@@ -28,8 +28,7 @@ module Action
             return axn_klass
           end
 
-          # TODO: CAREFUL ABOUT EXTENDING SELF WHEN THAT ALREADY HAS STEP INFO?!!
-          Axn::Factory.build(superclass: self, **kwargs, &block)
+          Axn::Factory.build(superclass: superclass || self, **kwargs, &block)
         end
       end
     end

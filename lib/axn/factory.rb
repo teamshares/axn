@@ -23,13 +23,16 @@ module Axn
       )
         args = block.parameters.each_with_object(_hash_with_default_array) { |(type, name), hash| hash[type] << name }
 
-        raise ArgumentError, "Cannot convert block to action: block expects positional arguments" if args[:req].present? || args[:rest].present?
-        raise ArgumentError, "Cannot convert block to action: block expects a splat of keyword arguments" if args[:keyrest].present?
+        if args[:opt].present? || args[:req].present? || args[:rest].present?
+          raise ArgumentError,
+                "[Axn::Factory] Cannot convert block to action: block expects positional arguments"
+        end
+        raise ArgumentError, "[Axn::Factory] Cannot convert block to action: block expects a splat of keyword arguments" if args[:keyrest].present?
 
         # TODO: is there any way to support default arguments? (if so, set allow_blank: true for those)
         if args[:key].present?
           raise ArgumentError,
-                "Cannot convert block to action: block expects keyword arguments with defaults (ruby does not allow introspecting)"
+                "[Axn::Factory] Cannot convert block to action: block expects keyword arguments with defaults (ruby does not allow introspecting)"
         end
 
         expects = _hydrate_hash(expects)
@@ -69,8 +72,8 @@ module Axn
 
           # Rollback
           if rollback.present?
-            raise ArgumentError, "Rollback must be a callable" unless rollback.respond_to?(:call) && rollback.respond_to?(:arity)
-            raise ArgumentError, "Rollback must be a callable with no arguments" unless rollback.arity.zero?
+            raise ArgumentError, "[Axn::Factory] Rollback must be a callable" unless rollback.respond_to?(:call) && rollback.respond_to?(:arity)
+            raise ArgumentError, "[Axn::Factory] Rollback must be a callable with no arguments" unless rollback.arity.zero?
 
             axn.define_method(:rollback) do
               instance_exec(&rollback)

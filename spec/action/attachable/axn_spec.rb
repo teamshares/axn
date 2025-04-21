@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Action do
-  describe "subactions" do
+  describe ".axn" do
     let(:client) do
       Class.new { include Action }
     end
@@ -13,7 +13,7 @@ RSpec.describe Action do
 
       it "attaches subaction" do
         expect(client).not_to respond_to(:foo)
-        client.action :foo, subaction
+        client.axn :foo, subaction
         expect(client).to respond_to(:foo)
 
         expect_any_instance_of(subaction).to receive(:call).and_call_original
@@ -28,7 +28,7 @@ RSpec.describe Action do
 
       it "attaches subaction" do
         expect(client).not_to respond_to(:foo)
-        client.action :foo, &subaction
+        client.axn :foo, &subaction
         expect(client).to respond_to(:foo)
 
         expect(client.foo).not_to be_ok
@@ -44,14 +44,14 @@ RSpec.describe Action do
 
         it "fails to attach" do
           expect(client).not_to respond_to(:foo)
-          expect { client.action(:foo, &subaction) }.to raise_error(ArgumentError, /block expects keyword arguments with defaults/)
+          expect { client.axn(:foo, &subaction) }.to raise_error(ArgumentError, /block expects keyword arguments with defaults/)
         end
       end
     end
 
-    describe "defined from block" do
+    describe "defined from block with default return" do
       before do
-        client.action(:foo, &subaction)
+        client.axn(:foo, expose_return_as: :barfoo, &subaction)
       end
 
       context "can handle default exposure" do
@@ -59,11 +59,11 @@ RSpec.describe Action do
           ->(char:, length:) { char * length }
         end
 
-        it "exposes value automatically" do
+        it "exposes automatically" do
           expect(client).to respond_to(:foo)
           result = client.foo(char: "a", length: 5)
           expect(result).to be_a(Action::Result)
-          expect(result.value).to eq("aaaaa")
+          expect(result.barfoo).to eq("aaaaa")
         end
       end
 
@@ -76,16 +76,16 @@ RSpec.describe Action do
           end
         end
 
-        it "exposes value automatically" do
+        it "exposes automatically" do
           result = client.foo(char: "a", length: 5)
-          expect(result.value).to eq("it's an A")
+          expect(result.barfoo).to eq("it's an A")
         end
       end
     end
 
     describe "defined from block with custom exposures" do
       before do
-        client.action(:foo, exposes: [:msg], &subaction)
+        client.axn(:foo, exposes: [:msg], &subaction)
       end
 
       let(:subaction) do
@@ -104,7 +104,7 @@ RSpec.describe Action do
 
     describe "handles custom expectations" do
       before do
-        client.action(:foo, expects:, &subaction)
+        client.axn(:foo, expects:, &subaction)
       end
 
       let(:expects) { [:name] }
@@ -134,7 +134,7 @@ RSpec.describe Action do
 
     context "with Client class customization" do
       before do
-        client.action(:foo, exposes: :resp, &subaction)
+        client.axn(:foo, exposes: :resp, &subaction)
       end
 
       let(:client) do

@@ -15,7 +15,8 @@ module Action
         def steps(*steps) = self._axn_steps += Array(steps).compact
 
         def step(name, axn_klass = nil, **kwargs, &block)
-          axn_klass = axn_for_attachment(name:, axn_klass:, attachment_type: "Step", **kwargs, &block)
+          # NOTE: by default steps do NOT inherit from the wrapping class (to avoid duplicate field expectations/exposures)
+          axn_klass = axn_for_attachment(name:, axn_klass:, attachment_type: "Step", superclass: Object, **kwargs, &block)
 
           # Add the step to the list of steps
           _axn_steps << Entry.new(label: name, axn: axn_klass)

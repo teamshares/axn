@@ -98,7 +98,7 @@ RSpec.shared_examples "can build Axns from callables" do
       end
 
       it "executes hooks in order" do
-        pending("TODO: fix rollback + hooks")
+        pending "TODO: implement #rollback"
 
         expect do
           expect(axn.call).not_to be_ok

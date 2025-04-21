@@ -7,14 +7,14 @@ RSpec.describe Action::Attachable::Steps do
     it "executes steps in order" do
       expect { result }.to output("Step1:bar\nStep2:11\n").to_stdout
       is_expected.to be_ok
+      expect(result.num).to eq(11)
     end
   end
 
   context "when applied via .step" do
     let(:composed) do
       build_action do
-        # TODO: careful specs around how to pass args into/out of steps + the overall component (issues with duplicate context keys)
-        # exposes :num
+        exposes :num
 
         step :step1, expects: [:name], exposes: [:num] do
           puts "Step1:#{name}"
@@ -49,6 +49,8 @@ RSpec.describe Action::Attachable::Steps do
       stub_const("Step2", step2)
 
       build_action do
+        exposes :num
+
         steps(Step1, Step2)
       end
     end
