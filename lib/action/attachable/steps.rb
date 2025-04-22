@@ -12,14 +12,22 @@ module Action
       Entry = Data.define(:label, :axn)
 
       class_methods do
-        def steps(*steps) = self._axn_steps += Array(steps).compact
+        def steps(*steps)
+          self._axn_steps += Array(steps).compact
+        end
 
         def step(name, axn_klass = nil, **kwargs, &block)
-          # NOTE: by default steps do NOT inherit from the wrapping class (to avoid duplicate field expectations/exposures)
-          axn_klass = axn_for_attachment(name:, axn_klass:, attachment_type: "Step", superclass: Object, **kwargs, &block)
+          axn_klass = axn_for_attachment(
+            name:,
+            axn_klass:,
+            attachment_type: "Step",
+            superclass: Object, # NOTE: steps skip inheriting from the wrapping class (to avoid duplicate field expectations/exposures)
+            **kwargs,
+            &block
+          )
 
           # Add the step to the list of steps
-          _axn_steps << Entry.new(label: name, axn: axn_klass)
+          steps Entry.new(label: name, axn: axn_klass)
         end
       end
 
