@@ -4,19 +4,26 @@ module Axn; end
 require_relative "axn/version"
 
 require "interactor"
-
 require "active_support"
 
-require_relative "action/exceptions"
-require_relative "action/logging"
-require_relative "action/configuration"
-require_relative "action/top_level_around_hook"
-require_relative "action/contract"
-require_relative "action/swallow_exceptions"
-require_relative "action/hoist_errors"
+require_relative "action/core/exceptions"
+require_relative "action/core/logging"
+require_relative "action/core/configuration"
+require_relative "action/core/top_level_around_hook"
+require_relative "action/core/contract"
+require_relative "action/core/swallow_exceptions"
+require_relative "action/core/hoist_errors"
+require_relative "action/core/enqueueable"
 
-require_relative "action/organizer"
-require_relative "action/enqueueable"
+require_relative "axn/factory"
+
+require_relative "action/attachable"
+
+def Axn(callable, **kwargs) # rubocop:disable Naming/MethodName
+  return callable if callable.is_a?(Class) && callable < Action
+
+  Axn::Factory.build(**kwargs, &callable)
+end
 
 module Action
   def self.included(base)
@@ -36,6 +43,9 @@ module Action
       include HoistErrors
 
       include Enqueueable
+
+      # --- Extensions ---
+      include Attachable
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }

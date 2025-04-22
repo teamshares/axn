@@ -3,6 +3,8 @@
 require "axn"
 require "pry-byebug"
 
+$LOAD_PATH.unshift(File.expand_path(__dir__))
+
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
   config.example_status_persistence_file_path = ".rspec_status"
@@ -27,6 +29,8 @@ def build_action(&block)
   action.class_eval(&block) if block
   action
 end
+
+def build_axn(**kwargs, &) = Axn::Factory.build(**kwargs, &) # rubocop:disable Style/ArgumentsForwarding << not sure which ruby version that came in
 
 def build_interactor(*modules, &block)
   interactor = Class.new.send(:include, Interactor)

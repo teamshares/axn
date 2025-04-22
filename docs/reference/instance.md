@@ -12,7 +12,7 @@ Primarily used for its side effects, but it does return a Hash with the key/valu
 
 ## `#fail!`
 
-Called with a string, it immediately halts execution (including triggering any [rollback handler](/reference/class#rollback) you have defined) ands sets `result.error` to the provided string.
+Called with a string, it immediately halts execution (including triggering any [rollback handler](/reference/class#rollback) you have defined) and sets `result.error` to the provided string.
 
 ## `#log`
 

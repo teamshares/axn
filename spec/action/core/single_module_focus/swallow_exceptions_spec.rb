@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "action/swallow_exceptions"
+require "action/core/swallow_exceptions"
 
 RSpec.describe Action::SwallowExceptions do
   describe "return shape" do

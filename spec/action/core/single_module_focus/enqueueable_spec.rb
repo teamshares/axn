@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 require "sidekiq/testing"
-require_relative "../fixtures/enqueueable"
+require "action/core/enqueueable"
+require "fixtures/enqueueable"
 
 RSpec.describe Action::Enqueueable, type: :worker do
   context "Interactor" do
@@ -77,31 +78,6 @@ RSpec.describe Action::Enqueueable, type: :worker do
           subject
         end.to raise_error(ArgumentError,
                            "Cannot pass non-JSON-serializable objects to Sidekiq. Make sure all objects in the context are serializable (or respond to to_global_id).") # rubocop:disable Layout/LineLength
-      end
-    end
-  end
-
-  context "Organizer" do
-    subject { TestEnqueueableOrganizer.enqueue(foo: "bar", name: "Joe", address: "123 Nope") }
-
-    around do |example|
-      Sidekiq::Testing.inline! do
-        example.run
-      end
-    end
-
-    describe "#enqueue" do
-      it "queues job to the given queue" do
-        expect(TestEnqueueableOrganizer.queue).to eq("high")
-      end
-
-      it "sets the options" do
-        expect(TestEnqueueableOrganizer.sidekiq_options_hash).to include("retry" => 2, "queue" => "high",
-                                                                         "retry_queue" => "medium")
-      end
-
-      it "sets the context with the passed-in hash args and calls all included Interactors" do
-        expect { subject }.to output(/Name: Joe\nAddress: 123 Nope.+?Another Interactor: bar\n/m).to_stdout
       end
     end
   end
