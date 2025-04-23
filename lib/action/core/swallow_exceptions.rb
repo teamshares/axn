@@ -5,7 +5,7 @@ module Action
     def self.included(base)
       base.class_eval do
         class_attribute :_success_msg, :_error_msg
-        class_attribute :_error_from, default: []
+        class_attribute :_custom_error_layers, default: []
 
         include InstanceMethods
         extend ClassMethods
@@ -69,10 +69,32 @@ module Action
         true
       end
 
+      CustomErrorsLayer = Data.define(:matcher, :message, :should_report_error)
+      class CustomErrorsLayer
+        def matches?(exception:, action:)
+          if matcher.respond_to?(:call)
+            if matcher.arity == 1
+              !!action.instance_exec(exception, &matcher)
+            else
+              !!action.instance_exec(&matcher)
+            end
+          elsif matcher.is_a?(String) || matcher.is_a?(Symbol)
+            klass = Object.const_get(matcher.to_s)
+            klass && exception.is_a?(klass)
+          elsif matcher < Exception
+            exception.is_a?(matcher)
+          else
+            action.warn("Ignoring matcher #{matcher.inspect} in rescues command")
+          end
+        end
+      end
+
       def error_from(matcher = nil, message = nil, **match_and_messages)
         raise ArgumentError, "error_from must be called with a key, value pair or else keyword args" if [matcher, message].compact.size == 1
 
-        { matcher => message }.compact.merge(match_and_messages).each { |mam| self._error_from += [mam] }
+        { matcher => message }.compact.merge(match_and_messages).each do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
+          self._custom_error_layers += [CustomErrorsLayer.new(matcher:, message:, should_report_error: true)]
+        end
       end
 
       def default_error = new.internal_context.default_error

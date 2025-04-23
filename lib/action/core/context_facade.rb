@@ -52,7 +52,7 @@ module Action
       return @context.error_from_user if @context.error_from_user.present?
 
       unless only_default
-        msg = message_from_rescues
+        msg = message_from_custom_settings
         return msg if msg.present?
       end
 
@@ -60,24 +60,9 @@ module Action
       stringified(action._error_msg, exception: the_exception).presence || "Something went wrong"
     end
 
-    def message_from_rescues
-      Array(action._error_from).each do |(matcher, value)|
-        matches = if matcher.respond_to?(:call)
-                    if matcher.arity == 1
-                      !!action.instance_exec(exception, &matcher)
-                    else
-                      !!action.instance_exec(&matcher)
-                    end
-                  elsif matcher.is_a?(String) || matcher.is_a?(Symbol)
-                    klass = Object.const_get(matcher.to_s)
-                    klass && exception.is_a?(klass)
-                  elsif matcher < Exception
-                    exception.is_a?(matcher)
-                  else
-                    action.warn("Ignoring matcher #{matcher.inspect} in rescues command")
-                  end
-
-        return stringified(value, exception:) if matches
+    def message_from_custom_settings
+      Array(action._custom_error_layers).each do |layer|
+        return stringified(layer.message, exception:) if layer.matches?(exception:, action:)
       end
 
       nil

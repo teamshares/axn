@@ -188,8 +188,15 @@ RSpec.describe Action do
         end
       end
 
+      before do
+        expect_any_instance_of(action).to receive(:trigger_on_exception).and_call_original
+      end
+
       it { expect(result).not_to be_ok }
-      it { expect(result.error).to eq("Inbound validation error!") }
+
+      it "matches by string exception class name" do
+        expect(result.error).to eq("Inbound validation error!")
+      end
 
       it "matches specific exceptions" do
         expect(action.call(param: 1).error).to eq("Argument error: bad arg")
