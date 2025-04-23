@@ -5,7 +5,7 @@ module Action
     def self.included(base)
       base.class_eval do
         class_attribute :_success_msg, :_error_msg
-        class_attribute :_error_rescues, default: []
+        class_attribute :_error_from, default: []
 
         include InstanceMethods
         extend ClassMethods
@@ -69,10 +69,10 @@ module Action
         true
       end
 
-      def rescues(matcher = nil, message = nil, **match_and_messages)
-        raise ArgumentError, "rescues must be called with a key, value pair or else keyword args" if [matcher, message].compact.size == 1
+      def error_from(matcher = nil, message = nil, **match_and_messages)
+        raise ArgumentError, "error_from must be called with a key, value pair or else keyword args" if [matcher, message].compact.size == 1
 
-        { matcher => message }.compact.merge(match_and_messages).each { |mam| self._error_rescues += [mam] }
+        { matcher => message }.compact.merge(match_and_messages).each { |mam| self._error_from += [mam] }
       end
 
       def default_error = new.internal_context.default_error

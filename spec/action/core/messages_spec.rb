@@ -168,49 +168,47 @@ RSpec.describe Action do
       end
     end
 
-    describe "with rescues" do
-      context "when static" do
-        let(:action) do
-          build_action do
-            expects :param
-            messages(error: "Bad news!")
-            rescues ArgumentError, ->(e) { "Argument error: #{e.message}" }
-            rescues "Action::InboundValidationError" => "Inbound validation error!"
-            rescues -> { param == 2 }, -> { "whoa a #{param}" }
-            rescues -> { param == 3 }, -> { "whoa: #{@var}" }
-            rescues -> { param == 4 }, -> { "whoa: #{default_error}" }
+    describe "with error_from" do
+      let(:action) do
+        build_action do
+          expects :param
+          messages(error: "Bad news!")
+          error_from ArgumentError, ->(e) { "Argument error: #{e.message}" }
+          error_from "Action::InboundValidationError" => "Inbound validation error!"
+          error_from -> { param == 2 }, -> { "whoa a #{param}" }
+          error_from -> { param == 3 }, -> { "whoa: #{@var}" }
+          error_from -> { param == 4 }, -> { "whoa: #{default_error}" }
 
-            def call
-              @var = 123
-              raise ArgumentError, "bad arg" if param == 1
+          def call
+            @var = 123
+            raise ArgumentError, "bad arg" if param == 1
 
-              raise "something else"
-            end
+            raise "something else"
           end
         end
+      end
 
-        it { expect(result).not_to be_ok }
-        it { expect(result.error).to eq("Inbound validation error!") }
+      it { expect(result).not_to be_ok }
+      it { expect(result.error).to eq("Inbound validation error!") }
 
-        it "rescues specific exceptions" do
-          expect(action.call(param: 1).error).to eq("Argument error: bad arg")
-        end
+      it "matches specific exceptions" do
+        expect(action.call(param: 1).error).to eq("Argument error: bad arg")
+      end
 
-        it "rescues by callable matcher" do
-          expect(action.call(param: 2).error).to eq("whoa a 2")
-        end
+      it "matches by callable matcher" do
+        expect(action.call(param: 2).error).to eq("whoa a 2")
+      end
 
-        it "can reference instance vars" do
-          expect(action.call(param: 3).error).to eq("whoa: 123")
-        end
+      it "can reference instance vars" do
+        expect(action.call(param: 3).error).to eq("whoa: 123")
+      end
 
-        it "can reference configured error" do
-          expect(action.call(param: 4).error).to eq("whoa: Bad news!")
-        end
+      it "can reference configured error" do
+        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
+      end
 
-        it "falls back correctly" do
-          expect(action.call(param: 5).error).to eq("Bad news!")
-        end
+      it "falls back correctly" do
+        expect(action.call(param: 5).error).to eq("Bad news!")
       end
     end
   end

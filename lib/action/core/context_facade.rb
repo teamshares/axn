@@ -61,7 +61,7 @@ module Action
     end
 
     def message_from_rescues
-      Array(action._error_rescues).each do |(matcher, value)|
+      Array(action._error_from).each do |(matcher, value)|
         matches = if matcher.respond_to?(:call)
                     if matcher.arity == 1
                       !!action.instance_exec(exception, &matcher)
