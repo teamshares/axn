@@ -51,21 +51,15 @@ module Action
     def determine_error_message(only_default: false)
       return @context.error_from_user if @context.error_from_user.present?
 
+      exception = @context.exception || (only_default ? Action::Failure.new(@context) : nil)
+      msg = action._error_msg
+
       unless only_default
-        msg = message_from_custom_settings
-        return msg if msg.present?
+        interceptor = action.class._error_interceptor_for(exception:, action:)
+        msg = interceptor.message if interceptor
       end
 
-      the_exception = @context.exception || (only_default ? Action::Failure.new(@context) : nil)
-      stringified(action._error_msg, exception: the_exception).presence || "Something went wrong"
-    end
-
-    def message_from_custom_settings
-      Array(action._custom_error_layers).each do |layer|
-        return stringified(layer.message, exception:) if layer.matches?(exception:, action:)
-      end
-
-      nil
+      stringified(msg, exception:).presence || "Something went wrong"
     end
 
     # Allow for callable OR string messages

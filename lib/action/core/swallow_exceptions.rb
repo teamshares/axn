@@ -2,10 +2,34 @@
 
 module Action
   module SwallowExceptions
+    CustomErrorInterceptor = Data.define(:matcher, :message, :should_report_error)
+    class CustomErrorInterceptor
+      def matches?(exception:, action:)
+        if matcher.respond_to?(:call)
+          if matcher.arity == 1
+            !!action.instance_exec(exception, &matcher)
+          else
+            !!action.instance_exec(&matcher)
+          end
+        elsif matcher.is_a?(String) || matcher.is_a?(Symbol)
+          klass = Object.const_get(matcher.to_s)
+          klass && exception.is_a?(klass)
+        elsif matcher < Exception
+          exception.is_a?(matcher)
+        else
+          action.warn("Ignoring apparently-invalid matcher #{matcher.inspect} -- could not find way to apply it")
+          false
+        end
+      rescue StandardError => e
+        action.warn("Ignoring #{e.class.name} raised while determining matcher: #{e.message}")
+        false
+      end
+    end
+
     def self.included(base)
       base.class_eval do
         class_attribute :_success_msg, :_error_msg
-        class_attribute :_custom_error_layers, default: []
+        class_attribute :_custom_error_interceptors, default: []
 
         include InstanceMethods
         extend ClassMethods
@@ -36,6 +60,9 @@ module Action
         end
 
         def trigger_on_exception(e)
+          interceptor = self.class._error_interceptor_for(exception: e, action: self)
+          return if interceptor&.should_report_error == false
+
           Action.config.on_exception(e,
                                      action: self,
                                      context: respond_to?(:context_for_logging) ? context_for_logging : @context.to_h)
@@ -69,35 +96,32 @@ module Action
         true
       end
 
-      CustomErrorsLayer = Data.define(:matcher, :message, :should_report_error)
-      class CustomErrorsLayer
-        def matches?(exception:, action:)
-          if matcher.respond_to?(:call)
-            if matcher.arity == 1
-              !!action.instance_exec(exception, &matcher)
-            else
-              !!action.instance_exec(&matcher)
-            end
-          elsif matcher.is_a?(String) || matcher.is_a?(Symbol)
-            klass = Object.const_get(matcher.to_s)
-            klass && exception.is_a?(klass)
-          elsif matcher < Exception
-            exception.is_a?(matcher)
-          else
-            action.warn("Ignoring matcher #{matcher.inspect} in rescues command")
-          end
-        end
+      def error_from(matcher = nil, message = nil, **match_and_messages)
+        _register_error_interceptor(matcher, message, should_report_error: true, **match_and_messages)
       end
 
-      def error_from(matcher = nil, message = nil, **match_and_messages)
-        raise ArgumentError, "error_from must be called with a key, value pair or else keyword args" if [matcher, message].compact.size == 1
-
-        { matcher => message }.compact.merge(match_and_messages).each do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
-          self._custom_error_layers += [CustomErrorsLayer.new(matcher:, message:, should_report_error: true)]
-        end
+      def rescues(matcher = nil, message = nil, **match_and_messages)
+        _register_error_interceptor(matcher, message, should_report_error: false, **match_and_messages)
       end
 
       def default_error = new.internal_context.default_error
+
+      # Private helpers
+
+      def _error_interceptor_for(exception:, action:)
+        Array(_custom_error_interceptors).detect do |int|
+          int.matches?(exception:, action:)
+        end
+      end
+
+      def _register_error_interceptor(matcher, message, should_report_error:, **match_and_messages)
+        method_name = should_report_error ? "error_from" : "rescues"
+        raise ArgumentError, "#{method_name} must be called with a key/value pair, or else keyword args" if [matcher, message].compact.size == 1
+
+        { matcher => message }.compact.merge(match_and_messages).each do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
+          self._custom_error_interceptors += [CustomErrorInterceptor.new(matcher:, message:, should_report_error:)]
+        end
+      end
     end
 
     module InstanceMethods
