@@ -213,7 +213,7 @@ RSpec.describe Action do
 
             raise "something else"
           end
-        end.tap do |a|
+        end.tap do |a| # rubocop:disable Style/MultilineBlockChain
           a.public_send(method_under_test, ArgumentError, ->(e) { "Argument error: #{e.message}" })
           a.public_send(method_under_test, "Action::InboundValidationError" => "Inbound validation error!")
           a.public_send(method_under_test, -> { param == 2 }, -> { "whoa a #{param}" })

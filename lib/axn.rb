@@ -19,10 +19,10 @@ require_relative "axn/factory"
 
 require_relative "action/attachable"
 
-def Axn(callable, **kwargs) # rubocop:disable Naming/MethodName
+def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
 
-  Axn::Factory.build(**kwargs, &callable)
+  Axn::Factory.build(**, &callable)
 end
 
 module Action
