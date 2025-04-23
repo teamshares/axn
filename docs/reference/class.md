@@ -56,3 +56,20 @@ Accepts `error` and/or `success` keys.  Values can be a string (returned directl
 ```ruby
 messages success: "All good!", error: ->(e) { "Bad news: #{e.message}" }
 ```
+
+## `error_for` and `rescues`
+
+While `.messages` sets the _default_ error/success messages and is more commonly used, there are times when you want specific error messages for specific failure cases.
+
+`error_for` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured global error handler.
+
+```ruby
+messages error: "bad"
+
+# Note this will NOT trigger Action.config.on_exception
+rescues ActiveRecord::InvalidRecord => "Invalid params provided"
+
+# These WILL trigger error handler (second demonstrates callable matcher AND message)
+error_for ArgumentError, ->(e) { "Argument error: #{e.message}"
+error_for -> { name == "bad" }, -> { "was given bad name: #{name}" }
+```
