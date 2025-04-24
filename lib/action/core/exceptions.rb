@@ -12,6 +12,8 @@ module Action
     end
 
     def message = @message.presence || "Execution was halted"
+
+    def inspect = "#<#{self.class.name} '#{message}'>"
   end
 
   class StepsRequiredForInheritanceSupportError < StandardError

@@ -25,7 +25,7 @@ module Action
         result = begin
           yield
         rescue StandardError => e
-          warn "hoist_errors block swallowed an exception: #{e.message}"
+          log "hoist_errors block transforming a #{e.class.name} exception: #{e.message}"
           MinimalFailedResult.new(error: nil, exception: e)
         end
 
@@ -44,7 +44,8 @@ module Action
         @context.exception = result.exception if result.exception.present?
         @context.error_prefix = prefix if prefix.present?
 
-        fail! result.error
+        error = result.exception.is_a?(Action::Failure) ? result.exception.message : result.error
+        fail! error
       end
     end
   end

@@ -36,10 +36,9 @@ module Action
 
         def run_with_exception_swallowing!
           original_run!
-        rescue Action::Failure => e
-          # Just re-raise these (so we don't hit the unexpected-error case below)
-          raise e
         rescue StandardError => e
+          raise if e.is_a?(Action::Failure) # TODO: avoid raising if this was passed along from a child action (esp. if wrapped in hoist_errors)
+
           # Add custom hook for intercepting exceptions (e.g. Teamshares automatically logs to Honeybadger)
           trigger_on_exception(e)
 

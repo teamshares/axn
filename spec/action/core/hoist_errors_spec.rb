@@ -44,7 +44,8 @@ RSpec.describe Action do
         let(:subaction) { -> { raise "subaction raised" } }
 
         before do
-          expect(action).to receive(:warn).with("hoist_errors block swallowed an exception: subaction raised")
+          allow(action).to receive(:log)
+          expect(action).to receive(:log).with("hoist_errors block transforming a RuntimeError exception: subaction raised")
         end
 
         it { is_expected.not_to be_ok }

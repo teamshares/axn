@@ -19,7 +19,7 @@ RSpec.configure do |config|
   config.before(:suite) do
     Action.configure do |c|
       # Hide default logging
-      c.logger = Logger.new(File::NULL)
+      c.logger = Logger.new(File::NULL) unless ENV["DEBUG"]
     end
   end
 end
