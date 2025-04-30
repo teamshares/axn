@@ -51,6 +51,20 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(axn.call(arg: 1).success).to eq("success")
       expect(axn.call(arg: 1).num).to eq(10)
     end
+
+    context "with a complex expects" do
+      let(:kwargs) do
+        {
+          expects: { arg: { type: Numeric, numericality: { greater_than: 1 } } },
+          exposes: [:num],
+        }
+      end
+
+      it "works correctly" do
+        expect(axn.call(arg: 1)).not_to be_ok
+        expect(axn.call(arg: 2)).to be_ok
+      end
+    end
   end
 
   context "setting before, after, around hooks" do
