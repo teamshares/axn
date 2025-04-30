@@ -10,8 +10,8 @@ module Axn
         expose_return_as: :nil,
 
         # Expose standard class-level options
-        exposes: {},
-        expects: {},
+        exposes: [],
+        expects: [],
         messages: {},
         before: nil,
         after: nil,
@@ -94,7 +94,13 @@ module Axn
         return given if given.is_a?(Hash)
 
         Array(given).each_with_object({}) do |key, acc|
-          acc[key] = {}
+          if key.is_a?(Hash)
+            key.keys.each do |k|
+              acc[k] = key[k]
+            end
+          else
+            acc[key] = {}
+          end
         end
       end
     end
