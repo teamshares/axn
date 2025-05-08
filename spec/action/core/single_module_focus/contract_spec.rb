@@ -184,7 +184,7 @@ RSpec.describe Action::Contract do
 
     let(:interactor) do
       build_interactor(described_class) do
-        expects :foo, boolean: true
+        expects :foo, type: :boolean
       end
     end
 
@@ -196,7 +196,7 @@ RSpec.describe Action::Contract do
     context "when nil" do
       let(:foo) { nil }
       it {
-        expect { subject }.to raise_error(Action::InboundValidationError, "Foo must be true or false")
+        expect { subject }.to raise_error(Action::InboundValidationError, "Foo is not a boolean")
       }
     end
   end
@@ -228,7 +228,7 @@ RSpec.describe Action::Contract do
 
     let(:interactor) do
       build_interactor(described_class) do
-        expects :foo, boolean: true
+        expects :foo, type: :boolean
         exposes :bar, allow_blank: true
 
         def call

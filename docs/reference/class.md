@@ -22,9 +22,9 @@ Both `expects` and `exposes` support the same core options:
 While we _support_ complex interface validations, in practice you usually just want a `type`, if anything.  Remember this is your validation about how the action is called, _not_ pretty user-facing errors (there's [a different pattern for that](/recipes/validating-user-input)).
 :::
 
-In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support three additional custom validators:
+In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support two additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
-* `boolean: true` - wrapper to handle a boolean field (since ruby doesn't have a Boolean class, so we can't use `type:` directly)
+  * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
 * `validate: [callable]` - Support custom validations (fails if any string is returned OR if it raises an exception)
   * Example:
     ```ruby

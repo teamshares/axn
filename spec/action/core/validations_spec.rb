@@ -120,11 +120,7 @@ RSpec.describe Action do
   describe "boolean" do
     let(:action) do
       build_action do
-        expects :foo, boolean: true
-
-        def call
-          foo? ? 1 : 2 # Just ensuring no NoMethodError for the auto-created ? reader
-        end
+        expects :foo, type: :boolean
       end
     end
 
@@ -140,7 +136,7 @@ RSpec.describe Action do
     context "and allow_blank" do
       let(:action) do
         build_action do
-          expects :foo, boolean: true, allow_blank: true
+          expects :foo, type: :boolean, allow_blank: true
         end
       end
 
@@ -157,7 +153,7 @@ RSpec.describe Action do
     context "and allow_nil" do
       let(:action) do
         build_action do
-          expects :foo, boolean: true, allow_nil: true
+          expects :foo, type: :boolean, allow_nil: true
         end
       end
 

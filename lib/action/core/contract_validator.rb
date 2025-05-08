@@ -43,23 +43,21 @@ module Action
       end
     end
 
-    class BooleanValidator < ActiveModel::EachValidator
-      def validate_each(record, attribute, value)
-        return if [true, false].include?(value)
-
-        record.errors.add(attribute, "must be true or false")
-      end
-    end
-
     class TypeValidator < ActiveModel::EachValidator
       def validate_each(record, attribute, value)
-        return if value.blank? # Handled with a separate default presence validator
-
         # TODO: the last one (:value) might be my fault from the make-it-a-hash fallback in #parse_field_configs
         types = options[:in].presence || Array(options[:with]).presence || Array(options[:value]).presence
 
+        return if value.blank? && !types.include?(:boolean) # Handled with a separate default presence validator
+
         msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(", ")}"
-        record.errors.add attribute, (options[:message] || msg) unless types.any? { |type| value.is_a?(type) }
+        record.errors.add attribute, (options[:message] || msg) unless types.any? do |type|
+          if type == :boolean
+            [true, false].include?(value)
+          else
+            value.is_a?(type)
+          end
+        end
       end
     end
   end

@@ -71,7 +71,6 @@ module Action
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES.include?(field.to_s)
 
           define_method(field) { internal_context.public_send(field) }
-          define_method("#{field}?") { !!internal_context.public_send(field) } if validations[:boolean]
         end
 
         if allow_blank
@@ -84,10 +83,8 @@ module Action
             v = { value: v } unless v.is_a?(Hash)
             { allow_nil: true }.merge(v)
           end
-        elsif validations.key?(:boolean)
-          validations[:presence] = false
         else
-          validations[:presence] = true unless validations.key?(:presence)
+          validations[:presence] = true unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean)
         end
 
         fields.map { |field| FieldConfig.new(field:, validations:, default:, preprocess:, sensitive:) }
