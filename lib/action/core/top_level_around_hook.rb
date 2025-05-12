@@ -44,8 +44,19 @@ module Action
 
         debug [
           "Execution completed (with outcome: #{outcome}) in #{elapsed_mils} milliseconds",
-          context_for_logging(:outbound).presence&.inspect,
+          _log_after_data_peak,
         ].compact.join(". Set: ")
+      end
+
+      def _log_after_data_peak
+        return unless (data = context_for_logging(:outbound)).present?
+
+        max_length = 100
+        suffix = "...<truncated>...}"
+
+        data.inspect.tap do |str|
+          return str[0, max_length - suffix.length] + suffix if str.length > max_length
+        end
       end
 
       def _call_and_return_outcome(hooked)
