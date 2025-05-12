@@ -49,26 +49,26 @@ module Axn
 
           define_singleton_method(:name) do
             [
-              (superclass ? superclass.name : nil).presence || "AnonymousAction",
+              superclass&.name.presence || "AnonymousAction",
               name,
             ].compact.join("#")
           end
 
           define_method(:call) do
-            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |name, hash|
-              hash[name] = public_send(name)
+            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
+              hash[field] = public_send(field)
             end
 
             retval = instance_exec(**unwrapped_kwargs, &block)
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn| # rubocop: disable Style/MultilineBlockChain
-          expects.each do |name, opts|
-            axn.expects(name, **opts)
+          expects.each do |field, opts|
+            axn.expects(field, **opts)
           end
 
-          exposes.each do |name, opts|
-            axn.exposes(name, **opts)
+          exposes.each do |field, opts|
+            axn.exposes(field, **opts)
           end
 
           axn.messages(**messages) if messages.present?
@@ -103,7 +103,7 @@ module Axn
 
         Array(given).each_with_object({}) do |key, acc|
           if key.is_a?(Hash)
-            key.keys.each do |k|
+            key.each_key do |k|
               acc[k] = key[k]
             end
           else
