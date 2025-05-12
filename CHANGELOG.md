@@ -1,7 +1,10 @@
 # Changelog
 
 ## UNRELEASED
-* N/A
+* Expects/Exposes: Add `allow_nil` option
+* Expects/Exposes: Replace `boolean: true` with `type: :boolean`
+* Truncate default debug line at 100 chars
+* Support complex Axn::Factory configurations
 
 
 ## 0.1.0-alpha.2
