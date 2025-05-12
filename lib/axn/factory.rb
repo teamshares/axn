@@ -6,6 +6,7 @@ module Axn
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
         # Builder-specific options
+        name: nil,
         superclass: nil,
         expose_return_as: :nil,
 
@@ -21,7 +22,7 @@ module Axn
         rollback: nil,
         &block
       )
-        args = block.parameters.each_with_object(_hash_with_default_array) { |(type, name), hash| hash[type] << name }
+        args = block.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
 
         if args[:opt].present? || args[:req].present? || args[:rest].present?
           raise ArgumentError,
@@ -38,29 +39,36 @@ module Axn
         expects = _hydrate_hash(expects)
         exposes = _hydrate_hash(exposes)
 
-        Array(args[:keyreq]).each do |name|
-          expects[name] ||= {}
+        Array(args[:keyreq]).each do |field|
+          expects[field] ||= {}
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
         Class.new(superclass || Object) do
           include Action unless self < Action
 
+          define_singleton_method(:name) do
+            [
+              superclass&.name.presence || "AnonymousAction",
+              name,
+            ].compact.join("#")
+          end
+
           define_method(:call) do
-            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |name, hash|
-              hash[name] = public_send(name)
+            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
+              hash[field] = public_send(field)
             end
 
             retval = instance_exec(**unwrapped_kwargs, &block)
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn| # rubocop: disable Style/MultilineBlockChain
-          expects.each do |name, opts|
-            axn.expects(name, **opts)
+          expects.each do |field, opts|
+            axn.expects(field, **opts)
           end
 
-          exposes.each do |name, opts|
-            axn.exposes(name, **opts)
+          exposes.each do |field, opts|
+            axn.exposes(field, **opts)
           end
 
           axn.messages(**messages) if messages.present?
@@ -95,7 +103,7 @@ module Axn
 
         Array(given).each_with_object({}) do |key, acc|
           if key.is_a?(Hash)
-            key.keys.each do |k|
+            key.each_key do |k|
               acc[k] = key[k]
             end
           else

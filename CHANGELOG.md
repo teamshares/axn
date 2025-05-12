@@ -3,6 +3,12 @@
 ## UNRELEASED
 * N/A
 
+## 0.1.0-alpha.2.1
+* Expects/Exposes: Add `allow_nil` option
+* Expects/Exposes: Replace `boolean: true` with `type: :boolean`
+* Truncate default debug line at 100 chars
+* Support complex Axn::Factory configurations
+* Auto-generate self.class.name for attachables
 
 ## 0.1.0-alpha.2
 * Renamed `.rescues` to `.error_from`

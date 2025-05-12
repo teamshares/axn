@@ -48,7 +48,7 @@ Naming/MethodParameterName:
   AllowedNames: e
 
 Metrics/ParameterLists:
-  Max: 6
+  Max: 7
 
 Layout/LineLength:
   Max: 160

@@ -34,9 +34,9 @@ module Action
     FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive)
 
     module ClassMethods
-      def expects(*fields, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
+      def expects(*fields, allow_blank: false, allow_nil: false, default: nil, preprocess: nil, sensitive: false,
                   **validations)
-        _parse_field_configs(*fields, allow_blank:, default:, preprocess:, sensitive:, **validations).tap do |configs|
+        _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations).tap do |configs|
           duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
           raise Action::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -45,8 +45,8 @@ module Action
         end
       end
 
-      def exposes(*fields, allow_blank: false, default: nil, sensitive: false, **validations)
-        _parse_field_configs(*fields, allow_blank:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
+      def exposes(*fields, allow_blank: false, allow_nil: false, default: nil, sensitive: false, **validations)
+        _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
           duplicated = external_field_configs.map(&:field) & configs.map(&:field)
           raise Action::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -63,7 +63,7 @@ module Action
         called! rollback! each_pair success? exception ok ok? error success message
       ].freeze
 
-      def _parse_field_configs(*fields, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
+      def _parse_field_configs(*fields, allow_nil: false, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
                                **validations)
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
@@ -78,10 +78,13 @@ module Action
             v = { value: v } unless v.is_a?(Hash)
             { allow_blank: true }.merge(v)
           end
-        elsif validations.key?(:boolean)
-          validations[:presence] = false
+        elsif allow_nil
+          validations.transform_values! do |v|
+            v = { value: v } unless v.is_a?(Hash)
+            { allow_nil: true }.merge(v)
+          end
         else
-          validations[:presence] = true unless validations.key?(:presence)
+          validations[:presence] = true unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean)
         end
 
         fields.map { |field| FieldConfig.new(field:, validations:, default:, preprocess:, sensitive:) }

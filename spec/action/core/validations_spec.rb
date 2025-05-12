@@ -116,4 +116,55 @@ RSpec.describe Action do
       end
     end
   end
+
+  describe "boolean" do
+    let(:action) do
+      build_action do
+        expects :foo, type: :boolean
+      end
+    end
+
+    it "validates" do
+      expect(action.call(foo: true)).to be_ok
+      expect(action.call(foo: false)).to be_ok
+
+      expect(action.call(foo: nil)).not_to be_ok
+      expect(action.call(foo: "")).not_to be_ok
+      expect(action.call(foo: 1)).not_to be_ok
+    end
+
+    context "and allow_blank" do
+      let(:action) do
+        build_action do
+          expects :foo, type: :boolean, allow_blank: true
+        end
+      end
+
+      it "validates" do
+        expect(action.call(foo: true)).to be_ok
+        expect(action.call(foo: false)).to be_ok
+
+        expect(action.call(foo: nil)).to be_ok
+        expect(action.call(foo: "")).to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+      end
+    end
+
+    context "and allow_nil" do
+      let(:action) do
+        build_action do
+          expects :foo, type: :boolean, allow_nil: true
+        end
+      end
+
+      it "validates" do
+        expect(action.call(foo: true)).to be_ok
+        expect(action.call(foo: false)).to be_ok
+
+        expect(action.call(foo: nil)).to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: "")).not_to be_ok
+      end
+    end
+  end
 end
