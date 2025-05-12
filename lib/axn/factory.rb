@@ -6,6 +6,7 @@ module Axn
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
         # Builder-specific options
+        name: nil,
         superclass: nil,
         expose_return_as: :nil,
 
@@ -21,7 +22,7 @@ module Axn
         rollback: nil,
         &block
       )
-        args = block.parameters.each_with_object(_hash_with_default_array) { |(type, name), hash| hash[type] << name }
+        args = block.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
 
         if args[:opt].present? || args[:req].present? || args[:rest].present?
           raise ArgumentError,
@@ -38,13 +39,20 @@ module Axn
         expects = _hydrate_hash(expects)
         exposes = _hydrate_hash(exposes)
 
-        Array(args[:keyreq]).each do |name|
-          expects[name] ||= {}
+        Array(args[:keyreq]).each do |field|
+          expects[field] ||= {}
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
         Class.new(superclass || Object) do
           include Action unless self < Action
+
+          define_singleton_method(:name) do
+            [
+              (superclass ? superclass.name : nil).presence || "AnonymousAction",
+              name,
+            ].compact.join("#")
+          end
 
           define_method(:call) do
             unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |name, hash|

@@ -5,6 +5,7 @@
 * Expects/Exposes: Replace `boolean: true` with `type: :boolean`
 * Truncate default debug line at 100 chars
 * Support complex Axn::Factory configurations
+* Auto-generate self.class.name for attachables
 
 
 ## 0.1.0-alpha.2

@@ -35,7 +35,7 @@ module Action
             return axn_klass
           end
 
-          Axn::Factory.build(superclass: superclass || self, **kwargs, &block)
+          Axn::Factory.build(superclass: superclass || self, name:, **kwargs, &block)
         end
       end
     end
