@@ -116,6 +116,8 @@ If you define a `#rollback` method, it'll be called (_before_ returning an `Acti
 
 `before` and `after` hooks are also supported. They can receive a block directly, or the symbol name of a local method.
 
+Note execution is halted whenever `fail!` is called or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `resuilt.ok?` be false even though `call` completed successfully).
+
 ### Concrete example
 
 Given this series of methods and hooks:
@@ -129,7 +131,6 @@ class Foo
 
   def call
     log("in call")
-    raise "oh no something borked"
   end
 
   def rollback
@@ -140,6 +141,8 @@ class Foo
 
   def log_after
     log("after hook")
+    raise "oh no something borked"
+    log("after after hook raised")
   end
 end
 ```
