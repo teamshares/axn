@@ -1,7 +1,7 @@
 # Changelog
 
 ## UNRELEASED
-* N/A
+* Expands `Action::Result.ok` and `Action::Result.error` to better support mocking in specs
 
 ## 0.1.0-alpha.2.1
 * Expects/Exposes: Add `allow_nil` option

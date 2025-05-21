@@ -2,22 +2,36 @@
 
 RSpec.describe "Action spec helpers" do
   describe "Action::Result.ok" do
-    subject(:result) { Action::Result.ok }
+    context "bare" do
+      subject(:result) { Action::Result.ok }
 
-    it { is_expected.to be_ok }
-    it { expect(result.success).to eq("Action completed successfully") }
+      it { is_expected.to be_ok }
+      it { expect(result.success).to eq("Action completed successfully") }
+    end
+
+    context "with custom message and exposure" do
+      subject(:result) { Action::Result.ok("optional success message", custom_exposure: 123) }
+
+      it { is_expected.to be_ok }
+      it { expect(result.success).to eq("optional success message") }
+      it { expect(result.custom_exposure).to eq(123) }
+    end
   end
 
   describe "Action::Result.error" do
-    subject(:result) { Action::Result.error }
+    context "bare" do
+      subject(:result) { Action::Result.error }
 
-    it { is_expected.not_to be_ok }
-    it { expect(result.error).to eq("Something went wrong") }
+      it { is_expected.not_to be_ok }
+      it { expect(result.error).to eq("Something went wrong") }
+    end
 
     context "with custom message" do
-      subject(:result) { Action::Result.error("Custom error message") }
+      subject(:result) { Action::Result.error("Custom error message", still_exposable: 456) }
 
+      it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Custom error message") }
+      it { expect(result.still_exposable).to eq(456) }
     end
   end
 end

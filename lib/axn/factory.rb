@@ -71,7 +71,7 @@ module Axn
             axn.exposes(field, **opts)
           end
 
-          axn.messages(**messages) if messages.present?
+          axn.messages(**messages) if messages.present? && messages.values.any?(&:present?)
 
           # Hooks
           axn.before(before) if before.present?
