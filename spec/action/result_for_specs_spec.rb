@@ -26,11 +26,26 @@ RSpec.describe "Action spec helpers" do
       it { expect(result.error).to eq("Something went wrong") }
     end
 
-    context "with custom message" do
+    context "with custom message and exposure" do
       subject(:result) { Action::Result.error("Custom error message", still_exposable: 456) }
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Custom error message") }
+      it { expect(result.exception).to be_nil }
+      it { expect(result.still_exposable).to eq(456) }
+    end
+
+    context "with exception" do
+      subject(:result) do
+        Action::Result.error("default msg", still_exposable: 456) do
+          raise StandardError, "Custom error message"
+        end
+      end
+
+      it { is_expected.not_to be_ok }
+      it { expect(result.error).to eq("default msg") }
+      it { expect(result.exception).to be_a(StandardError) }
+      it { expect(result.exception.message).to eq("Custom error message") }
       it { expect(result.still_exposable).to eq(456) }
     end
   end

@@ -102,11 +102,12 @@ module Action
         end.call
       end
 
-      def error(msg = nil, **exposures)
+      def error(msg = nil, **exposures, &block)
         Axn::Factory.build(exposes: exposures.keys, messages: { error: msg }) do
           exposures.each do |key, value|
             expose(key, value)
           end
+          block.call if block_given?
           fail!
         end.call
       end
