@@ -1,6 +1,8 @@
 # Changelog
 
 ## UNRELEASED
+
+## 0.1.0-alpha.2.2
 * Expands `Action::Result.ok` and `Action::Result.error` to better support mocking in specs
 
 ## 0.1.0-alpha.2.1
