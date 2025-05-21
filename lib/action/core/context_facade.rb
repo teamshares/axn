@@ -94,11 +94,21 @@ module Action
   class Result < ContextFacade
     # For ease of mocking return results in tests
     class << self
-      def ok = Class.new { include(Action) }.call
+      def ok(msg = nil, **exposures)
+        Axn::Factory.build(exposes: exposures.keys, messages: { success: msg }) do
+          exposures.each do |key, value|
+            expose(key, value)
+          end
+        end.call
+      end
 
-      def error(msg = "Something went wrong")
-        Class.new { include(Action) }.tap do |klass|
-          klass.define_method(:call) { fail!(msg) }
+      def error(msg = nil, **exposures, &block)
+        Axn::Factory.build(exposes: exposures.keys, messages: { error: msg }) do
+          exposures.each do |key, value|
+            expose(key, value)
+          end
+          block.call if block_given?
+          fail!
         end.call
       end
     end
