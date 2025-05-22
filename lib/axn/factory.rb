@@ -14,6 +14,10 @@ module Axn
         exposes: [],
         expects: [],
         messages: {},
+        error_from: {},
+        rescues: {},
+
+        # Hooks
         before: nil,
         after: nil,
         around: nil,
@@ -73,6 +77,9 @@ module Axn
 
           axn.messages(**messages) if messages.present? && messages.values.any?(&:present?)
 
+          axn.error_from(**_array_to_hash(error_from)) if error_from.present?
+          axn.rescues(**_array_to_hash(rescues)) if rescues.present?
+
           # Hooks
           axn.before(before) if before.present?
           axn.after(after) if after.present?
@@ -97,6 +104,12 @@ module Axn
       private
 
       def _hash_with_default_array = Hash.new { |h, k| h[k] = [] }
+
+      def _array_to_hash(given)
+        return given if given.is_a?(Hash)
+
+        [given].to_h
+      end
 
       def _hydrate_hash(given)
         return given if given.is_a?(Hash)

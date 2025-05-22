@@ -134,6 +134,34 @@ RSpec.shared_examples "can build Axns from callables" do
       end
     end
   end
+
+  %i[error_from rescues].each do |setting|
+    context "setting #{setting}" do
+      let(:callable) do
+        -> { raise "error" }
+      end
+
+      context "as hash" do
+        let(:kwargs) do
+          { setting => { -> { true } => "overridden msg" } }
+        end
+
+        it "works correctly" do
+          expect(axn.call.error).to eq("overridden msg")
+        end
+      end
+
+      context "as array" do
+        let(:kwargs) do
+          { setting => [-> { true }, "overridden msg"] }
+        end
+
+        it "works correctly" do
+          expect(axn.call.error).to eq("overridden msg")
+        end
+      end
+    end
+  end
 end
 
 RSpec.describe Axn::Factory do
