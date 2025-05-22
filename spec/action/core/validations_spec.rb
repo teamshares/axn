@@ -167,4 +167,22 @@ RSpec.describe Action do
       end
     end
   end
+
+  describe "uuid" do
+    let(:action) do
+      build_action do
+        expects :foo, type: :uuid
+      end
+    end
+
+    it "validates" do
+      expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
+      expect(action.call(foo: "123e4567e89b12d3a456426614174000")).to be_ok
+
+      expect(action.call(foo: nil)).not_to be_ok
+      expect(action.call(foo: "")).not_to be_ok
+      expect(action.call(foo: 1)).not_to be_ok
+      expect(action.call(foo: "abcabc")).not_to be_ok
+    end
+  end
 end
