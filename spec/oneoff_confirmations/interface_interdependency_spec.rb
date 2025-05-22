@@ -15,7 +15,7 @@ RSpec.describe "One-off confirmation" do
 
           private
 
-          def self.valid_channels = %w[web email sms].freeze
+          def valid_channels = %w[web email sms].freeze
         end
       end
 

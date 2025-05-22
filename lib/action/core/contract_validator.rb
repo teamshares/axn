@@ -54,6 +54,8 @@ module Action
         record.errors.add attribute, (options[:message] || msg) unless types.any? do |type|
           if type == :boolean
             [true, false].include?(value)
+          elsif type == :uuid
+            value.is_a?(String) && value.match?(/\A[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\z/i)
           else
             value.is_a?(type)
           end

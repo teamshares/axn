@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 RSpec.describe Action do
-  describe "#messages configuration" do
-    subject(:result) { action.call }
+  subject(:result) { action.call }
 
+  describe "#messages configuration" do
     describe "success message" do
       subject { result.success }
 
@@ -167,75 +167,75 @@ RSpec.describe Action do
         end
       end
     end
+  end
 
-    describe "custom error layers" do
-      shared_examples "action with custom error layers" do |opts = {}|
-        before do
-          method = opts[:should_raise] ? :to : :not_to
-          expect_any_instance_of(action).send(method, receive(:trigger_on_exception).and_call_original)
-        end
-
-        it { expect(result).not_to be_ok }
-
-        it "matches by string exception class name" do
-          expect(result.error).to eq("Inbound validation error!")
-        end
-
-        it "matches specific exceptions" do
-          expect(action.call(param: 1).error).to eq("Argument error: bad arg")
-        end
-
-        it "matches by callable matcher" do
-          expect(action.call(param: 2).error).to eq("whoa a 2")
-        end
-
-        it "can reference instance vars" do
-          expect(action.call(param: 3).error).to eq("whoa: 123")
-        end
-
-        it "can reference configured error" do
-          expect(action.call(param: 4).error).to eq("whoa: Bad news!")
-        end
-
-        it "falls back correctly" do
-          expect(action.call(param: 5).error).to eq("Bad news!")
-        end
+  describe "custom error layers" do
+    shared_examples "action with custom error layers" do |opts = {}|
+      before do
+        method = opts[:should_raise] ? :to : :not_to
+        expect_any_instance_of(action).send(method, receive(:trigger_on_exception).and_call_original)
       end
 
-      let(:action) do
-        build_action do
-          expects :param
-          messages(error: "Bad news!")
+      it { expect(result).not_to be_ok }
 
-          def call
-            @var = 123
-            raise ArgumentError, "bad arg" if param == 1
+      it "matches by string exception class name" do
+        expect(result.error).to eq("Inbound validation error!")
+      end
 
-            raise "something else"
-          end
-        end.tap do |a| # rubocop:disable Style/MultilineBlockChain
-          a.public_send(method_under_test, ArgumentError, ->(e) { "Argument error: #{e.message}" })
-          a.public_send(method_under_test, "Action::InboundValidationError" => "Inbound validation error!")
-          a.public_send(method_under_test, -> { param == 2 }, -> { "whoa a #{param}" })
-          a.public_send(method_under_test, -> { param == 3 }, -> { "whoa: #{@var}" })
-          a.public_send(method_under_test, -> { param == 4 }, -> { "whoa: #{default_error}" })
+      it "matches specific exceptions" do
+        expect(action.call(param: 1).error).to eq("Argument error: bad arg")
+      end
+
+      it "matches by callable matcher" do
+        expect(action.call(param: 2).error).to eq("whoa a 2")
+      end
+
+      it "can reference instance vars" do
+        expect(action.call(param: 3).error).to eq("whoa: 123")
+      end
+
+      it "can reference configured error" do
+        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
+      end
+
+      it "falls back correctly" do
+        expect(action.call(param: 5).error).to eq("Bad news!")
+      end
+    end
+
+    let(:action) do
+      build_action do
+        expects :param
+        messages(error: "Bad news!")
+
+        def call
+          @var = 123
+          raise ArgumentError, "bad arg" if param == 1
+
+          raise "something else"
         end
+      end.tap do |a| # rubocop:disable Style/MultilineBlockChain
+        a.public_send(method_under_test, ArgumentError, ->(e) { "Argument error: #{e.message}" })
+        a.public_send(method_under_test, "Action::InboundValidationError" => "Inbound validation error!")
+        a.public_send(method_under_test, -> { param == 2 }, -> { "whoa a #{param}" })
+        a.public_send(method_under_test, -> { param == 3 }, -> { "whoa: #{@var}" })
+        a.public_send(method_under_test, -> { param == 4 }, -> { "whoa: #{default_error}" })
+      end
+    end
+
+    context "via .error_from" do
+      let(:method_under_test) { :error_from }
+
+      it_behaves_like "action with custom error layers", should_raise: true
+    end
+
+    context "via .rescues" do
+      let(:method_under_test) { :rescues }
+      before do
+        expect_any_instance_of(action).to receive(:trigger_on_exception).and_call_original
       end
 
-      context "via .error_from" do
-        let(:method_under_test) { :error_from }
-
-        it_behaves_like "action with custom error layers", should_raise: true
-      end
-
-      context "via .rescues" do
-        let(:method_under_test) { :rescues }
-        before do
-          expect_any_instance_of(action).to receive(:trigger_on_exception).and_call_original
-        end
-
-        it_behaves_like "action with custom error layers", should_raise: false
-      end
+      it_behaves_like "action with custom error layers", should_raise: false
     end
   end
 end

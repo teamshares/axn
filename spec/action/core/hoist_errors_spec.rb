@@ -4,18 +4,26 @@ RSpec.describe Action do
   describe "#hoist_errors" do
     subject { action.call(subaction:) }
 
-    let(:subaction) { build_action }
+    let(:subaction) do
+      build_action do
+        exposes :num
+        def call = expose :num, 123
+      end
+    end
 
     let(:action) do
       build_action do
         expects :subaction
+        exposes :num_from_subaction
         def call
-          hoist_errors(prefix: "FROM HOIST:") { subaction.call }
+          result = hoist_errors(prefix: "FROM HOIST:") { subaction.call }
+          expose :num_from_subaction, result.num
         end
       end
     end
 
     it { is_expected.to be_ok }
+    it { expect(subject.num_from_subaction).to eq(123) }
 
     context "when the subaction fails" do
       let(:subaction) do

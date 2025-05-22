@@ -410,5 +410,23 @@ RSpec.describe Action::Contract do
         expect(subject).to be_ok
       end
     end
+
+    context "with default that is a callable" do
+      subject { interactor.call }
+
+      let(:interactor) do
+        build_interactor(described_class) do
+          exposes :foo, default: -> { "bar #{helper_method}" }
+
+          private
+
+          def helper_method = 123
+        end
+      end
+
+      it "has access to local helper methods" do
+        expect(subject.foo).to eq "bar 123"
+      end
+    end
   end
 end

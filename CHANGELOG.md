@@ -1,6 +1,14 @@
 # Changelog
 
 ## UNRELEASED
+* N/A
+
+## 0.1.0-alpha.2.3
+* `expects` / `exposes`: Add `type: :uuid` special case validation
+* [BUGFIX] Allow `hoist_errors` to pass the result through on success (allow access to subactions' exposures)
+* [`Axn::Factory`] Support error_from + rescues
+* `Action::Result.error` spec helper -- creation should NOT trigger global exception handler
+* [CHANGE] `expects` / `exposes`: The `default` key, if a callable, should be evaluated in the _instance_'s context
 
 ## 0.1.0-alpha.2.2
 * Expands `Action::Result.ok` and `Action::Result.error` to better support mocking in specs
