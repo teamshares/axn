@@ -163,11 +163,12 @@ module Action
           hash[config.field] = config.default
         end.compact
 
-        defaults_mapping.each do |field, default_value|
-          unless @context.public_send(field)
-            @context.public_send("#{field}=",
-                                 default_value.respond_to?(:call) ? default_value.call : default_value)
-          end
+        defaults_mapping.each do |field, default_value_getter|
+          next if @context.public_send(field).present?
+
+          default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
+
+          @context.public_send("#{field}=", default_value)
         end
       end
 
