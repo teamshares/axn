@@ -103,7 +103,7 @@ module Action
       end
 
       def error(msg = nil, **exposures, &block)
-        Axn::Factory.build(exposes: exposures.keys, messages: { error: msg }) do
+        Axn::Factory.build(exposes: exposures.keys, rescues: [-> { true }, msg]) do
           exposures.each do |key, value|
             expose(key, value)
           end
