@@ -63,7 +63,7 @@ messages success: "All good!", error: ->(e) { "Bad news: #{e.message}" }
 
 While `.messages` sets the _default_ error/success messages and is more commonly used, there are times when you want specific error messages for specific failure cases.
 
-`error_for` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured global error handler.
+`error_for` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured exception handlers (global or specific to this class).
 
 ```ruby
 messages error: "bad"
@@ -75,3 +75,37 @@ rescues ActiveRecord::InvalidRecord => "Invalid params provided"
 error_for ArgumentError, ->(e) { "Argument error: #{e.message}"
 error_for -> { name == "bad" }, -> { "was given bad name: #{name}" }
 ```
+
+## `on_exception`
+
+Much like the [globally-configured on_exception hook](/reference/configuration#on-exception), you can also specify exception handlers for a _specific_ Axn class:
+
+```ruby
+class Foo
+  include Action
+
+  on_exception do |exception| # [!code focus:3]
+    # e.g. trigger a slack error
+  end
+end
+```
+
+Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for [`error_for` and `rescues`](#error-for-and-rescues):
+
+```ruby
+class Foo
+  include Action
+
+  on_exception NoMethodError do |exception| # [!code focus]
+    # e.g. trigger a slack error
+  end
+
+  on_exception ->(e) { e.is_a?(ZeroDivisionError) } do # [!code focus]
+    # e.g. trigger a slack error
+  end
+end
+```
+
+If multiple `on_exception` handlers are provided, ALL that match the raised exception will be triggered in the order provided.
+
+The _global_ handler will be triggered _after_ all class-specific handlers.
