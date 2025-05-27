@@ -1,7 +1,7 @@
 # Changelog
 
 ## UNRELEASED
-* N/A
+* [FEAT] Adds per-Axn `on_exception` handlers
 
 ## 0.1.0-alpha.2.3
 * `expects` / `exposes`: Add `type: :uuid` special case validation

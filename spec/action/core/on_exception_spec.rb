@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Action do
-  describe "#on_exception" do
+  describe "Action.config#on_exception" do
     subject { action.call(name: "Foo", ssn: "abc", extra: "bang", outbound: 1) }
 
     before do
@@ -29,6 +29,62 @@ RSpec.describe Action do
                                                                     action: action,
                                                                     context: filtered_context).and_call_original
       is_expected.not_to be_ok
+    end
+  end
+
+  describe "Action #on_exception" do
+    context "base case" do
+      let(:action) do
+        build_action do
+          expects :exception_klass, default: RuntimeError
+
+          on_exception RuntimeError do |e|
+            log "in on_exception handler: #{e.class.name} - #{e.message}: #{method_for_handler(e.class)}"
+          end
+
+          def call
+            raise exception_klass, "Some internal issue!"
+          end
+
+          private
+
+          def method_for_handler(klass) = klass.to_s
+        end
+      end
+
+      it "calls the action's on_exception method when exception matches" do
+        expect_any_instance_of(action).to receive(:method_for_handler).with(RuntimeError).and_call_original
+        expect(action.call).not_to be_ok
+      end
+
+      it "does not call the action's on_exception method when exception does not match" do
+        expect_any_instance_of(action).not_to receive(:method_for_handler)
+        expect(action.call(exception_klass: ArgumentError)).not_to be_ok
+      end
+    end
+
+    context "triggers all that match" do
+      let(:action) do
+        build_action do
+          on_exception RuntimeError do
+            log "Handling RuntimeError"
+          end
+
+          on_exception do
+            log "Handling StandardError"
+          end
+
+          def call
+            raise "Some internal issue!"
+          end
+        end
+      end
+
+      it "triggers all handlers that match the exception" do
+        expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError").once
+        expect_any_instance_of(action).to receive(:log).with("Handling StandardError").once
+        expect(action.call).not_to be_ok
+      end
     end
   end
 

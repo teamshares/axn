@@ -39,6 +39,7 @@ A couple notes:
 
   * `context` will contain the arguments passed to the `action`, _but_ any marked as sensitive (e.g. `expects :foo, sensitive: true`) will be filtered out in the logs.
   * If your handler raises, the failure will _also_ be swallowed and logged
+  * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
 
 
 ## `top_level_around_hook`

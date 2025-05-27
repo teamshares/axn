@@ -3,8 +3,10 @@
 module Action
   module SwallowExceptions
     CustomErrorInterceptor = Data.define(:matcher, :message, :should_report_error)
+    CustomErrorHandler = Data.define(:matcher, :block)
+
     class CustomErrorInterceptor
-      def matches?(exception:, action:)
+      def self.matches?(matcher:, exception:, action:)
         if matcher.respond_to?(:call)
           if matcher.arity == 1
             !!action.instance_exec(exception, &matcher)
@@ -24,12 +26,17 @@ module Action
         action.warn("Ignoring #{e.class.name} raised while determining matcher: #{e.message}")
         false
       end
+
+      def matches?(exception:, action:)
+        self.class.matches?(matcher:, exception:, action:)
+      end
     end
 
     def self.included(base)
       base.class_eval do
         class_attribute :_success_msg, :_error_msg
         class_attribute :_custom_error_interceptors, default: []
+        class_attribute :_exception_handlers, default: []
 
         include InstanceMethods
         extend ClassMethods
@@ -62,6 +69,10 @@ module Action
           interceptor = self.class._error_interceptor_for(exception: e, action: self)
           return if interceptor&.should_report_error == false
 
+          # Call any handlers registered on *this specific action* class
+          _on_exception(e)
+
+          # Call any global handlers
           Action.config.on_exception(e,
                                      action: self,
                                      context: respond_to?(:context_for_logging) ? context_for_logging : @context.to_h)
@@ -101,6 +112,12 @@ module Action
 
       def rescues(matcher = nil, message = nil, **match_and_messages)
         _register_error_interceptor(matcher, message, should_report_error: false, **match_and_messages)
+      end
+
+      def on_exception(matcher = StandardError, &block)
+        raise ArgumentError, "on_exception must be called with a block" unless block_given?
+
+        self._exception_handlers += [CustomErrorHandler.new(matcher:, block:)]
       end
 
       def default_error = new.internal_context.default_error
@@ -144,6 +161,18 @@ module Action
       end
 
       delegate :default_error, to: :internal_context
+
+      def _on_exception(exception)
+        handlers = self.class._exception_handlers.select do |this|
+          CustomErrorInterceptor.matches?(matcher: this.matcher, exception:, action: self)
+        end
+
+        handlers.each do |handler|
+          instance_exec(exception, &handler.block)
+        rescue StandardError => e
+          warn("Ignoring #{e.class.name} in on_exception hook: #{e.message}")
+        end
+      end
     end
   end
 end
