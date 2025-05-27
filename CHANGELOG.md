@@ -1,6 +1,9 @@
 # Changelog
 
 ## UNRELEASED
+* N/A
+
+## 0.1.0-alpha.2.4
 * [FEAT] Adds per-Axn `on_exception` handlers
 
 ## 0.1.0-alpha.2.3
