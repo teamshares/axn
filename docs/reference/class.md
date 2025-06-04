@@ -72,11 +72,38 @@ messages error: "bad"
 rescues ActiveRecord::InvalidRecord => "Invalid params provided"
 
 # These WILL trigger error handler (second demonstrates callable matcher AND message)
-error_for ArgumentError, ->(e) { "Argument error: #{e.message}"
+error_for ArgumentError, ->(e) { "Argument error: #{e.message}" }
 error_for -> { name == "bad" }, -> { "was given bad name: #{name}" }
 ```
 
-## `on_exception`
+## Callbacks
+
+In addition to the [global exception handler](/reference/configuration#on-exception), a number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails.
+
+::: danger ALPHA
+* The callbacks themselves are functional. Note the ordering _between_ callbacks is not well defined (currently a side effect of the order they're defined).
+  * Ordering may change at any time so while in alpha DO NOT MAKE ASSUMPTIONS ABOUT THE ORDER OF CALLBACK EXECUTION!
+:::
+
+
+::: tip Callbacks vs Hooks
+  * *Hooks* (`before`/`after`) are executed _as part of the `call`_ -- exceptions or `fail!`s here _will_ change a successful action call to a failure (i.e. `result.ok?` will be false)
+  * *Callbacks* (defined below) are executed _after_ the `call` -- exceptions or `fail!`s here will _not_ change `result.ok?`
+:::
+
+### `on_success`
+
+This is triggered after the Axn completes, if it was successful.  Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
+
+### `on_error`
+
+Triggered on ANY error (explicit `fail!` or uncaught exception). Optional filter argument works the same as `on_exception` (documented below).
+
+### `on_failure`
+
+Triggered ONLY on explicit `fail!` (i.e. _not_ by an uncaught exception). Optional filter argument works the same as `on_exception` (documented below).
+
+### `on_exception`
 
 Much like the [globally-configured on_exception hook](/reference/configuration#on-exception), you can also specify exception handlers for a _specific_ Axn class:
 

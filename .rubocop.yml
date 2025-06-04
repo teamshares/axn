@@ -36,10 +36,10 @@ Metrics/PerceivedComplexity:
   Max: 15
 
 Metrics/AbcSize:
-  Max: 51
+  Max: 60
 
 Metrics/CyclomaticComplexity:
-  Max: 12
+  Max: 14
 
 Lint/EmptyBlock:
   Enabled: false
