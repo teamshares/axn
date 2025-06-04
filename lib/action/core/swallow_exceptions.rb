@@ -104,21 +104,21 @@ module Action
       end
 
       # ONLY raised exceptions (i.e. NOT fail!). Skipped if exception is rescued via .rescues.
-      def on_exception(matcher = StandardError, &handler)
+      def on_exception(matcher = -> { true }, &handler)
         raise ArgumentError, "on_exception must be called with a block" unless block_given?
 
         self._exception_handlers += [Action::EventHandlers::ConditionalHandler.new(matcher:, handler:)]
       end
 
       # ONLY raised on fail! (i.e. NOT unhandled exceptions).
-      def on_failure(matcher = Action::Failure, &handler)
+      def on_failure(matcher = -> { true }, &handler)
         raise ArgumentError, "on_failure must be called with a block" unless block_given?
 
         self._failure_handlers += [Action::EventHandlers::ConditionalHandler.new(matcher:, handler:)]
       end
 
       # Handles both fail! and unhandled exceptions... but is NOT affected by .rescues
-      def on_error(matcher = StandardError, &handler)
+      def on_error(matcher = -> { true }, &handler)
         raise ArgumentError, "on_error must be called with a block" unless block_given?
 
         self._error_handlers += [Action::EventHandlers::ConditionalHandler.new(matcher:, handler:)]
@@ -163,7 +163,7 @@ module Action
         @context.error_from_user = message if message.present?
 
         # TODO: should we use context_for_logging here? But doublecheck the one place where we're checking object_id on it...
-        raise Action::Failure.new(@context) # rubocop:disable Style/RaiseArgs
+        raise Action::Failure.new(@context, message:)
       end
 
       def try

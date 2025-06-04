@@ -11,7 +11,7 @@ module Action
       @context = context
     end
 
-    def message = @message.presence || "Execution was halted"
+    def message = @message.presence || @context.error_from_user.presence || "Execution was halted"
 
     def inspect = "#<#{self.class.name} '#{message}'>"
   end

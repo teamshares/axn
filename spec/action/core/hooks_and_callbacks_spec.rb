@@ -2,14 +2,12 @@
 
 RSpec.describe Action do
   describe "Hooks & Callbacks" do
-    subject(:result) { action.call(should_fail:, should_raise:, should_after_raise:) }
+    subject(:result) { action.call(trigger:) }
 
     let(:action) do
       Class.new do
         include Action
-        expects :should_fail, type: :boolean
-        expects :should_raise, type: :boolean
-        expects :should_after_raise, type: :boolean
+        expects :trigger, type: Symbol
 
         before { puts "before" }
 
@@ -21,24 +19,24 @@ RSpec.describe Action do
 
         after do
           puts "after"
-          raise "bad" if should_after_raise
+          raise "bad" if trigger == :raise_from_after
         end
 
         def call
           puts "calling"
-          raise "bad" if should_raise
 
-          fail!("Custom failure message") if should_fail
+          case trigger
+          when :raise then raise "bad"
+          when :fail then fail!("Custom failure message")
+          end
         end
       end
     end
 
-    let(:should_fail) { false }
-    let(:should_raise) { false }
-    let(:should_after_raise) { false }
-
     context "when ok?" do
-      it "executes before, after, THEN on_success" do
+      let(:trigger) { :ok }
+
+      it do
         expect do
           expect(result).to be_ok
         end.to output("before\ncalling\nafter\non_success\n").to_stdout
@@ -46,9 +44,9 @@ RSpec.describe Action do
     end
 
     context "when exception raised" do
-      let(:should_raise) { true }
+      let(:trigger) { :raise }
 
-      it "does not execute on_success" do
+      it do
         expect do
           expect(result).not_to be_ok
         end.to output("before\ncalling\non_error\non_exception\n").to_stdout
@@ -56,9 +54,9 @@ RSpec.describe Action do
     end
 
     context "when exception raised in after hook" do
-      let(:should_after_raise) { true }
+      let(:trigger) { :raise_from_after }
 
-      it "does not execute on_success" do
+      it do
         expect do
           expect(result).not_to be_ok
         end.to output("before\ncalling\nafter\non_error\non_exception\n").to_stdout
@@ -66,9 +64,9 @@ RSpec.describe Action do
     end
 
     context "when fail! is called" do
-      let(:should_fail) { true }
+      let(:trigger) { :fail }
 
-      it "executes on_failure" do
+      it do
         expect do
           expect(result).not_to be_ok
         end.to output("before\ncalling\non_error\non_failure\n").to_stdout
