@@ -104,23 +104,22 @@ Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life i
 
 In addition to `#call`, there are a few additional pieces to be aware of:
 
-### `#rollback`
+<!-- ### `#rollback`
+*** TODO: rollback actually only applies to rolling back *completed* steps of a multi-step Axn chain.  Do not document for now -- need to decide if adding a trigger-when-axn-itself-fails rollback path. ***
 
 ::: danger ALPHA
 * ⚠️ `#rollback` is _expected_ to be added shortly, but is not yet functional!
 :::
 
-If you define a `#rollback` method, it'll be called (_before_ returning an `Action::Result` to the caller) whenever your action fails.
+If you define a `#rollback` method, it'll be called (_before_ returning an `Action::Result` to the caller) whenever your action fails. -->
 
 ### Hooks
 
-`before` and `after` hooks are also supported. They can receive a block directly, or the symbol name of a local method.
+`before` and `after` hooks are supported. They can receive a block directly, or the symbol name of a local method.
 
-Note execution is halted whenever `fail!` is called or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `resuilt.ok?` be false even though `call` completed successfully).
+Note execution is halted whenever `fail!` is called or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully).
 
-### Concrete example
-
-Given this series of methods and hooks:
+For instance, given this configuration:
 
 ```ruby
 class Foo
@@ -131,10 +130,6 @@ class Foo
 
   def call
     log("in call")
-  end
-
-  def rollback
-    log("rolling back")
   end
 
   private
@@ -153,8 +148,11 @@ end
 before hook
 in call
 after hook
-rolling back
 ```
+
+### Callbacks
+
+A number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails. See the [Class Interface docs](/reference/class#callbacks) for details.
 
 ## Debugging
 Remember you can [enable debug logging](/reference/configuration.html#global-debug-logging) to print log lines before and after each action is executed.
