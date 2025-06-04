@@ -3,6 +3,9 @@
 ## UNRELEASED
 * N/A
 
+## 0.1.0-alpha.2.4.1
+* [FEAT] Adds full suite of per-Axn callbacks: `on_exception`, `on_failure`, `on_error`, `on_success`
+
 ## 0.1.0-alpha.2.4
 * [FEAT] Adds per-Axn `on_exception` handlers
 
