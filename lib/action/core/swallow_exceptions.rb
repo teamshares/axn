@@ -120,6 +120,15 @@ module Action
         self._exception_handlers += [CustomErrorHandler.new(matcher:, block:)]
       end
 
+      # Syntactic sugar for "after { try" (after, but if it fails do NOT fail the action)
+      def on_success(&block)
+        raise ArgumentError, "on_success must be called with a block" unless block_given?
+
+        after do
+          try { instance_exec(&block) }
+        end
+      end
+
       def default_error = new.internal_context.default_error
 
       # Private helpers
