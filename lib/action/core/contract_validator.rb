@@ -34,7 +34,7 @@ module Action
         msg = begin
           options[:with].call(value)
         rescue StandardError => e
-          warn("Custom validation on field '#{attribute}' raised #{e.class.name}: #{e.message}")
+          Action.config.logger.warn("Custom validation on field '#{attribute}' raised #{e.class.name}: #{e.message}")
 
           "failed validation: #{e.message}"
         end

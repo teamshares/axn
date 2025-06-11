@@ -27,7 +27,7 @@ module Action
         action.instance_exec(exception, &@handler)
         true
       rescue StandardError => e
-        action.warn("Ignoring #{e.class.name} in when evaluating #{self.class.name} handler: #{e.message}")
+        action.warn("Ignoring #{e.class.name} when evaluating handler: #{e.message}")
         nil
       end
     end
@@ -54,7 +54,7 @@ module Action
           false
         end
       rescue StandardError => e
-        action.warn("Ignoring #{e.class.name} raised while determining matcher: #{e.message}")
+        action.warn("Ignoring #{e.class.name} while determining matcher: #{e.message}")
         false
       end
 
