@@ -51,7 +51,7 @@ module Action
     def determine_error_message(only_default: false)
       return @context.error_from_user if @context.error_from_user.present?
 
-      exception = @context.exception || (only_default ? Action::Failure.new(@context) : nil)
+      exception = @context.exception || (only_default ? Action::Failure.new(context: @context) : nil)
       msg = action._error_msg
 
       unless only_default

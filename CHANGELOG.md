@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 * Support blank exposures for `Action::Result.ok`
+* Modify Action::Failure's initialize signature (to better match StandardError)
 
 ## 0.1.0-alpha.2.4.1
 * [FEAT] Adds full suite of per-Axn callbacks: `on_exception`, `on_failure`, `on_error`, `on_success`
