@@ -84,7 +84,9 @@ For example:
 
 For a practical example of this in practice, see [our 'memoization' recipe](/recipes/memoization).
 
-## `global_debug_logging`
+# Additional configuration
+
+## Global debug logging
 
 By default, every `action.call` will emit _debug_ log lines when it is called and after it completes:
 
@@ -93,12 +95,12 @@ By default, every `action.call` will emit _debug_ log lines when it is called an
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-You can bump the log level from `debug` to `info` for specific actions by including their class name (comma separated, if multiple) in a `SA_DEBUG_TARGETS` ENV variable.
-
-You can also turn this on _globally_ by setting `global_debug_logging = true`.
+You can bump the log level from `debug` to `info` for specific actions by defining a class method:
 
 ```ruby
-  Action.configure do |c|
-    c.global_debug_logging = true
-  end
+class Foo
+  include Action
+
+  def self.default_autolog_level = :info
+  ...
 ```

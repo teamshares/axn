@@ -4,8 +4,6 @@ RSpec.describe Action::Configuration do
   subject(:config) { described_class.new }
 
   describe "defaults" do
-    it { expect(config.global_debug_logging).to eq(nil) }
-    it { expect(config.global_debug_logging?).to eq(false) }
     it { expect(config.top_level_around_hook).to be_nil }
     it { expect(config.additional_includes).to eq([]) }
     it { expect(config.logger).to be_a(Logger) }
