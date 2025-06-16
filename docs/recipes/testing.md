@@ -59,6 +59,28 @@ end
 
 NOTE: to mock subaction failing via explicit `fail!` call, you'd use an `Action::Failure` exception class.
 
+## Mocking Axn arguments
+
+Be aware that in order to improve testing ergonomics, the `type` validation will return `true` for _any_ `RSpec::Mocks::` subclass _as long as `Action.config.env.test?` is `true`_.
+
+This makes it much easier to test Axns, as you can pass in mocks without immediately failing the inbound validation.
+
+```ruby
+subject(:result) { action.call!(sym:) }
+
+let(:action) { build_action { expects :sym, type: Symbol } }
+
+context "with a symbol" do
+  let(:sym) { :hello }
+  it { is_expected.to be_ok }
+end
+
+context "with an RSpec double" do
+  let(:sym) { double(to_s: "hello") }  # [!code focus:2]
+  it { is_expected.to be_ok }
+end
+```
+
 ## RSpec configuration
 
 Configuring rspec to treat files in spec/actions as service specs (very optional):

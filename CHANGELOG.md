@@ -7,6 +7,7 @@
 * Default logging changes:
   * Add `default_log_level` and `default_autolog_level` class methods (so inheritable) via `Action.config`
   * Remove `global_debug_logging?` from Configuration + unused `SA_DEBUG_TARGETS` approach to configuring logging
+* Improved testing ergonomics: the `type` expectation will now return `true` for _any_ `RSpec::Mocks::` subclass
 
 ## 0.1.0-alpha.2.4.1
 * [FEAT] Adds full suite of per-Axn callbacks: `on_exception`, `on_failure`, `on_error`, `on_success`
