@@ -14,7 +14,7 @@ module Action
     end
 
     module ClassMethods
-      def default_log_level = :info
+      def default_log_level = Action.config.default_log_level
 
       def log(message, level: default_log_level)
         msg = [_log_prefix, message].compact_blank.join(" ")

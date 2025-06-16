@@ -11,7 +11,8 @@ Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call
 
     c.additional_includes = []
 
-    c.global_debug_logging = false
+    c.default_log_level = :info
+    c.default_autolog_level = :debug
 
     c.logger = ...
   end
@@ -84,23 +85,17 @@ For example:
 
 For a practical example of this in practice, see [our 'memoization' recipe](/recipes/memoization).
 
-# Additional configuration
+## `default_log_level`
 
-## Global debug logging
+Sets the log level used when you call `log "Some message"` in your Action.  Note this is read via a `default_log_level` class method, so you can easily use inheritance to support different log levels for different sets of actions.
 
-By default, every `action.call` will emit _debug_ log lines when it is called and after it completes:
+## `default_autolog_level`
+
+By default, every `action.call` will emit log lines when it is called and after it completes:
 
   ```
     [YourCustomAction] About to execute with: {:foo=>"bar"}
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-You can bump the log level from `debug` to `info` for specific actions by defining a class method:
-
-```ruby
-class Foo
-  include Action
-
-  def self.default_autolog_level = :info
-  ...
-```
+You can change the default _auto_-log level separately from the log level used for your explicit `log` calls (just like above, via Action.config or a `default_autolog_level` class method).

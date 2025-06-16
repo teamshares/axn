@@ -4,7 +4,10 @@ module Action
   class Configuration
     include Action::Logging
     attr_accessor :top_level_around_hook
-    attr_writer :logger, :env, :on_exception, :additional_includes
+    attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
+
+    def default_log_level = @default_log_level ||= :info
+    def default_autolog_level = @default_autolog_level ||= :info
 
     def additional_includes = @additional_includes ||= []
 

@@ -5,7 +5,7 @@
 * Modify Action::Failure's initialize signature (to better match StandardError)
 * Reduce reserved fields to allow some `expects` (e.g. `message`) that would shadow internals if used as `exposes`
 * Default logging changes:
-  * Add `default_log_level` and `default_autolog_level` class methods (so inheritable)
+  * Add `default_log_level` and `default_autolog_level` class methods (so inheritable) via `Action.config`
   * Remove `global_debug_logging?` from Configuration + unused `SA_DEBUG_TARGETS` approach to configuring logging
 
 ## 0.1.0-alpha.2.4.1

@@ -13,7 +13,7 @@ module Action
     end
 
     module AutologgingClassMethods
-      def default_autolog_level = :debug
+      def default_autolog_level = Action.config.default_autolog_level
     end
 
     module AutologgingInstanceMethods
