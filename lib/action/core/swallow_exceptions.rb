@@ -15,8 +15,8 @@ module Action
         include InstanceMethods
         extend ClassMethods
 
-        def run_with_exception_swallowing!
-          original_run!
+        def run
+          run!
         rescue StandardError => e
           # on_error handlers run for both unhandled exceptions and fail!
           self.class._error_handlers.each do |handler|
@@ -25,31 +25,19 @@ module Action
 
           # on_failure handlers run ONLY for fail!
           if e.is_a?(Action::Failure)
+            @context.instance_variable_set("@error_from_user", e.message) if e.message.present?
+
             self.class._failure_handlers.each do |handler|
               handler.execute_if_matches(exception: e, action: self)
             end
+          else
+            # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+            trigger_on_exception(e)
 
-            # TODO: avoid raising if this was passed along from a child action (esp. if wrapped in hoist_errors)
-            raise e
+            @context.exception = e
           end
 
-          # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
-          trigger_on_exception(e)
-
-          @context.exception = e
-
-          fail!
-        end
-
-        alias_method :original_run!, :run!
-        alias_method :run!, :run_with_exception_swallowing!
-
-        # Tweaked to check @context.object_id rather than context (since forwarding object_id causes Ruby to complain)
-        # TODO: do we actually need the object_id check? Do we need this override at all?
-        def run
-          run!
-        rescue Action::Failure => e
-          raise if @context.object_id != e.context.object_id
+          @context.instance_variable_set("@failure", true)
         end
 
         def trigger_on_exception(exception)
@@ -72,17 +60,14 @@ module Action
         end
 
         class << base
-          def call_bang_with_unswallowed_exceptions(context = {})
+          def call!(context = {})
             result = call(context)
+
             return result if result.ok?
 
-            raise result.exception if result.exception
-
-            raise Action::Failure.new(result.error, context: result.instance_variable_get("@context"))
+            # TODO: we might not need to pass context around, depending on how we clean up run/run!
+            raise result.exception || Action::Failure.new(result.error, context: result.instance_variable_get("@context"))
           end
-
-          alias_method :original_call!, :call!
-          alias_method :call!, :call_bang_with_unswallowed_exceptions
         end
       end
     end

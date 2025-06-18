@@ -45,12 +45,10 @@ RSpec.describe Action do
           let(:bang) { true }
 
           it "inner call fails parent" do
-            pending "TODO: BUG -- if subaction raises `Action::Failure`, that gets passed through without being swallowed at the parent level"
-            expect { subject }.not_to raise_error
-            # is_expected.not_to be_ok
-            # expect(result.error).to eq("inner action failed")
-            # expect(result.exception).to be_a(Action::Failure)
-            # expect(result.exception.message).to eq("inner action failed")
+            is_expected.not_to be_ok
+            expect(result.error).to eq("inner action failed")
+            expect(result.exception).to be_a(Action::Failure)
+            expect(result.exception.message).to eq("inner action failed")
           end
         end
 
