@@ -66,7 +66,7 @@ module Axn
             retval = instance_exec(**unwrapped_kwargs, &block)
             expose(expose_return_as => retval) if expose_return_as.present?
           end
-        end.tap do |axn| # rubocop: disable Style/MultilineBlockChain
+        end.tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
