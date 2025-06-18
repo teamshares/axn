@@ -45,7 +45,7 @@ module Action
             _params_to_global_id(context).tap do |args|
               if client.send(:json_unsafe?, args).present?
                 raise ArgumentError,
-                      "Cannot pass non-JSON-serializable objects to Sidekiq. Make sure all objects in the context are serializable (or respond to to_global_id)."
+                      "Cannot pass non-JSON-serializable objects to Sidekiq. Make sure all expected arguments are serializable (or respond to to_global_id)."
               end
             end
           end
