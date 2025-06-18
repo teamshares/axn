@@ -13,11 +13,11 @@ require_relative "action/core/top_level_around_hook"
 require_relative "action/core/contract"
 require_relative "action/core/swallow_exceptions"
 require_relative "action/core/hoist_errors"
-require_relative "action/core/enqueueable"
 
 require_relative "axn/factory"
 
 require_relative "action/attachable"
+require_relative "action/enqueueable"
 
 def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
@@ -42,10 +42,9 @@ module Action
 
       include HoistErrors
 
-      include Enqueueable
-
       # --- Extensions ---
       include Attachable
+      include Enqueueable
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
@@ -62,3 +61,5 @@ module Action
     end
   end
 end
+
+require "action/enqueueable/enqueue_all_worker"
