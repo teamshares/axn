@@ -8,6 +8,11 @@
   * Add `default_log_level` and `default_autolog_level` class methods (so inheritable) via `Action.config`
   * Remove `global_debug_logging?` from Configuration + unused `SA_DEBUG_TARGETS` approach to configuring logging
 * Improved testing ergonomics: the `type` expectation will now return `true` for _any_ `RSpec::Mocks::` subclass
+* Enqueueable improvements:
+  * Extracted out of Core
+  * Renamed to `Enqueueable::ViaSidekiq` (make it easier to support different background runners in the future)
+  * Added ability to call `.enqueue_all_in_background` to run an Action's class-level `.enqueue_all` method (if defined) on a background worker
+    (important if triggered via a clock process that is NOT intended to execute actual jobs)
 
 ## 0.1.0-alpha.2.4.1
 * [FEAT] Adds full suite of per-Axn callbacks: `on_exception`, `on_failure`, `on_error`, `on_success`
