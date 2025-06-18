@@ -36,6 +36,10 @@ module Action
     module ClassMethods
       def expects(*fields, allow_blank: false, allow_nil: false, default: nil, preprocess: nil, sensitive: false,
                   **validations)
+        fields.each do |field|
+          raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
+        end
+
         _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations).tap do |configs|
           duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
           raise Action::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
@@ -46,6 +50,10 @@ module Action
       end
 
       def exposes(*fields, allow_blank: false, allow_nil: false, default: nil, sensitive: false, **validations)
+        fields.each do |field|
+          raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
+        end
+
         _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
           duplicated = external_field_configs.map(&:field) & configs.map(&:field)
           raise Action::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
@@ -57,10 +65,16 @@ module Action
 
       private
 
-      RESERVED_FIELD_NAMES = %w[
-        declared_fields inspect fail!
-        default_error
-        called! rollback! each_pair success? exception ok ok? error success message
+      RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
+        called! fail! rollback! success? ok?
+        inspect default_error
+        each_pair
+      ].freeze
+
+      RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
+        called! fail! rollback! success? ok?
+        inspect each_pair default_error
+        ok error success message
       ].freeze
 
       def _parse_field_configs(*fields, allow_nil: false, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
@@ -68,8 +82,6 @@ module Action
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
         fields.each do |field|
-          raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES.include?(field.to_s)
-
           define_method(field) { internal_context.public_send(field) }
         end
 
@@ -123,9 +135,9 @@ module Action
         raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
         klass = direction == :inbound ? Action::InternalContext : Action::Result
-        implicitly_allowed_fields = direction == :inbound ? declared_fields(:outbound) : []
+        implicitly_allowed_fields = direction == :inbound ? _declared_fields(:outbound) : []
 
-        klass.new(action: self, context: @context, declared_fields: declared_fields(direction), implicitly_allowed_fields:)
+        klass.new(action: self, context: @context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
       end
     end
 
@@ -173,7 +185,7 @@ module Action
       end
 
       def context_for_logging(direction = nil)
-        inspection_filter.filter(@context.to_h.slice(*declared_fields(direction)))
+        inspection_filter.filter(@context.to_h.slice(*_declared_fields(direction)))
       end
 
       protected
@@ -186,7 +198,7 @@ module Action
         (internal_field_configs + external_field_configs).select(&:sensitive).map(&:field)
       end
 
-      def declared_fields(direction)
+      def _declared_fields(direction)
         raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
 
         configs = case direction

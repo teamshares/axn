@@ -9,6 +9,15 @@ RSpec.describe "Action spec helpers" do
       it { expect(result.success).to eq("Action completed successfully") }
     end
 
+    context "allow blank exposures" do
+      subject(:result) { Action::Result.ok(still_exposable: "", another: nil) }
+
+      it { is_expected.to be_ok }
+      it { expect(result.success).to eq("Action completed successfully") }
+      it { expect(result.still_exposable).to eq("") }
+      it { expect(result.another).to be_nil }
+    end
+
     context "with custom message and exposure" do
       subject(:result) { Action::Result.ok("optional success message", custom_exposure: 123) }
 
@@ -33,6 +42,16 @@ RSpec.describe "Action spec helpers" do
       it { expect(result.error).to eq("Custom error message") }
       it { expect(result.exception).to be_nil }
       it { expect(result.still_exposable).to eq(456) }
+    end
+
+    context "allow blank exposures" do
+      subject(:result) { Action::Result.error(still_exposable: "", another: nil) }
+
+      it { is_expected.not_to be_ok }
+      it { expect(result.error).to eq("Something went wrong") }
+      it { expect(result.exception).to be_nil }
+      it { expect(result.still_exposable).to eq("") }
+      it { expect(result.another).to be_nil }
     end
 
     context "with exception" do

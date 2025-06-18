@@ -3,7 +3,11 @@
 RSpec.describe Action do
   describe ".axn" do
     let(:client) do
-      Class.new { include Action }
+      Class.new do
+        include Action
+
+        def self.default_autolog_level = :debug
+      end
     end
 
     context "with existing action class" do

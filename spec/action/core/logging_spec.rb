@@ -33,27 +33,20 @@ RSpec.describe Action do
           is_expected.to be_ok
         end
       end
-    end
 
-    describe "with ._targeted_for_debug_logging?" do
-      let(:level) { :debug }
-
-      before do
-        allow(action).to receive(:_targeted_for_debug_logging?).and_return(targeted_for_debug_logging)
-      end
-
-      context "false" do
-        let(:targeted_for_debug_logging) { false }
-        it "logs debug at debug level" do
-          expect(logger).to receive(:debug).with("[Anonymous Class] Hello, World!")
-          is_expected.to be_ok
+      describe "with .default_log_level set to #{level}" do
+        let(:action) do
+          build_action do
+            def call
+              log("Hello!")
+            end
+          end.tap do |a|
+            a.define_singleton_method(:default_log_level) { level }
+          end
         end
-      end
 
-      context "true" do
-        let(:targeted_for_debug_logging) { true }
-        it "logs debug at info level" do
-          expect(logger).to receive(:info).with("[Anonymous Class] Hello, World!")
+        it "logs at the default level" do
+          expect(logger).to receive(level).with("[Anonymous Class] Hello!")
           is_expected.to be_ok
         end
       end

@@ -3,15 +3,21 @@
 module Action
   # Raised internally when fail! is called -- triggers failure + rollback handling
   class Failure < StandardError
+    DEFAULT_MESSAGE = "Execution was halted"
+
     attr_reader :context
 
-    def initialize(context = nil, message: nil)
-      super()
-      @message = message if message.present?
+    def initialize(message = nil, context: nil, **)
       @context = context
+      @message = message
+      super(**)
     end
 
-    def message = @message.presence || @context.error_from_user.presence || "Execution was halted"
+    def message
+      @message.presence || @context&.error_from_user.presence || DEFAULT_MESSAGE
+    rescue StandardError
+      DEFAULT_MESSAGE
+    end
 
     def inspect = "#<#{self.class.name} '#{message}'>"
   end

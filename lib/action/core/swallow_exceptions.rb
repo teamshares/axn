@@ -78,7 +78,7 @@ module Action
 
             raise result.exception if result.exception
 
-            raise Action::Failure.new(result.instance_variable_get("@context"), message: result.error)
+            raise Action::Failure.new(result.error, context: result.instance_variable_get("@context"))
           end
 
           alias_method :original_call!, :call!
@@ -163,7 +163,7 @@ module Action
         @context.error_from_user = message if message.present?
 
         # TODO: should we use context_for_logging here? But doublecheck the one place where we're checking object_id on it...
-        raise Action::Failure.new(@context, message:)
+        raise Action::Failure.new(message, context: @context)
       end
 
       def try

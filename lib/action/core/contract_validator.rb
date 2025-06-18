@@ -34,7 +34,7 @@ module Action
         msg = begin
           options[:with].call(value)
         rescue StandardError => e
-          warn("Custom validation on field '#{attribute}' raised #{e.class.name}: #{e.message}")
+          Action.config.logger.warn("Custom validation on field '#{attribute}' raised #{e.class.name}: #{e.message}")
 
           "failed validation: #{e.message}"
         end
@@ -57,6 +57,8 @@ module Action
           elsif type == :uuid
             value.is_a?(String) && value.match?(/\A[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\z/i)
           else
+            next true if Action.config.env.test? && value.class.name.start_with?("RSpec::Mocks::")
+
             value.is_a?(type)
           end
         end

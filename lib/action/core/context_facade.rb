@@ -51,7 +51,7 @@ module Action
     def determine_error_message(only_default: false)
       return @context.error_from_user if @context.error_from_user.present?
 
-      exception = @context.exception || (only_default ? Action::Failure.new(@context) : nil)
+      exception = @context.exception || (only_default ? Action::Failure.new(context: @context) : nil)
       msg = action._error_msg
 
       unless only_default
@@ -73,7 +73,7 @@ module Action
         action.instance_exec(&msg)
       end
     rescue StandardError => e
-      action.warn("Ignoring #{e.class.name} raised while determining message callable: #{e.message}")
+      action.warn("Ignoring #{e.class.name} while determining message callable: #{e.message}")
       nil
     end
   end
@@ -95,7 +95,9 @@ module Action
     # For ease of mocking return results in tests
     class << self
       def ok(msg = nil, **exposures)
-        Axn::Factory.build(exposes: exposures.keys, messages: { success: msg }) do
+        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+
+        Axn::Factory.build(exposes:, messages: { success: msg }) do
           exposures.each do |key, value|
             expose(key, value)
           end
@@ -103,7 +105,10 @@ module Action
       end
 
       def error(msg = nil, **exposures, &block)
-        Axn::Factory.build(exposes: exposures.keys, rescues: [-> { true }, msg]) do
+        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+        rescues = [-> { true }, msg]
+
+        Axn::Factory.build(exposes:, rescues:) do
           exposures.each do |key, value|
             expose(key, value)
           end
@@ -162,7 +167,9 @@ module Action
       return unless facade.is_a?(Action::Result)
 
       return "[OK]" if context.success?
-      return "[failed with '#{context.error_from_user}']" unless context.exception
+      unless context.exception
+        return context.error_from_user.present? ? "[failed with '#{context.error_from_user}']" : "[failed]"
+      end
 
       %([failed with #{context.exception.class.name}: '#{context.exception.message}'])
     end

@@ -3,10 +3,11 @@
 module Action
   class Configuration
     include Action::Logging
-    attr_accessor :global_debug_logging, :top_level_around_hook
-    attr_writer :logger, :env, :on_exception, :additional_includes
+    attr_accessor :top_level_around_hook
+    attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
 
-    def global_debug_logging? = !!global_debug_logging
+    def default_log_level = @default_log_level ||= :info
+    def default_autolog_level = @default_autolog_level ||= :info
 
     def additional_includes = @additional_includes ||= []
 

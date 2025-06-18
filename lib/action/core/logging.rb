@@ -14,8 +14,9 @@ module Action
     end
 
     module ClassMethods
-      def log(message, level: :info)
-        level = :info if level == :debug && _targeted_for_debug_logging?
+      def default_log_level = Action.config.default_log_level
+
+      def log(message, level: default_log_level)
         msg = [_log_prefix, message].compact_blank.join(" ")
 
         Action.config.logger.send(level, msg)
@@ -29,13 +30,6 @@ module Action
 
       # TODO: this is ugly, we should be able to override in the config class...
       def _log_prefix = name == "Action::Configuration" ? nil : "[#{name || "Anonymous Class"}]"
-
-      def _targeted_for_debug_logging?
-        return true if Action.config.global_debug_logging?
-
-        target_class_names = (ENV["SA_DEBUG_TARGETS"] || "").split(",").map(&:strip)
-        target_class_names.include?(name)
-      end
     end
   end
 end
