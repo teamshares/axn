@@ -48,6 +48,7 @@ module Action
         @context.exception = result.exception if result.exception.present?
         @context.error_prefix = prefix if prefix.present?
 
+        # TODO: do we maybe want to always use exception.message? :thinking:
         error = result.exception.is_a?(Action::Failure) ? result.exception.message : result.error
         fail! error
       end

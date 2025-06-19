@@ -62,7 +62,6 @@ module Action
         class << base
           def call!(context = {})
             result = call(context)
-
             return result if result.ok?
 
             # TODO: we might not need to pass context around, depending on how we clean up run/run!

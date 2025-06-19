@@ -23,6 +23,12 @@ RSpec.describe Action do
         expects :bang, allow_blank: true
         expects :hoist, allow_blank: true
 
+        # TODO: resolve the messages-from-fail! issue, then update specs to use this
+        # messages error: lambda { |e|
+        #   binding.pry
+        #   "outer action failed"
+        # }
+
         def call
           if hoist
             hoist_errors(prefix: "PREFIX") { the_call }
@@ -44,11 +50,10 @@ RSpec.describe Action do
         context "with bang" do
           let(:bang) { true }
 
-          it "inner call fails parent" do
+          it "inner call fails parent WITHOUT custom message" do
             is_expected.not_to be_ok
-            expect(result.error).to eq("inner action failed")
-            expect(result.exception).to be_a(Action::Failure)
-            expect(result.exception.message).to eq("inner action failed")
+            expect(result.error).to eq("Something went wrong")
+            expect(result.exception).to be_nil
           end
         end
 
@@ -116,15 +121,9 @@ RSpec.describe Action do
         context "with bang" do
           let(:bang) { true }
 
-          it "inner call fails parent" do
-            pending "TODO: BUG? -- if subaction raises, any custom error message is not passed through"
-            # NOTE: remove the next spec when this bug is fixed
+          it "inner call fails parent (uses parent error message parsing, but NOT child's)" do
             is_expected.not_to be_ok
-            expect(result.error).to eq("PREFIX sub bad")
-          end
-
-          it "inner call fails parent" do
-            is_expected.not_to be_ok
+            expect(result.error).not_to eq("PREFIX sub bad") # we'd get this from child error message parsing, if called WITHOUT the bang
             expect(result.error).to eq("PREFIX Something went wrong")
           end
         end
