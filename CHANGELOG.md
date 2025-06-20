@@ -13,6 +13,7 @@
   * Renamed to `Enqueueable::ViaSidekiq` (make it easier to support different background runners in the future)
   * Added ability to call `.enqueue_all_in_background` to run an Action's class-level `.enqueue_all` method (if defined) on a background worker
     (important if triggered via a clock process that is NOT intended to execute actual jobs)
+* Restructure internals (call/call! + run/run! + Action::Failure) to simplify upstream implementation since we always wrap any raised exceptions
 
 ## 0.1.0-alpha.2.4.1
 * [FEAT] Adds full suite of per-Axn callbacks: `on_exception`, `on_failure`, `on_error`, `on_success`
