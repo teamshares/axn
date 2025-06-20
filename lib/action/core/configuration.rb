@@ -16,7 +16,7 @@ module Action
         # TODO: only pass action: or context: if requested (and update documentation)
         @on_exception.call(e, action:, context:)
       else
-        log("[#{action.class.name.presence || "Anonymous Action"}] Exception swallowed: #{e.class.name} - #{e.message}")
+        log("[#{action.class.name.presence || "Anonymous Action"}] Exception raised: #{e.class.name} - #{e.message}")
       end
     end
 

@@ -45,7 +45,7 @@ module Action
 
     class TypeValidator < ActiveModel::EachValidator
       def validate_each(record, attribute, value)
-        # TODO: the last one (:value) might be my fault from the make-it-a-hash fallback in #parse_field_configs
+        # NOTE: the last one (:value) might be my fault from the make-it-a-hash fallback in #parse_field_configs
         types = options[:in].presence || Array(options[:with]).presence || Array(options[:value]).presence
 
         return if value.blank? && !types.include?(:boolean) # Handled with a separate default presence validator

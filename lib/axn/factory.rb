@@ -34,7 +34,6 @@ module Axn
         end
         raise ArgumentError, "[Axn::Factory] Cannot convert block to action: block expects a splat of keyword arguments" if args[:keyrest].present?
 
-        # TODO: is there any way to support default arguments? (if so, set allow_blank: true for those)
         if args[:key].present?
           raise ArgumentError,
                 "[Axn::Factory] Cannot convert block to action: block expects keyword arguments with defaults (ruby does not allow introspecting)"
