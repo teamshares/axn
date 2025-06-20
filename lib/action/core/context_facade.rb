@@ -52,7 +52,7 @@ module Action
       return @context.error_from_user if @context.error_from_user.present?
 
       # We need an exception for interceptors, and also in case the messages.error callable expects an argument
-      exception = @context.exception || Action::Failure.new(context: @context)
+      exception = @context.exception || Action::Failure.new
 
       msg = action._error_msg
 

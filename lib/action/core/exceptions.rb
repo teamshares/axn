@@ -5,18 +5,13 @@ module Action
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    attr_reader :context
-
-    def initialize(message = nil, context: nil, **)
-      @context = context
+    def initialize(message = nil, **)
       @message = message
       super(**)
     end
 
     def message
-      @message.presence || @context&.error_from_user.presence || DEFAULT_MESSAGE
-    rescue StandardError
-      DEFAULT_MESSAGE
+      @message.presence || DEFAULT_MESSAGE
     end
 
     def inspect = "#<#{self.class.name} '#{message}'>"

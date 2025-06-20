@@ -64,8 +64,7 @@ module Action
             result = call(context)
             return result if result.ok?
 
-            # TODO: we might not need to pass context around, depending on how we clean up run/run!
-            raise result.exception || Action::Failure.new(result.error, context: result.instance_variable_get("@context"))
+            raise result.exception || Action::Failure.new(result.error)
           end
         end
       end
@@ -146,8 +145,7 @@ module Action
         @context.instance_variable_set("@failure", true)
         @context.error_from_user = message if message.present?
 
-        # TODO: should we use context_for_logging here? But doublecheck the one place where we're checking object_id on it...
-        raise Action::Failure.new(message, context: @context)
+        raise Action::Failure, message
       end
 
       def try
