@@ -146,6 +146,38 @@ RSpec.describe Action do
         it "supports class level default_error" do
           expect(action.default_error).to eq("Bad news: Action::Failure")
         end
+
+        context "when fail! is called with custom message" do
+          let(:action) do
+            build_action do
+              messages(error: ->(e) { "Bad news: #{e.message}" })
+
+              def call
+                fail! "Explicitly-set error message"
+              end
+            end
+          end
+
+          it "uses the custom message" do
+            is_expected.to eq("Explicitly-set error message")
+          end
+        end
+
+        context "when fail! is called without message" do
+          let(:action) do
+            build_action do
+              messages(error: ->(e) { "Bad news: #{e.message}" })
+
+              def call
+                fail!
+              end
+            end
+          end
+
+          it "uses the default message" do
+            is_expected.to eq("Bad news: Execution was halted")
+          end
+        end
       end
 
       context "when dynamic returns blank" do

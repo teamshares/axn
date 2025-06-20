@@ -51,13 +51,8 @@ module Action
     def determine_error_message(only_default: false)
       return @context.error_from_user if @context.error_from_user.present?
 
-      # TODO: just one of these... :grimace:
-
-      # This is original -- errors if exception is nil when passing to stringified
-      exception = @context.exception || (only_default ? Action::Failure.new(context: @context) : nil)
-
-      # This was new attempt -- fixes stringification, but the ultimately-raised error message is the default (loses the custom message somewhere)
-      # exception = @context.exception || Action::Failure.new(context: @context)
+      # We need an exception for interceptors, and also in case the messages.error callable expects an argument
+      exception = @context.exception || Action::Failure.new(context: @context)
 
       msg = action._error_msg
 
