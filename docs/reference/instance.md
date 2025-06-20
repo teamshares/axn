@@ -61,6 +61,12 @@ Accepts a `prefix` keyword argument -- when set, prefixes the `error` message fr
 
 NOTE: expects a single action call in the block -- if there are multiple calls, only the last one will be checked for `ok?` (although anything _raised_ in the block will still be handled).
 
+::: tip Versus `call!`
+* If you just want to make sure your action fails if the subaction fails: call subaction via `call!` (any failures will raise, which will fail the parent).
+  * Note this passes _child_ exception into _parent_ `messages :error` parsing.
+* If you want _the child's_ `result.error` to become the _parent's_ `result.error` on failure, use `hoist_errors` + `call`
+:::
+
 ### Example
 
 ```ruby

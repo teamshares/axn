@@ -29,8 +29,10 @@ module Action
           MinimalFailedResult.new(error: nil, exception: e)
         end
 
-        # This ensures the last line of hoist_errors was an Action call (CAUTION: if there are multiple
-        # calls per block, only the last one will be checked!)
+        # This ensures the last line of hoist_errors was an Action call
+        #
+        # CAUTION: if there are multiple calls per block, only the last one will be checked!
+        #
         unless result.respond_to?(:ok?)
           raise ArgumentError,
                 "#hoist_errors is expected to wrap an Action call, but it returned a #{result.class.name} instead"
