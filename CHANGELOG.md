@@ -1,6 +1,9 @@
 # Changelog
 
 ## UNRELEASED
+* N/A
+
+## 0.1.0-alpha.2.5
 * Support blank exposures for `Action::Result.ok`
 * Modify Action::Failure's initialize signature (to better match StandardError)
 * Reduce reserved fields to allow some `expects` (e.g. `message`) that would shadow internals if used as `exposes`
