@@ -49,7 +49,7 @@ Lint/EmptyBlock:
   Enabled: false
 
 Naming/MethodParameterName:
-  AllowedNames: e
+  AllowedNames: e, on
 
 Metrics/ParameterLists:
   Max: 7
