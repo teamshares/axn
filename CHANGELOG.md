@@ -1,7 +1,7 @@
 # Changelog
 
 ## UNRELEASED
-* N/A
+* Added new `model` validator for expectations
 
 ## 0.1.0-alpha.2.5
 * Support blank exposures for `Action::Result.ok`

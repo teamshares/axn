@@ -117,26 +117,11 @@ RSpec.describe Action do
     end
   end
 
-  describe "boolean" do
-    let(:action) do
-      build_action do
-        expects :foo, type: :boolean
-      end
-    end
-
-    it "validates" do
-      expect(action.call(foo: true)).to be_ok
-      expect(action.call(foo: false)).to be_ok
-
-      expect(action.call(foo: nil)).not_to be_ok
-      expect(action.call(foo: "")).not_to be_ok
-      expect(action.call(foo: 1)).not_to be_ok
-    end
-
-    context "and allow_blank" do
+  describe "type" do
+    describe "boolean" do
       let(:action) do
         build_action do
-          expects :foo, type: :boolean, allow_blank: true
+          expects :foo, type: :boolean
         end
       end
 
@@ -144,45 +129,85 @@ RSpec.describe Action do
         expect(action.call(foo: true)).to be_ok
         expect(action.call(foo: false)).to be_ok
 
-        expect(action.call(foo: nil)).to be_ok
-        expect(action.call(foo: "")).to be_ok
-        expect(action.call(foo: 1)).not_to be_ok
-      end
-    end
-
-    context "and allow_nil" do
-      let(:action) do
-        build_action do
-          expects :foo, type: :boolean, allow_nil: true
-        end
-      end
-
-      it "validates" do
-        expect(action.call(foo: true)).to be_ok
-        expect(action.call(foo: false)).to be_ok
-
-        expect(action.call(foo: nil)).to be_ok
-        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: nil)).not_to be_ok
         expect(action.call(foo: "")).not_to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+      end
+
+      context "and allow_blank" do
+        let(:action) do
+          build_action do
+            expects :foo, type: :boolean, allow_blank: true
+          end
+        end
+
+        it "validates" do
+          expect(action.call(foo: true)).to be_ok
+          expect(action.call(foo: false)).to be_ok
+
+          expect(action.call(foo: nil)).to be_ok
+          expect(action.call(foo: "")).to be_ok
+          expect(action.call(foo: 1)).not_to be_ok
+        end
+      end
+
+      context "and allow_nil" do
+        let(:action) do
+          build_action do
+            expects :foo, type: :boolean, allow_nil: true
+          end
+        end
+
+        it "validates" do
+          expect(action.call(foo: true)).to be_ok
+          expect(action.call(foo: false)).to be_ok
+
+          expect(action.call(foo: nil)).to be_ok
+          expect(action.call(foo: 1)).not_to be_ok
+          expect(action.call(foo: "")).not_to be_ok
+        end
+      end
+    end
+
+    describe "uuid" do
+      let(:action) do
+        build_action do
+          expects :foo, type: :uuid
+        end
+      end
+
+      it "validates" do
+        expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
+        expect(action.call(foo: "123e4567e89b12d3a456426614174000")).to be_ok
+
+        expect(action.call(foo: nil)).not_to be_ok
+        expect(action.call(foo: "")).not_to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: "abcabc")).not_to be_ok
       end
     end
   end
 
-  describe "uuid" do
+  describe "model" do
     let(:action) do
       build_action do
-        expects :foo, type: :uuid
+        expects :user_id, model: true
       end
     end
 
-    it "validates" do
-      expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
-      expect(action.call(foo: "123e4567e89b12d3a456426614174000")).to be_ok
+    let(:test_model) { double("User", is_a?: true, name: "User") }
 
-      expect(action.call(foo: nil)).not_to be_ok
-      expect(action.call(foo: "")).not_to be_ok
-      expect(action.call(foo: 1)).not_to be_ok
-      expect(action.call(foo: "abcabc")).not_to be_ok
+    before do
+      stub_const("User", test_model)
+
+      allow(test_model).to receive(:find_by).and_return(nil)
+      allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+    end
+
+    it "validates" do
+      expect(action.call(user_id: 1)).to be_ok
+      expect(action.call(user_id: nil)).not_to be_ok
+      expect(action.call(user_id: 2)).not_to be_ok
     end
   end
 end
