@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "active_model"
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
@@ -34,8 +33,15 @@ module Action
     FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive)
 
     module ClassMethods
-      def expects(*fields, allow_blank: false, allow_nil: false, default: nil, preprocess: nil, sensitive: false,
-                  **validations)
+      def expects(
+        *fields,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        preprocess: nil,
+        sensitive: false,
+        **validations
+      )
         fields.each do |field|
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
         end
@@ -49,7 +55,14 @@ module Action
         end
       end
 
-      def exposes(*fields, allow_blank: false, allow_nil: false, default: nil, sensitive: false, **validations)
+      def exposes(
+        *fields,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        sensitive: false,
+        **validations
+      )
         fields.each do |field|
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
         end
@@ -77,14 +90,36 @@ module Action
         ok error success message
       ].freeze
 
-      def _parse_field_configs(*fields, allow_nil: false, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
-                               **validations)
+      def _parse_field_configs(
+        *fields,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        preprocess: nil,
+        sensitive: false,
+        **validations
+      )
+        _define_field_readers(fields)
+        # TODO: model readers?
+        _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+          FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)
+        end
+      end
+
+      def _define_field_readers(fields)
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
         fields.each do |field|
           define_method(field) { internal_context.public_send(field) }
         end
+      end
 
+      def _parse_field_validations(
+        *fields,
+        allow_nil: false,
+        allow_blank: false,
+        **validations
+      )
         if allow_blank
           validations.transform_values! do |v|
             v = { value: v } unless v.is_a?(Hash)
@@ -99,7 +134,7 @@ module Action
           validations[:presence] = true unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean)
         end
 
-        fields.map { |field| FieldConfig.new(field:, validations:, default:, preprocess:, sensitive:) }
+        fields.map { |field| [field, validations] }
       end
     end
 

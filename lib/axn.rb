@@ -6,6 +6,10 @@ require_relative "axn/version"
 require "interactor"
 require "active_support"
 
+require "action/validators/model_validator"
+require "action/validators/type_validator"
+require "action/validators/validate_validator"
+
 require_relative "action/core/exceptions"
 require_relative "action/core/logging"
 require_relative "action/core/configuration"
