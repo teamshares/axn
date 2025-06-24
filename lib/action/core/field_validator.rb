@@ -19,7 +19,7 @@ module Action
 
     def self.validate!(validations:, context:, exception_klass:)
       validator = Class.new(self) do
-        def self.name = "Action::ContractValidator::OneOff"
+        def self.name = "Action::FieldValidator::OneOff"
 
         validations.each do |field, field_validations|
           field_validations.each do |key, value|

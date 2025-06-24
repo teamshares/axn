@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/hash/indifferent_access"
+
 module Action
   class SubfieldValidator
     include ActiveModel::Validations
@@ -18,14 +20,15 @@ module Action
     end
 
     def self.extract(attr, source)
-      # TODO: add fallbacks here + support digging
-      # data.dig(*key.to_s.split("."))
-      source.fetch(attr)
+      return source.public_send(attr) if source.respond_to?(attr)
+      raise "Unclear how to extract #{attr} from #{source.inspect}" unless source.respond_to?(:dig)
+
+      source.with_indifferent_access.dig(*attr.to_s.split("."))
     end
 
     def self.validate!(field:, validations:, source:, exception_klass:)
       validator = Class.new(self) do
-        def self.name = "Action::ContractValidator::Subfields::OneOff"
+        def self.name = "Action::SubfieldValidator::OneOff"
 
         validates field, **validations
       end.new(source)
