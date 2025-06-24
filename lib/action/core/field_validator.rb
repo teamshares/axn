@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Action
-  class ContractValidator
+  class FieldValidator
     include ActiveModel::Validations
 
     # NOTE: defining classes where needed b/c we explicitly register it'll affect ALL the consuming apps' validators as well

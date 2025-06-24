@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "action/core/subfield_validator"
+
 module Action
   module ContractForSubfields
     # TODO: add default, preprocess, sensitive options for subfields?
@@ -39,13 +41,7 @@ module Action
                 "expects_fields called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)"
         end
 
-        # fields.each do |field, validations|
-        #   # Don't create top-level readers for nested fields
-        #   next if field.to_s.include?(".")
-
-        #   create_data_reader(field) { DataShapeValidator.extract(field, data) }
-        #   create_model_data_reader(field, validations) if validations.key?(:model)
-        # end.keys
+        raise ArgumentError, "expects_fields does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
         # TODO: consider adding support for default, preprocess, sensitive options for subfields?
         _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, **validations).tap do |configs|
@@ -69,21 +65,26 @@ module Action
         # sensitive: false,
         **validations
       )
-        # _define_field_readers(fields)
+        _define_subfield_readers(fields, on:)
         # TODO: model readers?
         _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
           SubfieldConfig.new(field:, validations: parsed_validations, on:)
         end
       end
 
-      def create_subfield_reader(field, &block)
-        define_method(field) do
-          ivar = :"@_memoized_reader_#{field}"
-          cached_val = instance_variable_get(ivar)
-          return cached_val if cached_val.present?
+      def _define_subfield_readers(fields, on:)
+        fields.each do |field|
+          # Don't create top-level readers for nested fields
+          next if field.to_s.include?(".")
 
-          value = instance_exec(&block)
-          instance_variable_set(ivar, value)
+          define_method(field) do
+            ivar = :"@_memoized_reader_#{field}"
+            cached_val = instance_variable_get(ivar)
+            return cached_val if cached_val.present?
+
+            value = public_send(on).fetch(field)
+            instance_variable_set(ivar, value)
+          end
         end
       end
 
@@ -102,48 +103,15 @@ module Action
       def _validate_subfields_contract!
         return if subfield_configs.blank?
 
-        # subfield_configs
-
-        DataShapeValidator.validate!(
-          validations: _data_shape_validations,
-          data:,
-        )
-        # puts "VALIDATING SUBFIELDS CONTRACT"
-        # raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
-
-        # configs = direction == :inbound ? internal_field_configs : external_field_configs
-        # validations = configs.each_with_object({}) do |config, hash|
-        #   hash[config.field] = config.validations
-        # end
-        # context = direction == :inbound ? internal_context : external_context
-        # exception_klass = direction == :inbound ? Action::InboundValidationError : Action::OutboundValidationError
-
-        # ContractValidator.validate!(validations:, context:, exception_klass:)
+        subfield_configs.each do |config|
+          SubfieldValidator.validate!(
+            field: config.field,
+            validations: config.validations,
+            source: public_send(config.on),
+            exception_klass: Action::InboundValidationError,
+          )
+        end
       end
     end
   end
 end
-
-# TODO: ??
-# class DataShapeValidator
-#   include ActiveModel::Validations
-#   include DeclarativeInitialization
-#   initialize_with data: {}
-
-#   def self.extract(key, data) = data.dig(*key.to_s.split("."))
-#   def read_attribute_for_validation(key) = self.class.extract(key, @data)
-
-#   def self.validate!(validations:, data:)
-#     validator = Class.new(self) do
-#       def self.name = "TS::DataShapeValidator"
-
-#       validations.each do |field, field_validations|
-#         validates field, **field_validations
-#       end
-#     end.new(data:)
-
-#     return if validator.valid?
-
-#     raise Action::InboundValidationError, validator.errors
-#   end
-# end

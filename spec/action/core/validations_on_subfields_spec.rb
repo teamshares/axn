@@ -35,12 +35,6 @@ RSpec.describe Action do
       end
     end
 
-    # it "raises when the method doesn't exist" do
-    #   expect { action.expects_fields(:qux, on: :baz) }.to raise_error(ArgumentError)
-    # end
-
-    # TODO: ensure handles the subfield on a subfield case correctly checked
-
     it "validates" do
       expect(action.call(foo: { bar: { qux: 3 }, baz: 2 })).to be_ok
       expect(action.call(foo: { bar: 1, baz: 2 })).not_to be_ok
