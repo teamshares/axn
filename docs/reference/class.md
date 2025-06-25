@@ -40,7 +40,7 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
       * `user_id` is provided
       * `User.find(user_id)` returns a record
 
-    And will create two reader methods for you:
+    And, when used on `expects`, will create two reader methods for you:
       * `user_id` (normal), _and_
       * `user` (for the auto-found record)
 

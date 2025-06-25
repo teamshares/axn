@@ -189,25 +189,124 @@ RSpec.describe Action do
   end
 
   describe "model" do
-    let(:action) do
-      build_action do
-        expects :user_id, model: true
+    context "top level" do
+      context "when field does not end in _id" do
+        let(:action) do
+          build_action do
+            expects :user, model: true
+          end
+        end
+
+        it "raises an error" do
+          expect { action }.to raise_error(ArgumentError, "Model validation expects to be given a field ending in _id (given: user)")
+        end
+      end
+
+      let(:action) do
+        build_action do
+          expects :user_id, model: true
+          exposes :the_user, :user_id
+
+          def call
+            expose :user_id, user_id
+            expose :the_user, user
+          end
+        end
+      end
+
+      let(:test_model) { double("User", is_a?: true, name: "User") }
+
+      before do
+        stub_const("User", test_model)
+
+        allow(test_model).to receive(:find_by).and_return(nil)
+        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+      end
+
+      it "exposes readers" do
+        result = action.call(user_id: 1)
+        expect(result).to be_ok
+        expect(result.the_user.inspect).to eq(test_model.inspect)
+        expect(result.user_id).to eq(1)
+      end
+
+      it "validates" do
+        expect(action.call(user_id: nil)).not_to be_ok
+        expect(action.call(user_id: 2)).not_to be_ok
       end
     end
 
-    let(:test_model) { double("User", is_a?: true, name: "User") }
+    context "subfield" do
+      context "when field does not end in _id" do
+        let(:action) do
+          build_action do
+            expects :foo
+            expects :user, model: true, on: :foo
+          end
+        end
 
-    before do
-      stub_const("User", test_model)
+        it "raises an error" do
+          expect { action }.to raise_error(ArgumentError, "Model validation expects to be given a field ending in _id (given: user)")
+        end
+      end
 
-      allow(test_model).to receive(:find_by).and_return(nil)
-      allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
-    end
+      let(:action) do
+        build_action do
+          expects :foo
+          expects_fields :user_id, model: true, on: :foo
+          exposes :the_user, :user_id
 
-    it "validates" do
-      expect(action.call(user_id: 1)).to be_ok
-      expect(action.call(user_id: nil)).not_to be_ok
-      expect(action.call(user_id: 2)).not_to be_ok
+          def call
+            expose :user_id, foo[:user_id]
+            expose :the_user, user
+          end
+        end
+      end
+
+      let(:test_model) { double("User", is_a?: true, name: "User") }
+
+      before do
+        stub_const("User", test_model)
+
+        allow(test_model).to receive(:find_by).and_return(nil)
+        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+      end
+
+      it "exposes readers" do
+        result = action.call!(foo: { user_id: 1 })
+        expect(result).to be_ok
+        expect(result.the_user.inspect).to eq(test_model.inspect)
+        expect(result.user_id).to eq(1)
+      end
+
+      it "validates" do
+        expect(action.call(foo: { user_id: nil })).not_to be_ok
+        expect(action.call(foo: { user_id: 2 })).not_to be_ok
+      end
+
+      context "using expects shortcut to set exposure of same name" do
+        subject(:result) { action.call!(foo: { user_id: 1 }) }
+
+        let(:action) do
+          build_action do
+            expects :foo
+            expects_fields :user_id, model: true, on: :foo
+            exposes :user, :user_id
+
+            def call
+              expose :user_id, user_id
+              expose :user, user
+            end
+          end
+        end
+
+        it "exposes readers" do
+          pending "TODO: add support for exposing the same field name as the expects shortcut readers"
+          expect(result).to be_ok
+          expect(result.the_user.inspect).to eq(test_model.inspect)
+          expect(result.user_id).to eq(1)
+        end
+      end
     end
   end
 end

@@ -99,18 +99,26 @@ module Action
         sensitive: false,
         **validations
       )
-        _define_field_readers(fields)
-        # TODO: model readers?
         _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+          _define_field_reader(field)
+          _define_model_reader(field, parsed_validations[:model]) if parsed_validations.key?(:model)
           FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)
         end
       end
 
-      def _define_field_readers(fields)
+      def _define_field_reader(field)
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
-        fields.each do |field|
-          define_method(field) { internal_context.public_send(field) }
+        define_method(field) { internal_context.public_send(field) }
+      end
+
+      def _define_model_reader(field, klass)
+        name = field.to_s.delete_suffix("_id")
+        raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
+        raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
+
+        define_method(name) do
+          Validators::ModelValidator.instance_for(field:, klass:, id: public_send(field))
         end
       end
 

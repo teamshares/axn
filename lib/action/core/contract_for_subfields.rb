@@ -67,41 +67,34 @@ module Action
         # sensitive: false,
         **validations
       )
-        if readers
-          _define_subfield_readers(fields, on:)
-          # TODO: model readers?
-        end
-
         _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+          _define_subfield_reader(field, on:, validations: parsed_validations) if readers
           SubfieldConfig.new(field:, validations: parsed_validations, on:)
         end
       end
 
-      def _define_subfield_readers(fields, on:)
-        fields.each do |field|
-          # Don't create top-level readers for nested fields
-          next if field.to_s.include?(".")
+      def _define_subfield_reader(field, on:, validations:)
+        # Don't create top-level readers for nested fields
+        return if field.to_s.include?(".")
 
-          raise ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
+        raise ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
-          define_method(field) do
-            ivar = :"@_memoized_reader_#{field}"
-            cached_val = instance_variable_get(ivar)
-            return cached_val if cached_val.present?
-
-            value = public_send(on).fetch(field)
-            instance_variable_set(ivar, value)
-          end
+        # TODO:
+        # define_memoized_reader_method(field) do
+        define_method(field) do
+          public_send(on).fetch(field)
         end
+
+        _define_model_reader(field, validations[:model]) if validations.key?(:model)
       end
 
-      def create_model_data_reader(field, validations)
-        name = field.to_s.delete_suffix("_id")
-        raise ArgumentError, "#{name}: model validation expects to be given a field ending in _id" unless field.to_s.end_with?("_id")
+      def define_memoized_reader_method(field)
+        define_method(field) do
+          ivar = :"@_memoized_reader_#{field}"
+          cached_val = instance_variable_get(ivar)
+          return cached_val if cached_val.present?
 
-        create_data_reader(name) do
-          klass = DataShapeValidator::ModelValidator.model_for(attribute: field, klass: validations[:model])
-          klass.find_by(id: public_send(field))
+          instance_variable_set(ivar, yield)
         end
       end
     end
