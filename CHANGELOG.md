@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 * Added new `model` validator for expectations
+* [FEAT] Extended `expects` with the `on:` key to allow declaring nested data shapes/validations
 
 ## 0.1.0-alpha.2.5
 * Support blank exposures for `Action::Result.ok`

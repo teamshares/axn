@@ -1,3 +1,7 @@
+---
+outline: deep
+---
+
 # Class Methods
 
 ## `.expects` and `.exposes`
@@ -49,9 +53,30 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
     :::
 
+### Details specific to `.exposes`
+
+Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
+
 
 ### Details specific to `.expects`
 
+#### Nested/Subfield expectations
+
+`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well, _except default, preprocess, and sensitive_):
+
+```ruby
+class Foo
+  expects :event
+  expects :data, type: Hash, on: :event  # [!code focus:2]
+  expects :some, :random, :fields, on: :data
+
+  def call
+    puts "THe event.data.random field's value is: #{random}"
+  end
+end
+```
+
+#### `preprocess`
 `expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any validations.  This can be useful for type coercion, e.g.:
 
 ```ruby
@@ -59,11 +84,6 @@ expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d)
 ```
 
 will succeed if given _either_ an actual Date object _or_ a string that Date.parse can convert into one.  If the preprocess callable raises an exception, that'll be swallowed and the action failed.
-
-### Details specific to `.exposes`
-
-Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
-
 
 ## `.messages`
 
