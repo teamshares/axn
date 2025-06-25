@@ -23,7 +23,8 @@ module Action
       return source.public_send(attr) if source.respond_to?(attr)
       raise "Unclear how to extract #{attr} from #{source.inspect}" unless source.respond_to?(:dig)
 
-      source.with_indifferent_access.dig(*attr.to_s.split("."))
+      base = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
+      base.dig(*attr.to_s.split("."))
     end
 
     def self.validate!(field:, validations:, source:, exception_klass:)

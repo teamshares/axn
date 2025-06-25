@@ -29,6 +29,7 @@ module Action
       def expects_fields(
         *fields,
         on:,
+        readers: true,
         allow_blank: false,
         allow_nil: false,
         # default: nil,
@@ -44,7 +45,7 @@ module Action
         raise ArgumentError, "expects_fields does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
         # TODO: consider adding support for default, preprocess, sensitive options for subfields?
-        _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, **validations).tap do |configs|
+        _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, **validations).tap do |configs|
           duplicated = subfield_configs.map(&:field) & configs.map(&:field)
           raise Action::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -58,6 +59,7 @@ module Action
       def _parse_subfield_configs(
         *fields,
         on:,
+        readers:,
         allow_blank: false,
         allow_nil: false,
         # default: nil,
@@ -65,8 +67,11 @@ module Action
         # sensitive: false,
         **validations
       )
-        _define_subfield_readers(fields, on:)
-        # TODO: model readers?
+        if readers
+          _define_subfield_readers(fields, on:)
+          # TODO: model readers?
+        end
+
         _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
           SubfieldConfig.new(field:, validations: parsed_validations, on:)
         end
