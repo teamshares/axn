@@ -15,12 +15,6 @@ module Action
         extend ClassMethods
         include InstanceMethods
 
-        # TODO: compare before vs around hook
-        # around do |hooked|
-        #   _validate_subfield_contract!
-        #   hooked.call
-        # end
-
         before { _validate_subfields_contract! }
       end
     end
