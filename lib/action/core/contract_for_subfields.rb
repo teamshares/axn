@@ -79,22 +79,21 @@ module Action
 
         raise ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
-        # TODO:
-        # define_memoized_reader_method(field) do
-        define_method(field) do
+        define_memoized_reader_method(field) do
           public_send(on).fetch(field)
         end
 
         _define_model_reader(field, validations[:model]) if validations.key?(:model)
       end
 
-      def define_memoized_reader_method(field)
+      def define_memoized_reader_method(field, &block)
         define_method(field) do
           ivar = :"@_memoized_reader_#{field}"
           cached_val = instance_variable_get(ivar)
           return cached_val if cached_val.present?
 
-          instance_variable_set(ivar, yield)
+          value = instance_exec(&block)
+          instance_variable_set(ivar, value)
         end
       end
     end
