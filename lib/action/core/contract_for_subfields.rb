@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "action/core/subfield_validator"
+require "action/core/validation/subfields"
 
 module Action
   module ContractForSubfields
@@ -111,7 +111,7 @@ module Action
         return if subfield_configs.blank?
 
         subfield_configs.each do |config|
-          SubfieldValidator.validate!(
+          Validation::Subfields.validate!(
             field: config.field,
             validations: config.validations,
             source: public_send(config.on),

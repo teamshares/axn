@@ -3,7 +3,7 @@
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
-require "action/core/field_validator"
+require "action/core/validation/fields"
 require "action/core/context_facade"
 
 module Action
@@ -199,7 +199,7 @@ module Action
         context = direction == :inbound ? internal_context : external_context
         exception_klass = direction == :inbound ? Action::InboundValidationError : Action::OutboundValidationError
 
-        FieldValidator.validate!(validations:, context:, exception_klass:)
+        Validation::Fields.validate!(validations:, context:, exception_klass:)
       end
 
       def _apply_defaults!(direction)
