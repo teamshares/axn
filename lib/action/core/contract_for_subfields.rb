@@ -82,6 +82,8 @@ module Action
           # Don't create top-level readers for nested fields
           next if field.to_s.include?(".")
 
+          raise ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
+
           define_method(field) do
             ivar = :"@_memoized_reader_#{field}"
             cached_val = instance_variable_get(ivar)

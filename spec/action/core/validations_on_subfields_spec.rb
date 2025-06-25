@@ -79,6 +79,35 @@ RSpec.describe Action do
         expect(action.call(foo: { bar: 1, baz: 2 })).not_to be_ok
         expect(action.call(foo: 1)).not_to be_ok
       end
+
+      context "with duplicate sub-keys" do
+        let(:action) do
+          build_action do
+            expects :foo
+            expects_fields :bar, on: :foo
+          end.tap do |a|
+            a.expects_fields :foo, on: :bar, readers: readers
+          end
+        end
+
+        context "when readers are enabled" do
+          let(:readers) { true }
+
+          it "raises if readers are enabled" do
+            expect { action }.to raise_error(ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `foo` is already defined)")
+          end
+        end
+
+        context "when readers are disabled" do
+          let(:readers) { false }
+
+          it "does not raise" do
+            expect { action }.not_to raise_error
+            expect(action.call(foo: { bar: { foo: 3 } })).to be_ok
+            expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok
+          end
+        end
+      end
     end
 
     context "with objects rather than hashes" do
