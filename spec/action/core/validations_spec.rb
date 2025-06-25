@@ -253,7 +253,7 @@ RSpec.describe Action do
       let(:action) do
         build_action do
           expects :foo
-          expects_fields :user_id, model: true, on: :foo
+          expects :user_id, model: true, on: :foo
           exposes :the_user, :user_id
 
           def call
@@ -290,7 +290,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :foo
-            expects_fields :user_id, model: true, on: :foo
+            expects :user_id, model: true, on: :foo
             exposes :user, :user_id
 
             def call

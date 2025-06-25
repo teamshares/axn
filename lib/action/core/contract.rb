@@ -35,6 +35,7 @@ module Action
     module ClassMethods
       def expects(
         *fields,
+        on: nil,
         allow_blank: false,
         allow_nil: false,
         default: nil,
@@ -42,6 +43,8 @@ module Action
         sensitive: false,
         **validations
       )
+        return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations) if on.present?
+
         fields.each do |field|
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
         end

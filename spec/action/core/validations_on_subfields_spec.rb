@@ -1,27 +1,27 @@
 # frozen_string_literal: true
 
 RSpec.describe Action do
-  describe "expects_fields" do
+  describe "_expects_subfields" do
     shared_examples "raises when improperly configured" do |on:|
       it "raises" do
         expect { action }.to raise_error(
           ArgumentError,
-          "expects_fields called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)",
+          "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)",
         )
       end
     end
 
     context "when missing expects declaration" do
-      let(:action) { build_action { expects_fields :bar, on: :baz } }
+      let(:action) { build_action { expects :bar, on: :baz } }
       it_behaves_like "raises when improperly configured", on: :baz
     end
 
-    context "when missing nested expects_fields declaration" do
+    context "when missing nested expects declaration" do
       let(:action) do
         build_action do
           expects :baz
-          expects_fields :bar, on: :baz
-          expects_fields :quux, on: :qux
+          expects :bar, on: :baz
+          expects :quux, on: :qux
         end
       end
       it_behaves_like "raises when improperly configured", on: :qux
@@ -31,14 +31,14 @@ RSpec.describe Action do
     let(:action) do
       build_action do
         expects :foo
-        expects_fields :bar, :baz, on: :foo
+        expects :bar, :baz, on: :foo
         exposes :output
 
         def call
           expose output: qux
         end
       end.tap do |action|
-        action.expects_fields :qux, on: :bar, readers: readers
+        action.expects :qux, on: :bar, readers: readers
       end
     end
 
@@ -70,7 +70,7 @@ RSpec.describe Action do
       let(:action) do
         build_action do
           expects :foo
-          expects_fields "bar.baz", on: :foo
+          expects "bar.baz", on: :foo
         end
       end
 
@@ -84,9 +84,9 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :foo
-            expects_fields :bar, on: :foo
+            expects :bar, on: :foo
           end.tap do |a|
-            a.expects_fields :foo, on: :bar, readers: readers
+            a.expects :foo, on: :bar, readers: readers
           end
         end
 
@@ -94,7 +94,7 @@ RSpec.describe Action do
           let(:readers) { true }
 
           it "raises if readers are enabled" do
-            expect { action }.to raise_error(ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `foo` is already defined)")
+            expect { action }.to raise_error(ArgumentError, "expects does not support duplicate sub-keys (i.e. `foo` is already defined)")
           end
         end
 
@@ -114,7 +114,7 @@ RSpec.describe Action do
       let(:action) do
         build_action do
           expects :foo
-          expects_fields :bar, on: :foo
+          expects :bar, on: :foo
         end
       end
       let(:foo) { double(bar: 3) }

@@ -26,23 +26,31 @@ module Action
     end
 
     module ClassMethods
-      def expects_fields(
+      def _expects_subfields(
         *fields,
         on:,
         readers: true,
         allow_blank: false,
         allow_nil: false,
-        # default: nil,
-        # preprocess: nil,
-        # sensitive: false,
+
+        # TODO: add support for these three options for subfields
+        default: nil,
+        preprocess: nil,
+        sensitive: false,
+
         **validations
       )
+        # TODO: add support for these three options for subfields
+        raise ArgumentError, "expects does not support :default key when also given :on" if default.present?
+        raise ArgumentError, "expects does not support :preprocess key when also given :on" if preprocess.present?
+        raise ArgumentError, "expects does not support :sensitive key when also given :on" if sensitive.present?
+
         unless internal_field_configs.map(&:field).include?(on) || subfield_configs.map(&:field).include?(on)
           raise ArgumentError,
-                "expects_fields called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)"
+                "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)"
         end
 
-        raise ArgumentError, "expects_fields does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
+        raise ArgumentError, "expects does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
         # TODO: consider adding support for default, preprocess, sensitive options for subfields?
         _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, **validations).tap do |configs|
@@ -77,7 +85,7 @@ module Action
         # Don't create top-level readers for nested fields
         return if field.to_s.include?(".")
 
-        raise ArgumentError, "expects_fields does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
+        raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
         define_memoized_reader_method(field) do
           public_send(on).fetch(field)
