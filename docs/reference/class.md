@@ -22,7 +22,7 @@ Both `expects` and `exposes` support the same core options:
 While we _support_ complex interface validations, in practice you usually just want a `type`, if anything.  Remember this is your validation about how the action is called, _not_ pretty user-facing errors (there's [a different pattern for that](/recipes/validating-user-input)).
 :::
 
-In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support two additional custom validators:
+In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support three additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
   * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
   * Edge case: use `type: :uuid` to handle a confirming given string is a UUID (with or without `-` chars)
@@ -31,7 +31,23 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     ```ruby
     expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
     ```
+* `model: true` (or `model: TheModelClass`) - allows auto-hydrating a record when only given its ID
+  * Example:
+    ```ruby
+    expects :user_id, model: true
+    ```
+    This line will add expectations that:
+      * `user_id` is provided
+      * `User.find(user_id)` returns a record
 
+    And will create two reader methods for you:
+      * `user_id` (normal), _and_
+      * `user` (for the auto-found record)
+
+    ::: info NOTES
+    * The field name must end in `_id`
+    * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
+    :::
 
 
 ### Details specific to `.expects`
