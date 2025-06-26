@@ -109,6 +109,17 @@ module Action
         end
       end
 
+      def define_memoized_reader_method(field, &block)
+        define_method(field) do
+          ivar = :"@_memoized_reader_#{field}"
+          cached_val = instance_variable_get(ivar)
+          return cached_val if cached_val.present?
+
+          value = instance_exec(&block)
+          instance_variable_set(ivar, value)
+        end
+      end
+
       def _define_field_reader(field)
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
@@ -120,7 +131,7 @@ module Action
         raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
         raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
 
-        define_method(name) do
+        define_memoized_reader_method(name) do
           Validators::ModelValidator.instance_for(field:, klass:, id: public_send(field))
         end
       end

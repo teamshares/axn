@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.2.5.1.2
+* [BUGFIX] Subfield expectations: now support hashes with string keys (using with_indifferent_access)
+* [BUGFIX] Subfield expectations: Model reader fields now cache initial value (otherwise get fresh instance each call, cannot make in-memory changes)
+
 ## 0.1.0-alpha.2.5.1.1
 * [BUGFIX] TypeValidator must handle anonymous classes when determining if given argument is an RSpec mock
 

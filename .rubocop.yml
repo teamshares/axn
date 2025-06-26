@@ -33,6 +33,9 @@ Style/DoubleNegation:
 Metrics/BlockLength:
   Enabled: false
 
+Metrics/ModuleLength:
+  Enabled: false
+
 Metrics/MethodLength:
   Max: 60
 
