@@ -19,7 +19,7 @@ module Action
             value.is_a?(String) && value.match?(/\A[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\z/i)
           else
             # NOTE: allow mocks to pass type validation by default (much easier testing ergonomics)
-            next true if Action.config.env.test? && value.class.name.start_with?("RSpec::Mocks::")
+            next true if Action.config.env.test? && value.class.name&.start_with?("RSpec::Mocks::")
 
             value.is_a?(type)
           end

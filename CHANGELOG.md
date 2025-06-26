@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.0-alpha.2.5.1.1
+* [BUGFIX] TypeValidator must handle anonymous classes when determining if given argument is an RSpec mock
+
 ## 0.1.0-alpha.2.5.1
 * Added new `model` validator for expectations
 * [FEAT] Extended `expects` with the `on:` key to allow declaring nested data shapes/validations

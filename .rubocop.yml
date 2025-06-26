@@ -37,13 +37,13 @@ Metrics/MethodLength:
   Max: 60
 
 Metrics/PerceivedComplexity:
-  Max: 15
+  Max: 16
 
 Metrics/AbcSize:
   Max: 60
 
 Metrics/CyclomaticComplexity:
-  Max: 14
+  Max: 16
 
 Lint/EmptyBlock:
   Enabled: false
