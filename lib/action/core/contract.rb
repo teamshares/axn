@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 
-require "active_model"
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
-require "action/core/contract_validator"
+require "action/core/validation/fields"
 require "action/core/context_facade"
 
 module Action
@@ -34,8 +33,18 @@ module Action
     FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive)
 
     module ClassMethods
-      def expects(*fields, allow_blank: false, allow_nil: false, default: nil, preprocess: nil, sensitive: false,
-                  **validations)
+      def expects(
+        *fields,
+        on: nil,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        preprocess: nil,
+        sensitive: false,
+        **validations
+      )
+        return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations) if on.present?
+
         fields.each do |field|
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
         end
@@ -49,7 +58,14 @@ module Action
         end
       end
 
-      def exposes(*fields, allow_blank: false, allow_nil: false, default: nil, sensitive: false, **validations)
+      def exposes(
+        *fields,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        sensitive: false,
+        **validations
+      )
         fields.each do |field|
           raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
         end
@@ -77,14 +93,44 @@ module Action
         ok error success message
       ].freeze
 
-      def _parse_field_configs(*fields, allow_nil: false, allow_blank: false, default: nil, preprocess: nil, sensitive: false,
-                               **validations)
+      def _parse_field_configs(
+        *fields,
+        allow_blank: false,
+        allow_nil: false,
+        default: nil,
+        preprocess: nil,
+        sensitive: false,
+        **validations
+      )
+        _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+          _define_field_reader(field)
+          _define_model_reader(field, parsed_validations[:model]) if parsed_validations.key?(:model)
+          FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)
+        end
+      end
+
+      def _define_field_reader(field)
         # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
         # (e.g. to allow success message callable to reference exposed fields)
-        fields.each do |field|
-          define_method(field) { internal_context.public_send(field) }
-        end
+        define_method(field) { internal_context.public_send(field) }
+      end
 
+      def _define_model_reader(field, klass)
+        name = field.to_s.delete_suffix("_id")
+        raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
+        raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
+
+        define_method(name) do
+          Validators::ModelValidator.instance_for(field:, klass:, id: public_send(field))
+        end
+      end
+
+      def _parse_field_validations(
+        *fields,
+        allow_nil: false,
+        allow_blank: false,
+        **validations
+      )
         if allow_blank
           validations.transform_values! do |v|
             v = { value: v } unless v.is_a?(Hash)
@@ -99,7 +145,7 @@ module Action
           validations[:presence] = true unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean)
         end
 
-        fields.map { |field| FieldConfig.new(field:, validations:, default:, preprocess:, sensitive:) }
+        fields.map { |field| [field, validations] }
       end
     end
 
@@ -164,7 +210,7 @@ module Action
         context = direction == :inbound ? internal_context : external_context
         exception_klass = direction == :inbound ? Action::InboundValidationError : Action::OutboundValidationError
 
-        ContractValidator.validate!(validations:, context:, exception_klass:)
+        Validation::Fields.validate!(validations:, context:, exception_klass:)
       end
 
       def _apply_defaults!(direction)

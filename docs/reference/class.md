@@ -1,3 +1,7 @@
+---
+outline: deep
+---
+
 # Class Methods
 
 ## `.expects` and `.exposes`
@@ -22,7 +26,7 @@ Both `expects` and `exposes` support the same core options:
 While we _support_ complex interface validations, in practice you usually just want a `type`, if anything.  Remember this is your validation about how the action is called, _not_ pretty user-facing errors (there's [a different pattern for that](/recipes/validating-user-input)).
 :::
 
-In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support two additional custom validators:
+In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support three additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
   * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
   * Edge case: use `type: :uuid` to handle a confirming given string is a UUID (with or without `-` chars)
@@ -31,11 +35,48 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     ```ruby
     expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
     ```
+* `model: true` (or `model: TheModelClass`) - allows auto-hydrating a record when only given its ID
+  * Example:
+    ```ruby
+    expects :user_id, model: true
+    ```
+    This line will add expectations that:
+      * `user_id` is provided
+      * `User.find(user_id)` returns a record
 
+    And, when used on `expects`, will create two reader methods for you:
+      * `user_id` (normal), _and_
+      * `user` (for the auto-found record)
+
+    ::: info NOTES
+    * The field name must end in `_id`
+    * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
+    :::
+
+### Details specific to `.exposes`
+
+Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
 
 
 ### Details specific to `.expects`
 
+#### Nested/Subfield expectations
+
+`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well, _except default, preprocess, and sensitive_):
+
+```ruby
+class Foo
+  expects :event
+  expects :data, type: Hash, on: :event  # [!code focus:2]
+  expects :some, :random, :fields, on: :data
+
+  def call
+    puts "THe event.data.random field's value is: #{random}"
+  end
+end
+```
+
+#### `preprocess`
 `expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any validations.  This can be useful for type coercion, e.g.:
 
 ```ruby
@@ -43,11 +84,6 @@ expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d)
 ```
 
 will succeed if given _either_ an actual Date object _or_ a string that Date.parse can convert into one.  If the preprocess callable raises an exception, that'll be swallowed and the action failed.
-
-### Details specific to `.exposes`
-
-Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
-
 
 ## `.messages`
 

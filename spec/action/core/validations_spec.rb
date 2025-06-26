@@ -117,26 +117,11 @@ RSpec.describe Action do
     end
   end
 
-  describe "boolean" do
-    let(:action) do
-      build_action do
-        expects :foo, type: :boolean
-      end
-    end
-
-    it "validates" do
-      expect(action.call(foo: true)).to be_ok
-      expect(action.call(foo: false)).to be_ok
-
-      expect(action.call(foo: nil)).not_to be_ok
-      expect(action.call(foo: "")).not_to be_ok
-      expect(action.call(foo: 1)).not_to be_ok
-    end
-
-    context "and allow_blank" do
+  describe "type" do
+    describe "boolean" do
       let(:action) do
         build_action do
-          expects :foo, type: :boolean, allow_blank: true
+          expects :foo, type: :boolean
         end
       end
 
@@ -144,45 +129,184 @@ RSpec.describe Action do
         expect(action.call(foo: true)).to be_ok
         expect(action.call(foo: false)).to be_ok
 
-        expect(action.call(foo: nil)).to be_ok
-        expect(action.call(foo: "")).to be_ok
-        expect(action.call(foo: 1)).not_to be_ok
-      end
-    end
-
-    context "and allow_nil" do
-      let(:action) do
-        build_action do
-          expects :foo, type: :boolean, allow_nil: true
-        end
-      end
-
-      it "validates" do
-        expect(action.call(foo: true)).to be_ok
-        expect(action.call(foo: false)).to be_ok
-
-        expect(action.call(foo: nil)).to be_ok
-        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: nil)).not_to be_ok
         expect(action.call(foo: "")).not_to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+      end
+
+      context "and allow_blank" do
+        let(:action) do
+          build_action do
+            expects :foo, type: :boolean, allow_blank: true
+          end
+        end
+
+        it "validates" do
+          expect(action.call(foo: true)).to be_ok
+          expect(action.call(foo: false)).to be_ok
+
+          expect(action.call(foo: nil)).to be_ok
+          expect(action.call(foo: "")).to be_ok
+          expect(action.call(foo: 1)).not_to be_ok
+        end
+      end
+
+      context "and allow_nil" do
+        let(:action) do
+          build_action do
+            expects :foo, type: :boolean, allow_nil: true
+          end
+        end
+
+        it "validates" do
+          expect(action.call(foo: true)).to be_ok
+          expect(action.call(foo: false)).to be_ok
+
+          expect(action.call(foo: nil)).to be_ok
+          expect(action.call(foo: 1)).not_to be_ok
+          expect(action.call(foo: "")).not_to be_ok
+        end
+      end
+    end
+
+    describe "uuid" do
+      let(:action) do
+        build_action do
+          expects :foo, type: :uuid
+        end
+      end
+
+      it "validates" do
+        expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
+        expect(action.call(foo: "123e4567e89b12d3a456426614174000")).to be_ok
+
+        expect(action.call(foo: nil)).not_to be_ok
+        expect(action.call(foo: "")).not_to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: "abcabc")).not_to be_ok
       end
     end
   end
 
-  describe "uuid" do
-    let(:action) do
-      build_action do
-        expects :foo, type: :uuid
+  describe "model" do
+    context "top level" do
+      context "when field does not end in _id" do
+        let(:action) do
+          build_action do
+            expects :user, model: true
+          end
+        end
+
+        it "raises an error" do
+          expect { action }.to raise_error(ArgumentError, "Model validation expects to be given a field ending in _id (given: user)")
+        end
+      end
+
+      let(:action) do
+        build_action do
+          expects :user_id, model: true
+          exposes :the_user, :user_id
+
+          def call
+            expose :user_id, user_id
+            expose :the_user, user
+          end
+        end
+      end
+
+      let(:test_model) { double("User", is_a?: true, name: "User") }
+
+      before do
+        stub_const("User", test_model)
+
+        allow(test_model).to receive(:find_by).and_return(nil)
+        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+      end
+
+      it "exposes readers" do
+        result = action.call(user_id: 1)
+        expect(result).to be_ok
+        expect(result.the_user.inspect).to eq(test_model.inspect)
+        expect(result.user_id).to eq(1)
+      end
+
+      it "validates" do
+        expect(action.call(user_id: nil)).not_to be_ok
+        expect(action.call(user_id: 2)).not_to be_ok
       end
     end
 
-    it "validates" do
-      expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
-      expect(action.call(foo: "123e4567e89b12d3a456426614174000")).to be_ok
+    context "subfield" do
+      context "when field does not end in _id" do
+        let(:action) do
+          build_action do
+            expects :foo
+            expects :user, model: true, on: :foo
+          end
+        end
 
-      expect(action.call(foo: nil)).not_to be_ok
-      expect(action.call(foo: "")).not_to be_ok
-      expect(action.call(foo: 1)).not_to be_ok
-      expect(action.call(foo: "abcabc")).not_to be_ok
+        it "raises an error" do
+          expect { action }.to raise_error(ArgumentError, "Model validation expects to be given a field ending in _id (given: user)")
+        end
+      end
+
+      let(:action) do
+        build_action do
+          expects :foo
+          expects :user_id, model: true, on: :foo
+          exposes :the_user, :user_id
+
+          def call
+            expose :user_id, foo[:user_id]
+            expose :the_user, user
+          end
+        end
+      end
+
+      let(:test_model) { double("User", is_a?: true, name: "User") }
+
+      before do
+        stub_const("User", test_model)
+
+        allow(test_model).to receive(:find_by).and_return(nil)
+        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+      end
+
+      it "exposes readers" do
+        result = action.call!(foo: { user_id: 1 })
+        expect(result).to be_ok
+        expect(result.the_user.inspect).to eq(test_model.inspect)
+        expect(result.user_id).to eq(1)
+      end
+
+      it "validates" do
+        expect(action.call(foo: { user_id: nil })).not_to be_ok
+        expect(action.call(foo: { user_id: 2 })).not_to be_ok
+      end
+
+      context "using expects shortcut to set exposure of same name" do
+        subject(:result) { action.call!(foo: { user_id: 1 }) }
+
+        let(:action) do
+          build_action do
+            expects :foo
+            expects :user_id, model: true, on: :foo
+            exposes :user, :user_id
+
+            def call
+              expose :user_id, user_id
+              expose :user, user
+            end
+          end
+        end
+
+        it "exposes readers" do
+          pending "TODO: add support for exposing the same field name as the expects shortcut readers"
+          expect(result).to be_ok
+          expect(result.the_user.inspect).to eq(test_model.inspect)
+          expect(result.user_id).to eq(1)
+        end
+      end
     end
   end
 end
