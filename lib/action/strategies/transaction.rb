@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Action
-  module Strategies
+  class Strategies
     module Transaction
       extend ActiveSupport::Concern
 

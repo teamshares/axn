@@ -18,6 +18,7 @@ require_relative "action/core/contract"
 require_relative "action/core/contract_for_subfields"
 require_relative "action/core/swallow_exceptions"
 require_relative "action/core/hoist_errors"
+require_relative "action/core/use_strategy"
 
 require_relative "axn/factory"
 
@@ -49,10 +50,11 @@ module Action
 
       include HoistErrors
 
+      include UseStrategy
+
       # --- Extensions ---
       include Attachable
       include Enqueueable
-      include Strategies::Usable
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
