@@ -23,6 +23,7 @@ require_relative "axn/factory"
 
 require_relative "action/attachable"
 require_relative "action/enqueueable"
+require_relative "action/strategies"
 
 def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
@@ -51,6 +52,7 @@ module Action
       # --- Extensions ---
       include Attachable
       include Enqueueable
+      include Strategies::Usable
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
