@@ -6,8 +6,13 @@ module Action
       extend ActiveSupport::Concern
 
       included do
-        puts "Transaction strategy included!"
-        # TODO: implement
+        raise NotImplementedError, "Transaction strategy requires ActiveRecord" unless defined?(ActiveRecord)
+
+        around do |hooked|
+          ActiveRecord::Base.transaction do
+            hooked.call
+          end
+        end
       end
     end
   end
