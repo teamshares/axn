@@ -4,10 +4,8 @@ require "spec_helper"
 
 RSpec.describe Action::Strategies do
   let(:test_action) do
-    Class.new do
-      include Action
+    build_action do
       include Action::Strategies
-      include Action::Strategies::Usable
     end
   end
 
@@ -94,10 +92,8 @@ end
 
 RSpec.describe Action::Strategies::Usable do
   let(:test_action) do
-    Class.new do
-      include Action
+    build_action do
       include Action::Strategies
-      include Action::Strategies::Usable
     end
   end
 
@@ -132,15 +128,10 @@ end
 
 RSpec.describe "Integration: Using Transaction strategy in an action" do
   let(:action_with_transaction) do
-    Class.new do
-      include Action
+    build_action do
       include Action::Strategies
-      include Action::Strategies::Usable
-
       use :transaction
-
       def call
-        # Action implementation would go here
         "success"
       end
     end
@@ -157,10 +148,8 @@ RSpec.describe "Integration: Using Transaction strategy in an action" do
 
   it "outputs the inclusion message when the class is defined" do
     expect do
-      Class.new do
-        include Action
+      build_action do
         include Action::Strategies
-        include Action::Strategies::Usable
         use :transaction
       end
     end.to output("Transaction strategy included!\n").to_stdout
