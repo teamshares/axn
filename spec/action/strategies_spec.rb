@@ -13,12 +13,14 @@ RSpec.describe Action::Strategies do
 
   describe ".built_in" do
     it "loads all strategy files from the strategies directory" do
-      expect(test_action.built_in).to include(Action::Strategies::Transaction)
+      expect(test_action.built_in.keys).to include(:transaction)
+      expect(test_action.built_in[:transaction]).to be(Action::Strategies::Transaction)
     end
 
-    it "returns only modules" do
+    it "returns a hash with module values" do
       strategies = test_action.built_in
-      expect(strategies).to all(be_a(Module))
+      expect(strategies).to be_a(Hash)
+      expect(strategies.values).to all(be_a(Module))
     end
 
     it "memoizes the result" do
@@ -42,36 +44,42 @@ RSpec.describe Action::Strategies do
       test_action.clear!
       initial_count = test_action.all.length
 
-      test_action.register(custom_strategy)
+      test_action.register(:custom, custom_strategy)
 
       expect(test_action.all.length).to eq(initial_count + 1)
-      expect(test_action.all).to include(custom_strategy)
+      expect(test_action.all[:custom]).to eq(custom_strategy)
     end
 
-    it "does not add duplicate strategies" do
+    it "allows custom strategies to be used" do
       test_action.clear!
-      test_action.register(custom_strategy)
-      initial_count = test_action.all.length
+      test_action.register(:custom, custom_strategy)
+      expect { test_action.use(:custom) }.to output("Custom strategy included!\n").to_stdout
+      expect(test_action.included_modules).to include(custom_strategy)
+    end
 
-      test_action.register(custom_strategy)
+    it "raises an error when registering a duplicate strategy by name" do
+      test_action.clear!
+      test_action.register(:custom, custom_strategy)
 
-      expect(test_action.all.length).to eq(initial_count)
+      expect do
+        test_action.register(:custom, custom_strategy)
+      end.to raise_error(Action::DuplicateStrategyError, "Strategy custom already registered")
     end
 
     it "initializes strategies if not already done" do
       test_action.class_variable_set(:@@strategies, nil)
 
-      test_action.register(custom_strategy)
+      test_action.register(:custom, custom_strategy)
 
-      expect(test_action.all).to include(custom_strategy)
+      expect(test_action.all[:custom]).to eq(custom_strategy)
     end
   end
 
   describe ".all" do
-    it "returns all registered strategies" do
+    it "returns all registered strategies as a hash" do
       strategies = test_action.all
-      expect(strategies).to be_an(Array)
-      expect(strategies).to include(Action::Strategies::Transaction)
+      expect(strategies).to be_a(Hash)
+      expect(strategies.values).to include(Action::Strategies::Transaction)
     end
 
     it "initializes strategies if not already done" do
@@ -79,7 +87,7 @@ RSpec.describe Action::Strategies do
 
       strategies = test_action.all
 
-      expect(strategies).to include(Action::Strategies::Transaction)
+      expect(strategies.values).to include(Action::Strategies::Transaction)
     end
   end
 end

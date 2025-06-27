@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 module Action
+  class StrategyNotFound < StandardError; end
+  class DuplicateStrategyError < StandardError; end
+
   # rubocop:disable Style/ClassVars
   module Strategies
     extend ActiveSupport::Concern
@@ -17,13 +20,17 @@ module Action
         strategy_files.each { |file| require file }
 
         constants = Action::Strategies.constants.map { |const| Action::Strategies.const_get(const) }
+        mods = constants.select { |const| const.is_a?(Module) }
 
-        @built_in = constants.select { |const| const.is_a?(Module) }
+        @built_in = mods.map { |mod| [mod.name&.split("::")&.last&.downcase&.to_sym, mod] }.to_h
       end
 
-      def register(strategy)
+      def register(name, strategy)
         @@strategies ||= built_in
-        @@strategies << strategy unless @@strategies.include?(strategy)
+        key = name.to_sym
+        raise DuplicateStrategyError, "Strategy #{name} already registered" if @@strategies.key?(key)
+
+        @@strategies[key] = strategy
         @@strategies
       end
 
@@ -43,10 +50,9 @@ module Action
 
     class_methods do
       # TODO: support configs
-      # TODO: support registering via name
       def use(strategy_name)
-        strategy = all.find { |strategy| strategy.name&.split("::")&.last&.downcase == strategy_name.to_s }
-        raise "Strategy #{strategy_name} not found" unless strategy
+        strategy = all[strategy_name.to_sym]
+        raise StrategyNotFound, "Strategy #{strategy_name} not found" if strategy.blank?
 
         include strategy
       end
