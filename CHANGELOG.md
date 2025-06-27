@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+* [BREAKING] Removing `EnqueueAllInBackground` + `EnqueueAllWorker` - better + simply solved at application level
+
 ## 0.1.0-alpha.2.5.1.2
 * [BUGFIX] Subfield expectations: now support hashes with string keys (using with_indifferent_access)
 * [BUGFIX] Subfield expectations: Model reader fields now cache initial value (otherwise get fresh instance each call, cannot make in-memory changes)

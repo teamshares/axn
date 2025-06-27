@@ -55,33 +55,3 @@ Sidekiq integration is NOT YET TESTED/NOT YET USED IN OUR APP, and naming will V
     * enqueue will not retry even if fails
     * enqueue! will go through normal sidekiq retries on any failure (including user-facing `fail!`)
     * Note implicit GlobalID support (if not serializable, will get ArgumentError at callsite)
-
-
-### `.enqueue_all_in_background`
-
-In practice it's fairly common to need to enqueue a bunch of sidekiq jobs from a clock process.
-
-One approach is to define a class-level `.enqueue_all` method on your Action... but that ends up executing the enqueue_all logic directly from the clock process, which is undesirable.
-
-
-::: danger ALPHA
-We are actively testing this pattern -- not yet certain we'll keep it past beta.
-:::
-
-Therefore we've added an `.enqueue_all_in_background` method that will automatically call your `.enqueue_all` _from a background job_ rather than directly on the active process.
-
-```ruby
-class Foo
-  include Action
-
-  def self.enqueue_all
-    SomeModel.some_scope.find_each do |record|
-      enqueue(record:)
-    end
-  end
-
-  ...
-end
-
-Foo.enqueue_all # works, but `SomeModel.some_scope.find_each` is executed in the current context
-Foo.enqueue_all_in_background # same, but runs in the background (via Action::Enqueueable::EnqueueAllWorker)

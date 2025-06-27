@@ -67,5 +67,3 @@ module Action
     end
   end
 end
-
-require "action/enqueueable/enqueue_all_worker"
