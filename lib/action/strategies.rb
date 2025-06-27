@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "strategies/transaction"
-
 module Action
   # rubocop:disable Style/ClassVars
   module Strategies
@@ -47,7 +45,7 @@ module Action
       # TODO: support configs
       # TODO: support registering via name
       def use(strategy_name)
-        strategy = Strategies.all.find { |strategy| strategy.name == strategy_name }
+        strategy = all.find { |strategy| strategy.name&.split("::")&.last&.downcase == strategy_name.to_s }
         raise "Strategy #{strategy_name} not found" unless strategy
 
         include strategy
