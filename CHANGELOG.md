@@ -2,6 +2,7 @@
 
 ## Unreleased
 * [BREAKING] Removing `EnqueueAllInBackground` + `EnqueueAllWorker` - better + simply solved at application level
+* [TEST] Expose spec helpers to consumers (add `require "axn/testing/spec_helpers"` to your `spec_helper.rb`)
 
 ## 0.1.0-alpha.2.5.1.2
 * [BUGFIX] Subfield expectations: now support hashes with string keys (using with_indifferent_access)
