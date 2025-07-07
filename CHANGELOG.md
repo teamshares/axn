@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.2.5.2
 * [BREAKING] Removing `EnqueueAllInBackground` + `EnqueueAllWorker` - better + simply solved at application level
 * [TEST] Expose spec helpers to consumers (add `require "axn/testing/spec_helpers"` to your `spec_helper.rb`)
 # [FEAT] Added ability to use custom Strategies (via e.g. `use :transaction`)
