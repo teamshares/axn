@@ -61,7 +61,7 @@ RSpec.describe Action::Strategies do
     end
 
     it "initializes strategies if not already done" do
-      described_class.class_variable_set(:@@strategies, nil)
+      described_class.clear!
 
       described_class.register(:custom, custom_strategy)
 
@@ -77,11 +77,56 @@ RSpec.describe Action::Strategies do
     end
 
     it "initializes strategies if not already done" do
-      described_class.class_variable_set(:@@strategies, nil)
+      described_class.clear!
 
       strategies = described_class.all
 
       expect(strategies.values).to include(Action::Strategies::Transaction)
+    end
+  end
+
+  describe ".find" do
+    it "finds a built-in strategy by symbol" do
+      strategy = described_class.find(:transaction)
+      expect(strategy).to be(Action::Strategies::Transaction)
+    end
+
+    it "finds a built-in strategy by string" do
+      strategy = described_class.find("transaction")
+      expect(strategy).to be(Action::Strategies::Transaction)
+    end
+
+    it "finds a custom registered strategy" do
+      custom_strategy = Module.new
+      described_class.clear!
+      described_class.register(:custom, custom_strategy)
+
+      strategy = described_class.find(:custom)
+      expect(strategy).to eq(custom_strategy)
+    end
+
+    it "raises StrategyNotFound for non-existent strategy" do
+      expect do
+        described_class.find(:nonexistent)
+      end.to raise_error(Action::StrategyNotFound, "Strategy 'nonexistent' not found")
+    end
+
+    it "raises StrategyNotFound for nil strategy name" do
+      expect do
+        described_class.find(nil)
+      end.to raise_error(Action::StrategyNotFound, "Strategy name cannot be nil")
+    end
+
+    it "raises StrategyNotFound for empty string strategy name" do
+      expect do
+        described_class.find("")
+      end.to raise_error(Action::StrategyNotFound, "Strategy name cannot be empty")
+    end
+
+    it "raises StrategyNotFound for whitespace-only string strategy name" do
+      expect do
+        described_class.find("   ")
+      end.to raise_error(Action::StrategyNotFound, "Strategy name cannot be empty")
     end
   end
 end

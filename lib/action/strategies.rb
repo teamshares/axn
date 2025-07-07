@@ -37,6 +37,9 @@ module Action
       end
 
       def find(name)
+        raise StrategyNotFound, "Strategy name cannot be nil" if name.nil?
+        raise StrategyNotFound, "Strategy name cannot be empty" if name.to_s.strip.empty?
+
         all[name.to_sym] or raise StrategyNotFound, "Strategy '#{name}' not found"
       end
     end
