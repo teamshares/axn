@@ -103,7 +103,7 @@ RSpec.describe Action::UseStrategy do
       it "allows block when no config is provided" do
         expect do
           test_action.use(:custom) { "block" }
-        end.to output("Custom strategy included!\n").to_stdout
+        end.to raise_error(ArgumentError, "Strategy custom does not support blocks (define #setup method)")
       end
     end
   end
