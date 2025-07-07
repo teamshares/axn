@@ -69,9 +69,15 @@ RSpec.describe Action::UseStrategy do
       end
 
       it "calls setup method with config and block" do
+        expected = <<~OUTPUT
+          Setup called with config: {:option1=>"value1", :option2=>"value2"}
+          Setup called with block: block result
+          Setup strategy included!
+        OUTPUT
+
         expect do
           test_action.use(:setup_strategy, option1: "value1", option2: "value2") { "block result" }
-        end.to output("Setup called with config: {:option1=>\"value1\", :option2=>\"value2\"}\nSetup called with block: block result\nSetup strategy included!\n").to_stdout
+        end.to output(expected).to_stdout
       end
 
       it "calls setup method with only config" do

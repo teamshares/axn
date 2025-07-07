@@ -4,8 +4,8 @@ module Action
   class StrategyNotFound < StandardError; end
   class DuplicateStrategyError < StandardError; end
 
-  # rubocop:disable Style/ClassVars
   class Strategies
+    # rubocop:disable Style/ClassVars
     class << self
       def built_in
         return @@built_in if defined?(@@built_in)
@@ -35,7 +35,11 @@ module Action
       def clear!
         @@strategies = built_in.dup
       end
+
+      def find(name)
+        all[name.to_sym] or raise StrategyNotFound, "Strategy '#{name}' not found"
+      end
     end
+    # rubocop:enable Style/ClassVars
   end
-  # rubocop:enable Style/ClassVars
 end

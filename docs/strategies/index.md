@@ -231,6 +231,20 @@ Action::Strategies.all
 # Returns a hash of strategy names to their modules
 ```
 
+### Finding Specific Strategies
+
+To find a specific strategy by name:
+
+```ruby
+Action::Strategies.find(:transaction)
+# Returns the strategy module for the transaction strategy
+
+Action::Strategies.find(:nonexistent)
+# Raises Action::StrategyNotFound: Strategy 'nonexistent' not found
+```
+
+The `find` method is useful when you need to programmatically access a strategy module or verify that a strategy exists before using it.
+
 ### Clearing Strategies
 
 To reset strategies to only built-in ones (useful in tests):
