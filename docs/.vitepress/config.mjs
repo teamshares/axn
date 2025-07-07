@@ -48,6 +48,13 @@ export default defineConfig({
         ]
       },
       {
+        text: 'Strategies',
+        items: [
+          { text: 'Overview', link: '/strategies/index' },
+          { text: 'Transaction', link: '/strategies/transaction' },
+        ]
+      },
+      {
         text: 'Additional Notes',
         items: [
           { text: 'ROUGH NOTES', link: '/advanced/rough' },

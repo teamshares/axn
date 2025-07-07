@@ -18,11 +18,13 @@ require_relative "action/core/contract"
 require_relative "action/core/contract_for_subfields"
 require_relative "action/core/swallow_exceptions"
 require_relative "action/core/hoist_errors"
+require_relative "action/core/use_strategy"
 
 require_relative "axn/factory"
 
 require_relative "action/attachable"
 require_relative "action/enqueueable"
+require_relative "action/strategies"
 
 def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
@@ -47,6 +49,8 @@ module Action
       include ContractForSubfields
 
       include HoistErrors
+
+      include UseStrategy
 
       # --- Extensions ---
       include Attachable

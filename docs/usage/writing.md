@@ -154,5 +154,5 @@ after hook
 
 A number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails. See the [Class Interface docs](/reference/class#callbacks) for details.
 
-## Debugging
-Remember you can [enable debug logging](/reference/configuration.html#global-debug-logging) to print log lines before and after each action is executed.
+## Strategies
+A number of [Strategies](/strategies), which are <abbr title="Don't Repeat Yourself">DRY</abbr>ed bits of commonly-used configuration, are available for your use as well.
