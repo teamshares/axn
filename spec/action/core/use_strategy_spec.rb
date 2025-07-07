@@ -44,5 +44,67 @@ RSpec.describe Action::UseStrategy do
         test_action.use("custom")
       end.to output("Custom strategy included!\n").to_stdout
     end
+
+    context "when strategy has a setup method" do
+      let(:setup_strategy) do
+        Module.new do
+          extend ActiveSupport::Concern
+
+          def self.setup(**config, &block)
+            puts "Setup called with config: #{config.inspect}"
+            puts "Setup called with block: #{block.call if block_given?}"
+
+            Module.new do
+              extend ActiveSupport::Concern
+              included do
+                puts "Setup strategy included!"
+              end
+            end
+          end
+        end
+      end
+
+      before do
+        Action::Strategies.register(:setup_strategy, setup_strategy)
+      end
+
+      it "calls setup method with config and block" do
+        expect do
+          test_action.use(:setup_strategy, option1: "value1", option2: "value2") { "block result" }
+        end.to output("Setup called with config: {:option1=>\"value1\", :option2=>\"value2\"}\nSetup called with block: block result\nSetup strategy included!\n").to_stdout
+      end
+
+      it "calls setup method with only config" do
+        expect do
+          test_action.use(:setup_strategy, option1: "value1")
+        end.to output("Setup called with config: {:option1=>\"value1\"}\nSetup called with block: \nSetup strategy included!\n").to_stdout
+      end
+
+      it "calls setup method with only block" do
+        expect do
+          test_action.use(:setup_strategy) { "block only" }
+        end.to output("Setup called with config: {}\nSetup called with block: block only\nSetup strategy included!\n").to_stdout
+      end
+
+      it "calls setup method with no arguments" do
+        expect do
+          test_action.use(:setup_strategy)
+        end.to output("Setup called with config: {}\nSetup called with block: \nSetup strategy included!\n").to_stdout
+      end
+    end
+
+    context "when strategy doesn't have a setup method" do
+      it "raises an error when config is provided" do
+        expect do
+          test_action.use(:custom, option1: "value1")
+        end.to raise_error(ArgumentError, "Strategy custom does not support config")
+      end
+
+      it "allows block when no config is provided" do
+        expect do
+          test_action.use(:custom) { "block" }
+        end.to output("Custom strategy included!\n").to_stdout
+      end
+    end
   end
 end
