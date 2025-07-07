@@ -16,7 +16,7 @@ module Action
         constants = Action::Strategies.constants.map { |const| Action::Strategies.const_get(const) }
         mods = constants.select { |const| const.is_a?(Module) }
 
-        @@built_in = mods.map { |mod| [mod.name&.split("::")&.last&.downcase&.to_sym, mod] }.to_h
+        @@built_in = mods.to_h { |mod| [mod.name.split("::").last.downcase.to_sym, mod] }
       end
 
       def register(name, strategy)
