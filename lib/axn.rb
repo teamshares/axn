@@ -2,6 +2,7 @@
 
 module Axn; end
 require_relative "axn/version"
+require_relative "axn/util"
 
 require "interactor"
 require "active_support"
