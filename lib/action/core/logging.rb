@@ -28,8 +28,7 @@ module Action
         end
       end
 
-      # TODO: this is ugly, we should be able to override in the config class...
-      def _log_prefix = name == "Action::Configuration" ? nil : "[#{name || "Anonymous Class"}]"
+      def _log_prefix = "[#{name.presence || "Anonymous Class"}]"
     end
   end
 end

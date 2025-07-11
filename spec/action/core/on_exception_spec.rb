@@ -67,11 +67,11 @@ RSpec.describe Action do
       let(:action) do
         build_action do
           on_exception RuntimeError do
-            log "Handling RuntimeError"
+            log "Handling RuntimeError (specific)"
           end
 
           on_exception do
-            log "Handling StandardError"
+            log "Handling StandardError (general)"
           end
 
           def call
@@ -81,9 +81,23 @@ RSpec.describe Action do
       end
 
       it "triggers all handlers that match the exception" do
-        expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError").once
-        expect_any_instance_of(action).to receive(:log).with("Handling StandardError").once
+        expect_any_instance_of(action).to receive(:log).with("******************************\nHandled exception (RuntimeError): Some internal issue!\n******************************").once
+        expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
+        expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once
         expect(action.call).not_to be_ok
+      end
+
+      context "in production" do
+        before do
+          allow(Action.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+        end
+
+        it "logs less aggressively" do
+          expect_any_instance_of(action).to receive(:log).with("Handled exception (RuntimeError): Some internal issue!").once
+          expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
+          expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once
+          expect(action.call).not_to be_ok
+        end
       end
     end
   end
