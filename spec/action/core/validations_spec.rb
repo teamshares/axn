@@ -310,13 +310,6 @@ RSpec.describe Action do
     end
   end
 
-  def expect_piping_error_called(message_substring:, error_class:, error_message:)
-    expect(Axn::Util).to have_received(:piping_error).with(
-      a_string_including(message_substring),
-      hash_including(error_class ? { exception: an_object_satisfying { |e| e.is_a?(error_class) && e.message == error_message } } : {}),
-    )
-  end
-
   describe "Axn::Util.piping_error integration" do
     let(:action) do
       build_action do

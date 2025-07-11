@@ -202,7 +202,7 @@ RSpec.describe Action do
       context "when dynamic raises error in error message" do
         let(:action) do
           build_action do
-            messages(error: -> { raise StandardError, "fail message" })
+            messages(error: -> { raise ArgumentError, "fail message" })
 
             def call
               raise "triggering failure"
@@ -219,9 +219,10 @@ RSpec.describe Action do
           expect(result).not_to be_ok
           expect(result.exception).to be_a(RuntimeError)
           expect(result.error).to eq("Something went wrong")
-          expect(Axn::Util).to have_received(:piping_error).with(
-            a_string_including("determining message callable"),
-            hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail message" }),
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "fail message",
           )
         end
       end
