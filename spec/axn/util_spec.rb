@@ -33,7 +33,17 @@ RSpec.describe Axn::Util do
       end
 
       it "logs a verbose warning" do
-        expected_message = "******************************\n\n!! IGNORING EXCEPTION RAISED WHILE FOO !!\n\n\t* Exception: StandardError\n\t* Message: fail message\n\t* From: baz.rb:42\n\n******************************"
+        expected_message = [
+          "******************************",
+          "",
+          "!! IGNORING EXCEPTION RAISED WHILE FOO !!",
+          "",
+          "\t* Exception: StandardError",
+          "\t* Message: fail message",
+          "\t* From: baz.rb:42",
+          "",
+          "******************************",
+        ].join("\n")
         expect(logger).to receive(:warn).with(expected_message)
         described_class.piping_error("foo", exception:)
       end
