@@ -3,7 +3,7 @@
 require_relative "event_handlers"
 
 module Action
-  module SwallowExceptions
+  module HandleExceptions
     def self.included(base)
       base.class_eval do
         class_attribute :_success_msg, :_error_msg

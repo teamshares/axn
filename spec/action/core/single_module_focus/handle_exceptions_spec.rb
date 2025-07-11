@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "action/core/swallow_exceptions"
+require "action/core/handle_exceptions"
 
-RSpec.describe Action::SwallowExceptions do
+RSpec.describe Action::HandleExceptions do
   describe "return shape" do
     subject(:result) { interactor.call }
 
