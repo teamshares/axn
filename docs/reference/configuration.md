@@ -36,6 +36,22 @@ For example, if you're using Honeybadger this could look something like:
   end
 ```
 
+**Note:** The `action:` and `context:` keyword arguments are *optional*—your proc can accept any combination of `e`, `action:`, and `context:`. Only the keyword arguments you explicitly declare will be passed to your handler. All of the following are valid:
+
+```ruby
+  # Only exception object
+  c.on_exception = proc { |e| ... }
+
+  # Exception and action
+  c.on_exception = proc { |e, action:| ... }
+
+  # Exception and context
+  c.on_exception = proc { |e, context:| ... }
+
+  # Exception, action, and context
+  c.on_exception = proc { |e, action:, context:| ... }
+```
+
 A couple notes:
 
   * `context` will contain the arguments passed to the `action`, _but_ any marked as sensitive (e.g. `expects :foo, sensitive: true`) will be filtered out in the logs.

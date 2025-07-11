@@ -309,4 +309,51 @@ RSpec.describe Action do
       end
     end
   end
+
+  describe "Axn::Util.piping_error integration" do
+    let(:action) do
+      build_action do
+        expects :foo, validate: { with: ->(_v) { raise ArgumentError, "fail message" } }
+      end
+    end
+
+    before do
+      allow(Axn::Util).to receive(:piping_error).and_call_original
+    end
+
+    it "calls Axn::Util.piping_error when custom validation raises" do
+      result = action.call(foo: 1)
+      expect(result.exception).to be_a(Action::InboundValidationError)
+      expect_piping_error_called(
+        message_substring: "applying custom validation",
+        error_class: ArgumentError,
+        error_message: "fail message",
+      )
+    end
+  end
+
+  describe "Axn::Util.piping_error integration for model validation" do
+    let(:test_model) { double("User", is_a?: true, name: "User") }
+    let(:action) do
+      build_action do
+        expects :user_id, model: true
+      end
+    end
+
+    before do
+      stub_const("User", test_model)
+      allow(test_model).to receive(:find_by).and_raise(ArgumentError, "fail model validation")
+      allow(Axn::Util).to receive(:piping_error).and_call_original
+    end
+
+    it "calls Axn::Util.piping_error when model validation raises" do
+      result = action.call(user_id: 1)
+      expect(result.exception).to be_a(Action::InboundValidationError)
+      expect_piping_error_called(
+        message_substring: "applying model validation",
+        error_class: ArgumentError,
+        error_message: "fail model validation",
+      )
+    end
+  end
 end

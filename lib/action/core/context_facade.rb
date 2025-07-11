@@ -75,8 +75,7 @@ module Action
         action.instance_exec(&msg)
       end
     rescue StandardError => e
-      action.warn("Ignoring #{e.class.name} while determining message callable: #{e.message}")
-      nil
+      Axn::Util.piping_error("determining message callable", action:, exception: e)
     end
   end
 

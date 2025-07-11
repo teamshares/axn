@@ -30,6 +30,9 @@ Style/TrailingCommaInHashLiteral:
 Style/ClassAndModuleChildren:
   Enabled: false
 
+Style/HashSyntax:
+  EnforcedShorthandSyntax: always
+
 Style/DoubleNegation:
   Enabled: false
 

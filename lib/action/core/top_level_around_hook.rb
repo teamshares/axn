@@ -24,8 +24,9 @@ module Action
           self.class.default_autolog_level,
           [
             "About to execute",
-            context_for_logging(:inbound).presence&.inspect,
+            _log_context(:inbound),
           ].compact.join(" with: "),
+          before: Action.config.env.production? ? nil : "\n------\n",
         )
       end
 
@@ -36,19 +37,36 @@ module Action
           self.class.default_autolog_level,
           [
             "Execution completed (with outcome: #{outcome}) in #{elapsed_mils} milliseconds",
-            _log_after_data_peak,
+            _log_context(:outbound),
           ].compact.join(". Set: "),
+          after: Action.config.env.production? ? nil : "\n------\n",
         )
       end
 
-      def _log_after_data_peak
-        return unless (data = context_for_logging(:outbound)).present?
+      def _log_context(direction)
+        data = context_for_logging(direction)
+        return unless data.present?
 
-        max_length = 100
-        suffix = "...<truncated>...}"
+        max_length = 150
+        suffix = "…<truncated>…"
 
-        data.inspect.tap do |str|
+        _log_object(data).tap do |str|
           return str[0, max_length - suffix.length] + suffix if str.length > max_length
+        end
+      end
+
+      def _log_object(data)
+        case data
+        when Hash
+          # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
+          "{#{data.map { |k, v| "#{k}: #{_log_object(v)}" }.join(", ")}}"
+        when Array
+          data.map { |v| _log_object(v) }
+        else
+          return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
+          return "<#{data.class.name}##{data.to_param.presence || "unpersisted"}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+
+          data.inspect
         end
       end
     end

@@ -27,8 +27,7 @@ module Action
         action.instance_exec(exception, &@handler)
         true
       rescue StandardError => e
-        action.warn("Ignoring #{e.class.name} when evaluating handler: #{e.message}")
-        nil
+        Axn::Util.piping_error("executing handler", action:, exception: e)
       end
     end
 
@@ -54,8 +53,7 @@ module Action
           false
         end
       rescue StandardError => e
-        action.warn("Ignoring #{e.class.name} while determining matcher: #{e.message}")
-        false
+        Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
       end
 
       private attr_reader :matcher

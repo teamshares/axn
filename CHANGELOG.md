@@ -2,6 +2,8 @@
 
 ## Unreleased
 * N/A
+* More aggressive logging of swallowed exceptions when not in production mode
+* Make automatic pre/post logging more digestible
 
 ## 0.1.0-alpha.2.5.2
 * [BREAKING] Removing `EnqueueAllInBackground` + `EnqueueAllWorker` - better + simply solved at application level

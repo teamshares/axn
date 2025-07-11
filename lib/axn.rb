@@ -2,6 +2,7 @@
 
 module Axn; end
 require_relative "axn/version"
+require_relative "axn/util"
 
 require "interactor"
 require "active_support"
@@ -16,7 +17,7 @@ require_relative "action/core/configuration"
 require_relative "action/core/top_level_around_hook"
 require_relative "action/core/contract"
 require_relative "action/core/contract_for_subfields"
-require_relative "action/core/swallow_exceptions"
+require_relative "action/core/handle_exceptions"
 require_relative "action/core/hoist_errors"
 require_relative "action/core/use_strategy"
 
@@ -44,7 +45,7 @@ module Action
       # can include those hook executions in any traces set from this hook.
       include TopLevelAroundHook
 
-      include SwallowExceptions
+      include HandleExceptions
       include Contract
       include ContractForSubfields
 

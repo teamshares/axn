@@ -2,7 +2,6 @@
 
 module Action
   class Configuration
-    include Action::Logging
     attr_accessor :top_level_around_hook
     attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
 
@@ -12,11 +11,21 @@ module Action
     def additional_includes = @additional_includes ||= []
 
     def on_exception(e, action:, context: {})
-      if @on_exception
-        # TODO: only pass action: or context: if requested (and update documentation)
-        @on_exception.call(e, action:, context:)
+      msg = "Handled exception (#{e.class.name}): #{e.message}"
+      msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Action.config.env.production?
+      action.log(msg)
+
+      return unless @on_exception
+
+      # Only pass the kwargs that the given block expects
+      kwargs = @on_exception.parameters.select { |type, _name| %i[key keyreq].include?(type) }.map(&:last)
+      kwarg_hash = {}
+      kwarg_hash[:action] = action if kwargs.include?(:action)
+      kwarg_hash[:context] = context if kwargs.include?(:context)
+      if kwarg_hash.any?
+        @on_exception.call(e, **kwarg_hash)
       else
-        log("[#{action.class.name.presence || "Anonymous Action"}] Exception raised: #{e.class.name} - #{e.message}")
+        @on_exception.call(e)
       end
     end
 
