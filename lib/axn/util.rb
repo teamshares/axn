@@ -9,8 +9,12 @@ module Axn
       message = if Action.config.env.production?
                   "Ignoring exception raised while #{desc}: #{exception.class.name} - #{exception.message} (from #{src})"
                 else
-                  msg = "!! IGNORING EXCEPTION RAISED WHILE #{desc.upcase} !!\n\n\t* Exception: #{exception.class.name}\n\t* Message: #{exception.message}\n\t* From: #{src}"
-                  ("*" * 30) + "\n\n#{msg}\n\n" + ("*" * 30)
+                  msg = "!! IGNORING EXCEPTION RAISED WHILE #{desc.upcase} !!\n\n" \
+                        "\t* Exception: #{exception.class.name}\n" \
+                        "\t* Message: #{exception.message}\n" \
+                        "\t* From: #{src}"
+                  banner = "#{"*" * 30}\n\n#{msg}\n\n#{"*" * 30}"
+                  banner
                 end
 
       (action || Action.config.logger).send(:warn, message)

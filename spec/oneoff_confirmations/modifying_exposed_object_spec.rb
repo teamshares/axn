@@ -31,7 +31,7 @@ RSpec.describe "One-off confirmation" do
 
         def call
           preferences[:foo] = "before"
-          expose preferences: preferences
+          expose(preferences:)
           preferences[:foo] = "final"
         end
       end

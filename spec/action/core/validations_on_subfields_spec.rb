@@ -38,7 +38,7 @@ RSpec.describe Action do
           expose output: qux
         end
       end.tap do |action|
-        action.expects :qux, on: :bar, readers: readers
+        action.expects :qux, on: :bar, readers:
       end
     end
 
@@ -86,7 +86,7 @@ RSpec.describe Action do
             expects :foo
             expects :bar, on: :foo
           end.tap do |a|
-            a.expects :foo, on: :bar, readers: readers
+            a.expects :foo, on: :bar, readers:
           end
         end
 

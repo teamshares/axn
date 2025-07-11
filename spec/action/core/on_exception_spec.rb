@@ -81,7 +81,11 @@ RSpec.describe Action do
       end
 
       it "triggers all handlers that match the exception" do
-        expect_any_instance_of(action).to receive(:log).with("******************************\nHandled exception (RuntimeError): Some internal issue!\n******************************").once
+        expect_any_instance_of(action).to receive(:log).with(
+          "******************************\n" \
+          "Handled exception (RuntimeError): Some internal issue!\n" \
+          "******************************",
+        ).once
         expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
         expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once
         expect(action.call).not_to be_ok
@@ -130,7 +134,7 @@ RSpec.describe Action do
   context "when event handler matcher raises" do
     let(:action) do
       build_action do
-        on_exception ->(e) { raise StandardError, "fail in matcher" } do
+        on_exception ->(_e) { raise StandardError, "fail in matcher" } do
           # handler body doesn't matter
         end
         def call
