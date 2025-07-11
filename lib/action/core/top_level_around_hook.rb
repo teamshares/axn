@@ -58,14 +58,16 @@ module Action
       def _log_object(data)
         case data
         when Hash
-          data.transform_values { |v| _log_object(v) }
+          # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
+          "{#{data.map { |k, v| "#{k}: #{_log_object(v)}" }.join(", ")}}"
         when Array
           data.map { |v| _log_object(v) }
         else
-          return "<#{data.class.name}##{data.id.presence || "unpersisted"}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+          return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
+          return "<#{data.class.name}##{data.to_param.presence || "unpersisted"}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
 
-          data
-        end.inspect
+          data.inspect
+        end
       end
     end
 
