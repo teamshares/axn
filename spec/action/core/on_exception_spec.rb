@@ -26,7 +26,7 @@ RSpec.describe Action do
 
     it "is given a filtered context (sensitive values filtered + only declared inbound/outbound fields)" do
       expect(described_class.config).to receive(:on_exception).with(anything,
-                                                                    action: action,
+                                                                    action:,
                                                                     context: filtered_context).and_call_original
       is_expected.not_to be_ok
     end
@@ -99,6 +99,56 @@ RSpec.describe Action do
           expect(action.call).not_to be_ok
         end
       end
+    end
+  end
+
+  context "when on_exception handler itself raises" do
+    let(:action) do
+      build_action do
+        on_exception RuntimeError do
+          raise StandardError, "fail in handler"
+        end
+        def call
+          raise "Some internal issue!"
+        end
+      end
+    end
+
+    before do
+      allow(Axn::Util).to receive(:piping_error).and_call_original
+    end
+
+    it "calls Axn::Util.piping_error when on_exception handler raises" do
+      action.call
+      expect(Axn::Util).to have_received(:piping_error).with(
+        a_string_including("executing handler"),
+        hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail in handler" }),
+      )
+    end
+  end
+
+  context "when event handler matcher raises" do
+    let(:action) do
+      build_action do
+        on_exception ->(e) { raise StandardError, "fail in matcher" } do
+          # handler body doesn't matter
+        end
+        def call
+          raise "Some internal issue!"
+        end
+      end
+    end
+
+    before do
+      allow(Axn::Util).to receive(:piping_error).and_call_original
+    end
+
+    it "calls Axn::Util.piping_error when event handler matcher raises" do
+      action.call
+      expect(Axn::Util).to have_received(:piping_error).with(
+        a_string_including("determining if handler applies to exception"),
+        hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail in matcher" }),
+      )
     end
   end
 

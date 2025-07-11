@@ -198,6 +198,33 @@ RSpec.describe Action do
           expect(action.default_error).to eq("Something went wrong")
         end
       end
+
+      context "when dynamic raises error in error message" do
+        let(:action) do
+          build_action do
+            messages(error: -> { raise StandardError, "fail message" })
+
+            def call
+              raise "triggering failure"
+            end
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "calls Axn::Util.piping_error when error message callable raises" do
+          result = action.call
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(RuntimeError)
+          expect(result.error).to eq("Something went wrong")
+          expect(Axn::Util).to have_received(:piping_error).with(
+            a_string_including("determining message callable"),
+            hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail message" }),
+          )
+        end
+      end
     end
   end
 
