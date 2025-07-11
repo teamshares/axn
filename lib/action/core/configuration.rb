@@ -12,7 +12,7 @@ module Action
 
     def on_exception(e, action:, context: {})
       msg = "Handled exception (#{e.class.name}): #{e.message}"
-      msg = ("*" * 30) + "\n#{msg}\n" + ("*" * 30) unless Action.config.env.production?
+      msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Action.config.env.production?
       action.log(msg)
 
       return unless @on_exception

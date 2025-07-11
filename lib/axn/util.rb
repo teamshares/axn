@@ -13,7 +13,7 @@ module Axn
                         "\t* Exception: #{exception.class.name}\n" \
                         "\t* Message: #{exception.message}\n" \
                         "\t* From: #{src}"
-                  banner = "#{"*" * 30}\n\n#{msg}\n\n#{"*" * 30}"
+                  banner = "#{"⌵" * 30}\n\n#{msg}\n\n#{"^" * 30}"
                   banner
                 end
 

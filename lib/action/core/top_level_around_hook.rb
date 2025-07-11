@@ -26,6 +26,7 @@ module Action
             "About to execute",
             _log_context(:inbound),
           ].compact.join(" with: "),
+          before: Action.config.env.production? ? nil : "\n------\n",
         )
       end
 
@@ -38,6 +39,7 @@ module Action
             "Execution completed (with outcome: #{outcome}) in #{elapsed_mils} milliseconds",
             _log_context(:outbound),
           ].compact.join(". Set: "),
+          after: Action.config.env.production? ? nil : "\n------\n",
         )
       end
 

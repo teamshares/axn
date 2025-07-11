@@ -82,9 +82,7 @@ RSpec.describe Action do
 
       it "triggers all handlers that match the exception" do
         expect_any_instance_of(action).to receive(:log).with(
-          "******************************\n" \
-          "Handled exception (RuntimeError): Some internal issue!\n" \
-          "******************************",
+          "#{"#" * 10} Handled exception (RuntimeError): Some internal issue! #{"#" * 10}",
         ).once
         expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
         expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once

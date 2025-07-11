@@ -16,15 +16,16 @@ module Action
     module ClassMethods
       def default_log_level = Action.config.default_log_level
 
-      def log(message, level: default_log_level)
+      def log(message, level: default_log_level, before: nil, after: nil)
         msg = [_log_prefix, message].compact_blank.join(" ")
+        msg = [before, msg, after].compact_blank.join if before || after
 
         Action.config.logger.send(level, msg)
       end
 
       LEVELS.each do |level|
-        define_method(level) do |message|
-          log(message, level:)
+        define_method(level) do |message, before: nil, after: nil|
+          log(message, level:, before:, after:)
         end
       end
 
