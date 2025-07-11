@@ -15,8 +15,18 @@ module Action
       msg = ("*" * 30) + "\n#{msg}\n" + ("*" * 30) unless Action.config.env.production?
       action.log(msg)
 
-      # TODO: only pass action: or context: if requested (and update documentation)
-      @on_exception&.call(e, action:, context:)
+      return unless @on_exception
+
+      # Only pass the kwargs that the given block expects
+      kwargs = @on_exception.parameters.select { |type, _name| %i[key keyreq].include?(type) }.map(&:last)
+      kwarg_hash = {}
+      kwarg_hash[:action] = action if kwargs.include?(:action)
+      kwarg_hash[:context] = context if kwargs.include?(:context)
+      if kwarg_hash.any?
+        @on_exception.call(e, **kwarg_hash)
+      else
+        @on_exception.call(e)
+      end
     end
 
     def logger
