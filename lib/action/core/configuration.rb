@@ -2,7 +2,6 @@
 
 module Action
   class Configuration
-    include Action::Logging
     attr_accessor :top_level_around_hook
     attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
 
@@ -34,10 +33,6 @@ module Action
       @env ||= ENV["RACK_ENV"].presence || ENV["RAILS_ENV"].presence || "development"
       ActiveSupport::StringInquirer.new(@env)
     end
-
-    private
-
-    def _log_prefix = nil
   end
 
   class << self
