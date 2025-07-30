@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* Remove explicit 'require rspec' from `axn/testing/spec_helpers` (must already be loaded)
 
 ## 0.1.0-alpha.2.5.3
 * More aggressive logging of swallowed exceptions when not in production mode

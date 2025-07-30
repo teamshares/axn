@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "rspec"
-
 module Axn
   module Testing
     module SpecHelpers
