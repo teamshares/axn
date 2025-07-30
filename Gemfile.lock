@@ -8,7 +8,7 @@ GIT
 PATH
   remote: .
   specs:
-    axn (0.1.0.pre.alpha.2.5.2)
+    axn (0.1.0.pre.alpha.2.5.3)
       activemodel (> 7.0)
       activesupport (> 7.0)
       interactor (= 3.1.2)

@@ -2,6 +2,8 @@
 
 ## Unreleased
 * N/A
+
+## 0.1.0-alpha.2.5.3
 * More aggressive logging of swallowed exceptions when not in production mode
 * Make automatic pre/post logging more digestible
 
