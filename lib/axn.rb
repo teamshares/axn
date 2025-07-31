@@ -4,7 +4,10 @@ module Axn; end
 require_relative "axn/version"
 require_relative "axn/util"
 
-require "interactor"
+require "interactor/context"
+require "interactor/error"
+require "interactor/hooks"
+
 require "active_support"
 
 require_relative "action/core/validation/validators/model_validator"
@@ -36,7 +39,14 @@ end
 module Action
   def self.included(base)
     base.class_eval do
-      include Interactor
+      # *** START -- CORE INTERNALS ***
+      extend ClassMethods
+      include Interactor::Hooks
+
+      # Public: Gets the Interactor::Context of the Interactor instance.
+      attr_reader :context
+
+      # *** END -- CORE INTERNALS ***
 
       # Include first so other modules can assume `log` is available
       include Logging
@@ -71,4 +81,36 @@ module Action
       end
     end
   end
+
+  module ClassMethods
+    def call(context = {})
+      new(context).tap(&:run).context
+    end
+
+    def call!(context = {})
+      new(context).tap(&:run!).context
+    end
+  end
+
+  def initialize(context = {})
+    @context = Interactor::Context.build(context)
+  end
+
+  def run
+    run!
+  rescue Interactor::Failure
+  end
+
+  def run!
+    with_hooks do
+      call
+      context.called!(self)
+    end
+  rescue StandardError
+    context.rollback!
+    raise
+  end
+
+  def call; end
+  def rollback; end
 end
