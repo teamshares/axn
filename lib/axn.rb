@@ -1,18 +1,16 @@
 # frozen_string_literal: true
 
-module Axn; end
-require_relative "axn/version"
-require_relative "axn/util"
-
 require "active_support"
+
+module Axn; end
+require "axn/version"
+require "axn/util"
+require "axn/factory"
 
 require "action/core"
 
-require_relative "axn/factory"
-
-require_relative "action/attachable"
-require_relative "action/enqueueable"
-require_relative "action/strategies"
+require "action/attachable"
+require "action/enqueueable"
 
 def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
@@ -23,7 +21,7 @@ end
 module Action
   def self.included(base)
     base.class_eval do
-      include Action::Core
+      include Core
 
       # --- Extensions ---
       include Attachable

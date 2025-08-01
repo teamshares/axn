@@ -3,6 +3,8 @@
 require "interactor/context"
 require "interactor/hooks"
 
+require "action/strategies"
+
 require_relative "core/validation/validators/model_validator"
 require_relative "core/validation/validators/type_validator"
 require_relative "core/validation/validators/validate_validator"
