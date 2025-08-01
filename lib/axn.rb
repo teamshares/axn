@@ -31,16 +31,6 @@ module Action
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
-
-      # ----
-
-      # ALPHA: Everything below here is to support inheritance
-
-      base.define_singleton_method(:inherited) do |base_klass|
-        return super(base_klass) if Interactor::Hooks::ClassMethods.private_method_defined?(:ancestor_hooks)
-
-        raise StepsRequiredForInheritanceSupportError
-      end
     end
   end
 end
