@@ -27,11 +27,12 @@ RSpec.configure do |config|
   end
 end
 
-def build_interactor(*modules, &block)
-  interactor = Class.new.send(:include, Interactor)
-  modules.each { |mod| interactor = interactor.send(:include, mod) }
-  interactor.class_eval(&block) if block
-  interactor
+def build_interactor(*modules, &)
+  # TODO: fix this
+  #   interactor = Class.new.send(:include, Interactor)
+  #   modules.each { |mod| interactor = interactor.send(:include, mod) }
+  #   interactor.class_eval(&block) if block
+  #   interactor
 end
 
 def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil)

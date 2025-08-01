@@ -1,23 +1,22 @@
 # frozen_string_literal: true
 
-require "interactor/context"
+require "action/context"
 
 require "action/strategies"
 require "action/core/hooks"
+require "action/core/logging"
+require "action/core/hoist_errors"
+require "action/core/handle_exceptions"
+require "action/core/top_level_around_hook"
+require "action/core/use_strategy"
 
-require_relative "core/validation/validators/model_validator"
-require_relative "core/validation/validators/type_validator"
-require_relative "core/validation/validators/validate_validator"
+# CONSIDER: make class names match file paths?
+require "action/core/validation/validators/model_validator"
+require "action/core/validation/validators/type_validator"
+require "action/core/validation/validators/validate_validator"
 
-require_relative "core/exceptions"
-require_relative "core/logging"
-require_relative "core/configuration"
-require_relative "core/top_level_around_hook"
-require_relative "core/contract"
-require_relative "core/contract_for_subfields"
-require_relative "core/handle_exceptions"
-require_relative "core/hoist_errors"
-require_relative "core/use_strategy"
+require "action/core/contract"
+require "action/core/contract_for_subfields"
 
 module Action
   module Core
@@ -27,25 +26,25 @@ module Action
         extend ClassMethods
         include Core::Hooks
 
-        # Public: Gets the Interactor::Context of the Interactor instance.
+        # Public: Gets the Action::Context of the instance.
         attr_reader :context
 
         # *** END -- CORE INTERNALS ***
 
         # Include first so other modules can assume `log` is available
-        include Logging
+        include Core::Logging
 
         # NOTE: include before any others that set hooks (like contract validation), so we
         # can include those hook executions in any traces set from this hook.
-        include TopLevelAroundHook
+        include Core::TopLevelAroundHook
 
-        include HandleExceptions
+        include Core::HandleExceptions
         include Contract
         include ContractForSubfields
 
-        include HoistErrors
+        include Core::HoistErrors
 
-        include UseStrategy
+        include Core::UseStrategy
       end
     end
 
@@ -63,7 +62,7 @@ module Action
     end
 
     def initialize(context = {})
-      @context = Interactor::Context.build(context)
+      @context = Action::Context.build(context)
     end
 
     def run

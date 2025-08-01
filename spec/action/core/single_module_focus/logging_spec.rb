@@ -2,7 +2,7 @@
 
 require "action/core/logging"
 
-RSpec.describe Action::Logging do
+RSpec.describe Action::Core::Logging do
   let(:interactor) do
     build_interactor(described_class) do
       def call

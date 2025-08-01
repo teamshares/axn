@@ -1,6 +1,6 @@
 require "ostruct"
 
-module Interactor
+module Action
   class Context < OpenStruct
     def self.build(context = {})
       self === context ? context : new(context)
@@ -20,8 +20,8 @@ module Interactor
       raise Failure, self
     end
 
-    def called!(interactor)
-      _called << interactor
+    def called!(action)
+      _called << action
     end
 
     def rollback!

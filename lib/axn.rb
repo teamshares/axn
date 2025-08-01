@@ -7,6 +7,9 @@ require "axn/version"
 require "axn/util"
 require "axn/factory"
 
+require "action/configuration"
+require "action/exceptions"
+
 require "action/core"
 
 require "action/attachable"

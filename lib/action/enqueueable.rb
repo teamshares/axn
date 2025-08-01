@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "enqueueable/via_sidekiq"
+require "action/enqueueable/via_sidekiq"
 
 module Action
   module Enqueueable

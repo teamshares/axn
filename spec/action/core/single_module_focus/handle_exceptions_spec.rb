@@ -2,7 +2,7 @@
 
 require "action/core/handle_exceptions"
 
-RSpec.describe Action::HandleExceptions do
+RSpec.describe Action::Core::HandleExceptions do
   describe "return shape" do
     subject(:result) { interactor.call }
 

@@ -2,7 +2,7 @@
 
 require "action/core/contract"
 
-RSpec.describe Action::Contract do
+RSpec.describe Action::Core::Contract do
   let(:interactor) do
     build_interactor(described_class) do
       expects :foo, type: Numeric, numericality: { greater_than: 10 }
