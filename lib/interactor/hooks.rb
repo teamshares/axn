@@ -1,14 +1,11 @@
 module Interactor
-  # Internal: Methods relating to supporting hooks around Interactor invocation.
   module Hooks
-    # Internal: Install Interactor's behavior in the given class.
     def self.included(base)
       base.class_eval do
         extend ClassMethods
       end
     end
 
-    # Internal: Interactor::Hooks class methods.
     module ClassMethods
       # Public: Declare hooks to run around Interactor invocation. The around
       # method may be called multiple times; subsequent calls append declared
@@ -20,34 +17,6 @@ module Interactor
       #         the around hook chain.
       # block - An optional block to be executed as a hook. If given, the block
       #         is executed after methods corresponding to any given Symbols.
-      #
-      # Examples
-      #
-      #   class MyInteractor
-      #     include Interactor
-      #
-      #     around :time_execution
-      #
-      #     around do |interactor|
-      #       puts "started"
-      #       interactor.call
-      #       puts "finished"
-      #     end
-      #
-      #     def call
-      #       puts "called"
-      #     end
-      #
-      #     private
-      #
-      #     def time_execution(interactor)
-      #       context.start_time = Time.now
-      #       interactor.call
-      #       context.finish_time = Time.now
-      #     end
-      #   end
-      #
-      # Returns nothing.
       def around(*hooks, &block)
         hooks << block if block
         hooks.each { |hook| internal_around_hooks.push(hook) }
@@ -61,30 +30,6 @@ module Interactor
       #         to be called before interactor invocation.
       # block - An optional block to be executed as a hook. If given, the block
       #         is executed after methods corresponding to any given Symbols.
-      #
-      # Examples
-      #
-      #   class MyInteractor
-      #     include Interactor
-      #
-      #     before :set_start_time
-      #
-      #     before do
-      #       puts "started"
-      #     end
-      #
-      #     def call
-      #       puts "called"
-      #     end
-      #
-      #     private
-      #
-      #     def set_start_time
-      #       context.start_time = Time.now
-      #     end
-      #   end
-      #
-      # Returns nothing.
       def before(*hooks, &block)
         hooks << block if block
         hooks.each { |hook| internal_before_hooks.push(hook) }
@@ -98,30 +43,6 @@ module Interactor
       #         to be called after interactor invocation.
       # block - An optional block to be executed as a hook. If given, the block
       #         is executed before methods corresponding to any given Symbols.
-      #
-      # Examples
-      #
-      #   class MyInteractor
-      #     include Interactor
-      #
-      #     after :set_finish_time
-      #
-      #     after do
-      #       puts "finished"
-      #     end
-      #
-      #     def call
-      #       puts "called"
-      #     end
-      #
-      #     private
-      #
-      #     def set_finish_time
-      #       context.finish_time = Time.now
-      #     end
-      #   end
-      #
-      # Returns nothing.
       def after(*hooks, &block)
         hooks << block if block
         hooks.each { |hook| internal_after_hooks.unshift(hook) }
@@ -290,9 +211,9 @@ module Interactor
     #
     # Returns nothing.
     def run_around_hooks(&block)
-      self.class.around_hooks.reverse.inject(block) { |chain, hook|
+      self.class.around_hooks.reverse.inject(block) do |chain, hook|
         proc { run_hook(hook, chain) }
-      }.call
+      end.call
     end
 
     # Internal: Run before hooks.
@@ -330,8 +251,8 @@ module Interactor
     #        Symbol method name.
     #
     # Returns nothing.
-    def run_hook(hook, *args)
-      hook.is_a?(Symbol) ? send(hook, *args) : instance_exec(*args, &hook)
+    def run_hook(hook, *)
+      hook.is_a?(Symbol) ? send(hook, *) : instance_exec(*, &hook)
     end
   end
 end
