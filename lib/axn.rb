@@ -5,7 +5,6 @@ require_relative "axn/version"
 require_relative "axn/util"
 
 require "interactor/context"
-require "interactor/error"
 require "interactor/hooks"
 
 require "active_support"
@@ -88,7 +87,10 @@ module Action
     end
 
     def call!(context = {})
-      new(context).tap(&:run!).context
+      result = call(context)
+      return result if result.ok?
+
+      raise result.exception || Action::Failure.new(result.error)
     end
   end
 
@@ -98,7 +100,27 @@ module Action
 
   def run
     run!
-  rescue Interactor::Failure
+  rescue StandardError => e
+    # on_error handlers run for both unhandled exceptions and fail!
+    self.class._error_handlers.each do |handler|
+      handler.execute_if_matches(exception: e, action: self)
+    end
+
+    # on_failure handlers run ONLY for fail!
+    if e.is_a?(Action::Failure)
+      @context.instance_variable_set("@error_from_user", e.message) if e.message.present?
+
+      self.class._failure_handlers.each do |handler|
+        handler.execute_if_matches(exception: e, action: self)
+      end
+    else
+      # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+      trigger_on_exception(e)
+
+      @context.exception = e
+    end
+
+    @context.instance_variable_set("@failure", true)
   end
 
   def run!
