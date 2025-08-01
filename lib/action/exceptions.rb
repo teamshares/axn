@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Action
-  # Raised internally when fail! is called -- triggers failure + rollback handling
+  # Raised internally when fail! is called
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 

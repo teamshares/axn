@@ -17,7 +17,7 @@ module Action
           include InstanceMethods
           include ValidationInstanceMethods
 
-          # Remove public context accessor
+          # Remove public context accessor [TODO: should be able to just not define it now...]
           remove_method :context
 
           around do |hooked|

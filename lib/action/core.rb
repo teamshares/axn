@@ -39,11 +39,12 @@ module Action
         include Core::TopLevelAroundHook
 
         include Core::HandleExceptions
-        include Contract
-        include ContractForSubfields
+
+        # TODO: pull these out directly into the top-level module?
+        include Core::Contract
+        include Core::ContractForSubfields
 
         include Core::HoistErrors
-
         include Core::UseStrategy
       end
     end
