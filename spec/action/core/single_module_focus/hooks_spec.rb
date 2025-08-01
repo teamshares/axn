@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-RSpec.describe Interactor::Hooks do
+RSpec.describe Action::Core::Hooks do
   describe "#with_hooks" do
     def build_hooked(&block)
-      hooked = Class.new.send(:include, Interactor::Hooks)
+      hooked = Class.new.send(:include, Action::Core::Hooks)
 
       hooked.class_eval do
         attr_reader :steps

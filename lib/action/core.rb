@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require "interactor/context"
-require "interactor/hooks"
 
 require "action/strategies"
+require "action/core/hooks"
 
 require_relative "core/validation/validators/model_validator"
 require_relative "core/validation/validators/type_validator"
@@ -25,7 +25,7 @@ module Action
       base.class_eval do
         # *** START -- CORE INTERNALS ***
         extend ClassMethods
-        include Interactor::Hooks
+        include Core::Hooks
 
         # Public: Gets the Interactor::Context of the Interactor instance.
         attr_reader :context
