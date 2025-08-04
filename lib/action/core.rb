@@ -67,8 +67,13 @@ module Action
     end
 
     def run
-      run!
+      with_hooks do
+        call
+        context.called!(self)
+      end
     rescue StandardError => e
+      context.rollback!
+
       # on_error handlers run for both unhandled exceptions and fail!
       self.class._error_handlers.each do |handler|
         handler.execute_if_matches(exception: e, action: self)
@@ -89,16 +94,6 @@ module Action
       end
 
       @context.instance_variable_set("@failure", true)
-    end
-
-    def run!
-      with_hooks do
-        call
-        context.called!(self)
-      end
-    rescue StandardError
-      context.rollback!
-      raise
     end
 
     def call; end

@@ -1,7 +1,9 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* Inline interactor code (no more dependency on unpublished forked branch to support inheritance)
+  * Clean up implementation methods now that we have direct control
+* Clean up requires structure
 
 ## 0.1.0-alpha.2.5.3.1
 * Remove explicit 'require rspec' from `axn/testing/spec_helpers` (must already be loaded)
