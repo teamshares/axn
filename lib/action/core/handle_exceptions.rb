@@ -13,6 +13,7 @@ module Action
           class_attribute :_error_handlers, default: []
           class_attribute :_exception_handlers, default: []
           class_attribute :_failure_handlers, default: []
+          class_attribute :_success_handlers, default: []
 
           include InstanceMethods
           extend ClassMethods
@@ -34,6 +35,16 @@ module Action
             # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
             # we don't want exception *handling* failures to cascade and overwrite the original exception.
             Axn::Util.piping_error("executing on_exception hooks", action: self, exception: e)
+          end
+
+          def trigger_on_success
+            # Call success handlers in child-first order (like after hooks)
+            self.class._success_handlers.each do |handler|
+              instance_exec(&handler)
+            rescue StandardError => e
+              # Log the error but continue with other handlers
+              Axn::Util.piping_error("executing on_success hook", action: self, exception: e)
+            end
           end
         end
       end
@@ -75,13 +86,13 @@ module Action
           self._error_handlers += [Action::EventHandlers::ConditionalHandler.new(matcher:, handler:)]
         end
 
-        # Syntactic sugar for "after { try" (after, but if it fails do NOT fail the action)
-        def on_success(&block)
+        # Executes when the action completes successfully (after all after hooks complete successfully)
+        # Runs in child-first order (child handlers before parent handlers)
+        def on_success(&handler)
           raise ArgumentError, "on_success must be called with a block" unless block_given?
 
-          after do
-            try { instance_exec(&block) }
-          end
+          # Prepend like after hooks - child handlers run before parent handlers
+          self._success_handlers = [handler] + _success_handlers
         end
 
         def default_error = new.internal_context.default_error

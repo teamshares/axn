@@ -39,7 +39,7 @@ RSpec.describe Action do
       it do
         expect do
           expect(result).to be_ok
-        end.to output("before\ncalling\non_success\nafter\n").to_stdout
+        end.to output("before\ncalling\nafter\non_success\n").to_stdout
       end
     end
 
@@ -59,7 +59,7 @@ RSpec.describe Action do
       it do
         expect do
           expect(result).not_to be_ok
-        end.to output("before\ncalling\non_success\nafter\non_error\non_exception\n").to_stdout
+        end.to output("before\ncalling\nafter\non_error\non_exception\n").to_stdout
       end
     end
 
@@ -70,6 +70,66 @@ RSpec.describe Action do
         expect do
           expect(result).not_to be_ok
         end.to output("before\ncalling\non_error\non_failure\n").to_stdout
+      end
+    end
+
+    context "when after hook fails" do
+      let(:action) do
+        Class.new do
+          include Action
+          expects :trigger, type: Symbol
+
+          before { puts "before" }
+
+          on_success { puts "on_success" }
+
+          after do
+            puts "after"
+            raise "after hook failed" if trigger == :fail_after
+          end
+
+          def call
+            puts "calling"
+          end
+        end
+      end
+
+      let(:trigger) { :fail_after }
+
+      it "does not call on_success when after hook fails" do
+        expect do
+          expect(result).not_to be_ok
+        end.to output("before\ncalling\nafter\n").to_stdout
+      end
+    end
+
+    context "when on_success callback fails" do
+      let(:action) do
+        Class.new do
+          include Action
+          expects :trigger, type: Symbol
+
+          before { puts "before" }
+
+          on_success { puts "first_success" }
+          on_success { puts "second_success" }
+          on_success { raise "third_success_failed" }
+          on_success { puts "fourth_success" }
+
+          after { puts "after" }
+
+          def call
+            puts "calling"
+          end
+        end
+      end
+
+      let(:trigger) { :ok }
+
+      it "continues running other on_success callbacks even if one fails" do
+        expect do
+          expect(result).to be_ok
+        end.to output("before\ncalling\nafter\nfourth_success\nsecond_success\nfirst_success\n").to_stdout
       end
     end
   end

@@ -138,5 +138,42 @@ RSpec.describe Action do
         end
       end
     end
+
+    context "inheritance" do
+      let(:parent_class) do
+        Class.new do
+          include Action
+          expects :trigger, type: Symbol
+
+          before { puts "parent_before" }
+          on_success { puts "parent_on_success" }
+          after { puts "parent_after" }
+
+          def call
+            puts "parent_calling"
+          end
+        end
+      end
+
+      let(:child_class) do
+        Class.new(parent_class) do
+          before { puts "child_before" }
+          on_success { puts "child_on_success" }
+          after { puts "child_after" }
+
+          def call
+            puts "child_calling"
+          end
+        end
+      end
+
+      let(:action) { child_class }
+
+      it "runs on_success in child-first order" do
+        expect do
+          expect(action.call(trigger: :ok)).to be_ok
+        end.to output("parent_before\nchild_before\nchild_calling\nparent_after\nchild_after\nchild_on_success\nparent_on_success\n").to_stdout
+      end
+    end
   end
 end
