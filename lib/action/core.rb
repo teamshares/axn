@@ -15,6 +15,7 @@ require "action/core/validation/validators/model_validator"
 require "action/core/validation/validators/type_validator"
 require "action/core/validation/validators/validate_validator"
 
+require "action/core/contract_validation"
 require "action/core/contract"
 require "action/core/contract_for_subfields"
 
@@ -41,6 +42,7 @@ module Action
         include Core::HandleExceptions
 
         # TODO: pull these out directly into the top-level module?
+        include Core::ContractValidation
         include Core::Contract
         include Core::ContractForSubfields
 
@@ -67,12 +69,22 @@ module Action
     end
 
     def run
+      # Library internals - ALWAYS run, no user interference
+      _apply_inbound_preprocessing!
+      _apply_defaults!(:inbound)
+      _validate_contract!(:inbound)
+
+      # User hooks and implementation
       with_hooks do
         call
-        context.called!(self)
+        @context.called!(self)
       end
+
+      # More library internals - after user code but before returning
+      _apply_defaults!(:outbound)
+      _validate_contract!(:outbound)
     rescue StandardError => e
-      context.rollback!
+      @context.rollback!
 
       # on_error handlers run for both unhandled exceptions and fail!
       self.class._error_handlers.each do |handler|
