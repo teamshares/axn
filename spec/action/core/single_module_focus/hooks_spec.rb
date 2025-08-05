@@ -275,8 +275,8 @@ RSpec.describe Action::Core::Hooks do
       it "runs the after hook method and block in order" do
         expect(hooked.process).to eq(%i[
                                        process
-                                       after2
                                        after1
+                                       after2
                                      ])
       end
     end
@@ -301,8 +301,8 @@ RSpec.describe Action::Core::Hooks do
       it "runs the after hook block and method in order" do
         expect(hooked.process).to eq(%i[
                                        process
-                                       after2
                                        after1
+                                       after2
                                      ])
       end
     end
@@ -347,8 +347,8 @@ RSpec.describe Action::Core::Hooks do
                                        before1
                                        before2
                                        process
-                                       after2
                                        after1
+                                       after2
                                        around_after2
                                        around_after1
                                      ])
@@ -413,19 +413,19 @@ RSpec.describe Action::Core::Hooks do
 
         it "runs hooks defined in ancestors" do
           expect(hooked.process).to eq(%i[
-                                         around_before
-                                         around_before_ancestor
                                          around_before_ancestor_top
-                                         before
-                                         before_ancestor
+                                         around_before_ancestor
+                                         around_before
                                          before_ancestor_top
+                                         before_ancestor
+                                         before
                                          process
                                          after_ancestor_top
                                          after_ancestor
                                          after
-                                         around_after_ancestor_top
-                                         around_after_ancestor
                                          around_after
+                                         around_after_ancestor
+                                         around_after_ancestor_top
                                        ])
         end
       end

@@ -115,7 +115,7 @@ If you define a `#rollback` method, it'll be called (_before_ returning an `Acti
 
 ### Hooks
 
-`before` and `after` hooks are supported. They can receive a block directly, or the symbol name of a local method.
+`before`, `after`, and `around` hooks are supported. They can receive a block directly, or the symbol name of a local method.
 
 Note execution is halted whenever `fail!` is called or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully).
 
@@ -149,6 +149,13 @@ before hook
 in call
 after hook
 ```
+
+**Hook Ordering with Inheritance:**
+- **Around hooks**: Parent wraps child (parent outside, child inside)
+- **Before hooks**: Parent → Child (general setup first, then specific)
+- **After hooks**: Child → Parent (specific cleanup first, then general)
+
+This follows the natural pattern of setup (general → specific) and teardown (specific → general).
 
 ### Callbacks
 

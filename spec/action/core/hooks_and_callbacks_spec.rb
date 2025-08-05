@@ -39,7 +39,7 @@ RSpec.describe Action do
       it do
         expect do
           expect(result).to be_ok
-        end.to output("before\ncalling\nafter\non_success\n").to_stdout
+        end.to output("before\ncalling\non_success\nafter\n").to_stdout
       end
     end
 
@@ -59,7 +59,7 @@ RSpec.describe Action do
       it do
         expect do
           expect(result).not_to be_ok
-        end.to output("before\ncalling\nafter\non_error\non_exception\n").to_stdout
+        end.to output("before\ncalling\non_success\nafter\non_error\non_exception\n").to_stdout
       end
     end
 

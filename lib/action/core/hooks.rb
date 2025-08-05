@@ -5,6 +5,10 @@ module Action
     module Hooks
       def self.included(base)
         base.class_eval do
+          class_attribute :around_hooks, default: []
+          class_attribute :before_hooks, default: []
+          class_attribute :after_hooks, default: []
+
           extend ClassMethods
         end
       end
@@ -14,6 +18,9 @@ module Action
         # method may be called multiple times; subsequent calls append declared
         # hooks to existing around hooks.
         #
+        # Around hooks wrap the entire action execution, including before and
+        # after hooks. Parent hooks wrap child hooks (parent outside, child inside).
+        #
         # hooks - Zero or more Symbol method names representing instance methods
         #         to be called around action execution. Each instance method
         #         invocation receives an argument representing the next link in
@@ -22,12 +29,15 @@ module Action
         #         is executed after methods corresponding to any given Symbols.
         def around(*hooks, &block)
           hooks << block if block
-          hooks.each { |hook| internal_around_hooks.push(hook) }
+          hooks.each { |hook| self.around_hooks += [hook] }
         end
 
         # Public: Declare hooks to run before action execution. The before
         # method may be called multiple times; subsequent calls append declared
         # hooks to existing before hooks.
+        #
+        # Before hooks run in parent-first order (general setup first, then specific).
+        # Parent hooks run before child hooks.
         #
         # hooks - Zero or more Symbol method names representing instance methods
         #         to be called before action execution.
@@ -35,12 +45,15 @@ module Action
         #         is executed after methods corresponding to any given Symbols.
         def before(*hooks, &block)
           hooks << block if block
-          hooks.each { |hook| internal_before_hooks.push(hook) }
+          hooks.each { |hook| self.before_hooks += [hook] }
         end
 
         # Public: Declare hooks to run after action execution. The after
         # method may be called multiple times; subsequent calls prepend declared
         # hooks to existing after hooks.
+        #
+        # After hooks run in child-first order (specific cleanup first, then general).
+        # Child hooks run before parent hooks.
         #
         # hooks - Zero or more Symbol method names representing instance methods
         #         to be called after action execution.
@@ -48,160 +61,12 @@ module Action
         #         is executed before methods corresponding to any given Symbols.
         def after(*hooks, &block)
           hooks << block if block
-          hooks.each { |hook| internal_after_hooks.unshift(hook) }
-        end
-
-        # Internal: An Array of declared hooks to run around action
-        # execution. The hooks appear in the order in which they will be run.
-        # Includes hooks declared in ancestors.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     around :time_execution, :use_transaction
-        #   end
-        #
-        #   MyAction.around_hooks
-        #   # => [:time_execution, :use_transaction]
-        #
-        # Returns an Array of Symbols and Procs.
-        def around_hooks
-          internal_around_hooks + ancestor_hooks(:around_hooks)
-        end
-
-        # Internal: An Array of declared hooks to run before action
-        # execution. The hooks appear in the order in which they will be run.
-        # Includes hooks declared in ancestors.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     before :set_start_time, :say_hello
-        #   end
-        #
-        #   MyAction.before_hooks
-        #   # => [:set_start_time, :say_hello]
-        #
-        # Returns an Array of Symbols and Procs.
-        def before_hooks
-          internal_before_hooks + ancestor_hooks(:before_hooks)
-        end
-
-        # Internal: An Array of declared hooks to run after action
-        # execution. The hooks appear in the order in which they will be run.
-        # Includes hooks declared in ancestors.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     after :set_finish_time, :say_goodbye
-        #   end
-        #
-        #   MyAction.after_hooks
-        #   # => [:say_goodbye, :set_finish_time]
-        #
-        # Returns an Array of Symbols and Procs.
-        def after_hooks
-          ancestor_hooks(:after_hooks) + internal_after_hooks
-        end
-
-        private
-
-        # Internal: An Array of declared hooks to run around action
-        # execution. The hooks appear in the order in which they will be run.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     around :time_execution, :use_transaction
-        #   end
-        #
-        #   MyAction.internal_around_hooks
-        #   # => [:time_execution, :use_transaction]
-        #
-        # Returns an Array of Symbols and Procs.
-        def internal_around_hooks
-          @internal_around_hooks ||= []
-        end
-
-        # Internal: An Array of declared hooks to run before action
-        # execution. The hooks appear in the order in which they will be run.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     before :set_start_time, :say_hello
-        #   end
-        #
-        #   MyAction.internal_before_hooks
-        #   # => [:set_start_time, :say_hello]
-        #
-        # Returns an Array of Symbols and Procs.
-        def internal_before_hooks
-          @internal_before_hooks ||= []
-        end
-
-        # Internal: An Array of declared hooks to run after action
-        # execution. The hooks appear in the order in which they will be run.
-        #
-        # Examples
-        #
-        #   class MyAction
-        #     include Action
-        #
-        #     after :set_finish_time, :say_goodbye
-        #   end
-        #
-        #   MyAction.internal_after_hooks
-        #   # => [:say_goodbye, :set_finish_time]
-        #
-        # Returns an Array of Symbols and Procs.
-        def internal_after_hooks
-          @internal_after_hooks ||= []
-        end
-
-        # Internal: Fetches hooks declared in the ancestor.
-        #
-        # name - A Symbol corresponding to the hook method in the ancestor.
-        #
-        # Returns an Array of Symbols and Procs.
-        def ancestor_hooks(hook)
-          superclass&.respond_to?(hook) ? superclass.send(hook) : []
+          hooks.each { |hook| self.after_hooks = [hook] + after_hooks }
         end
       end
 
       private
 
-      # Internal: Run around, before and after hooks around yielded execution. The
-      # required block is surrounded with hooks and executed.
-      #
-      # Examples
-      #
-      #   class MyProcessor
-      #     include Action::Hooks
-      #
-      #     def process_with_hooks
-      #       with_hooks do
-      #         process
-      #       end
-      #     end
-      #
-      #     def process
-      #       puts "processed!"
-      #     end
-      #   end
-      #
-      # Returns nothing.
       def with_hooks
         run_around_hooks do
           run_before_hooks
@@ -210,33 +75,29 @@ module Action
         end
       end
 
-      # Internal: Run around hooks.
-      #
-      # Returns nothing.
+      # Around hooks are reversed before injection to ensure parent hooks wrap
+      # child hooks (parent outside, child inside).
       def run_around_hooks(&block)
         self.class.around_hooks.reverse.inject(block) do |chain, hook|
           proc { run_hook(hook, chain) }
         end.call
       end
 
-      # Internal: Run before hooks.
-      #
-      # Returns nothing.
+      # Before hooks run in the order they were added (parent first, then child).
       def run_before_hooks
         run_hooks(self.class.before_hooks)
       end
 
-      # Internal: Run after hooks.
-      #
-      # Returns nothing.
+      # After hooks are reversed to ensure child hooks run before parent hooks
+      # (specific cleanup first, then general).
       def run_after_hooks
-        run_hooks(self.class.after_hooks)
+        run_hooks(self.class.after_hooks.reverse)
       end
 
-      # Internal: Run a colection of hooks. The "run_hooks" method is the common
+      # Internal: Run a collection of hooks. The "run_hooks" method is the common
       # interface by which collections of either before or after hooks are run.
       #
-      # hooks - An Array of Symbol and Proc hooks.
+      # hooks - An Array of Symbol and Procs.
       #
       # Returns nothing.
       def run_hooks(hooks)
