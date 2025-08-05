@@ -2,7 +2,7 @@
 
 module Action
   module Core
-    module TopLevelAroundHook
+    module AutomaticLogging
       def self.included(base)
         base.class_eval do
           around :__top_level_around_hook

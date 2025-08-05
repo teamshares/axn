@@ -7,7 +7,7 @@ require "action/core/hooks"
 require "action/core/logging"
 require "action/core/hoist_errors"
 require "action/core/handle_exceptions"
-require "action/core/top_level_around_hook"
+require "action/core/automatic_logging"
 require "action/core/use_strategy"
 
 # CONSIDER: make class names match file paths?
@@ -23,25 +23,13 @@ module Action
   module Core
     def self.included(base)
       base.class_eval do
-        # *** START -- CORE INTERNALS ***
         extend ClassMethods
         include Core::Hooks
-
-        # Public: Gets the Action::Context of the instance.
-        attr_reader :context
-
-        # *** END -- CORE INTERNALS ***
-
-        # Include first so other modules can assume `log` is available
         include Core::Logging
-
-        # NOTE: include before any others that set hooks (like contract validation), so we
-        # can include those hook executions in any traces set from this hook.
-        include Core::TopLevelAroundHook
+        include Core::AutomaticLogging
 
         include Core::HandleExceptions
 
-        # TODO: pull these out directly into the top-level module?
         include Core::ContractValidation
         include Core::Contract
         include Core::ContractForSubfields
@@ -53,7 +41,8 @@ module Action
 
     module ClassMethods
       def call(context = {})
-        new(context).tap(&:run).context
+        # TODO: can clean up the external_context naming now that we're not exposing #context at all
+        new(context).tap(&:run).external_context
       end
 
       def call!(context = {})

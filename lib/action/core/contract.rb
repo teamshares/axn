@@ -15,12 +15,6 @@ module Action
 
           extend ClassMethods
           include InstanceMethods
-
-          # Remove public context accessor and redefine it to return external_context
-          remove_method :context if method_defined?(:context)
-          define_method :context do
-            external_context
-          end
         end
       end
 
@@ -157,10 +151,6 @@ module Action
       module InstanceMethods
         def internal_context = @internal_context ||= _build_context_facade(:inbound)
         def external_context = @external_context ||= _build_context_facade(:outbound)
-
-        # NOTE: ideally no direct access from client code, but we need to expose this for internal Interactor methods
-        # (and passing through control methods to underlying context) in order to avoid rewriting internal methods.
-        def context = external_context
 
         # Accepts either two positional arguments (key, value) or a hash of key/value pairs
         def expose(*args, **kwargs)
