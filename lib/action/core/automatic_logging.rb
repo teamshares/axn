@@ -5,24 +5,21 @@ module Action
     module AutomaticLogging
       def self.included(base)
         base.class_eval do
-          around :__top_level_around_hook
-
-          extend AutologgingClassMethods
-          include AutologgingInstanceMethods
+          extend ClassMethods
           include InstanceMethods
         end
       end
 
-      module AutologgingClassMethods
-        def default_autolog_level = Action.config.default_autolog_level
+      module ClassMethods
+        def autolog_level = Action.config.default_autolog_level
       end
 
-      module AutologgingInstanceMethods
+      module InstanceMethods
         private
 
         def _log_before
           public_send(
-            self.class.default_autolog_level,
+            self.class.autolog_level,
             [
               "About to execute",
               _log_context(:inbound),
@@ -35,7 +32,7 @@ module Action
           elapsed_mils = ((Time.now - timing_start) * 1000).round(3)
 
           public_send(
-            self.class.default_autolog_level,
+            self.class.autolog_level,
             [
               "Execution completed (with outcome: #{outcome}) in #{elapsed_mils} milliseconds",
               _log_context(:outbound),
@@ -69,32 +66,6 @@ module Action
 
             data.inspect
           end
-        end
-      end
-
-      module InstanceMethods
-        def __top_level_around_hook(hooked)
-          timing_start = Time.now
-          _log_before
-
-          (@outcome, @exception) = _call_and_return_outcome(hooked)
-
-          _log_after(timing_start:, outcome: @outcome)
-
-          raise @exception if @exception
-        end
-
-        private
-
-        def _call_and_return_outcome(hooked)
-          hooked.call
-
-          "success"
-        rescue StandardError => e
-          [
-            e.is_a?(Action::Failure) ? "failure" : "exception",
-            e,
-          ]
         end
       end
     end

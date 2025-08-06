@@ -58,6 +58,9 @@ module Action
     end
 
     def run
+      timing_start = Time.now
+      _log_before
+
       # Library internals - ALWAYS run, no user interference
       _apply_inbound_preprocessing!
       _apply_defaults!(:inbound)
@@ -98,6 +101,7 @@ module Action
     ensure
       # Always emit metrics, regardless of success/failure/exception
       _emit_metrics
+      _log_after(timing_start:, outcome: _determine_outcome)
     end
 
     def call; end
@@ -112,6 +116,13 @@ module Action
         self.class.name || "AnonymousClass",
         @context,
       )
+    end
+
+    def _determine_outcome
+      return "exception" if @context.exception
+      return "failure" if @context.failure?
+
+      "success"
     end
   end
 end
