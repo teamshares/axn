@@ -1,3 +1,7 @@
+# frozen_string_literal: true
+
+# NOTE: This is a temporary file to be removed when we have a better way to handle context.
+# rubocop:disable Style/OpenStructUse, Style/CaseEquality
 require "ostruct"
 
 module Action
@@ -17,7 +21,7 @@ module Action
     def fail!(context = {})
       context.each { |key, value| self[key.to_sym] = value }
       @failure = true
-      raise Failure, self
+      raise Action::Failure, self
     end
 
     def called!(action)
@@ -36,3 +40,4 @@ module Action
     end
   end
 end
+# rubocop:enable Style/OpenStructUse, Style/CaseEquality
