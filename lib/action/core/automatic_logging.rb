@@ -77,9 +77,7 @@ module Action
           timing_start = Time.now
           _log_before
 
-          _configurable_around_wrapper do
-            (@outcome, @exception) = _call_and_return_outcome(hooked)
-          end
+          (@outcome, @exception) = _call_and_return_outcome(hooked)
 
           _log_after(timing_start:, outcome: @outcome)
 
@@ -87,12 +85,6 @@ module Action
         end
 
         private
-
-        def _configurable_around_wrapper(&)
-          return yield unless Action.config.top_level_around_hook
-
-          Action.config.top_level_around_hook.call(self.class.name || "AnonymousClass", &)
-        end
 
         def _call_and_return_outcome(hooked)
           hooked.call

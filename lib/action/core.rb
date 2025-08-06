@@ -95,9 +95,23 @@ module Action
       end
 
       @context.instance_variable_set("@failure", true)
+    ensure
+      # Always emit metrics, regardless of success/failure/exception
+      _emit_metrics
     end
 
     def call; end
     def rollback; end
+
+    private
+
+    def _emit_metrics
+      return unless Action.config.metrics_hook
+
+      Action.config.metrics_hook.call(
+        self.class.name || "AnonymousClass",
+        @context,
+      )
+    end
   end
 end
