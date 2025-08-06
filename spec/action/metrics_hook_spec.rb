@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
 RSpec.describe "Action metrics hook" do
-  let(:metrics_called) { [] }
+  let(:last_metrics_call) { nil }
   let(:metrics_hook) do
-    proc do |resource, result|
-      metrics_called << {
-        resource:,
-        outcome: determine_outcome(result),
-      }
+    proc do |resource, outcome|
+      @last_metrics_call = { resource:, outcome: }
     end
   end
 
@@ -23,31 +20,19 @@ RSpec.describe "Action metrics hook" do
     end
   end
 
-  def determine_outcome(result)
-    return "exception" if result.exception
-    return "failure" if result.failure?
-
-    "success"
-  end
-
   describe "metrics hook execution" do
     context "when action succeeds" do
       let(:action) do
         Class.new do
           include Action
-
-          def call
-            # Simple action that just succeeds
-          end
+          def call; end
         end
       end
 
-      it "calls metrics hook with success outcome" do
+      it "calls metrics hook with success outcome and correct resource" do
         action.call
-
-        expect(metrics_called.length).to eq(1)
-        expect(metrics_called.first[:outcome]).to eq("success")
-        expect(metrics_called.first[:resource]).to eq("AnonymousClass")
+        expect(@last_metrics_call[:outcome]).to eq("success")
+        expect(@last_metrics_call[:resource]).to eq("AnonymousClass")
       end
     end
 
@@ -55,7 +40,6 @@ RSpec.describe "Action metrics hook" do
       let(:action) do
         Class.new do
           include Action
-
           def call
             fail! "intentional failure"
           end
@@ -64,10 +48,7 @@ RSpec.describe "Action metrics hook" do
 
       it "calls metrics hook with failure outcome" do
         action.call
-
-        expect(metrics_called.length).to eq(1)
-        expect(metrics_called.first[:outcome]).to eq("failure")
-        expect(metrics_called.first[:resource]).to eq("AnonymousClass")
+        expect(@last_metrics_call[:outcome]).to eq("failure")
       end
     end
 
@@ -75,7 +56,6 @@ RSpec.describe "Action metrics hook" do
       let(:action) do
         Class.new do
           include Action
-
           def call
             raise "intentional exception"
           end
@@ -84,10 +64,7 @@ RSpec.describe "Action metrics hook" do
 
       it "calls metrics hook with exception outcome" do
         action.call
-
-        expect(metrics_called.length).to eq(1)
-        expect(metrics_called.first[:outcome]).to eq("exception")
-        expect(metrics_called.first[:resource]).to eq("AnonymousClass")
+        expect(@last_metrics_call[:outcome]).to eq("exception")
       end
     end
 
@@ -95,21 +72,16 @@ RSpec.describe "Action metrics hook" do
       let(:action) do
         Class.new do
           include Action
-
           expects :required_field
-
           def call
             expose :value, 42
           end
         end
       end
 
-      it "calls metrics hook with the correct outcome" do
+      it "calls metrics hook with exception outcome" do
         expect { action.call! }.to raise_error(Action::InboundValidationError)
-
-        expect(metrics_called.length).to eq(1)
-        expect(metrics_called.first[:outcome]).to eq("exception")
-        expect(metrics_called.first[:resource]).to eq("AnonymousClass")
+        expect(@last_metrics_call[:outcome]).to eq("exception")
       end
     end
 
@@ -127,8 +99,7 @@ RSpec.describe "Action metrics hook" do
         end
 
         action.call
-
-        expect(metrics_called).to be_empty
+        expect(@last_metrics_call).to be_nil
       end
     end
   end

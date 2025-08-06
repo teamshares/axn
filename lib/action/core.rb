@@ -115,7 +115,7 @@ module Action
 
       Action.config.metrics_hook.call(
         self.class.name || "AnonymousClass",
-        @context,
+        _determine_outcome,
       )
     end
 
