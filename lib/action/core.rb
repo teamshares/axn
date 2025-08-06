@@ -18,6 +18,7 @@ require "action/core/validation/validators/validate_validator"
 require "action/core/contract_validation"
 require "action/core/contract"
 require "action/core/contract_for_subfields"
+require "action/core/timing"
 
 module Action
   module Core
@@ -58,7 +59,7 @@ module Action
     end
 
     def run
-      timing_start = Time.now
+      timing_start = Core::Timing.now
       _log_before
 
       # Library internals - ALWAYS run, no user interference

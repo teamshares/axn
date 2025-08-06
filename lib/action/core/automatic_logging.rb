@@ -29,7 +29,7 @@ module Action
         end
 
         def _log_after(outcome:, timing_start:)
-          elapsed_mils = ((Time.now - timing_start) * 1000).round(3)
+          elapsed_mils = Core::Timing.elapsed_ms(timing_start)
 
           public_send(
             self.class.autolog_level,
