@@ -72,7 +72,6 @@ module Action
           run_before_hooks
           yield
           run_after_hooks
-          trigger_on_success if respond_to?(:trigger_on_success)
         end
       end
 

@@ -58,24 +58,46 @@ module Action
       @context = Action::Context.build(context)
     end
 
-    def run
+    def with_tracing(&)
+      return yield unless Action.config.trace_hook
+
+      Action.config.trace_hook.call(self.class.name || "AnonymousClass", &)
+    end
+
+    def with_logging
       timing_start = Core::Timing.now
       _log_before
+      yield
+    ensure
+      _log_after(timing_start:, outcome: _determine_outcome)
+    end
 
-      # Library internals - ALWAYS run, no user interference
+    def with_contract
       _apply_inbound_preprocessing!
       _apply_defaults!(:inbound)
       _validate_contract!(:inbound)
 
-      # User hooks and implementation
-      with_hooks do
-        call
-        @context.called!(self)
-      end
+      yield
 
-      # More library internals - after user code but before returning
       _apply_defaults!(:outbound)
       _validate_contract!(:outbound)
+
+      # TODO: improve location of this triggering
+      trigger_on_success if respond_to?(:trigger_on_success)
+    end
+
+    def run
+      with_tracing do
+        with_logging do
+          with_contract do
+            # User hooks and implementation
+            with_hooks do
+              call
+              @context.called!(self)
+            end
+          end
+        end
+      end
     rescue StandardError => e
       @context.rollback!
 
@@ -102,7 +124,6 @@ module Action
     ensure
       # Always emit metrics, regardless of success/failure/exception
       _emit_metrics
-      _log_after(timing_start:, outcome: _determine_outcome)
     end
 
     def call; end
