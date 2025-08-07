@@ -6,7 +6,7 @@
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)
   * Refactor internals to clean implementation now that we have direct control
-  * [BREAKING] Replaced `Action.config.top_level_around_hook` with `Action.config.metrics_hook`
+  * [BREAKING] Replaced `Action.config.top_level_around_hook` with `.wrap_with_trace` and `.emit_metrics`
   * [BREAKING] the order of hooks with inheritance has changed to more intuitively follow the natural pattern of setup (general → specific) and teardown (specific → general):
     * **Before hooks**: Parent → Child (general setup first, then specific)
     * **After hooks**: Child → Parent (specific cleanup first, then general)

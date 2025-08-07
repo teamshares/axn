@@ -19,6 +19,6 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 
 ### Metrics / Tracing
 
-If you're using an APM provider, observability can be greatly enhanced by [configuring a `top_level_around_hook`](/reference/configuration#top-level-around-hook).
+If you're using an APM provider, observability can be greatly enhanced by [configuring tracing and metrics hooks](/reference/configuration#tracing-and-metrics).
 
 

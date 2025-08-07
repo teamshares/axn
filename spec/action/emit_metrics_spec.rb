@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-RSpec.describe "Action metrics hook" do
+RSpec.describe "Action emit_metrics hook" do
   let(:last_metrics_call) { nil }
-  let(:metrics_hook) do
+  let(:emit_metrics) do
     proc do |resource, outcome|
       @last_metrics_call = { resource:, outcome: }
     end
@@ -10,17 +10,17 @@ RSpec.describe "Action metrics hook" do
 
   before do
     Action.configure do |c|
-      c.metrics_hook = metrics_hook
+      c.emit_metrics = emit_metrics
     end
   end
 
   after do
     Action.configure do |c|
-      c.metrics_hook = nil
+      c.emit_metrics = nil
     end
   end
 
-  describe "metrics hook execution" do
+  describe "emit_metrics hook execution" do
     context "when action succeeds" do
       let(:action) do
         Class.new do
@@ -29,7 +29,7 @@ RSpec.describe "Action metrics hook" do
         end
       end
 
-      it "calls metrics hook with success outcome and correct resource" do
+      it "calls emit_metrics hook with success outcome and correct resource" do
         action.call
         expect(@last_metrics_call[:outcome]).to eq("success")
         expect(@last_metrics_call[:resource]).to eq("AnonymousClass")
@@ -46,7 +46,7 @@ RSpec.describe "Action metrics hook" do
         end
       end
 
-      it "calls metrics hook with failure outcome" do
+      it "calls emit_metrics hook with failure outcome" do
         action.call
         expect(@last_metrics_call[:outcome]).to eq("failure")
       end
@@ -62,7 +62,7 @@ RSpec.describe "Action metrics hook" do
         end
       end
 
-      it "calls metrics hook with exception outcome" do
+      it "calls emit_metrics hook with exception outcome" do
         action.call
         expect(@last_metrics_call[:outcome]).to eq("exception")
       end
@@ -79,7 +79,7 @@ RSpec.describe "Action metrics hook" do
         end
       end
 
-      it "calls metrics hook with exception outcome" do
+      it "calls emit_metrics hook with exception outcome" do
         expect { action.call! }.to raise_error(Action::InboundValidationError)
         expect(@last_metrics_call[:outcome]).to eq("exception")
       end
@@ -88,11 +88,11 @@ RSpec.describe "Action metrics hook" do
     context "when no metrics hook is configured" do
       before do
         Action.configure do |c|
-          c.metrics_hook = nil
+          c.emit_metrics = nil
         end
       end
 
-      it "does not call metrics hook" do
+      it "does not call emit_metrics hook" do
         action = Class.new do
           include Action
           def call; end

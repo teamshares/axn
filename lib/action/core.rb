@@ -58,9 +58,9 @@ module Action
     end
 
     def with_tracing(&)
-      return yield unless Action.config.trace_hook
+      return yield unless Action.config.wrap_with_trace
 
-      Action.config.trace_hook.call(self.class.name || "AnonymousClass", &)
+      Action.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)
     rescue StandardError => e
       Axn::Util.piping_error("running trace hook", action: self, exception: e)
     end
@@ -115,10 +115,9 @@ module Action
     def run
       with_tracing do
         with_logging do
-          with_exception_swallowing do
-            with_contract do
-              # User hooks -- any failures here *should* fail the Action::Result
-              with_hooks do
+          with_exception_swallowing do # Raised exceptions stop here. Outer wrappers can access result status (and must be sure they do not introduce another exception layer)
+            with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+              with_hooks do # User hooks -- any failures here *should* fail the Action::Result
                 call
               end
             end
@@ -134,9 +133,9 @@ module Action
     private
 
     def _emit_metrics
-      return unless Action.config.metrics_hook
+      return unless Action.config.emit_metrics
 
-      Action.config.metrics_hook.call(
+      Action.config.emit_metrics.call(
         self.class.name || "AnonymousClass",
         _determine_outcome,
       )
