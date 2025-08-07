@@ -17,6 +17,14 @@ module Action
       module InstanceMethods
         private
 
+        def with_logging
+          timing_start = Core::Timing.now
+          _log_before
+          yield
+        ensure
+          _log_after(timing_start:, outcome: _determine_outcome)
+        end
+
         def _log_before
           public_send(
             self.class.autolog_level,
