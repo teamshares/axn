@@ -11,6 +11,7 @@
     * **Before hooks**: Parent → Child (general setup first, then specific)
     * **After hooks**: Child → Parent (specific cleanup first, then general)
     * **Around hooks**: Parent wraps child (parent outside, child inside)
+* Removed non-functional #rollback traces (use on_exception hook instead)
 * Clean requires structure
 
 ## 0.1.0-alpha.2.5.3.1

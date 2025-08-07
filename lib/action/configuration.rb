@@ -2,7 +2,7 @@
 
 module Action
   class Configuration
-    attr_accessor :metrics_hook
+    attr_accessor :metrics_hook, :trace_hook
     attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
 
     def default_log_level = @default_log_level ||= :info

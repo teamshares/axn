@@ -84,7 +84,6 @@ RSpec.shared_examples "can build Axns from callables" do
   context "setting before, after, around hooks" do
     let(:before) { -> { puts "before" } }
     let(:after) { -> { puts "after" } }
-    let(:rollback) { -> { puts "rollback" } }
     let(:around) do
       lambda { |block|
         puts "<<"
@@ -98,7 +97,7 @@ RSpec.shared_examples "can build Axns from callables" do
     end
 
     let(:kwargs) do
-      { before:, after:, around:, rollback: }
+      { before:, after:, around: }
     end
 
     context "when ok?" do
@@ -115,7 +114,7 @@ RSpec.shared_examples "can build Axns from callables" do
 
     context "when not ok?" do
       let(:expected) do
-        %w[<< before call rollback].join("\n") + "\n" # rubocop:disable Style/StringConcatenation
+        %w[<< before call].join("\n") + "\n" # rubocop:disable Style/StringConcatenation
       end
 
       let(:callable) do
@@ -126,8 +125,6 @@ RSpec.shared_examples "can build Axns from callables" do
       end
 
       it "executes hooks in order" do
-        pending "TODO: implement #rollback"
-
         expect do
           expect(axn.call).not_to be_ok
         end.to output(expected).to_stdout

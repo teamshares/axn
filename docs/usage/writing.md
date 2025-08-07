@@ -104,14 +104,7 @@ Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life i
 
 In addition to `#call`, there are a few additional pieces to be aware of:
 
-<!-- ### `#rollback`
-*** TODO: rollback actually only applies to rolling back *completed* steps of a multi-step Axn chain.  Do not document for now -- need to decide if adding a trigger-when-axn-itself-fails rollback path. ***
 
-::: danger ALPHA
-* ⚠️ `#rollback` is _expected_ to be added shortly, but is not yet functional!
-:::
-
-If you define a `#rollback` method, it'll be called (_before_ returning an `Action::Result` to the caller) whenever your action fails. -->
 
 ### Hooks
 

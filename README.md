@@ -1,19 +1,10 @@
 # Axn -- [AHK-sin] (a.k.a. "Action")
 
-Just spinning this up -- not yet released (i.e. doc updates in flight).
+Just spinning this up -- not yet publicly released, changes coming frequently.
 
 ## Installation & Usage
 
 See our [User Guide](https://teamshares.github.io/axn/) for details.
-
-## [!!] Inheritance Support
-
-Out of the box Axn only supports a direct style (every action must `include Action`).
-
-If you want to support inheritance, you'll need to add this line to your `Gemfile` (we're layered over Interactor, and their released version doesn't yet support inheritance):
-
-    gem "interactor", github: "kaspermeyer/interactor", branch: "fix-hook-inheritance"
-
 
 ## Development
 
@@ -27,4 +18,4 @@ See our [contribution guidelines](CONTRIBUTING.md) for more information.
 
 ## Thank You
 
-A very special thank you to [Collective Idea](https://collectiveidea.com/)'s fantastic [Interactor](https://github.com/collectiveidea/interactor?tab=readme-ov-file#interactor) library, which [we](https://www.teamshares.com/) used successfully for a number of years and which still forms the basis of this library today.
+A very special thank you to [Collective Idea](https://collectiveidea.com/)'s fantastic [Interactor](https://github.com/collectiveidea/interactor?tab=readme-ov-file#interactor) library, which [we](https://www.teamshares.com/) used successfully for a number of years and which we used to scaffold early versions of this library.

@@ -23,21 +23,6 @@ module Action
       @failure = true
       raise Action::Failure, self
     end
-
-    def called!(action)
-      _called << action
-    end
-
-    def rollback!
-      return false if @rolled_back
-
-      _called.reverse_each(&:rollback)
-      @rolled_back = true
-    end
-
-    def _called
-      @called ||= []
-    end
   end
 end
 # rubocop:enable Style/OpenStructUse, Style/CaseEquality

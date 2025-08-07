@@ -70,13 +70,13 @@ module Action
         private
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
-          called! fail! rollback! success? ok?
+          fail! success? ok?
           inspect default_error
           each_pair
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
-          called! fail! rollback! success? ok?
+          fail! success? ok?
           inspect each_pair default_error
           ok error success message
         ].freeze

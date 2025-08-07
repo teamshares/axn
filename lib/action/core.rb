@@ -93,14 +93,11 @@ module Action
             # User hooks and implementation
             with_hooks do
               call
-              @context.called!(self)
             end
           end
         end
       end
     rescue StandardError => e
-      @context.rollback!
-
       # on_error handlers run for both unhandled exceptions and fail!
       self.class._error_handlers.each do |handler|
         handler.execute_if_matches(exception: e, action: self)
@@ -127,7 +124,6 @@ module Action
     end
 
     def call; end
-    def rollback; end
 
     private
 
