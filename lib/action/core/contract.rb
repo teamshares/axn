@@ -176,7 +176,7 @@ module Action
 
         private
 
-        def with_contract
+        def _with_contract
           _apply_inbound_preprocessing!
           _apply_defaults!(:inbound)
           _validate_contract!(:inbound)
@@ -187,7 +187,7 @@ module Action
           _validate_contract!(:outbound)
 
           # TODO: improve location of this triggering
-          trigger_on_success if respond_to?(:trigger_on_success)
+          _trigger_on_success if respond_to?(:_trigger_on_success)
         end
 
         def _build_context_facade(direction)

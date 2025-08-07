@@ -5,7 +5,7 @@ module Action
     module Tracing
       private
 
-      def with_tracing(&)
+      def _with_tracing(&)
         return yield unless Action.config.wrap_with_trace
 
         Action.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)

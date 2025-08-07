@@ -17,7 +17,7 @@ module Action
       module InstanceMethods
         private
 
-        def with_logging
+        def _with_logging
           timing_start = Core::Timing.now
           _log_before
           yield

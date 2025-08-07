@@ -18,7 +18,7 @@ module Action
           include InstanceMethods
           extend ClassMethods
 
-          def trigger_on_exception(exception)
+          def _trigger_on_exception(exception)
             interceptor = self.class._error_interceptor_for(exception:, action: self)
             return if interceptor&.should_report_error == false
 
@@ -37,7 +37,7 @@ module Action
             Axn::Util.piping_error("executing on_exception hooks", action: self, exception: e)
           end
 
-          def trigger_on_success
+          def _trigger_on_success
             # Call success handlers in child-first order (like after hooks)
             self.class._success_handlers.each do |handler|
               instance_exec(&handler)
@@ -120,7 +120,7 @@ module Action
       module InstanceMethods
         private
 
-        def with_exception_swallowing
+        def _with_exception_swallowing
           yield
         rescue StandardError => e
           # on_error handlers run for both unhandled exceptions and fail!
@@ -137,7 +137,7 @@ module Action
             end
           else
             # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
-            trigger_on_exception(e)
+            _trigger_on_exception(e)
 
             @context.exception = e
           end
@@ -158,7 +158,7 @@ module Action
           # NOTE: re-raising so we can still fail! from inside the block
           raise e
         rescue StandardError => e
-          trigger_on_exception(e)
+          _trigger_on_exception(e)
         end
 
         delegate :default_error, to: :internal_context

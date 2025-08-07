@@ -44,7 +44,7 @@ module Action
 
     module ClassMethods
       def call(context = {})
-        new(context).tap(&:run).result
+        new(context).tap(&:_run).result
       end
 
       def call!(context = {})
@@ -60,12 +60,12 @@ module Action
     end
 
     # Main entry point for action execution
-    def run
-      with_tracing do
-        with_logging do
-          with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-            with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-              with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+    def _run
+      _with_tracing do
+        _with_logging do
+          _with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+            _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+              _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
                 call
               end
             end
