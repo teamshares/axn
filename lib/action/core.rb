@@ -62,6 +62,28 @@ module Action
       @context = Action::Context.build(context)
     end
 
+    # Main entry point for action execution
+    def run
+      with_tracing do
+        with_logging do
+          with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+            with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+              with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                call
+              end
+            end
+          end
+        end
+      end
+    ensure
+      _emit_metrics
+    end
+
+    # User-defined action logic - override this method in your action classes
+    def call; end
+
+    private
+
     def with_tracing(&)
       return yield unless Action.config.wrap_with_trace
 
@@ -116,26 +138,6 @@ module Action
 
       @context.instance_variable_set("@failure", true)
     end
-
-    def run
-      with_tracing do
-        with_logging do
-          with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-            with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-              with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                call
-              end
-            end
-          end
-        end
-      end
-    ensure
-      _emit_metrics
-    end
-
-    def call; end
-
-    private
 
     def _emit_metrics
       return unless Action.config.emit_metrics
