@@ -22,6 +22,11 @@ require "action/core/timing"
 
 module Action
   module Core
+    # Outcome constants for action execution results
+    OUTCOME_SUCCESS = :success
+    OUTCOME_FAILURE = :failure
+    OUTCOME_EXCEPTION = :exception
+
     def self.included(base)
       base.class_eval do
         extend ClassMethods
@@ -144,10 +149,10 @@ module Action
     end
 
     def _determine_outcome
-      return "exception" if @context.exception
-      return "failure" if @context.failure?
+      return OUTCOME_EXCEPTION if @context.exception
+      return OUTCOME_FAILURE if @context.failure?
 
-      "success"
+      OUTCOME_SUCCESS
     end
   end
 end
