@@ -24,7 +24,7 @@ module Action
         validations = configs.each_with_object({}) do |config, hash|
           hash[config.field] = config.validations
         end
-        context = direction == :inbound ? internal_context : external_context
+        context = direction == :inbound ? internal_context : result
         exception_klass = direction == :inbound ? Action::InboundValidationError : Action::OutboundValidationError
 
         Validation::Fields.validate!(validations:, context:, exception_klass:)

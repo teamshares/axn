@@ -42,8 +42,7 @@ module Action
 
     module ClassMethods
       def call(context = {})
-        # TODO: can clean up the external_context naming now that we're not exposing #context at all
-        new(context).tap(&:run).external_context
+        new(context).tap(&:run).result
       end
 
       def call!(context = {})

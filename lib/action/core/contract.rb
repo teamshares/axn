@@ -150,7 +150,7 @@ module Action
 
       module InstanceMethods
         def internal_context = @internal_context ||= _build_context_facade(:inbound)
-        def external_context = @external_context ||= _build_context_facade(:outbound)
+        def result = @result ||= _build_context_facade(:outbound)
 
         # Accepts either two positional arguments (key, value) or a hash of key/value pairs
         def expose(*args, **kwargs)
@@ -164,7 +164,7 @@ module Action
           end
 
           kwargs.each do |key, value|
-            raise Action::ContractViolation::UnknownExposure, key unless external_context.respond_to?(key)
+            raise Action::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
 
             @context.public_send("#{key}=", value)
           end
