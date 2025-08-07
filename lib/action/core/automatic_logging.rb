@@ -26,6 +26,8 @@ module Action
             ].compact.join(" with: "),
             before: Action.config.env.production? ? nil : "\n------\n",
           )
+        rescue StandardError => e
+          Axn::Util.piping_error("logging before hook", action: self, exception: e)
         end
 
         def _log_after(outcome:, timing_start:)
@@ -39,6 +41,8 @@ module Action
             ].compact.join(". Set: "),
             after: Action.config.env.production? ? nil : "\n------\n",
           )
+        rescue StandardError => e
+          Axn::Util.piping_error("logging after hook", action: self, exception: e)
         end
 
         def _log_context(direction)

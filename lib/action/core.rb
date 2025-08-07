@@ -61,6 +61,8 @@ module Action
       return yield unless Action.config.trace_hook
 
       Action.config.trace_hook.call(self.class.name || "AnonymousClass", &)
+    rescue StandardError => e
+      Axn::Util.piping_error("running trace hook", action: self, exception: e)
     end
 
     def with_logging
@@ -85,17 +87,8 @@ module Action
       trigger_on_success if respond_to?(:trigger_on_success)
     end
 
-    def run
-      with_tracing do
-        with_logging do
-          with_contract do
-            # User hooks and implementation
-            with_hooks do
-              call
-            end
-          end
-        end
-      end
+    def with_exception_swallowing
+      yield
     rescue StandardError => e
       # on_error handlers run for both unhandled exceptions and fail!
       self.class._error_handlers.each do |handler|
@@ -117,8 +110,22 @@ module Action
       end
 
       @context.instance_variable_set("@failure", true)
+    end
+
+    def run
+      with_tracing do
+        with_logging do
+          with_exception_swallowing do
+            with_contract do
+              # User hooks -- any failures here *should* fail the Action::Result
+              with_hooks do
+                call
+              end
+            end
+          end
+        end
+      end
     ensure
-      # Always emit metrics, regardless of success/failure/exception
       _emit_metrics
     end
 
@@ -133,6 +140,8 @@ module Action
         self.class.name || "AnonymousClass",
         _determine_outcome,
       )
+    rescue StandardError => e
+      Axn::Util.piping_error("running metrics hook", action: self, exception: e)
     end
 
     def _determine_outcome
