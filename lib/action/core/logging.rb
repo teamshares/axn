@@ -15,9 +15,9 @@ module Action
       end
 
       module ClassMethods
-        def default_log_level = Action.config.default_log_level
+        def log_level = Action.config.log_level
 
-        def log(message, level: default_log_level, before: nil, after: nil)
+        def log(message, level: log_level, before: nil, after: nil)
           msg = [_log_prefix, message].compact_blank.join(" ")
           msg = [before, msg, after].compact_blank.join if before || after
 

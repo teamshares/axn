@@ -7,26 +7,34 @@ module Action
         base.class_eval do
           extend ClassMethods
           include InstanceMethods
+
+          # Single class_attribute - nil means disabled, any level means enabled
+          class_attribute :auto_log_level, default: Action.config.log_level
         end
       end
 
       module ClassMethods
-        def autolog_level = Action.config.default_autolog_level
+        def auto_log(level)
+          self.auto_log_level = level.presence
+        end
       end
 
       module InstanceMethods
         private
 
         def _with_logging
-          _log_before
+          _log_before if self.class.auto_log_level
           yield
         ensure
-          _log_after
+          _log_after if self.class.auto_log_level
         end
 
         def _log_before
-          public_send(
-            self.class.autolog_level,
+          level = self.class.auto_log_level
+          return unless level
+
+          self.class.public_send(
+            level,
             [
               "About to execute",
               _log_context(:inbound),
@@ -38,12 +46,13 @@ module Action
         end
 
         def _log_after
-          elapsed_mils = result.elapsed_time
+          level = self.class.auto_log_level
+          return unless level
 
-          public_send(
-            self.class.autolog_level,
+          self.class.public_send(
+            level,
             [
-              "Execution completed (with outcome: #{result.outcome}) in #{elapsed_mils} milliseconds",
+              "Execution completed (with outcome: #{result.outcome}) in #{result.elapsed_time} milliseconds",
               _log_context(:outbound),
             ].compact.join(". Set: "),
             after: Action.config.env.production? ? nil : "\n------\n",
