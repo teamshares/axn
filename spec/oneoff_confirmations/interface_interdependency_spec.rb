@@ -22,7 +22,7 @@ RSpec.describe "One-off confirmation" do
       subject { action.call }
 
       it { is_expected.to be_ok }
-      it { expect(subject.instance_variable_get("@context").channel).to eq("web") }
+      it { expect(subject.instance_variable_get("@context").provided_data[:channel]).to eq("web") }
     end
 
     context "interdependencies to consider for future support" do

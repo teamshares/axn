@@ -1,28 +1,41 @@
 # frozen_string_literal: true
 
-# NOTE: This is a temporary file to be removed when we have a better way to handle context.
-# rubocop:disable Style/OpenStructUse, Style/CaseEquality
-require "ostruct"
-
 module Action
-  class Context < OpenStruct
+  class Context
+    attr_accessor :provided_data, :exposed_data
+
     def self.build(context = {})
-      self === context ? context : new(context)
+      # TODO: check if this causes problems when passing context down the line with Steps
+      return context if context.is_a?(Context)
+
+      new(**context)
     end
 
-    def success?
-      !failure?
+    def initialize(**provided_data)
+      @provided_data = provided_data
+      @exposed_data = {}
+      @failure = false
+      # Framework-managed fields
+      @exception = nil
+      @error_from_user = nil
+      @error_prefix = nil
+      @elapsed_time = nil
     end
 
-    def failure?
-      @failure || false
+    # Hash conversion for logging - combines both data sets
+    def to_h
+      @provided_data.merge(@exposed_data)
     end
 
-    def fail!(context = {})
-      context.each { |key, value| self[key.to_sym] = value }
-      @failure = true
-      raise Action::Failure, self
-    end
+    # Framework state methods
+    def success? = !@failure
+    def failure? = @failure || false
+
+    # Framework field accessors
+    attr_accessor :exception, :error_from_user, :error_prefix, :elapsed_time
+
+    # Internal failure state setter (for framework use)
+    attr_writer :failure
+    private :failure=
   end
 end
-# rubocop:enable Style/OpenStructUse, Style/CaseEquality

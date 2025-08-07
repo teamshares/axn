@@ -14,7 +14,9 @@ module Action
       @declared_fields = declared_fields
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
-        singleton_class.define_method(field) { @context.public_send(field) }
+        singleton_class.define_method(field) do
+          data_source[field]
+        end
       end
     end
 
@@ -32,9 +34,14 @@ module Action
 
     def exposure_method_name = raise NotImplementedError
 
+    def data_source = raise NotImplementedError
+
+    def other_data_source = raise NotImplementedError
+
     # Add nice error message for missing methods
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
-      if context.respond_to?(method_name)
+      # Check if this field exists in the primary data source but wasn't declared
+      if data_source.key?(method_name.to_sym)
         msg = <<~MSG
           Method ##{method_name} is not available on #{self.class.name}!
 
@@ -89,6 +96,10 @@ module Action
     private
 
     def exposure_method_name = :expects
+
+    def data_source = @context.provided_data
+
+    def other_data_source = @context.exposed_data
   end
 
   # Outbound / External ContextFacade
@@ -166,6 +177,10 @@ module Action
     delegate :failure?, to: :context
 
     def exposure_method_name = :exposes
+
+    def data_source = @context.exposed_data
+
+    def other_data_source = @context.provided_data
   end
 
   class Inspector

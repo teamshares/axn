@@ -166,7 +166,7 @@ module Action
           kwargs.each do |key, value|
             raise Action::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
 
-            @context.public_send("#{key}=", value)
+            @context.exposed_data[key] = value
           end
         end
 

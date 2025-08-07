@@ -9,9 +9,9 @@ module Action
         internal_field_configs.each do |config|
           next unless config.preprocess
 
-          initial_value = @context.public_send(config.field)
+          initial_value = @context.provided_data[config.field]
           new_value = config.preprocess.call(initial_value)
-          @context.public_send("#{config.field}=", new_value)
+          @context.provided_data[config.field] = new_value
         rescue StandardError => e
           raise Action::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}"
         end
@@ -33,17 +33,28 @@ module Action
       def _apply_defaults!(direction)
         raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
+        if direction == :outbound
+          # For outbound defaults, first copy values from provided_data for fields that are both expected and exposed
+          external_field_configs.each do |config|
+            field = config.field
+            next if @context.exposed_data[field].present? # Already has a value
+
+            @context.exposed_data[field] = @context.provided_data[field] if @context.provided_data[field].present?
+          end
+        end
+
         configs = direction == :inbound ? internal_field_configs : external_field_configs
         defaults_mapping = configs.each_with_object({}) do |config, hash|
           hash[config.field] = config.default
         end.compact
 
         defaults_mapping.each do |field, default_value_getter|
-          next if @context.public_send(field).present?
+          data_hash = direction == :inbound ? @context.provided_data : @context.exposed_data
+          next if data_hash[field].present?
 
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
 
-          @context.public_send("#{field}=", default_value)
+          data_hash[field] = default_value
         end
       end
     end
