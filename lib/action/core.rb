@@ -115,7 +115,7 @@ module Action
     def run
       with_tracing do
         with_logging do
-          with_exception_swallowing do # Raised exceptions stop here. Outer wrappers can access result status (and must be sure they do not introduce another exception layer)
+          with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
             with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
               with_hooks do # User hooks -- any failures here *should* fail the Action::Result
                 call

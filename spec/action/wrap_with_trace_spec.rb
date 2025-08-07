@@ -126,7 +126,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when wrap_with_trace hook raises an exception" do
       let(:wrap_with_trace) do
-        proc do |resource, &action|
+        proc do |_resource, &_action|
           raise "trace hook error"
         end
       end
@@ -156,7 +156,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when wrap_with_trace hook does not call the action block" do
       let(:wrap_with_trace) do
-        proc do |resource, &action|
+        proc do |resource, &_action|
           @last_trace_call = { resource:, action_called: false }
           # Intentionally not calling action.call
         end
