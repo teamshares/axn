@@ -24,12 +24,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
   describe "wrap_with_trace hook execution" do
     context "when action succeeds" do
-      let(:action) do
-        Class.new do
-          include Action
-          def call; end
-        end
-      end
+      let(:action) { build_action }
 
       it "calls wrap_with_trace hook with correct resource and executes action" do
         action.call
@@ -40,8 +35,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when action fails with fail!" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           def call
             fail! "intentional failure"
           end
@@ -53,12 +47,16 @@ RSpec.describe "Action wrap_with_trace hook" do
         expect(result).not_to be_ok
         expect(@last_trace_call[:action_called]).to eq(true)
       end
+
+      it "calls wrap_with_trace hook and executes action when using call!" do
+        expect { action.call! }.to raise_error(Action::Failure)
+        expect(@last_trace_call[:action_called]).to eq(true)
+      end
     end
 
     context "when action raises an exception" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           def call
             raise "intentional exception"
           end
@@ -70,13 +68,36 @@ RSpec.describe "Action wrap_with_trace hook" do
         expect(result).not_to be_ok
         expect(@last_trace_call[:action_called]).to eq(true)
       end
+
+      it "calls wrap_with_trace hook and executes action when using call!" do
+        expect { action.call! }.to raise_error(RuntimeError)
+        expect(@last_trace_call[:action_called]).to eq(true)
+      end
+    end
+
+    context "when call! succeeds" do
+      let(:action) do
+        build_action do
+          expects :required_field
+          exposes :value
+          def call
+            expose :value, 42
+          end
+        end
+      end
+
+      it "calls wrap_with_trace hook and executes action" do
+        result = action.call!(required_field: "test")
+        expect(result).to be_ok
+        expect(@last_trace_call[:action_called]).to eq(true)
+      end
     end
 
     context "when call! raises an exception" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           expects :required_field
+          exposes :value
           def call
             expose :value, 42
           end
@@ -97,11 +118,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       it "does not call wrap_with_trace hook" do
-        action = Class.new do
-          include Action
-          def call; end
-        end
-
+        action = build_action
         action.call
         expect(@last_trace_call).to be_nil
       end
@@ -114,12 +131,7 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      let(:action) do
-        Class.new do
-          include Action
-          def call; end
-        end
-      end
+      let(:action) { build_action }
 
       before do
         allow(Axn::Util).to receive(:piping_error).and_call_original
@@ -151,8 +163,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           def call
             @called = true
           end
@@ -168,13 +179,10 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "with named action class" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           def self.name
             "TestAction"
           end
-
-          def call; end
         end
       end
 
@@ -185,12 +193,7 @@ RSpec.describe "Action wrap_with_trace hook" do
     end
 
     context "with anonymous class" do
-      let(:action) do
-        Class.new do
-          include Action
-          def call; end
-        end
-      end
+      let(:action) { build_action }
 
       it "passes AnonymousClass as resource name" do
         action.call

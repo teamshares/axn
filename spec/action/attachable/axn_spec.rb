@@ -3,9 +3,7 @@
 RSpec.describe Action do
   describe ".axn" do
     let(:client) do
-      Class.new do
-        include Action
-
+      build_action do
         def self.default_autolog_level = :debug
       end
     end
@@ -145,9 +143,7 @@ RSpec.describe Action do
       end
 
       let(:client) do
-        Class.new do
-          include Action
-
+        build_action do
           def self.awesome_thing = 123
         end
       end

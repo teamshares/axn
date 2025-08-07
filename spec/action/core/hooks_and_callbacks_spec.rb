@@ -8,8 +8,7 @@ RSpec.describe Action do
     let(:should_rescue) { false }
 
     let(:action) do
-      Class.new do
-        include Action
+      build_action do
         expects :trigger, type: Symbol
         expects :should_rescue, type: :boolean, default: false
 
@@ -91,8 +90,7 @@ RSpec.describe Action do
 
     context "when after hook fails" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           expects :trigger, type: Symbol
 
           before { puts "before" }
@@ -121,8 +119,7 @@ RSpec.describe Action do
 
     context "when on_success callback fails" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           expects :trigger, type: Symbol
 
           before { puts "before" }
@@ -151,8 +148,7 @@ RSpec.describe Action do
 
     context "with filtering" do
       let(:action) do
-        Class.new do
-          include Action
+        build_action do
           expects :trigger, type: Symbol
           expects :should_rescue, type: :boolean, default: false
 
@@ -275,8 +271,7 @@ RSpec.describe Action do
 
     context "inheritance" do
       let(:parent_class) do
-        Class.new do
-          include Action
+        build_action do
           expects :trigger, type: Symbol
 
           before { puts "parent_before" }
