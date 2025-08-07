@@ -18,11 +18,10 @@ module Action
         private
 
         def _with_logging
-          timing_start = Core::Timing.now
           _log_before
           yield
         ensure
-          _log_after(timing_start:, outcome: result.outcome)
+          _log_after
         end
 
         def _log_before
@@ -38,13 +37,13 @@ module Action
           Axn::Util.piping_error("logging before hook", action: self, exception: e)
         end
 
-        def _log_after(outcome:, timing_start:)
-          elapsed_mils = Core::Timing.elapsed_ms(timing_start)
+        def _log_after
+          elapsed_mils = result.elapsed_time
 
           public_send(
             self.class.autolog_level,
             [
-              "Execution completed (with outcome: #{outcome}) in #{elapsed_mils} milliseconds",
+              "Execution completed (with outcome: #{result.outcome}) in #{elapsed_mils} milliseconds",
               _log_context(:outbound),
             ].compact.join(". Set: "),
             after: Action.config.env.production? ? nil : "\n------\n",

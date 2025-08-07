@@ -30,6 +30,7 @@ module Action
         include Core::Logging
         include Core::AutomaticLogging
         include Core::Tracing
+        include Core::Timing
 
         include Core::HandleExceptions
 
@@ -63,10 +64,12 @@ module Action
     def _run
       _with_tracing do
         _with_logging do
-          _with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-            _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-              _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                call
+          _with_timing do
+            _with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+              _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+                _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                  call
+                end
               end
             end
           end
@@ -86,7 +89,7 @@ module Action
 
       Action.config.emit_metrics.call(
         self.class.name || "AnonymousClass",
-        result.outcome,
+        result,
       )
     rescue StandardError => e
       Axn::Util.piping_error("running metrics hook", action: self, exception: e)

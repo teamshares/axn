@@ -156,6 +156,11 @@ module Action
       OUTCOME_SUCCESS
     end
 
+    # Elapsed time in milliseconds
+    def elapsed_time
+      @context.elapsed_time
+    end
+
     private
 
     delegate :failure?, to: :context

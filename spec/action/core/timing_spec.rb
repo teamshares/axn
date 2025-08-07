@@ -55,4 +55,38 @@ RSpec.describe Action::Core::Timing do
       expect(decimal_places).to be <= 6
     end
   end
+
+  describe "InstanceMethods#_with_timing" do
+    let(:action) { build_action }
+
+    it "stores elapsed time in the context" do
+      result = action.call
+      expect(result.elapsed_time).to be_a(Float)
+      expect(result.elapsed_time).to be >= 0
+    end
+
+    it "stores timing even when action fails" do
+      failing_action = build_action do
+        def call
+          fail! "intentional failure"
+        end
+      end
+
+      result = failing_action.call
+      expect(result.elapsed_time).to be_a(Float)
+      expect(result.elapsed_time).to be >= 0
+    end
+
+    it "stores timing even when action raises exception" do
+      exception_action = build_action do
+        def call
+          raise "intentional exception"
+        end
+      end
+
+      result = exception_action.call
+      expect(result.elapsed_time).to be_a(Float)
+      expect(result.elapsed_time).to be >= 0
+    end
+  end
 end

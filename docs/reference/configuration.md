@@ -68,7 +68,7 @@ If you're using an APM provider, observability can be greatly enhanced by adding
 The framework provides two distinct hooks for observability:
 
 - **`wrap_with_trace`**: An around hook that wraps the entire action execution. You MUST call the provided block to execute the action.
-- **`emit_metrics`**: A post-execution hook that receives the action outcome. Do NOT call any blocks.
+- **`emit_metrics`**: A post-execution hook that receives the action result. Do NOT call any blocks.
 
 For example, to wire up Datadog:
 
@@ -80,8 +80,9 @@ For example, to wire up Datadog:
       end
     end
 
-    c.emit_metrics = proc do |resource, outcome|
-      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome:, resource: })
+    c.emit_metrics = proc do |resource, result|
+      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome, resource: })
+      TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
     end
   end
 ```
@@ -89,9 +90,9 @@ For example, to wire up Datadog:
 A couple notes:
 
   * `Datadog::Tracing` is provided by [the datadog gem](https://rubygems.org/gems/datadog)
-  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that outcome (`success`, `failure`, `exception`) of the action is reported so you can easily track e.g. success rates per action.
+  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that the result object provides access to the outcome (`success`, `failure`, `exception`) and elapsed time of the action.
   * The `wrap_with_trace` hook is an around hook - you must call the provided block to execute the action
-  * The `emit_metrics` hook is called after execution with the outcome - do not call any blocks
+  * The `emit_metrics` hook is called after execution with the result - do not call any blocks
 
 
 ## `logger`

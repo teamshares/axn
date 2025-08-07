@@ -1,7 +1,12 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`
+  * `elapsed_time` returns execution time in milliseconds (Float)
+  * `outcome` returns execution outcome as symbol (`:success`, `:failure`, or `:exception`)
+* [BREAKING] `emit_metrics` hook now receives the full `Action::Result` object instead of just the outcome
+  * Provides access to both outcome and elapsed time for richer metrics
+  * Example: `proc { |resource, result| TS::Metrics.histogram("action.duration", result.elapsed_time) }`
 
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)
