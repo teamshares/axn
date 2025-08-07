@@ -27,13 +27,6 @@ RSpec.configure do |config|
   end
 end
 
-def build_interactor(*modules, &block)
-  interactor = Class.new.send(:include, Interactor)
-  modules.each { |mod| interactor = interactor.send(:include, mod) }
-  interactor.class_eval(&block) if block
-  interactor
-end
-
 def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil)
   matcher = {
     exception: an_object_satisfying { |e| e.is_a?(error_class) && e.message == error_message },

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Action
-  # Raised internally when fail! is called -- triggers failure + rollback handling
+  # Raised internally when fail! is called
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
@@ -15,24 +15,6 @@ module Action
     end
 
     def inspect = "#<#{self.class.name} '#{message}'>"
-  end
-
-  class StepsRequiredForInheritanceSupportError < StandardError
-    def message
-      <<~MSG
-        ** Inheritance support requires the following steps: **
-
-        Add this to your Gemfile:
-          gem "interactor", github: "kaspermeyer/interactor", branch: "fix-hook-inheritance"
-
-        Explanation:
-          Unfortunately the upstream interactor gem does not support inheritance of hooks, which is required for this feature.
-          This branch is a temporary fork that adds support for inheritance of hooks, but published gems cannot specify a branch dependency.
-          In the future we may inline the upstream Interactor gem entirely and remove this necessity, but while we're in alpha we're continuing
-          to use the upstream gem for stability (and there has been recent activity on the project, so they *may* be adding additional functionality
-          soon).
-      MSG
-    end
   end
 
   class ContractViolation < StandardError

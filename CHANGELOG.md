@@ -3,6 +3,17 @@
 ## Unreleased
 * N/A
 
+## 0.1.0-alpha.2.6
+* Inline interactor code (no more dependency on unpublished forked branch to support inheritance)
+  * Refactor internals to clean implementation now that we have direct control
+  * [BREAKING] Replaced `Action.config.top_level_around_hook` with `.wrap_with_trace` and `.emit_metrics`
+  * [BREAKING] the order of hooks with inheritance has changed to more intuitively follow the natural pattern of setup (general → specific) and teardown (specific → general):
+    * **Before hooks**: Parent → Child (general setup first, then specific)
+    * **After hooks**: Child → Parent (specific cleanup first, then general)
+    * **Around hooks**: Parent wraps child (parent outside, child inside)
+* Removed non-functional #rollback traces (use on_exception hook instead)
+* Clean requires structure
+
 ## 0.1.0-alpha.2.5.3.1
 * Remove explicit 'require rspec' from `axn/testing/spec_helpers` (must already be loaded)
 
@@ -13,7 +24,7 @@
 ## 0.1.0-alpha.2.5.2
 * [BREAKING] Removing `EnqueueAllInBackground` + `EnqueueAllWorker` - better + simply solved at application level
 * [TEST] Expose spec helpers to consumers (add `require "axn/testing/spec_helpers"` to your `spec_helper.rb`)
-# [FEAT] Added ability to use custom Strategies (via e.g. `use :transaction`)
+* [FEAT] Added ability to use custom Strategies (via e.g. `use :transaction`)
 
 ## 0.1.0-alpha.2.5.1.2
 * [BUGFIX] Subfield expectations: now support hashes with string keys (using with_indifferent_access)

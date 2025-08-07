@@ -11,6 +11,3 @@ gem "sidekiq", "~> 7" # Background job processor -- when update, ensure `process
 
 gem "rake", "~> 13.0"
 gem "rubocop", "~> 1.21"
-
-# TODO: will need this in .gemspec if we want downstream consumers to have access
-gem "interactor", github: "kaspermeyer/interactor", branch: "fix-hook-inheritance"

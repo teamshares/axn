@@ -25,6 +25,121 @@ RSpec.describe Action do
         expect(subject.exception.message).to eq("Foo must be greater than 10")
       end
     end
+
+    context "with missing inbound args" do
+      subject { action.call(bar: 12, baz: 13) }
+
+      it "fails inbound" do
+        expect(subject).not_to be_ok
+        expect(subject.exception).to be_a(Action::InboundValidationError)
+      end
+    end
+
+    context "with outbound missing" do
+      let(:action) do
+        build_action do
+          expects :foo, type: Numeric, numericality: { greater_than: 10 }
+          exposes :bar
+        end
+      end
+
+      subject { action.call(foo: 11, baz: 13) }
+
+      it "fails" do
+        expect(subject).not_to be_ok
+        expect(subject.exception).to be_a(Action::OutboundValidationError)
+      end
+    end
+
+    context "allow_blank is passed to further validators as well" do
+      let(:action) do
+        build_action do
+          expects :foo, type: Numeric, numericality: { greater_than: 10 }, allow_blank: true
+          exposes :bar, allow_blank: true
+        end
+      end
+
+      subject { action.call(baz: 13) }
+
+      it { is_expected.to be_ok }
+    end
+
+    context "inbound defaults" do
+      let(:action) do
+        build_action do
+          expects :foo, type: Numeric, default: 99
+          exposes :foo
+        end
+      end
+
+      subject { action.call }
+
+      it "are set correctly" do
+        is_expected.to be_ok
+        expect(subject.foo).to eq 99
+      end
+    end
+
+    context "multiple fields validations per call" do
+      let(:action) do
+        build_action do
+          expects :foo, :bar, type: { with: Numeric, message: "should numberz" }
+        end
+      end
+
+      context "when one invalid" do
+        subject { action.call(foo: 1, bar: "string") }
+
+        it "fails" do
+          expect(subject).not_to be_ok
+          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception.message).to eq("Bar should numberz")
+        end
+      end
+
+      context "when set" do
+        subject { action.call(foo: 1, bar: 2) }
+
+        it { is_expected.to be_ok }
+      end
+    end
+
+    context "with multiple fields per expects line" do
+      let(:action) do
+        build_action do
+          expects :foo, :bar, type: Numeric
+        end
+      end
+
+      context "when valid" do
+        subject { action.call(foo: 1, bar: 2) }
+
+        it { is_expected.to be_ok }
+      end
+
+      context "when invalid" do
+        subject { action.call(foo: 1, bar: "string") }
+
+        it "fails" do
+          expect(subject).not_to be_ok
+          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception.message).to eq("Bar is not a Numeric")
+        end
+      end
+    end
+
+    context "with multiple expectations on the same field" do
+      let(:action) do
+        build_action do
+          expects :foo, type: String
+          expects :foo, numericality: { greater_than: 10 }
+        end
+      end
+
+      it "raises" do
+        expect { action.call(foo: 100) }.to raise_error(Action::DuplicateFieldError, "Duplicate field(s) declared: foo")
+      end
+    end
   end
 
   describe "outbound validation" do
@@ -86,6 +201,146 @@ RSpec.describe Action do
         expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
         expect(subject.exception).to be_a(Action::ContractViolation::UnknownExposure)
+      end
+    end
+
+    context "outbound defaults" do
+      let(:action) do
+        build_action do
+          exposes :foo, default: 99
+        end
+      end
+
+      subject { action.call }
+
+      it "are set correctly" do
+        is_expected.to be_ok
+        expect(subject.foo).to eq 99
+      end
+    end
+
+    context "support optional outbound exposures" do
+      let(:action) do
+        build_action do
+          expects :foo, type: :boolean
+          exposes :bar, allow_blank: true
+
+          def call
+            expose :bar, 99 if foo
+          end
+        end
+      end
+
+      context "when not set" do
+        subject { action.call(foo: false) }
+
+        it { is_expected.to be_ok }
+      end
+
+      context "when set" do
+        subject { action.call(foo: true) }
+
+        it { is_expected.to be_ok }
+      end
+    end
+
+    context "with multiple fields per exposes line" do
+      let(:action) do
+        build_action do
+          expects :baz
+          exposes :foo, :bar, type: Numeric
+
+          def call
+            expose foo: baz, bar: baz
+          end
+        end
+      end
+
+      context "when valid" do
+        subject { action.call(baz: 100) }
+
+        it { is_expected.to be_ok }
+      end
+
+      context "when invalid" do
+        subject { action.call(baz: "string") }
+
+        it "fails" do
+          expect(subject).not_to be_ok
+          expect(subject.exception).to be_a(Action::OutboundValidationError)
+          expect(subject.exception.message).to eq("Foo is not a Numeric and Bar is not a Numeric")
+        end
+      end
+    end
+
+    context "with multiple expectations on the same field" do
+      let(:action) do
+        build_action do
+          exposes :foo, type: String
+          exposes :foo, numericality: { greater_than: 10 }
+        end
+      end
+
+      it "raises" do
+        expect { action.call(baz: 100) }.to raise_error(Action::DuplicateFieldError, "Duplicate field(s) declared: foo")
+      end
+    end
+
+    context "is accessible on internal context" do
+      let(:action) do
+        build_action do
+          exposes :foo, default: "bar"
+
+          def call
+            puts "Foo is: #{foo}"
+          end
+        end
+      end
+
+      subject { action.call }
+
+      it "is accessible" do
+        # TODO: if we apply defaults earlier, this would say bar
+        expect { subject }.to output("Foo is: \n").to_stdout
+        expect(subject).to be_ok
+      end
+    end
+
+    context "with default that is a callable" do
+      let(:action) do
+        build_action do
+          exposes :foo, default: -> { "bar #{helper_method}" }
+
+          private
+
+          def helper_method = 123
+        end
+      end
+
+      subject { action.call }
+
+      it "has access to local helper methods" do
+        expect(subject.foo).to eq "bar 123"
+      end
+    end
+
+    describe "#expose" do
+      let(:action) do
+        build_action do
+          exposes :qux
+
+          def call
+            expose :qux, 11 # Just confirming can call twice
+            expose :qux, 99
+          end
+        end
+      end
+
+      subject { action.call }
+
+      it "can expose" do
+        is_expected.to be_ok
+        expect(subject.qux).to eq 99
       end
     end
   end
@@ -167,6 +422,64 @@ RSpec.describe Action do
           expect(action.call(foo: "")).not_to be_ok
         end
       end
+
+      context "explicit presence settings override implicit validation" do
+        let(:action) do
+          build_action do
+            expects :foo, type: :boolean
+          end
+        end
+
+        context "when false" do
+          subject { action.call(foo: false) }
+
+          it { is_expected.to be_ok }
+        end
+
+        context "when nil" do
+          subject { action.call(foo: nil) }
+
+          it "fails" do
+            expect(subject).not_to be_ok
+            expect(subject.exception).to be_a(Action::InboundValidationError)
+            expect(subject.exception.message).to eq("Foo is not a boolean")
+          end
+        end
+      end
+    end
+
+    describe "array of types" do
+      let(:action) do
+        build_action do
+          expects :foo, type: [String, Numeric]
+        end
+      end
+
+      context "when valid" do
+        subject { action.call(foo: 123) }
+
+        it { is_expected.to be_ok }
+      end
+
+      context "when invalid" do
+        subject { action.call(foo: Object.new) }
+
+        it "fails" do
+          expect(subject).not_to be_ok
+          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception.message).to eq("Foo is not one of String, Numeric")
+        end
+      end
+
+      context "when false" do
+        subject { action.call(foo: false) }
+
+        it "fails" do
+          expect(subject).not_to be_ok
+          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception.message).to eq("Foo can't be blank")
+        end
+      end
     end
 
     describe "uuid" do
@@ -184,6 +497,77 @@ RSpec.describe Action do
         expect(action.call(foo: "")).not_to be_ok
         expect(action.call(foo: 1)).not_to be_ok
         expect(action.call(foo: "abcabc")).not_to be_ok
+      end
+    end
+  end
+
+  describe "preprocessing" do
+    let(:action) do
+      build_action do
+        expects :date_as_date, type: Date, preprocess: ->(raw) { Date.parse(raw) }
+        exposes :date_as_date
+
+        def call
+          expose date_as_date:
+        end
+      end
+    end
+
+    context "when preprocessing is successful" do
+      subject { action.call(date_as_date: "2020-01-01") }
+
+      it "modifies the context" do
+        is_expected.to be_ok
+        expect(subject.date_as_date).to be_a(Date)
+      end
+    end
+
+    context "when preprocessing fails" do
+      subject { action.call(date_as_date: "") }
+
+      it "fails" do
+        expect(subject).not_to be_ok
+        expect(subject.exception).to be_a(Action::ContractViolation::PreprocessingError)
+      end
+    end
+  end
+
+  describe "custom validations" do
+    let(:action) do
+      build_action do
+        expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
+      end
+    end
+
+    context "when valid" do
+      subject { action.call(foo: 20) }
+
+      it { is_expected.to be_ok }
+    end
+
+    context "when invalid" do
+      subject { action.call(foo: 10) }
+
+      it "fails" do
+        expect(subject).not_to be_ok
+        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception.message).to eq("Foo must be pretty big")
+      end
+    end
+
+    context "when validator raises" do
+      let(:action) do
+        build_action do
+          expects :foo, validate: ->(_value) { raise "oops" }
+        end
+      end
+
+      subject { action.call(foo: 20) }
+
+      it "fails" do
+        expect(subject).not_to be_ok
+        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception.message).to eq("Foo failed validation: oops")
       end
     end
   end

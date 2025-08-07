@@ -23,6 +23,8 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"] = "https://github.com/teamshares/axn/blob/main/CHANGELOG.md"
 
+  spec.metadata["rubygems_mfa_required"] = "true"
+
   # Specify which files should be added to the gem when it is released.
   # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
   spec.files = Dir.chdir(__dir__) do
@@ -38,8 +40,4 @@ Gem::Specification.new do |spec|
   # Core dependencies
   spec.add_dependency "activemodel", "> 7.0"    # For contract validation
   spec.add_dependency "activesupport", "> 7.0"  # For compact_blank and friends
-
-  # NOTE: for inheritance support, need to specify a fork in consuming applications' Gemfile (see Gemfile here for syntax)
-  spec.add_dependency "interactor", "3.1.2" # We're building on this scaffolding for organizing business logic
-  spec.metadata["rubygems_mfa_required"] = "true"
 end

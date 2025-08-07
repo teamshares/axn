@@ -22,8 +22,6 @@ module Axn
         after: nil,
         around: nil,
 
-        # Allow dynamically assigning rollback method
-        rollback: nil,
         &block
       )
         args = block.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
@@ -83,16 +81,6 @@ module Axn
           axn.before(before) if before.present?
           axn.after(after) if after.present?
           axn.around(around) if around.present?
-
-          # Rollback
-          if rollback.present?
-            raise ArgumentError, "[Axn::Factory] Rollback must be a callable" unless rollback.respond_to?(:call) && rollback.respond_to?(:arity)
-            raise ArgumentError, "[Axn::Factory] Rollback must be a callable with no arguments" unless rollback.arity.zero?
-
-            axn.define_method(:rollback) do
-              instance_exec(&rollback)
-            end
-          end
 
           # Default exposure
           axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?

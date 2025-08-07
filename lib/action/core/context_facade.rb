@@ -120,7 +120,7 @@ module Action
     end
 
     # Poke some holes for necessary internal control methods
-    delegate :called!, :rollback!, :each_pair, to: :context
+    delegate :each_pair, to: :context
 
     # External interface
     delegate :success?, :exception, to: :context

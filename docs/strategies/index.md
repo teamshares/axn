@@ -155,7 +155,7 @@ Action::Strategies.register(:retry, RetryStrategy)
 
 ### Example: Complete Custom Strategy
 
-Here's a complete example of a custom strategy that adds performance monitoring:
+Here's a complete example of a custom strategy that adds performance monitoring (note Axn already logs elapsed time, this is just a toy example):
 
 ```ruby
 module PerformanceMonitoringStrategy

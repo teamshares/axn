@@ -1,31 +1,19 @@
 # frozen_string_literal: true
 
-module Axn; end
-require_relative "axn/version"
-require_relative "axn/util"
-
-require "interactor"
 require "active_support"
 
-require_relative "action/core/validation/validators/model_validator"
-require_relative "action/core/validation/validators/type_validator"
-require_relative "action/core/validation/validators/validate_validator"
+module Axn; end
+require "axn/version"
+require "axn/util"
+require "axn/factory"
 
-require_relative "action/core/exceptions"
-require_relative "action/core/logging"
-require_relative "action/core/configuration"
-require_relative "action/core/top_level_around_hook"
-require_relative "action/core/contract"
-require_relative "action/core/contract_for_subfields"
-require_relative "action/core/handle_exceptions"
-require_relative "action/core/hoist_errors"
-require_relative "action/core/use_strategy"
+require "action/configuration"
+require "action/exceptions"
 
-require_relative "axn/factory"
+require "action/core"
 
-require_relative "action/attachable"
-require_relative "action/enqueueable"
-require_relative "action/strategies"
+require "action/attachable"
+require "action/enqueueable"
 
 def Axn(callable, **) # rubocop:disable Naming/MethodName
   return callable if callable.is_a?(Class) && callable < Action
@@ -36,22 +24,7 @@ end
 module Action
   def self.included(base)
     base.class_eval do
-      include Interactor
-
-      # Include first so other modules can assume `log` is available
-      include Logging
-
-      # NOTE: include before any others that set hooks (like contract validation), so we
-      # can include those hook executions in any traces set from this hook.
-      include TopLevelAroundHook
-
-      include HandleExceptions
-      include Contract
-      include ContractForSubfields
-
-      include HoistErrors
-
-      include UseStrategy
+      include Core
 
       # --- Extensions ---
       include Attachable
@@ -59,16 +32,6 @@ module Action
 
       # Allow additional automatic includes to be configured
       Array(Action.config.additional_includes).each { |mod| include mod }
-
-      # ----
-
-      # ALPHA: Everything below here is to support inheritance
-
-      base.define_singleton_method(:inherited) do |base_klass|
-        return super(base_klass) if Interactor::Hooks::ClassMethods.private_method_defined?(:ancestor_hooks)
-
-        raise StepsRequiredForInheritanceSupportError
-      end
     end
   end
 end

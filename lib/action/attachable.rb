@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "attachable/base"
-require_relative "attachable/steps"
-require_relative "attachable/subactions"
+require "action/attachable/base"
+require "action/attachable/steps"
+require "action/attachable/subactions"
 
 module Action
   module Attachable

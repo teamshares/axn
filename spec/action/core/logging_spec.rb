@@ -24,7 +24,7 @@ RSpec.describe Action do
       is_expected.to be_ok
     end
 
-    Action::Logging::LEVELS.each do |level|
+    Action::Core::Logging::LEVELS.each do |level|
       describe "##{level}" do
         let(:level) { level }
 

@@ -3,9 +3,7 @@
 RSpec.describe Action do
   describe ".axnable_method" do
     let(:client) do
-      Class.new do
-        include Action
-
+      build_action do
         messages error: "bad"
 
         axnable_method :number, messages: { error: "badbadbad" } do |arg:|

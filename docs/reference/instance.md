@@ -12,7 +12,7 @@ Primarily used for its side effects, but it does return a Hash with the key/valu
 
 ## `#fail!`
 
-Called with a string, it immediately halts execution (including triggering any [rollback handler](/reference/class#rollback) you have defined) and sets `result.error` to the provided string.
+Called with a string, it immediately halts execution and sets `result.error` to the provided string.
 
 ## `#log`
 
@@ -31,7 +31,7 @@ A few details:
 * An explicit `fail!` call _will_ still fail the action
 * Any exceptions swallowed _will_ still be reported via the `on_exception` handler
 
-This is primarily useful in an after block, e.g. trigger notifications after an action has been taken.  If the notification fails to send you DO want to log the failure somewhere to investigate, but since the core action has already been taken often you do _not_ want to fail and roll back.
+This is primarily useful in an after block, e.g. trigger notifications after an action has been taken.  If the notification fails to send you DO want to log the failure somewhere to investigate, but since the core action has already been taken often you do _not_ want to fail.
 
 Example:
 

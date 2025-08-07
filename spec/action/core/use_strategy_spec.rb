@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Action::UseStrategy do
+RSpec.describe Action::Core::UseStrategy do
   let(:test_action) { build_action }
   let(:custom_strategy) do
     Module.new do

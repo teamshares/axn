@@ -3,9 +3,7 @@
 RSpec.describe Action do
   describe ".axn" do
     let(:client) do
-      Class.new do
-        include Action
-
+      build_action do
         def self.default_autolog_level = :debug
       end
     end
@@ -37,7 +35,10 @@ RSpec.describe Action do
 
         expect(client.foo).not_to be_ok
 
-        expect(Action.config.logger).to receive(:info).with(/got expected=true, arg=123/)
+        # The automatic logging will log before and after execution, so we need to expect multiple calls
+        expect(Action.config.logger).to receive(:info).with(/About to execute with: {expected: true, arg: 123}/).ordered
+        expect(Action.config.logger).to receive(:info).with(/got expected=true, arg=123/).ordered
+        expect(Action.config.logger).to receive(:info).with(/Execution completed \(with outcome: success\)/).ordered
         expect(client.foo(expected: true, arg: 123)).to be_ok
       end
 
@@ -142,9 +143,7 @@ RSpec.describe Action do
       end
 
       let(:client) do
-        Class.new do
-          include Action
-
+        build_action do
           def self.awesome_thing = 123
         end
       end
