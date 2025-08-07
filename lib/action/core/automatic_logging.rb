@@ -22,7 +22,7 @@ module Action
           _log_before
           yield
         ensure
-          _log_after(timing_start:, outcome: _determine_outcome)
+          _log_after(timing_start:, outcome: result.outcome)
         end
 
         def _log_before

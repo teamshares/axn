@@ -68,4 +68,19 @@ RSpec.describe "Action spec helpers" do
       it { expect(result.still_exposable).to eq(456) }
     end
   end
+
+  describe "Action::Result#outcome" do
+    it "returns success for ok results" do
+      expect(Action::Result.ok.outcome).to eq(Action::Result::OUTCOME_SUCCESS)
+    end
+
+    it "returns failure for error results" do
+      expect(Action::Result.error.outcome).to eq(Action::Result::OUTCOME_FAILURE)
+    end
+
+    it "returns exception for results with exceptions" do
+      result = Action::Result.error { raise "error" }
+      expect(result.outcome).to eq(Action::Result::OUTCOME_EXCEPTION)
+    end
+  end
 end

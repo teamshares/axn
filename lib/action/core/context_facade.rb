@@ -142,7 +142,23 @@ module Action
 
     def message = error || success
 
+    # Outcome constants for action execution results
+    OUTCOMES = [
+      OUTCOME_SUCCESS = :success,
+      OUTCOME_FAILURE = :failure,
+      OUTCOME_EXCEPTION = :exception,
+    ].freeze
+
+    def outcome
+      return OUTCOME_EXCEPTION if exception
+      return OUTCOME_FAILURE if failure?
+
+      OUTCOME_SUCCESS
+    end
+
     private
+
+    delegate :failure?, to: :context
 
     def exposure_method_name = :exposes
   end

@@ -23,11 +23,6 @@ require "action/core/timing"
 
 module Action
   module Core
-    # Outcome constants for action execution results
-    OUTCOME_SUCCESS = :success
-    OUTCOME_FAILURE = :failure
-    OUTCOME_EXCEPTION = :exception
-
     def self.included(base)
       base.class_eval do
         extend ClassMethods
@@ -91,17 +86,10 @@ module Action
 
       Action.config.emit_metrics.call(
         self.class.name || "AnonymousClass",
-        _determine_outcome,
+        result.outcome,
       )
     rescue StandardError => e
       Axn::Util.piping_error("running metrics hook", action: self, exception: e)
-    end
-
-    def _determine_outcome
-      return OUTCOME_EXCEPTION if @context.exception
-      return OUTCOME_FAILURE if @context.failure?
-
-      OUTCOME_SUCCESS
     end
   end
 end
