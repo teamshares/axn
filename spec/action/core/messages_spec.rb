@@ -40,6 +40,25 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             exposes :foo, default: "bar"
+            messages(success: -> { "Great news: #{@var} from #{result.foo}" })
+
+            def call
+              expose foo: "baz"
+              @var = 123
+            end
+          end
+        end
+
+        it { expect(result).to be_ok }
+        it "can access exposed vars via result.field pattern" do
+          is_expected.to eq("Great news: 123 from baz")
+        end
+      end
+
+      context "when dynamic tries to access exposed vars directly" do
+        let(:action) do
+          build_action do
+            exposes :foo, default: "bar"
             messages(success: -> { "Great news: #{@var} from #{foo}" })
 
             def call
@@ -50,8 +69,8 @@ RSpec.describe Action do
         end
 
         it { expect(result).to be_ok }
-        it "is evaluated within internal context + expected vars" do
-          is_expected.to eq("Great news: 123 from baz")
+        it "cannot access exposed vars directly (returns nil/empty)" do
+          is_expected.to eq("Great news: 123 from ")
         end
       end
 

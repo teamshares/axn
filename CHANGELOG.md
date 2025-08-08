@@ -9,6 +9,7 @@
   * Example: `proc { |resource, result| TS::Metrics.histogram("action.duration", result.elapsed_time) }`
 * [BREAKING] Replaced `Action.config.default_log_level` and `default_autolog_level` with simpler `log_level`
 * [BREAKING] `autolog_level` method overrides with e.g. `auto_log :warn` or `auto_log false`
+* [BREAKING] Direct access to exposed fields in callables no longer works -- `foo` becomes `result.foo`
 
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)
