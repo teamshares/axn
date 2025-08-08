@@ -38,7 +38,19 @@ module Action
           step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
 
           hoist_errors(prefix: "#{step.label} step") do
-            step.axn.call(@context)
+            # Merge exposed data from previous steps into provided data for this step
+            # This ensures each step has access to both original data and exposures from previous steps
+            merged_data = @context.provided_data.merge(@context.exposed_data)
+
+            # Execute the step with the merged context and get the result
+            step_result = step.axn.call(merged_data)
+
+            # Merge the step's exposures back into the main context
+            # Extract only the newly exposed data by getting the exposed_data from the step's context
+            step_context = step_result.instance_variable_get(:@context)
+            @context.exposed_data.merge!(step_context.exposed_data)
+
+            step_result
           end
         end
       end
