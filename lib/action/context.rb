@@ -4,13 +4,6 @@ module Action
   class Context
     attr_accessor :provided_data, :exposed_data
 
-    def self.build(context = {})
-      # TODO: check if this causes problems when passing context down the line with Steps
-      return context if context.is_a?(Context)
-
-      new(**context)
-    end
-
     def initialize(**provided_data)
       @provided_data = provided_data
       @exposed_data = {}

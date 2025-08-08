@@ -57,7 +57,7 @@ module Action
     end
 
     def initialize(context = {})
-      @context = Action::Context.build(context)
+      @context = Action::Context.new(**context)
     end
 
     # Main entry point for action execution
