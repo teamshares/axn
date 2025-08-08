@@ -171,7 +171,8 @@ module Action
         end
 
         def context_for_logging(direction = nil)
-          inspection_filter.filter(@context.to_h.slice(*_declared_fields(direction)))
+          combined_data_to_be_filtered = @context.provided_data.merge(@context.exposed_data)
+          inspection_filter.filter(combined_data_to_be_filtered.slice(*_declared_fields(direction)))
         end
 
         private

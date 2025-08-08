@@ -7,17 +7,13 @@ module Action
     def initialize(**provided_data)
       @provided_data = provided_data
       @exposed_data = {}
-      @failure = false
+
       # Framework-managed fields
+      @failure = false
       @exception = nil
       @error_from_user = nil
       @error_prefix = nil
       @elapsed_time = nil
-    end
-
-    # Hash conversion for logging - combines both data sets
-    def to_h
-      @provided_data.merge(@exposed_data)
     end
 
     # Framework state methods

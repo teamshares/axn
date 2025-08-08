@@ -28,9 +28,7 @@ module Action
             end
 
             # Call any global handlers
-            Action.config.on_exception(exception,
-                                       action: self,
-                                       context: respond_to?(:context_for_logging) ? context_for_logging : @context.to_h)
+            Action.config.on_exception(exception, action: self, context: context_for_logging)
           rescue StandardError => e
             # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
             # we don't want exception *handling* failures to cascade and overwrite the original exception.
