@@ -67,44 +67,44 @@ module Action
 
       private
 
-      def with_hooks
-        run_around_hooks do
-          run_before_hooks
+      def _with_hooks
+        _run_around_hooks do
+          _run_before_hooks
           yield
-          run_after_hooks
+          _run_after_hooks
         end
       end
 
       # Around hooks are reversed before injection to ensure parent hooks wrap
       # child hooks (parent outside, child inside).
-      def run_around_hooks(&block)
+      def _run_around_hooks(&block)
         self.class.around_hooks.reverse.inject(block) do |chain, hook|
-          proc { run_hook(hook, chain) }
+          proc { _run_hook(hook, chain) }
         end.call
       end
 
       # Before hooks run in the order they were added (parent first, then child).
-      def run_before_hooks
-        run_hooks(self.class.before_hooks)
+      def _run_before_hooks
+        _run_hooks(self.class.before_hooks)
       end
 
       # After hooks are reversed to ensure child hooks run before parent hooks
       # (specific cleanup first, then general).
-      def run_after_hooks
-        run_hooks(self.class.after_hooks.reverse)
+      def _run_after_hooks
+        _run_hooks(self.class.after_hooks.reverse)
       end
 
-      # Internal: Run a collection of hooks. The "run_hooks" method is the common
+      # Internal: Run a collection of hooks. The "_run_hooks" method is the common
       # interface by which collections of either before or after hooks are run.
       #
       # hooks - An Array of Symbol and Procs.
       #
       # Returns nothing.
-      def run_hooks(hooks)
-        hooks.each { |hook| run_hook(hook) }
+      def _run_hooks(hooks)
+        hooks.each { |hook| _run_hook(hook) }
       end
 
-      # Internal: Run an individual hook. The "run_hook" method is the common
+      # Internal: Run an individual hook. The "_run_hook" method is the common
       # interface by which an individual hook is run. If the given hook is a
       # symbol, the method is invoked whether public or private. If the hook is a
       # proc, the proc is evaluated in the context of the current instance.
@@ -115,7 +115,7 @@ module Action
       #        Symbol method name.
       #
       # Returns nothing.
-      def run_hook(hook, *)
+      def _run_hook(hook, *)
         hook.is_a?(Symbol) ? send(hook, *) : instance_exec(*, &hook)
       end
     end

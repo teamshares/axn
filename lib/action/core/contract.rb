@@ -176,6 +176,20 @@ module Action
 
         private
 
+        def _with_contract
+          _apply_inbound_preprocessing!
+          _apply_defaults!(:inbound)
+          _validate_contract!(:inbound)
+
+          yield
+
+          _apply_defaults!(:outbound)
+          _validate_contract!(:outbound)
+
+          # TODO: improve location of this triggering
+          _trigger_on_success if respond_to?(:_trigger_on_success)
+        end
+
         def _build_context_facade(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 

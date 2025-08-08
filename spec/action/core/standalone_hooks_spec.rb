@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Action::Core::Hooks do
-  describe "#with_hooks" do
+  describe "#_with_hooks" do
     def build_hooked(&block)
       hooked = Class.new.send(:include, Action::Core::Hooks)
 
@@ -17,7 +17,7 @@ RSpec.describe Action::Core::Hooks do
         end
 
         def process
-          with_hooks { steps << :process }
+          _with_hooks { steps << :process }
         end
       end
 

@@ -4,18 +4,16 @@ Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call
 
 
 ```ruby
-  Action.configure do |c|
-    c.on_exception = ...
+Action.configure do |c|
+  c.log_level = :info
+  c.logger = ...
+  c.on_exception = proc do |e, action:, context:|
+    message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
 
-    c.top_level_around_hook = ...
-
-    c.additional_includes = []
-
-    c.default_log_level = :info
-    c.default_autolog_level = :debug
-
-    c.logger = ...
+    Rails.logger.warn(message)
+    Honeybadger.notify(message, context: { axn_context: context })
   end
+end
 ```
 
 ## `on_exception`
@@ -68,7 +66,7 @@ If you're using an APM provider, observability can be greatly enhanced by adding
 The framework provides two distinct hooks for observability:
 
 - **`wrap_with_trace`**: An around hook that wraps the entire action execution. You MUST call the provided block to execute the action.
-- **`emit_metrics`**: A post-execution hook that receives the action outcome. Do NOT call any blocks.
+- **`emit_metrics`**: A post-execution hook that receives the action result. Do NOT call any blocks.
 
 For example, to wire up Datadog:
 
@@ -80,8 +78,9 @@ For example, to wire up Datadog:
       end
     end
 
-    c.emit_metrics = proc do |resource, outcome|
-      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome:, resource: })
+    c.emit_metrics = proc do |resource, result|
+      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome, resource: })
+      TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
     end
   end
 ```
@@ -89,9 +88,9 @@ For example, to wire up Datadog:
 A couple notes:
 
   * `Datadog::Tracing` is provided by [the datadog gem](https://rubygems.org/gems/datadog)
-  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that outcome (`success`, `failure`, `exception`) of the action is reported so you can easily track e.g. success rates per action.
+  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that the result object provides access to the outcome (`success`, `failure`, `exception`) and elapsed time of the action.
   * The `wrap_with_trace` hook is an around hook - you must call the provided block to execute the action
-  * The `emit_metrics` hook is called after execution with the outcome - do not call any blocks
+  * The `emit_metrics` hook is called after execution with the result - do not call any blocks
 
 
 ## `logger`
@@ -112,11 +111,11 @@ For example:
 
 For a practical example of this in practice, see [our 'memoization' recipe](/recipes/memoization).
 
-## `default_log_level`
+## `log_level`
 
-Sets the log level used when you call `log "Some message"` in your Action.  Note this is read via a `default_log_level` class method, so you can easily use inheritance to support different log levels for different sets of actions.
+Sets the log level used when you call `log "Some message"` in your Action.  Note this is read via a `log_level` class method, so you can easily use inheritance to support different log levels for different sets of actions.
 
-## `default_autolog_level`
+## Automatic Logging
 
 By default, every `action.call` will emit log lines when it is called and after it completes:
 
@@ -125,4 +124,27 @@ By default, every `action.call` will emit log lines when it is called and after 
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-You can change the default _auto_-log level separately from the log level used for your explicit `log` calls (just like above, via Action.config or a `default_autolog_level` class method).
+Automatic logging will log at `Action.config.log_level` by default, but can be overridden or disabled using the declarative `auto_log` method:
+
+```ruby
+# Set default for all actions (affects both explicit logging and automatic logging)
+Action.configure do |c|
+  c.log_level = :debug
+end
+
+# Override for specific actions
+class MyAction
+  auto_log :warn  # Use warn level for this action
+end
+
+class SilentAction
+  auto_log false  # Disable automatic logging for this action
+end
+
+# Use default level (no auto_log call needed)
+class DefaultAction
+  # Uses Action.config.log_level
+end
+```
+
+The `auto_log` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.

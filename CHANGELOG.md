@@ -1,7 +1,14 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`
+  * `elapsed_time` returns execution time in milliseconds (Float)
+  * `outcome` returns execution outcome as symbol (`:success`, `:failure`, or `:exception`)
+* [BREAKING] `emit_metrics` hook now receives the full `Action::Result` object instead of just the outcome
+  * Provides access to both outcome and elapsed time for richer metrics
+  * Example: `proc { |resource, result| TS::Metrics.histogram("action.duration", result.elapsed_time) }`
+* [BREAKING] Replaced `Action.config.default_log_level` and `default_autolog_level` with simpler `log_level`
+* [BREAKING] `autolog_level` method overrides with e.g. `auto_log :warn` or `auto_log false`
 
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)

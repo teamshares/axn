@@ -34,14 +34,14 @@ RSpec.describe Action do
         end
       end
 
-      describe "with .default_log_level set to #{level}" do
+      describe "with .log_level set to #{level}" do
         let(:action) do
           build_action do
             def call
               log("Hello!")
             end
           end.tap do |a|
-            a.define_singleton_method(:default_log_level) { level }
+            a.define_singleton_method(:log_level) { level }
           end
         end
 

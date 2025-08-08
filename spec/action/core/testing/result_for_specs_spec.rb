@@ -68,4 +68,34 @@ RSpec.describe "Action spec helpers" do
       it { expect(result.still_exposable).to eq(456) }
     end
   end
+
+  describe "Action::Result#outcome" do
+    it "returns success for ok results" do
+      expect(Action::Result.ok.outcome).to eq(Action::Result::OUTCOME_SUCCESS)
+    end
+
+    it "returns failure for error results" do
+      expect(Action::Result.error.outcome).to eq(Action::Result::OUTCOME_FAILURE)
+    end
+
+    it "returns exception for results with exceptions" do
+      result = Action::Result.error { raise "error" }
+      expect(result.outcome).to eq(Action::Result::OUTCOME_EXCEPTION)
+    end
+  end
+
+  describe "Action::Result#elapsed_time" do
+    it "returns elapsed time for action results" do
+      action = build_action
+      result = action.call
+      expect(result.elapsed_time).to be_a(Float)
+      expect(result.elapsed_time).to be >= 0
+    end
+
+    it "returns elapsed time for factory-created results" do
+      result = Action::Result.ok
+      expect(result.elapsed_time).to be_a(Float)
+      expect(result.elapsed_time).to be >= 0
+    end
+  end
 end

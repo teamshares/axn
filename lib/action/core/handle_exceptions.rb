@@ -18,7 +18,7 @@ module Action
           include InstanceMethods
           extend ClassMethods
 
-          def trigger_on_exception(exception)
+          def _trigger_on_exception(exception)
             interceptor = self.class._error_interceptor_for(exception:, action: self)
             return if interceptor&.should_report_error == false
 
@@ -37,7 +37,7 @@ module Action
             Axn::Util.piping_error("executing on_exception hooks", action: self, exception: e)
           end
 
-          def trigger_on_success
+          def _trigger_on_success
             # Call success handlers in child-first order (like after hooks)
             self.class._success_handlers.each do |handler|
               instance_exec(&handler)
@@ -120,6 +120,31 @@ module Action
       module InstanceMethods
         private
 
+        def _with_exception_swallowing
+          yield
+        rescue StandardError => e
+          # on_error handlers run for both unhandled exceptions and fail!
+          self.class._error_handlers.each do |handler|
+            handler.execute_if_matches(exception: e, action: self)
+          end
+
+          # on_failure handlers run ONLY for fail!
+          if e.is_a?(Action::Failure)
+            @context.instance_variable_set("@error_from_user", e.message) if e.message.present?
+
+            self.class._failure_handlers.each do |handler|
+              handler.execute_if_matches(exception: e, action: self)
+            end
+          else
+            # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+            _trigger_on_exception(e)
+
+            @context.exception = e
+          end
+
+          @context.instance_variable_set("@failure", true)
+        end
+
         def fail!(message = nil)
           @context.instance_variable_set("@failure", true)
           @context.error_from_user = message if message.present?
@@ -133,7 +158,7 @@ module Action
           # NOTE: re-raising so we can still fail! from inside the block
           raise e
         rescue StandardError => e
-          trigger_on_exception(e)
+          _trigger_on_exception(e)
         end
 
         delegate :default_error, to: :internal_context

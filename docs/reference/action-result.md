@@ -9,6 +9,8 @@ Every `call` invocation on an Action will return an `Action::Result` instance, w
 | `success` | User-facing success message (string), if `ok?` (else nil)
 | `message` | User-facing message (string), always defined (`ok? ? success : error`)
 | `exception` | If not `ok?` because an exception was swallowed, will be set to the swallowed exception (note: rarely used outside development; prefer to let the library automatically handle exception handling for you)
+| `outcome` | The execution outcome as a symbol (`:success`, `:failure`, or `:exception`)
+| `elapsed_time` | Execution time in milliseconds (Float)
 | any `expose`d values | guaranteed to be set if `ok?` (since they have outgoing presence validations by default; any missing would have failed the action)
 
 NOTE: `success` and `error` (and so implicitly `message`) can be configured per-action via [the `messages` declaration](/reference/class#messages).

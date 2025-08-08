@@ -6,20 +6,14 @@ RSpec.describe Action::Core::AutomaticLogging do
   describe "automatic logging" do
     let(:log_messages) { [] }
 
-    before do
-      allow_any_instance_of(action).to receive(:info) do |_instance, message, **options|
-        log_messages << { level: :info, message:, options: }
-      end
-      allow_any_instance_of(action).to receive(:debug) do |_instance, message, **options|
-        log_messages << { level: :debug, message:, options: }
-      end
-      allow_any_instance_of(action).to receive(:warn) do |_instance, message, **options|
-        log_messages << { level: :warn, message:, options: }
-      end
-    end
-
     context "when action succeeds" do
       let(:action) { build_action }
+
+      before do
+        allow(action).to receive(:info) do |message, **options|
+          log_messages << { level: :info, message:, options: }
+        end
+      end
 
       it "logs before and after successful execution" do
         action.call
@@ -45,6 +39,12 @@ RSpec.describe Action::Core::AutomaticLogging do
     context "when action fails" do
       let(:action) { build_action { def call = fail!("Something went wrong") } }
 
+      before do
+        allow(action).to receive(:info) do |message, **options|
+          log_messages << { level: :info, message:, options: }
+        end
+      end
+
       it "logs before and after failed execution" do
         action.call
 
@@ -62,6 +62,12 @@ RSpec.describe Action::Core::AutomaticLogging do
     context "when action raises exception" do
       let(:action) { build_action { def call = raise("Unexpected error") } }
 
+      before do
+        allow(action).to receive(:info) do |message, **options|
+          log_messages << { level: :info, message:, options: }
+        end
+      end
+
       it "logs before and after exception" do
         expect { action.call! }.to raise_error("Unexpected error")
 
@@ -76,16 +82,20 @@ RSpec.describe Action::Core::AutomaticLogging do
       end
     end
 
-    context "when action overrides autolog level" do
+    context "when action uses auto_log with specific level" do
       let(:action) do
         build_action do
-          def self.autolog_level
-            :warn
-          end
+          auto_log :warn
         end
       end
 
-      it "uses the custom autolog level" do
+      before do
+        allow(action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+      end
+
+      it "uses the specified level" do
         action.call
 
         expect(log_messages.length).to eq(2)
@@ -103,8 +113,42 @@ RSpec.describe Action::Core::AutomaticLogging do
       end
     end
 
-    context "when action uses default autolog level" do
+    context "when action disables logging with auto_log false" do
+      let(:action) do
+        build_action do
+          auto_log false
+        end
+      end
+
+      it "disables logging entirely" do
+        action.call
+
+        expect(log_messages).to be_empty
+      end
+    end
+
+    context "when action disables logging with auto_log nil" do
+      let(:action) do
+        build_action do
+          auto_log nil
+        end
+      end
+
+      it "disables logging entirely" do
+        action.call
+
+        expect(log_messages).to be_empty
+      end
+    end
+
+    context "when action uses default auto_log level" do
       let(:action) { build_action }
+
+      before do
+        allow(action).to receive(:info) do |message, **options|
+          log_messages << { level: :info, message:, options: }
+        end
+      end
 
       it "uses the default autolog level" do
         action.call
@@ -121,6 +165,52 @@ RSpec.describe Action::Core::AutomaticLogging do
 
         expect(before_log).to be_present
         expect(after_log).to be_present
+      end
+    end
+  end
+
+  describe "inheritance" do
+    let(:log_messages) { [] }
+
+    let(:parent_action_class) do
+      build_action do
+        auto_log :debug
+      end
+    end
+
+    it "inherits the auto_log setting" do
+      # Set up logging mocks for the parent action class
+      allow(parent_action_class).to receive(:debug) do |message, **options|
+        log_messages << { level: :debug, message:, options: }
+      end
+
+      parent_action_class.call
+
+      expect(log_messages.length).to eq(2)
+      log_messages.each { |log| expect(log[:level]).to eq(:debug) }
+    end
+
+    context "when child overrides auto_log" do
+      let(:child_action) do
+        Class.new(parent_action_class) do
+          auto_log :warn
+
+          def call
+            # child implementation
+          end
+        end
+      end
+
+      it "uses the overridden level" do
+        # Set up logging mocks for the child action class
+        allow(child_action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+
+        child_action.call
+
+        expect(log_messages.length).to eq(2)
+        log_messages.each { |log| expect(log[:level]).to eq(:warn) }
       end
     end
   end

@@ -3,10 +3,9 @@
 module Action
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
-    attr_writer :logger, :env, :on_exception, :additional_includes, :default_log_level, :default_autolog_level
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level
 
-    def default_log_level = @default_log_level ||= :info
-    def default_autolog_level = @default_autolog_level ||= :info
+    def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
 

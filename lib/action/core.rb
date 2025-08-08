@@ -9,6 +9,7 @@ require "action/core/hoist_errors"
 require "action/core/handle_exceptions"
 require "action/core/automatic_logging"
 require "action/core/use_strategy"
+require "action/core/tracing"
 
 # CONSIDER: make class names match file paths?
 require "action/core/validation/validators/model_validator"
@@ -28,6 +29,8 @@ module Action
         include Core::Hooks
         include Core::Logging
         include Core::AutomaticLogging
+        include Core::Tracing
+        include Core::Timing
 
         include Core::HandleExceptions
 
@@ -42,7 +45,7 @@ module Action
 
     module ClassMethods
       def call(context = {})
-        new(context).tap(&:run).result
+        new(context).tap(&:_run).result
       end
 
       def call!(context = {})
@@ -57,68 +60,16 @@ module Action
       @context = Action::Context.build(context)
     end
 
-    def with_tracing(&)
-      return yield unless Action.config.wrap_with_trace
-
-      Action.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)
-    rescue StandardError => e
-      Axn::Util.piping_error("running trace hook", action: self, exception: e)
-    end
-
-    def with_logging
-      timing_start = Core::Timing.now
-      _log_before
-      yield
-    ensure
-      _log_after(timing_start:, outcome: _determine_outcome)
-    end
-
-    def with_contract
-      _apply_inbound_preprocessing!
-      _apply_defaults!(:inbound)
-      _validate_contract!(:inbound)
-
-      yield
-
-      _apply_defaults!(:outbound)
-      _validate_contract!(:outbound)
-
-      # TODO: improve location of this triggering
-      trigger_on_success if respond_to?(:trigger_on_success)
-    end
-
-    def with_exception_swallowing
-      yield
-    rescue StandardError => e
-      # on_error handlers run for both unhandled exceptions and fail!
-      self.class._error_handlers.each do |handler|
-        handler.execute_if_matches(exception: e, action: self)
-      end
-
-      # on_failure handlers run ONLY for fail!
-      if e.is_a?(Action::Failure)
-        @context.instance_variable_set("@error_from_user", e.message) if e.message.present?
-
-        self.class._failure_handlers.each do |handler|
-          handler.execute_if_matches(exception: e, action: self)
-        end
-      else
-        # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
-        trigger_on_exception(e)
-
-        @context.exception = e
-      end
-
-      @context.instance_variable_set("@failure", true)
-    end
-
-    def run
-      with_tracing do
-        with_logging do
-          with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-            with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-              with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                call
+    # Main entry point for action execution
+    def _run
+      _with_tracing do
+        _with_logging do
+          _with_timing do
+            _with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+              _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+                _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                  call
+                end
               end
             end
           end
@@ -128,6 +79,7 @@ module Action
       _emit_metrics
     end
 
+    # User-defined action logic - override this method in your action classes
     def call; end
 
     private
@@ -137,17 +89,10 @@ module Action
 
       Action.config.emit_metrics.call(
         self.class.name || "AnonymousClass",
-        _determine_outcome,
+        result,
       )
     rescue StandardError => e
       Axn::Util.piping_error("running metrics hook", action: self, exception: e)
-    end
-
-    def _determine_outcome
-      return "exception" if @context.exception
-      return "failure" if @context.failure?
-
-      "success"
     end
   end
 end
