@@ -128,8 +128,6 @@ module Action
 
           # on_failure handlers run ONLY for fail!
           if e.is_a?(Action::Failure)
-            @context.error_from_user = e.message if e.message.present?
-
             self.class._failure_handlers.each do |handler|
               handler.execute_if_matches(exception: e, action: self)
             end
@@ -142,11 +140,6 @@ module Action
 
           # Set failure state using accessor method
           @context.send(:failure=, true)
-        end
-
-        def fail!(message = nil)
-          @context.error_from_user = message if message.present?
-          raise Action::Failure, message
         end
 
         def try

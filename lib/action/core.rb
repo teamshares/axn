@@ -82,6 +82,8 @@ module Action
     # User-defined action logic - override this method in your action classes
     def call; end
 
+    delegate :fail!, to: :@context
+
     private
 
     def _emit_metrics

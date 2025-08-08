@@ -16,6 +16,11 @@ module Action
       @elapsed_time = nil
     end
 
+    def fail!(message = nil)
+      @error_from_user = message if message.present?
+      raise Action::Failure, message
+    end
+
     # Framework state methods
     def success? = !@failure
     def failure? = @failure || false
