@@ -114,13 +114,15 @@ module Action
           define_method(field) { internal_context.public_send(field) }
         end
 
-        def _define_model_reader(field, klass)
+        def _define_model_reader(field, klass, &id_extractor)
           name = field.to_s.delete_suffix("_id")
           raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
           raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
 
+          id_extractor ||= -> { public_send(field) }
+
           define_memoized_reader_method(name) do
-            Validators::ModelValidator.instance_for(field:, klass:, id: public_send(field))
+            Validators::ModelValidator.instance_for(field:, klass:, id: instance_exec(&id_extractor))
           end
         end
 

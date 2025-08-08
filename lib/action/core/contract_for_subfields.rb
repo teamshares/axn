@@ -86,7 +86,7 @@ module Action
             Action::Validation::Subfields.extract(field, public_send(on))
           end
 
-          _define_model_reader(field, validations[:model]) if validations.key?(:model)
+          _define_model_reader(field, validations[:model]) { Action::Validation::Subfields.extract(field, public_send(on)) } if validations.key?(:model)
         end
       end
 

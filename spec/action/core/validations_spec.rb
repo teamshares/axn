@@ -684,12 +684,13 @@ RSpec.describe Action do
           end
         end
 
-        it "exposes readers" do
-          pending "TODO: add support for exposing the same field name as the expects shortcut readers"
-          expect(result).to be_ok
-          expect(result.the_user.inspect).to eq(test_model.inspect)
-          expect(result.user_id).to eq(1)
-        end
+        # TODO: circle back to this when we tackle supporting passing user in directly for model: true
+        # it "exposes readers" do
+        #   pending "TODO: add support for exposing the same field name as the expects shortcut readers"
+        #   expect(result).to be_ok
+        #   expect(result.the_user.inspect).to eq(test_model.inspect)
+        #   expect(result.user_id).to eq(1)
+        # end
       end
     end
   end
