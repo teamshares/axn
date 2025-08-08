@@ -15,7 +15,7 @@ module Action
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
         singleton_class.define_method(field) do
-          data_source[field]
+          context_data_source[field]
         end
       end
     end
@@ -32,28 +32,9 @@ module Action
 
     attr_reader :action, :context
 
-    def exposure_method_name = raise NotImplementedError
+    def action_name = @action.class.name.presence || "The action"
 
-    def data_source = raise NotImplementedError
-
-    def other_data_source = raise NotImplementedError
-
-    # Add nice error message for missing methods
-    def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
-      # Check if this field exists in the primary data source but wasn't declared
-      if data_source.key?(method_name.to_sym)
-        msg = <<~MSG
-          Method ##{method_name} is not available on #{self.class.name}!
-
-          #{@action.class.name || "The action"} may be missing a line like:
-            #{exposure_method_name} :#{method_name}
-        MSG
-
-        raise Action::ContractViolation::MethodNotAllowed, msg
-      end
-
-      super
-    end
+    def context_data_source = raise NotImplementedError
 
     def determine_error_message(only_default: false)
       return @context.error_from_user if @context.error_from_user.present?
@@ -95,11 +76,22 @@ module Action
 
     private
 
-    def exposure_method_name = :expects
+    def context_data_source = @context.provided_data
 
-    def data_source = @context.provided_data
+    def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
+      if @context.__combined_data.key?(method_name.to_sym)
+        msg = <<~MSG
+          Method ##{method_name} is not available on Action::InternalContext!
 
-    def other_data_source = @context.exposed_data
+          #{action_name} may be missing a line like:
+            expects :#{method_name}
+        MSG
+
+        raise Action::ContractViolation::MethodNotAllowed, msg
+      end
+
+      super
+    end
   end
 
   # Outbound / External ContextFacade
@@ -176,11 +168,22 @@ module Action
 
     delegate :failure?, to: :context
 
-    def exposure_method_name = :exposes
+    def context_data_source = @context.exposed_data
 
-    def data_source = @context.exposed_data
+    def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
+      if @context.__combined_data.key?(method_name.to_sym)
+        msg = <<~MSG
+          Method ##{method_name} is not available on Action::Result!
 
-    def other_data_source = @context.provided_data
+          #{action_name} may be missing a line like:
+            exposes :#{method_name}
+        MSG
+
+        raise Action::ContractViolation::MethodNotAllowed, msg
+      end
+
+      super
+    end
   end
 
   class Inspector

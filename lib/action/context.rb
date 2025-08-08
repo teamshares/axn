@@ -21,6 +21,9 @@ module Action
       raise Action::Failure, message
     end
 
+    # INTERNAL: base for further filtering (for logging) or providing user with usage hints
+    def __combined_data = @provided_data.merge(@exposed_data)
+
     # Framework state methods
     def success? = !@failure
     def failure? = @failure || false
