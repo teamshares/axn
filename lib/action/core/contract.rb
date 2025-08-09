@@ -168,12 +168,12 @@ module Action
           kwargs.each do |key, value|
             raise Action::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
 
-            @context.exposed_data[key] = value
+            @__context.exposed_data[key] = value
           end
         end
 
         def context_for_logging(direction = nil)
-          inspection_filter.filter(@context.__combined_data.slice(*_declared_fields(direction)))
+          inspection_filter.filter(@__context.__combined_data.slice(*_declared_fields(direction)))
         end
 
         private
@@ -198,7 +198,7 @@ module Action
           klass = direction == :inbound ? Action::InternalContext : Action::Result
           implicitly_allowed_fields = direction == :inbound ? _declared_fields(:outbound) : []
 
-          klass.new(action: self, context: @context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
+          klass.new(action: self, context: @__context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
         end
 
         def inspection_filter

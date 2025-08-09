@@ -57,7 +57,7 @@ module Action
     end
 
     def initialize(context = {})
-      @context = Action::Context.new(**context)
+      @__context = Action::Context.new(**context)
     end
 
     # Main entry point for action execution
@@ -82,7 +82,7 @@ module Action
     # User-defined action logic - override this method in your action classes
     def call; end
 
-    delegate :fail!, to: :@context
+    delegate :fail!, to: :@__context
 
     private
 

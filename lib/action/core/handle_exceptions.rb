@@ -135,11 +135,11 @@ module Action
             # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
             _trigger_on_exception(e)
 
-            @context.exception = e
+            @__context.exception = e
           end
 
           # Set failure state using accessor method
-          @context.send(:failure=, true)
+          @__context.send(:failure=, true)
         end
 
         def try

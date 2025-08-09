@@ -9,9 +9,9 @@ module Action
         internal_field_configs.each do |config|
           next unless config.preprocess
 
-          initial_value = @context.provided_data[config.field]
+          initial_value = @__context.provided_data[config.field]
           new_value = config.preprocess.call(initial_value)
-          @context.provided_data[config.field] = new_value
+          @__context.provided_data[config.field] = new_value
         rescue StandardError => e
           raise Action::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}"
         end
@@ -37,9 +37,9 @@ module Action
           # For outbound defaults, first copy values from provided_data for fields that are both expected and exposed
           external_field_configs.each do |config|
             field = config.field
-            next if @context.exposed_data[field].present? # Already has a value
+            next if @__context.exposed_data[field].present? # Already has a value
 
-            @context.exposed_data[field] = @context.provided_data[field] if @context.provided_data[field].present?
+            @__context.exposed_data[field] = @__context.provided_data[field] if @__context.provided_data[field].present?
           end
         end
 
@@ -49,7 +49,7 @@ module Action
         end.compact
 
         defaults_mapping.each do |field, default_value_getter|
-          data_hash = direction == :inbound ? @context.provided_data : @context.exposed_data
+          data_hash = direction == :inbound ? @__context.provided_data : @__context.exposed_data
           next if data_hash[field].present?
 
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter

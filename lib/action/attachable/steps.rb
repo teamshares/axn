@@ -40,15 +40,16 @@ module Action
           hoist_errors(prefix: "#{step.label} step") do
             # Merge exposed data from previous steps into provided data for this step
             # This ensures each step has access to both original data and exposures from previous steps
-            merged_data = @context.provided_data.merge(@context.exposed_data)
+            merged_data = @__context.provided_data.merge(@__context.exposed_data)
 
             # Execute the step with the merged context and get the result
             step_result = step.axn.call(merged_data)
 
             # Merge the step's exposures back into the main context
-            # Extract only the newly exposed data by getting the exposed_data from the step's context
-            step_context = step_result.instance_variable_get(:@context)
-            @context.exposed_data.merge!(step_context.exposed_data)
+            # Extract the exposed data from the step result by reading its declared fields
+            step_result.declared_fields.each do |field|
+              @__context.exposed_data[field] = step_result.public_send(field)
+            end
 
             step_result
           end
