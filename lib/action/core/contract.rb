@@ -4,7 +4,8 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
 require "action/core/validation/fields"
-require "action/core/context_facade"
+require "action/result"
+require "action/core/context/internal"
 
 module Action
   module Core

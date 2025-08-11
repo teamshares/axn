@@ -1,0 +1,95 @@
+# frozen_string_literal: true
+
+require "action/core/context/facade"
+require "action/core/context/facade_inspector"
+
+module Action
+  # Outbound / External ContextFacade
+  class Result < ContextFacade
+    # For ease of mocking return results in tests
+    class << self
+      def ok(msg = nil, **exposures)
+        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+
+        Axn::Factory.build(exposes:, messages: { success: msg }) do
+          exposures.each do |key, value|
+            expose(key, value)
+          end
+        end.call
+      end
+
+      def error(msg = nil, **exposures, &block)
+        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+        rescues = [-> { true }, msg]
+
+        Axn::Factory.build(exposes:, rescues:) do
+          exposures.each do |key, value|
+            expose(key, value)
+          end
+          block.call if block_given?
+          fail!
+        end.call
+      end
+    end
+
+    # Poke some holes for necessary internal control methods
+    delegate :each_pair, to: :context
+
+    # External interface
+    delegate :ok?, :exception, to: :context
+
+    def error
+      return if ok?
+
+      [@context.error_prefix, determine_error_message].compact.join(" ").squeeze(" ")
+    end
+
+    def success
+      return unless ok?
+
+      stringified(action._success_msg).presence || "Action completed successfully"
+    end
+
+    def ok = success
+
+    def message = error || success
+
+    # Outcome constants for action execution results
+    OUTCOMES = [
+      OUTCOME_SUCCESS = :success,
+      OUTCOME_FAILURE = :failure,
+      OUTCOME_EXCEPTION = :exception,
+    ].freeze
+
+    def outcome
+      return OUTCOME_EXCEPTION if exception
+      return OUTCOME_FAILURE if @context.failed?
+
+      OUTCOME_SUCCESS
+    end
+
+    # Elapsed time in milliseconds
+    def elapsed_time
+      @context.elapsed_time
+    end
+
+    private
+
+    def context_data_source = @context.exposed_data
+
+    def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
+      if @context.__combined_data.key?(method_name.to_sym)
+        msg = <<~MSG
+          Method ##{method_name} is not available on Action::Result!
+
+          #{action_name} may be missing a line like:
+            exposes :#{method_name}
+        MSG
+
+        raise Action::ContractViolation::MethodNotAllowed, msg
+      end
+
+      super
+    end
+  end
+end
