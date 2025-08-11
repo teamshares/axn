@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`
   * `elapsed_time` returns execution time in milliseconds (Float)
   * `outcome` returns execution outcome as symbol (`:success`, `:failure`, or `:exception`)
