@@ -38,21 +38,23 @@ module Action
           step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
 
           hoist_errors(prefix: "#{step.label} step") do
-            # Merge exposed data from previous steps into provided data for this step
-            # This ensures each step has access to both original data and exposures from previous steps
-            merged_data = @__context.provided_data.merge(@__context.exposed_data)
-
-            # Execute the step with the merged context and get the result
-            step_result = step.axn.call(**merged_data)
-
-            # Merge the step's exposures back into the main context
-            # Extract the exposed data from the step result by reading its declared fields
-            step_result.declared_fields.each do |field|
-              @__context.exposed_data[field] = step_result.public_send(field)
+            step.axn.call(**merged_context_data).tap do |step_result|
+              merge_step_exposures!(step_result)
             end
-
-            step_result
           end
+        end
+      end
+
+      private
+
+      def merged_context_data
+        @__context.__combined_data
+      end
+
+      # Each step can expect the data exposed from the previous steps
+      def merge_step_exposures!(step_result)
+        step_result.declared_fields.each do |field|
+          @__context.exposed_data[field] = step_result.public_send(field)
         end
       end
     end
