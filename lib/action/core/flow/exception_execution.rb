@@ -1,0 +1,79 @@
+# frozen_string_literal: true
+
+module Action
+  module Core
+    module Flow
+      module ExceptionExecution
+        def self.included(base)
+          base.class_eval do
+            include InstanceMethods
+
+            def _trigger_on_exception(exception)
+              interceptor = self.class._error_interceptor_for(exception:, action: self)
+              return if interceptor&.should_report_error == false
+
+              # Call any handlers registered on *this specific action* class
+              self.class._exception_handlers.each do |handler|
+                handler.execute_if_matches(exception:, action: self)
+              end
+
+              # Call any global handlers
+              Action.config.on_exception(exception, action: self, context: context_for_logging)
+            rescue StandardError => e
+              # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
+              # we don't want exception *handling* failures to cascade and overwrite the original exception.
+              Axn::Util.piping_error("executing on_exception hooks", action: self, exception: e)
+            end
+
+            def _trigger_on_success
+              # Call success handlers in child-first order (like after hooks)
+              self.class._success_handlers.each do |handler|
+                instance_exec(&handler)
+              rescue StandardError => e
+                # Log the error but continue with other handlers
+                Axn::Util.piping_error("executing on_success hook", action: self, exception: e)
+              end
+            end
+          end
+        end
+
+        module InstanceMethods
+          private
+
+          def _with_exception_handling
+            yield
+          rescue StandardError => e
+            # on_error handlers run for both unhandled exceptions and fail!
+            self.class._error_handlers.each do |handler|
+              handler.execute_if_matches(exception: e, action: self)
+            end
+
+            # on_failure handlers run ONLY for fail!
+            if e.is_a?(Action::Failure)
+              self.class._failure_handlers.each do |handler|
+                handler.execute_if_matches(exception: e, action: self)
+              end
+            else
+              # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+              _trigger_on_exception(e)
+
+              @__context.exception = e
+            end
+
+            # Set failure state using accessor method
+            @__context.send(:failure=, true)
+          end
+
+          def try
+            yield
+          rescue Action::Failure => e
+            # NOTE: re-raising so we can still fail! from inside the block
+            raise e
+          rescue StandardError => e
+            _trigger_on_exception(e)
+          end
+        end
+      end
+    end
+  end
+end
