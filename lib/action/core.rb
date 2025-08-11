@@ -44,20 +44,20 @@ module Action
     end
 
     module ClassMethods
-      def call(context = {})
-        new(context).tap(&:_run).result
+      def call(**)
+        new(**).tap(&:_run).result
       end
 
-      def call!(context = {})
-        result = call(context)
+      def call!(**)
+        result = call(**)
         return result if result.ok?
 
         raise result.exception || Action::Failure.new(result.error)
       end
     end
 
-    def initialize(context = {})
-      @__context = Action::Context.new(**context)
+    def initialize(**)
+      @__context = Action::Context.new(**)
     end
 
     # Main entry point for action execution

@@ -43,7 +43,7 @@ module Action
             merged_data = @__context.provided_data.merge(@__context.exposed_data)
 
             # Execute the step with the merged context and get the result
-            step_result = step.axn.call(merged_data)
+            step_result = step.axn.call(**merged_data)
 
             # Merge the step's exposures back into the main context
             # Extract the exposed data from the step result by reading its declared fields
