@@ -11,6 +11,7 @@
 * [BREAKING] `autolog_level` method overrides with e.g. `auto_log :warn` or `auto_log false`
 * [BREAKING] Direct access to exposed fields in callables no longer works -- `foo` becomes `result.foo`
 * [BREAKING] Removed `success?` check on Action::Result (use `ok?` instead)
+* [FEAT] Added callback and strategy support to Axn::Factory.build
 
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)

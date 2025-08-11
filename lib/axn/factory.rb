@@ -22,6 +22,15 @@ module Axn
         after: nil,
         around: nil,
 
+        # Callbacks
+        on_success: nil,
+        on_failure: nil,
+        on_error: nil,
+        on_exception: nil,
+
+        # Strategies
+        use: [],
+
         &block
       )
         args = block.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
@@ -81,6 +90,27 @@ module Axn
           axn.before(before) if before.present?
           axn.after(after) if after.present?
           axn.around(around) if around.present?
+
+          # Callbacks
+          axn.on_success(&on_success) if on_success.present?
+          axn.on_failure(&on_failure) if on_failure.present?
+          axn.on_error(&on_error) if on_error.present?
+          axn.on_exception(&on_exception) if on_exception.present?
+
+          # Strategies
+          Array(use).each do |strategy|
+            if strategy.is_a?(Array)
+              strategy_name, *config_args = strategy
+              if config_args.last.is_a?(Hash)
+                *other_args, config = config_args
+                axn.use(strategy_name, *other_args, **config)
+              else
+                axn.use(strategy_name, *config_args)
+              end
+            else
+              axn.use(strategy)
+            end
+          end
 
           # Default exposure
           axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?
