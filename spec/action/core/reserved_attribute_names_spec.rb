@@ -33,7 +33,7 @@ RSpec.describe Action do
         end
       end
 
-      it { is_expected.to be_success }
+      it { is_expected.to be_ok }
     end
 
     context "with reserved attribute names" do

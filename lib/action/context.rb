@@ -25,8 +25,8 @@ module Action
     def __combined_data = @provided_data.merge(@exposed_data)
 
     # Framework state methods
-    def success? = !@failure
-    def failure? = @failure || false
+    def ok? = !@failure
+    def failed? = @failure || false
 
     # Framework field accessors
     attr_accessor :exception, :error_from_user, :error_prefix, :elapsed_time

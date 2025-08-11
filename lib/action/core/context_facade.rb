@@ -126,8 +126,7 @@ module Action
     delegate :each_pair, to: :context
 
     # External interface
-    delegate :success?, :exception, to: :context
-    def ok? = success?
+    delegate :ok?, :exception, to: :context
 
     def error
       return if ok?
@@ -154,7 +153,7 @@ module Action
 
     def outcome
       return OUTCOME_EXCEPTION if exception
-      return OUTCOME_FAILURE if failure?
+      return OUTCOME_FAILURE if @context.failed?
 
       OUTCOME_SUCCESS
     end
@@ -165,8 +164,6 @@ module Action
     end
 
     private
-
-    delegate :failure?, to: :context
 
     def context_data_source = @context.exposed_data
 
@@ -206,7 +203,7 @@ module Action
     def status
       return unless facade.is_a?(Action::Result)
 
-      return "[OK]" if context.success?
+      return "[OK]" if context.ok?
       unless context.exception
         return context.error_from_user.present? ? "[failed with '#{context.error_from_user}']" : "[failed]"
       end
