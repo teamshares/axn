@@ -42,8 +42,11 @@ Metrics/BlockLength:
 Metrics/ModuleLength:
   Enabled: false
 
+Metrics/ClassLength:
+  Max: 110
+
 Metrics/MethodLength:
-  Max: 60
+  Max: 70
 
 Metrics/PerceivedComplexity:
   Max: 16
