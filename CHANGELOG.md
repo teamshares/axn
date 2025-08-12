@@ -13,6 +13,7 @@
 * [BREAKING] spec_helpers: removed rarely used `build_axn`; renamed existing `build_action` -> `build_axn`
 * [FEAT] `Axn::Factory.build` can receive a callable OR a block
 * [FEAT] Added `#finalized?` method to `Axn::Result` to check if result has completed execution
+* [FEAT] Added `type: :params` validation option for `expects`/`exposes` that accepts Hash or ActionController::Parameters (Rails-compatible)
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

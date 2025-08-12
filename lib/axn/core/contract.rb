@@ -144,7 +144,10 @@ module Axn
               { allow_nil: true }.merge(v)
             end
           else
-            validations[:presence] = true unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean)
+            unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean) || Array(validations[:type]).include?(:params)
+              validations[:presence] =
+                true
+            end
           end
 
           fields.map { |field| [field, validations] }

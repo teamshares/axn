@@ -499,6 +499,43 @@ RSpec.describe Axn do
         expect(action.call(foo: "abcabc")).not_to be_ok
       end
     end
+
+    describe "params" do
+      let(:action) do
+        build_axn do
+          expects :foo, type: :params
+        end
+      end
+
+      it "validates" do
+        expect(action.call(foo: {})).to be_ok
+        expect(action.call(foo: { key: "value" })).to be_ok
+
+        expect(action.call(foo: nil)).not_to be_ok
+        expect(action.call(foo: "")).not_to be_ok
+        expect(action.call(foo: 1)).not_to be_ok
+        expect(action.call(foo: [])).not_to be_ok
+      end
+
+      context "with ActionController::Parameters" do
+        before do
+          # Create a mock ActionController::Parameters class if not defined
+          unless defined?(ActionController::Parameters)
+            stub_const("ActionController::Parameters", Class.new(Hash) do
+              def initialize(params = {})
+                super()
+                merge!(params)
+              end
+            end)
+          end
+        end
+
+        it "validates ActionController::Parameters" do
+          params = ActionController::Parameters.new(key: "value")
+          expect(action.call(foo: params)).to be_ok
+        end
+      end
+    end
   end
 
   describe "preprocessing" do
