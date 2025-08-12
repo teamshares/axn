@@ -159,6 +159,101 @@ RSpec.shared_examples "can build Axns from callables" do
       end
     end
   end
+
+  context "setting callbacks" do
+    let(:on_success) { -> { puts "on_success" } }
+    let(:on_failure) { ->(_exception) { puts "on_failure" } }
+    let(:on_error) { ->(_exception) { puts "on_error" } }
+    let(:on_exception) { ->(_exception) { puts "on_exception" } }
+
+    let(:kwargs) do
+      { on_success:, on_failure:, on_error:, on_exception: }
+    end
+
+    context "when success" do
+      let(:callable) { -> { puts "call" } }
+
+      it "executes on_success callback" do
+        expect do
+          expect(axn.call).to be_ok
+        end.to output("call\non_success\n").to_stdout
+      end
+    end
+
+    context "when failure via fail!" do
+      let(:callable) { -> { fail! "test failure" } }
+
+      it "executes on_failure and on_error callbacks" do
+        expect do
+          expect(axn.call).not_to be_ok
+        end.to output("on_error\non_failure\n").to_stdout
+      end
+    end
+
+    context "when exception raised" do
+      let(:callable) { -> { raise "test exception" } }
+
+      it "executes on_exception and on_error callbacks" do
+        expect do
+          expect(axn.call).not_to be_ok
+        end.to output("on_error\non_exception\n").to_stdout
+      end
+    end
+  end
+
+  context "setting use strategies" do
+    let(:callable) { -> { puts "call" } }
+
+    before do
+      # Create a test strategy
+      test_strategy = Module.new do
+        def self.included(base)
+          base.class_eval do
+            def test_method
+              "strategy loaded"
+            end
+          end
+        end
+      end
+
+      # Register it with the strategy system
+      Action::Strategies.register(:test_strategy, test_strategy)
+    end
+
+    after do
+      # Clean up the strategy registry
+      Action::Strategies.clear!
+    end
+
+    context "with simple strategy name" do
+      let(:kwargs) { { use: :test_strategy } }
+
+      it "includes the strategy" do
+        expect(axn.call).to be_ok
+        # Verify the strategy was used
+        expect(axn.new).to respond_to(:test_method)
+        expect(axn.new.test_method).to eq("strategy loaded")
+      end
+    end
+
+    context "with multiple strategies" do
+      let(:kwargs) { { use: [:test_strategy] } }
+
+      it "includes all strategies" do
+        expect(axn.call).to be_ok
+        expect(axn.new).to respond_to(:test_method)
+      end
+    end
+
+    context "with strategy array without config" do
+      let(:kwargs) { { use: [:test_strategy] } }
+
+      it "includes the strategy without configuration" do
+        expect(axn.call).to be_ok
+        expect(axn.new).to respond_to(:test_method)
+      end
+    end
+  end
 end
 
 RSpec.describe Axn::Factory do

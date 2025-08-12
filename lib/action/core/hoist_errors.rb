@@ -46,8 +46,8 @@ module Action
 
         # Separate method to allow overriding in subclasses
         def _handle_hoisted_errors(result, prefix: nil)
-          @context.exception = result.exception if result.exception.present?
-          @context.error_prefix = prefix if prefix.present?
+          @__context.exception = result.exception if result.exception.present?
+          @__context.error_prefix = prefix if prefix.present?
 
           error = result.exception.is_a?(Action::Failure) ? result.exception.message : result.error
           fail! error

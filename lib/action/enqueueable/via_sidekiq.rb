@@ -18,9 +18,9 @@ module Action
             bang = args.size > 1 ? args.last : false
 
             if bang
-              self.class.call!(context)
+              self.class.call!(**context)
             else
-              self.class.call(context)
+              self.class.call(**context)
             end
           end
 

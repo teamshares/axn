@@ -4,7 +4,8 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
 require "action/core/validation/fields"
-require "action/core/context_facade"
+require "action/result"
+require "action/core/context/internal"
 
 module Action
   module Core
@@ -70,13 +71,13 @@ module Action
         private
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
-          fail! success? ok?
+          fail! ok?
           inspect default_error
           each_pair
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
-          fail! success? ok?
+          fail! ok?
           inspect each_pair default_error
           ok error success message
         ].freeze
@@ -114,13 +115,15 @@ module Action
           define_method(field) { internal_context.public_send(field) }
         end
 
-        def _define_model_reader(field, klass)
+        def _define_model_reader(field, klass, &id_extractor)
           name = field.to_s.delete_suffix("_id")
           raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
           raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
 
+          id_extractor ||= -> { public_send(field) }
+
           define_memoized_reader_method(name) do
-            Validators::ModelValidator.instance_for(field:, klass:, id: public_send(field))
+            Validators::ModelValidator.instance_for(field:, klass:, id: instance_exec(&id_extractor))
           end
         end
 
@@ -166,12 +169,12 @@ module Action
           kwargs.each do |key, value|
             raise Action::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
 
-            @context.public_send("#{key}=", value)
+            @__context.exposed_data[key] = value
           end
         end
 
         def context_for_logging(direction = nil)
-          inspection_filter.filter(@context.to_h.slice(*_declared_fields(direction)))
+          inspection_filter.filter(@__context.__combined_data.slice(*_declared_fields(direction)))
         end
 
         private
@@ -196,7 +199,7 @@ module Action
           klass = direction == :inbound ? Action::InternalContext : Action::Result
           implicitly_allowed_fields = direction == :inbound ? _declared_fields(:outbound) : []
 
-          klass.new(action: self, context: @context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
+          klass.new(action: self, context: @__context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
         end
 
         def inspection_filter

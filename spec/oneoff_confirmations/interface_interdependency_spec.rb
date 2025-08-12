@@ -22,7 +22,12 @@ RSpec.describe "One-off confirmation" do
       subject { action.call }
 
       it { is_expected.to be_ok }
-      it { expect(subject.instance_variable_get("@context").channel).to eq("web") }
+      it "sets the default channel value" do
+        # Create an action instance to access its internal context for verification
+        action_instance = action.new
+        action_instance._run
+        expect(action_instance.instance_variable_get("@__context").provided_data[:channel]).to eq("web")
+      end
     end
 
     context "interdependencies to consider for future support" do

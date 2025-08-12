@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`
   * `elapsed_time` returns execution time in milliseconds (Float)
   * `outcome` returns execution outcome as symbol (`:success`, `:failure`, or `:exception`)
@@ -9,6 +12,9 @@
   * Example: `proc { |resource, result| TS::Metrics.histogram("action.duration", result.elapsed_time) }`
 * [BREAKING] Replaced `Action.config.default_log_level` and `default_autolog_level` with simpler `log_level`
 * [BREAKING] `autolog_level` method overrides with e.g. `auto_log :warn` or `auto_log false`
+* [BREAKING] Direct access to exposed fields in callables no longer works -- `foo` becomes `result.foo`
+* [BREAKING] Removed `success?` check on Action::Result (use `ok?` instead)
+* [FEAT] Added callback and strategy support to Axn::Factory.build
 
 ## 0.1.0-alpha.2.6
 * Inline interactor code (no more dependency on unpublished forked branch to support inheritance)

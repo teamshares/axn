@@ -15,6 +15,8 @@ module Action
       end
 
       def read_attribute_for_validation(attr)
+        # The context here is actually a facade (InternalContext or Result)
+        # which already handles reading from the correct data source
         @context.public_send(attr)
       end
 

@@ -6,7 +6,7 @@ require "action/strategies"
 require "action/core/hooks"
 require "action/core/logging"
 require "action/core/hoist_errors"
-require "action/core/handle_exceptions"
+require "action/core/flow"
 require "action/core/automatic_logging"
 require "action/core/use_strategy"
 require "action/core/tracing"
@@ -32,7 +32,7 @@ module Action
         include Core::Tracing
         include Core::Timing
 
-        include Core::HandleExceptions
+        include Core::Flow
 
         include Core::ContractValidation
         include Core::Contract
@@ -44,20 +44,20 @@ module Action
     end
 
     module ClassMethods
-      def call(context = {})
-        new(context).tap(&:_run).result
+      def call(**)
+        new(**).tap(&:_run).result
       end
 
-      def call!(context = {})
-        result = call(context)
+      def call!(**)
+        result = call(**)
         return result if result.ok?
 
         raise result.exception || Action::Failure.new(result.error)
       end
     end
 
-    def initialize(context = {})
-      @context = Action::Context.build(context)
+    def initialize(**)
+      @__context = Action::Context.new(**)
     end
 
     # Main entry point for action execution
@@ -65,7 +65,7 @@ module Action
       _with_tracing do
         _with_logging do
           _with_timing do
-            _with_exception_swallowing do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+            _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
               _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
                 _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
                   call
@@ -81,6 +81,8 @@ module Action
 
     # User-defined action logic - override this method in your action classes
     def call; end
+
+    delegate :fail!, to: :@__context
 
     private
 

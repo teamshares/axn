@@ -79,7 +79,7 @@ class Foo
   expects :name, type: String
   exposes :meaning_of_life
 
-  messages success: -> { "Revealed the secret of life to #{name}" }, # [!code focus:2]
+  messages success: -> { "Revealed to #{name}: #{result.meaning_of_life}" }, # [!code focus:2]
            error: ->(e) { "No secret of life for you: #{e.message}" }
 
   def call
