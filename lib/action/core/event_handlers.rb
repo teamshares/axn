@@ -2,6 +2,22 @@
 
 module Action
   module EventHandlers
+    # Shared block evaluation with consistent arity handling and error piping
+    module EvalAdapter
+      module_function
+
+      def call_block(action:, block:, exception: nil, operation: "executing handler")
+        if exception && block.respond_to?(:arity) && block.arity == 1
+          action.instance_exec(exception, &block)
+        else
+          action.instance_exec(&block)
+        end
+      rescue StandardError => e
+        Axn::Util.piping_error(operation, action:, exception: e)
+        nil
+      end
+    end
+
     # Small, immutable, copy-on-write registry keyed by event_type.
     # Stores arrays of entries (handlers/interceptors) in insertion order.
     class Registry
@@ -47,14 +63,8 @@ module Action
       def execute_if_matches(action:, exception:)
         return false unless matches?(exception:, action:)
 
-        if @handler.respond_to?(:arity) && @handler.arity == 1
-          action.instance_exec(exception, &@handler)
-        else
-          action.instance_exec(&@handler)
-        end
+        EvalAdapter.call_block(action:, block: @handler, exception:, operation: "executing handler")
         true
-      rescue StandardError => e
-        Axn::Util.piping_error("executing handler", action:, exception: e)
       end
     end
 
@@ -73,6 +83,18 @@ module Action
         return true if static?
 
         @matcher.matches?(exception:, action:)
+      end
+
+      # Returns a string (truthy) when it applies and yields a non-blank message; otherwise nil
+      def execute_if_matches(action:, exception:)
+        return nil unless matches?(exception:, action:)
+
+        value = if message.respond_to?(:call)
+                  EvalAdapter.call_block(action:, block: message, exception:, operation: "determining message callable")
+                else
+                  message
+                end
+        value.respond_to?(:presence) ? value.presence : value
       end
     end
 

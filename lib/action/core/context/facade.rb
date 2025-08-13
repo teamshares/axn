@@ -46,9 +46,8 @@ module Action
       unless only_default
         Array(action.class._messages_registry&.for(:error)).each do |handler|
           next if handler.respond_to?(:static?) && handler.static?
-          next unless handler.matches?(exception:, action:)
 
-          msg = stringified(handler.message, exception:)
+          msg = handler.execute_if_matches(action:, exception:)
           return msg if msg.present?
         end
       end
@@ -57,7 +56,7 @@ module Action
       Array(action.class._messages_registry&.for(:error)).each do |handler|
         next unless handler.respond_to?(:static?) && handler.static?
 
-        msg = stringified(handler.message, exception:)
+        msg = handler.execute_if_matches(action:, exception:)
         return msg if msg.present?
       end
 
@@ -67,9 +66,7 @@ module Action
     def determine_success_message
       # Prefer conditional success interceptors if any match; first non-blank wins
       Array(action.class._messages_registry&.for(:success)).each do |handler|
-        next unless handler.matches?(exception: nil, action:)
-
-        msg = stringified(handler.message)
+        msg = handler.execute_if_matches(action:, exception: nil)
         return msg if msg.present?
       end
 
@@ -77,25 +74,13 @@ module Action
       Array(action.class._messages_registry&.for(:success)).each do |handler|
         next unless handler.respond_to?(:static?) && handler.static?
 
-        msg = stringified(handler.message)
+        msg = handler.execute_if_matches(action:, exception: nil)
         return msg if msg.present?
       end
 
       "Action completed successfully"
     end
 
-    # Allow for callable OR string messages
-    def stringified(msg, exception: nil)
-      return msg.presence unless msg.respond_to?(:call)
-
-      # The error message callable can take the exception as an argument
-      if exception && msg.arity == 1
-        action.instance_exec(exception, &msg)
-      else
-        action.instance_exec(&msg)
-      end
-    rescue StandardError => e
-      Axn::Util.piping_error("determining message callable", action:, exception: e)
-    end
+    # Adapter now lives in handlers
   end
 end
