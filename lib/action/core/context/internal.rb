@@ -11,6 +11,11 @@ module Action
       [@context.error_prefix, msg.presence || "Something went wrong"].compact.join(" ").squeeze(" ")
     end
 
+    def default_success
+      msg = action.class._static_message_for(:success, action:, exception: nil)
+      msg.presence || "Action completed successfully"
+    end
+
     private
 
     def context_data_source = @context.provided_data

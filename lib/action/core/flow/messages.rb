@@ -70,6 +70,7 @@ module Action
           end
 
           def default_error = new.internal_context.default_error
+          def default_success = new.internal_context.default_success
 
           # Private helpers
           def _add_message(kind, msg, matcher:, static:)
@@ -80,7 +81,7 @@ module Action
         end
 
         module InstanceMethods
-          delegate :default_error, to: :internal_context
+          delegate :default_error, :default_success, to: :internal_context
         end
       end
     end

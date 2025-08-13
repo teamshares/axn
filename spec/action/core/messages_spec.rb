@@ -141,6 +141,14 @@ RSpec.describe Action do
         it "supports class level default_error" do
           expect(action.default_error).to eq("Bad news!")
         end
+
+        it "supports class level default_success" do
+          klass = build_action do
+            success "Great news!"
+          end
+
+          expect(klass.default_success).to eq("Great news!")
+        end
       end
 
       context "when dynamic (callable)" do
