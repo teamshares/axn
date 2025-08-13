@@ -32,15 +32,17 @@ module Action
       attr_reader :index
     end
 
-    # NOTE: Message interceptors are handled via ConditionalHandler entries
-
-    class ConditionalHandler
+    class CallbackHandler
       def initialize(matcher:, handler:)
-        @matcher = Matcher.new(matcher)
+        @matcher = matcher.nil? ? nil : Matcher.new(matcher)
         @handler = handler
       end
 
-      delegate :matches?, to: :@matcher
+      def matches?(exception:, action:)
+        return true if @matcher.nil?
+
+        @matcher.matches?(exception:, action:)
+      end
 
       def execute_if_matches(action:, exception:)
         return false unless matches?(exception:, action:)
@@ -56,7 +58,6 @@ module Action
       end
     end
 
-    # Generic message handler used for success/error message interception
     class MessageHandler
       def initialize(matcher:, message:, static: false)
         @matcher = Matcher.new(matcher)
