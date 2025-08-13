@@ -21,50 +21,39 @@ module Action
             Array(_messages_registry.for(event_type))
           end
 
-          def success(message)
+          def success(message, if: nil)
             return true unless message.present?
 
-            entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
-            # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
-            self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
+            if binding.local_variable_get(:if)
+              matcher = binding.local_variable_get(:if)
+              entry = Action::EventHandlers::MessageHandler.new(matcher:, message:, static: false)
+              self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
+            else
+              entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
+              # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
+              self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
+            end
             true
           end
 
-          def error(message)
+          def error(message, if: nil)
             return true unless message.present?
 
-            entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
-            # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
-            self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
+            if binding.local_variable_get(:if)
+              matcher = binding.local_variable_get(:if)
+              entry = Action::EventHandlers::MessageHandler.new(matcher:, message:, static: false)
+              self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
+            else
+              entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
+              # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
+              self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
+            end
             true
-          end
-
-          def error_from(matcher = nil, message = nil, **match_and_messages)
-            _register_message_interceptor(:error, matcher, message, **match_and_messages)
-          end
-
-          def success_from(matcher = nil, message = nil, **match_and_messages)
-            _register_success_interceptor(matcher, message, **match_and_messages)
           end
 
           def default_error = new.internal_context.default_error
 
           # Private helpers
-
-          def _register_message_interceptor(kind, matcher, message, **match_and_messages)
-            pairs = { matcher => message }.compact.merge(match_and_messages)
-            raise ArgumentError, "#{kind}_from must be called with a key/value pair, or else keyword args" if pairs.empty? && [matcher,
-                                                                                                                               message].compact.size == 1
-
-            pairs.each do |(m, msg_callable)|
-              entry = Action::EventHandlers::MessageHandler.new(matcher: m, message: msg_callable, static: false)
-              self._messages_registry = _messages_registry.register(event_type: kind, entry:, prepend: true)
-            end
-          end
-
-          def _register_success_interceptor(matcher, message, **match_and_messages)
-            _register_message_interceptor(:success, matcher, message, **match_and_messages)
-          end
         end
 
         module InstanceMethods

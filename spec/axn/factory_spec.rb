@@ -133,31 +133,15 @@ RSpec.shared_examples "can build Axns from callables" do
     end
   end
 
-  context "setting error_from" do
-    let(:setting) { :error_from }
-
+  context "setting conditional error" do
     let(:callable) do
       -> { raise "error" }
     end
 
-    context "as hash" do
-      let(:kwargs) do
-        { setting => { -> { true } => "overridden msg" } }
-      end
+    let(:kwargs) { { error: [-> { true }, "overridden msg"] } }
 
-      it "works correctly" do
-        expect(axn.call.error).to eq("overridden msg")
-      end
-    end
-
-    context "as array" do
-      let(:kwargs) do
-        { setting => [-> { true }, "overridden msg"] }
-      end
-
-      it "works correctly" do
-        expect(axn.call.error).to eq("overridden msg")
-      end
+    it "works correctly" do
+      expect(axn.call.error).to eq("overridden msg")
     end
   end
 

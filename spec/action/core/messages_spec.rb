@@ -293,18 +293,14 @@ RSpec.describe Action do
           raise "something else"
         end
       end.tap do |a|
-        a.public_send(method_under_test, ArgumentError, ->(e) { "Argument error: #{e.message}" })
-        a.public_send(method_under_test, "Action::InboundValidationError" => "Inbound validation error!")
-        a.public_send(method_under_test, -> { param == 2 }, -> { "whoa a #{param}" })
-        a.public_send(method_under_test, -> { param == 3 }, -> { "whoa: #{@var}" })
-        a.public_send(method_under_test, -> { param == 4 }, -> { "whoa: #{default_error}" })
+        a.error ->(e) { "Argument error: #{e.message}" }, if: ArgumentError
+        a.error "Inbound validation error!", if: "Action::InboundValidationError"
+        a.error -> { "whoa a #{param}" }, if: -> { param == 2 }
+        a.error -> { "whoa: #{@var}" }, if: -> { param == 3 }
+        a.error -> { "whoa: #{default_error}" }, if: -> { param == 4 }
       end
     end
 
-    context "via .error_from" do
-      let(:method_under_test) { :error_from }
-
-      it_behaves_like "action with custom error layers"
-    end
+    it_behaves_like "action with custom error layers"
   end
 end

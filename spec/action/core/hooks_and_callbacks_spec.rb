@@ -14,7 +14,7 @@ RSpec.describe Action do
 
         before { puts "before" }
 
-        error_from -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+        error ->(e) { "rescued: #{e.message}" }, if: -> { should_rescue }
 
         # Callbacks
         on_success { puts "on_success" }
@@ -154,7 +154,7 @@ RSpec.describe Action do
 
           before { puts "before" }
 
-          error_from -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+          error ->(e) { "rescued: #{e.message}" }, if: -> { should_rescue }
 
           # Callbacks with filters
           on_success { puts "on_success" }

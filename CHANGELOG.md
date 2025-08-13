@@ -3,6 +3,8 @@
 ## Unreleased
 * [BREAKING] Replaced `messages` declaration with separate `success` and `error` calls
 * [BREAKING] Removed `rescues` method (use `error_from` for custom error messages; all exceptions now report to `on_exception` handlers)
+* [BREAKING] Replaced `error_from` with an optional `if:` argument on `error`
+* [FEAT] Implemented conditional success message filtering as well
 
 ## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`

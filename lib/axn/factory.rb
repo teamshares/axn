@@ -15,7 +15,6 @@ module Axn
         expects: [],
         success: nil,
         error: nil,
-        error_from: {},
 
         # Hooks
         before: nil,
@@ -73,6 +72,17 @@ module Axn
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn|
+          apply_message = lambda do |kind, value|
+            return unless value.present?
+
+            if value.is_a?(Array) && value.size == 2
+              matcher, msg = value
+              axn.public_send(kind, msg, if: matcher)
+            else
+              axn.public_send(kind, value)
+            end
+          end
+
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -81,10 +91,8 @@ module Axn
             axn.exposes(field, **opts)
           end
 
-          axn.success(success) if success.present?
-          axn.error(error) if error.present?
-
-          axn.error_from(**_array_to_hash(error_from)) if error_from.present?
+          apply_message.call(:success, success)
+          apply_message.call(:error, error)
 
           # Hooks
           axn.before(before) if before.present?
