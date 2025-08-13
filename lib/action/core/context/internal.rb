@@ -5,7 +5,7 @@ require "action/core/context/facade"
 module Action
   # Inbound / Internal ContextFacade
   class InternalContext < ContextFacade
-    # So can be referenced from within e.g. error_from callables
+    # Available for use from within message callables
     def default_error
       msg = action.class._static_message_for(:error, action:, exception: @context.exception || Action::Failure.new)
       [@context.error_prefix, msg.presence || "Something went wrong"].compact.join(" ").squeeze(" ")

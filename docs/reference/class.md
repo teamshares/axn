@@ -89,7 +89,7 @@ will succeed if given _either_ an actual Date object _or_ a string that Date.par
 
 The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
 
-Both methods accept a single argument that can be a string (returned directly) or a callable (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a callable that expects a positional argument, the exception that was raised will be passed in as that value.
+Both methods accept either a string (returned directly) or a block (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a block that expects a positional argument, the exception that was raised will be passed in as that value.
 
 In callables, you can access:
 - **Input data**: Use field names directly (e.g., `name`)
@@ -97,27 +97,23 @@ In callables, you can access:
 - **Instance methods and variables**: Direct access
 
 ```ruby
-success -> { "Hello #{name}, your greeting: #{result.greeting}" }
-error ->(e) { "Bad news: #{e.message}" }
+success { "Hello #{name}, your greeting: #{result.greeting}" }
+error { |e| "Bad news: #{e.message}" }
 ```
 
-## `error_from`
+## Conditional messages
 
-While `.error` sets the _default_ error message and is more commonly used, there are times when you want specific error messages for specific failure cases.
-
-`error_from` registers a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds. All exceptions with custom messages will still trigger the configured exception handlers (global or specific to this class).
-
-Callable matchers and messages follow the same data access patterns as other callables: input fields directly, output fields via `result.field`, instance variables, and methods.
+While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` matcher. The matcher can be an exception class, a class name string, or a callable (arity 0 or 1). The first matching non-blank conditional message wins; otherwise the static defaults are used.
 
 ```ruby
 error "bad"
 
 # Custom message with exception class matcher
-error_from ActiveRecord::InvalidRecord => "Invalid params provided"
+error "Invalid params provided", if: ActiveRecord::InvalidRecord
 
 # Custom message with callable matcher and message
-error_from ArgumentError, ->(e) { "Argument error: #{e.message}" }
-error_from -> { name == "bad" }, -> { "Bad input #{name}, result: #{result.status}" }
+error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
+error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
 ```
 
 ## Callbacks
@@ -161,7 +157,7 @@ class Foo
 end
 ```
 
-Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for [`error_from`](#error_from):
+Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:`):
 
 ```ruby
 class Foo
