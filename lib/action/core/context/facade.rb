@@ -35,22 +35,5 @@ module Action
     def action_name = @action.class.name.presence || "The action"
 
     def context_data_source = raise NotImplementedError
-
-    def determine_error_message(only_default: false)
-      return @context.error_from_user if @context.error_from_user.present?
-
-      # We need an exception for interceptors, and also in case the messages.error callable expects an argument
-      exception = @context.exception || Action::Failure.new
-
-      msg = action.class._message_for(:error, action:, exception:, only_default:)
-      msg.presence || "Something went wrong"
-    end
-
-    def determine_success_message
-      msg = action.class._message_for(:success, action:, exception: nil)
-      msg.presence || "Action completed successfully"
-    end
-
-    # Adapter now lives in handlers
   end
 end
