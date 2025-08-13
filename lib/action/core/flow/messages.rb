@@ -21,32 +21,32 @@ module Action
             Array(_messages_registry.for(event_type))
           end
 
-          def success(message, if: nil)
-            return true unless message.present?
+          def success(message = nil, **kwargs, &block)
+            matcher = kwargs.key?(:if) ? kwargs[:if] : nil
+            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
+            raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            if binding.local_variable_get(:if)
-              matcher = binding.local_variable_get(:if)
-              entry = Action::EventHandlers::MessageHandler.new(matcher:, message:, static: false)
-              self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
+            msg = block_given? ? block : message
+
+            if matcher
+              _add_message(:success, msg, matcher:, static: false)
             else
-              entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
-              # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
-              self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
+              _add_message(:success, msg, matcher: -> { true }, static: true)
             end
             true
           end
 
-          def error(message, if: nil)
-            return true unless message.present?
+          def error(message = nil, **kwargs, &block)
+            matcher = kwargs.key?(:if) ? kwargs[:if] : nil
+            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
+            raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            if binding.local_variable_get(:if)
-              matcher = binding.local_variable_get(:if)
-              entry = Action::EventHandlers::MessageHandler.new(matcher:, message:, static: false)
-              self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
+            msg = block_given? ? block : message
+
+            if matcher
+              _add_message(:error, msg, matcher:, static: false)
             else
-              entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
-              # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
-              self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
+              _add_message(:error, msg, matcher: -> { true }, static: true)
             end
             true
           end
@@ -54,6 +54,11 @@ module Action
           def default_error = new.internal_context.default_error
 
           # Private helpers
+          def _add_message(kind, msg, matcher:, static:)
+            entry = Action::EventHandlers::MessageHandler.new(matcher:, message: msg, static:)
+            self._messages_registry = _messages_registry.register(event_type: kind, entry:, prepend: true)
+          end
+          private :_add_message
         end
 
         module InstanceMethods

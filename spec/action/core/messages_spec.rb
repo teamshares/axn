@@ -18,7 +18,7 @@ RSpec.describe Action do
         it { is_expected.to eq("Great news!") }
       end
 
-      context "when dynamic" do
+      context "when dynamic (callable)" do
         let(:action) do
           build_action do
             expects :foo, default: "bar"
@@ -32,6 +32,24 @@ RSpec.describe Action do
 
         it { expect(result).to be_ok }
         it "is evaluated within internal context + expected vars" do
+          is_expected.to eq("Great news: 123 from bar")
+        end
+      end
+
+      context "when dynamic (block)" do
+        let(:action) do
+          build_action do
+            expects :foo, default: "bar"
+            success { "Great news: #{@var} from #{foo}" }
+
+            def call
+              @var = 123
+            end
+          end
+        end
+
+        it { expect(result).to be_ok }
+        it "evaluates the block in action context" do
           is_expected.to eq("Great news: 123 from bar")
         end
       end
@@ -125,7 +143,7 @@ RSpec.describe Action do
         end
       end
 
-      context "when dynamic" do
+      context "when dynamic (callable)" do
         let(:action) do
           build_action do
             expects :missing_param
@@ -145,6 +163,25 @@ RSpec.describe Action do
 
         it "supports class level default_error" do
           expect(action.default_error).to eq("Bad news: ")
+        end
+      end
+
+      context "when dynamic (block)" do
+        let(:action) do
+          build_action do
+            expects :missing_param
+            error { "Bad news: #{@var}" }
+
+            def call
+              @var = 123
+            end
+          end
+        end
+
+        it { expect(result).not_to be_ok }
+
+        it "is evaluated within internal context" do
+          is_expected.to eq("Bad news: ")
         end
       end
 
