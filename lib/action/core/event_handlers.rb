@@ -2,15 +2,37 @@
 
 module Action
   module EventHandlers
-    class CustomErrorInterceptor
-      def initialize(matcher:, message:)
-        @matcher = Matcher.new(matcher)
-        @message = message
+    # Small, immutable, copy-on-write registry keyed by event_type.
+    # Stores arrays of entries (handlers/interceptors) in insertion order.
+    class Registry
+      def self.empty = new({})
+
+      def initialize(index)
+        # Freeze arrays and the index for immutability
+        @index = index.transform_values { |arr| Array(arr).freeze }.freeze
       end
 
-      delegate :matches?, to: :@matcher
-      attr_reader :message
+      def register(event_type:, entry:, prepend: true)
+        key = event_type.to_sym
+        existing = Array(@index[key])
+        updated = prepend ? [entry] + existing : existing + [entry]
+        self.class.new(@index.merge(key => updated.freeze))
+      end
+
+      def for(event_type)
+        Array(@index[event_type.to_sym])
+      end
+
+      def empty?
+        @index.empty?
+      end
+
+      protected
+
+      attr_reader :index
     end
+
+    # NOTE: Message interceptors are handled via ConditionalHandler entries
 
     class ConditionalHandler
       def initialize(matcher:, handler:)
@@ -23,11 +45,29 @@ module Action
       def execute_if_matches(action:, exception:)
         return false unless matches?(exception:, action:)
 
-        action.instance_exec(exception, &@handler)
+        if @handler.respond_to?(:arity) && @handler.arity == 1
+          action.instance_exec(exception, &@handler)
+        else
+          action.instance_exec(&@handler)
+        end
         true
       rescue StandardError => e
         Axn::Util.piping_error("executing handler", action:, exception: e)
       end
+    end
+
+    # Generic message handler used for success/error message interception
+    class MessageHandler
+      def initialize(matcher:, message:, static: false)
+        @matcher = Matcher.new(matcher)
+        @message = message
+        @static = !!static
+      end
+
+      delegate :matches?, to: :@matcher
+      attr_reader :message
+
+      def static? = @static
     end
 
     class Matcher

@@ -10,7 +10,7 @@ module Action
 
             def _trigger_on_exception(exception)
               # Call any handlers registered on *this specific action* class
-              self.class._exception_handlers.each do |handler|
+              self.class._callbacks_registry.for(:exception).each do |handler|
                 handler.execute_if_matches(exception:, action: self)
               end
 
@@ -24,8 +24,8 @@ module Action
 
             def _trigger_on_success
               # Call success handlers in child-first order (like after hooks)
-              self.class._success_handlers.each do |handler|
-                instance_exec(&handler)
+              self.class._callbacks_registry.for(:success).each do |handler|
+                handler.execute_if_matches(exception: nil, action: self)
               rescue StandardError => e
                 # Log the error but continue with other handlers
                 Axn::Util.piping_error("executing on_success hook", action: self, exception: e)
@@ -41,15 +41,11 @@ module Action
             yield
           rescue StandardError => e
             # on_error handlers run for both unhandled exceptions and fail!
-            self.class._error_handlers.each do |handler|
-              handler.execute_if_matches(exception: e, action: self)
-            end
+            self.class._callbacks_registry.for(:error).each { |h| h.execute_if_matches(exception: e, action: self) }
 
             # on_failure handlers run ONLY for fail!
             if e.is_a?(Action::Failure)
-              self.class._failure_handlers.each do |handler|
-                handler.execute_if_matches(exception: e, action: self)
-              end
+              self.class._callbacks_registry.for(:failure).each { |h| h.execute_if_matches(exception: e, action: self) }
             else
               # on_exception handlers run for ONLY for unhandled exceptions.
               _trigger_on_exception(e)

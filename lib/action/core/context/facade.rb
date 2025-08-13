@@ -42,14 +42,48 @@ module Action
       # We need an exception for interceptors, and also in case the messages.error callable expects an argument
       exception = @context.exception || Action::Failure.new
 
-      msg = action._error_msg
-
+      # Try message handlers in order; pick first non-blank (non-static first)
       unless only_default
-        interceptor = action.class._error_interceptor_for(exception:, action:)
-        msg = interceptor.message if interceptor
+        Array(action.class._messages_registry&.for(:error)).each do |handler|
+          next if handler.respond_to?(:static?) && handler.static?
+          next unless handler.matches?(exception:, action:)
+
+          msg = stringified(handler.message, exception:)
+          return msg if msg.present?
+        end
       end
 
-      stringified(msg, exception:).presence || "Something went wrong"
+      # Try static error message entries (registered via .error); else default
+      Array(action.class._messages_registry&.for(:error)).each do |handler|
+        next unless handler.respond_to?(:static?) && handler.static?
+        next unless handler.matches?(exception:, action:)
+
+        msg = stringified(handler.message, exception:)
+        return msg if msg.present?
+      end
+
+      "Something went wrong"
+    end
+
+    def determine_success_message
+      # Prefer conditional success interceptors if any match; first non-blank wins
+      Array(action.class._messages_registry&.for(:success)).each do |handler|
+        next unless handler.matches?(exception: nil, action:)
+
+        msg = stringified(handler.message)
+        return msg if msg.present?
+      end
+
+      # Try static success message entries (registered via .success); else default
+      Array(action.class._messages_registry&.for(:success)).each do |handler|
+        next unless handler.respond_to?(:static?) && handler.static?
+        next unless handler.matches?(exception: nil, action:)
+
+        msg = stringified(handler.message)
+        return msg if msg.present?
+      end
+
+      "Action completed successfully"
     end
 
     # Allow for callable OR string messages

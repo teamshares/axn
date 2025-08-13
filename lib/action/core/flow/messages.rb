@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
+require "action/core/event_handlers"
+
 module Action
   module Core
     module Flow
       module Messages
         def self.included(base)
           base.class_eval do
-            class_attribute :_success_msg, :_error_msg
-            class_attribute :_custom_error_interceptors, default: []
+            class_attribute :_messages_registry, default: Action::EventHandlers::Registry.empty
 
             extend ClassMethods
             include InstanceMethods
@@ -15,38 +16,54 @@ module Action
         end
 
         module ClassMethods
+          # Internal introspection helper
+          def _messages_for(event_type)
+            Array(_messages_registry.for(event_type))
+          end
+
           def success(message)
-            self._success_msg = message if message.present?
+            return true unless message.present?
+
+            entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
+            # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
+            self._messages_registry = _messages_registry.register(event_type: :success, entry:, prepend: true)
             true
           end
 
           def error(message)
-            self._error_msg = message if message.present?
+            return true unless message.present?
+
+            entry = Action::EventHandlers::MessageHandler.new(matcher: -> { true }, message:, static: true)
+            # Prepend so child statics override parent statics; non-statics are resolved earlier anyway
+            self._messages_registry = _messages_registry.register(event_type: :error, entry:, prepend: true)
             true
           end
 
           def error_from(matcher = nil, message = nil, **match_and_messages)
-            _register_error_interceptor(matcher, message, **match_and_messages)
+            _register_message_interceptor(:error, matcher, message, **match_and_messages)
+          end
+
+          def success_from(matcher = nil, message = nil, **match_and_messages)
+            _register_success_interceptor(matcher, message, **match_and_messages)
           end
 
           def default_error = new.internal_context.default_error
 
           # Private helpers
 
-          def _error_interceptor_for(exception:, action:)
-            Array(_custom_error_interceptors).detect do |int|
-              int.matches?(exception:, action:)
+          def _register_message_interceptor(kind, matcher, message, **match_and_messages)
+            pairs = { matcher => message }.compact.merge(match_and_messages)
+            raise ArgumentError, "#{kind}_from must be called with a key/value pair, or else keyword args" if pairs.empty? && [matcher,
+                                                                                                                               message].compact.size == 1
+
+            pairs.each do |(m, msg_callable)|
+              entry = Action::EventHandlers::MessageHandler.new(matcher: m, message: msg_callable, static: false)
+              self._messages_registry = _messages_registry.register(event_type: kind, entry:, prepend: true)
             end
           end
 
-          def _register_error_interceptor(matcher, message, **match_and_messages)
-            raise ArgumentError, "error_from must be called with a key/value pair, or else keyword args" if [matcher, message].compact.size == 1
-
-            interceptors = { matcher => message }.compact.merge(match_and_messages).map do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
-              Action::EventHandlers::CustomErrorInterceptor.new(matcher:, message:)
-            end
-
-            self._custom_error_interceptors += interceptors
+          def _register_success_interceptor(matcher, message, **match_and_messages)
+            _register_message_interceptor(:success, matcher, message, **match_and_messages)
           end
         end
 

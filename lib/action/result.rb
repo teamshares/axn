@@ -53,7 +53,7 @@ module Action
     def success
       return unless ok?
 
-      stringified(action._success_msg).presence || "Action completed successfully"
+      determine_success_message
     end
 
     def ok = success
