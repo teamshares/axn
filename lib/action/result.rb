@@ -83,11 +83,11 @@ module Action
 
     def context_data_source = @context.exposed_data
 
-    def determine_error_message(only_default: false)
+    def determine_error_message
       return @context.error_from_user if @context.error_from_user.present?
 
       exception = @context.exception || Action::Failure.new
-      msg = action.class._message_for(:error, action:, exception:, only_default:)
+      msg = action.class._message_for(:error, action:, exception:)
       msg.presence || "Something went wrong"
     end
 
