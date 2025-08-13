@@ -9,9 +9,6 @@ module Action
             include InstanceMethods
 
             def _trigger_on_exception(exception)
-              interceptor = self.class._error_interceptor_for(exception:, action: self)
-              return if interceptor&.should_report_error == false
-
               # Call any handlers registered on *this specific action* class
               self.class._exception_handlers.each do |handler|
                 handler.execute_if_matches(exception:, action: self)
@@ -54,7 +51,7 @@ module Action
                 handler.execute_if_matches(exception: e, action: self)
               end
             else
-              # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+              # on_exception handlers run for ONLY for unhandled exceptions.
               _trigger_on_exception(e)
 
               @__context.exception = e

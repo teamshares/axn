@@ -20,13 +20,19 @@ module Action
 
       def error(msg = nil, **exposures, &block)
         exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
-        rescues = [-> { true }, msg]
 
-        Axn::Factory.build(exposes:, rescues:) do
+        Axn::Factory.build(exposes:, error: msg) do
           exposures.each do |key, value|
             expose(key, value)
           end
-          block.call if block_given?
+          if block_given?
+            begin
+              block.call
+            rescue StandardError => e
+              # Set the exception directly without triggering on_exception handlers
+              @__context.exception = e
+            end
+          end
           fail!
         end.call
       end

@@ -5,7 +5,7 @@ require "action/core/context/facade"
 module Action
   # Inbound / Internal ContextFacade
   class InternalContext < ContextFacade
-    # So can be referenced from within e.g. rescues callables
+    # So can be referenced from within e.g. error_from callables
     def default_error
       [@context.error_prefix, determine_error_message(only_default: true)].compact.join(" ").squeeze(" ")
     end

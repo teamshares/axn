@@ -14,7 +14,7 @@ RSpec.describe Action do
 
         before { puts "before" }
 
-        rescues -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+        error_from -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
 
         # Callbacks
         on_success { puts "on_success" }
@@ -154,7 +154,7 @@ RSpec.describe Action do
 
           before { puts "before" }
 
-          rescues -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+          error_from -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
 
           # Callbacks with filters
           on_success { puts "on_success" }
@@ -232,16 +232,6 @@ RSpec.describe Action do
             expect do
               expect(result).not_to be_ok
             end.to output("before\ncalling\non_exception: SPECIFIC\n").to_stdout
-          end
-
-          context "when rescues" do
-            let(:should_rescue) { true }
-
-            it "does not call on_exception" do
-              expect do
-                expect(result).not_to be_ok
-              end.to output("before\ncalling\n").to_stdout
-            end
           end
         end
       end

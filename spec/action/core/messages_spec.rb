@@ -249,10 +249,9 @@ RSpec.describe Action do
   end
 
   describe "custom error layers" do
-    shared_examples "action with custom error layers" do |opts = {}|
+    shared_examples "action with custom error layers" do
       before do
-        method = opts[:should_raise] ? :to : :not_to
-        expect_any_instance_of(action).send(method, receive(:_trigger_on_exception).and_call_original)
+        expect_any_instance_of(action).to receive(:_trigger_on_exception).and_call_original
       end
 
       it { expect(result).not_to be_ok }
@@ -305,16 +304,7 @@ RSpec.describe Action do
     context "via .error_from" do
       let(:method_under_test) { :error_from }
 
-      it_behaves_like "action with custom error layers", should_raise: true
-    end
-
-    context "via .rescues" do
-      let(:method_under_test) { :rescues }
-      before do
-        expect_any_instance_of(action).to receive(:_trigger_on_exception).and_call_original
-      end
-
-      it_behaves_like "action with custom error layers", should_raise: false
+      it_behaves_like "action with custom error layers"
     end
   end
 end

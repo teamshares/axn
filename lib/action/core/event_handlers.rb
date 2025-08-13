@@ -3,14 +3,13 @@
 module Action
   module EventHandlers
     class CustomErrorInterceptor
-      def initialize(matcher:, message:, should_report_error:)
+      def initialize(matcher:, message:)
         @matcher = Matcher.new(matcher)
         @message = message
-        @should_report_error = should_report_error
       end
 
       delegate :matches?, to: :@matcher
-      attr_reader :message, :should_report_error
+      attr_reader :message
     end
 
     class ConditionalHandler

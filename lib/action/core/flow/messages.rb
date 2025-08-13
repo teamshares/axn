@@ -26,11 +26,7 @@ module Action
           end
 
           def error_from(matcher = nil, message = nil, **match_and_messages)
-            _register_error_interceptor(matcher, message, should_report_error: true, **match_and_messages)
-          end
-
-          def rescues(matcher = nil, message = nil, **match_and_messages)
-            _register_error_interceptor(matcher, message, should_report_error: false, **match_and_messages)
+            _register_error_interceptor(matcher, message, **match_and_messages)
           end
 
           def default_error = new.internal_context.default_error
@@ -43,12 +39,11 @@ module Action
             end
           end
 
-          def _register_error_interceptor(matcher, message, should_report_error:, **match_and_messages)
-            method_name = should_report_error ? "error_from" : "rescues"
-            raise ArgumentError, "#{method_name} must be called with a key/value pair, or else keyword args" if [matcher, message].compact.size == 1
+          def _register_error_interceptor(matcher, message, **match_and_messages)
+            raise ArgumentError, "error_from must be called with a key/value pair, or else keyword args" if [matcher, message].compact.size == 1
 
             interceptors = { matcher => message }.compact.merge(match_and_messages).map do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
-              Action::EventHandlers::CustomErrorInterceptor.new(matcher:, message:, should_report_error:)
+              Action::EventHandlers::CustomErrorInterceptor.new(matcher:, message:)
             end
 
             self._custom_error_interceptors += interceptors

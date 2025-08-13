@@ -16,7 +16,6 @@ module Axn
         success: nil,
         error: nil,
         error_from: {},
-        rescues: {},
 
         # Hooks
         before: nil,
@@ -86,7 +85,6 @@ module Axn
           axn.error(error) if error.present?
 
           axn.error_from(**_array_to_hash(error_from)) if error_from.present?
-          axn.rescues(**_array_to_hash(rescues)) if rescues.present?
 
           # Hooks
           axn.before(before) if before.present?

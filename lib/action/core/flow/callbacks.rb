@@ -18,7 +18,7 @@ module Action
         end
 
         module ClassMethods
-          # ONLY raised exceptions (i.e. NOT fail!). Skipped if exception is rescued via .rescues.
+          # ONLY raised exceptions (i.e. NOT fail!).
           def on_exception(matcher = -> { true }, &handler)
             raise ArgumentError, "on_exception must be called with a block" unless block_given?
 
@@ -32,7 +32,7 @@ module Action
             self._failure_handlers += [Action::EventHandlers::ConditionalHandler.new(matcher:, handler:)]
           end
 
-          # Handles both fail! and unhandled exceptions... but is NOT affected by .rescues
+          # Handles both fail! and unhandled exceptions
           def on_error(matcher = -> { true }, &handler)
             raise ArgumentError, "on_error must be called with a block" unless block_given?
 

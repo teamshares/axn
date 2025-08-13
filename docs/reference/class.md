@@ -101,21 +101,21 @@ success -> { "Hello #{name}, your greeting: #{result.greeting}" }
 error ->(e) { "Bad news: #{e.message}" }
 ```
 
-## `error_from` and `rescues`
+## `error_from`
 
 While `.error` sets the _default_ error message and is more commonly used, there are times when you want specific error messages for specific failure cases.
 
-`error_from` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured exception handlers (global or specific to this class).
+`error_from` registers a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds. All exceptions with custom messages will still trigger the configured exception handlers (global or specific to this class).
 
 Callable matchers and messages follow the same data access patterns as other callables: input fields directly, output fields via `result.field`, instance variables, and methods.
 
 ```ruby
 error "bad"
 
-# Note this will NOT trigger Action.config.on_exception
-rescues ActiveRecord::InvalidRecord => "Invalid params provided"
+# Custom message with exception class matcher
+error_from ActiveRecord::InvalidRecord => "Invalid params provided"
 
-# These WILL trigger error handler (callable matcher + message with data access)
+# Custom message with callable matcher and message
 error_from ArgumentError, ->(e) { "Argument error: #{e.message}" }
 error_from -> { name == "bad" }, -> { "Bad input #{name}, result: #{result.status}" }
 ```
@@ -161,7 +161,7 @@ class Foo
 end
 ```
 
-Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for [`error_from` and `rescues`](#error-for-and-rescues):
+Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for [`error_from`](#error_from):
 
 ```ruby
 class Foo
