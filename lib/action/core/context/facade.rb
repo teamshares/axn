@@ -42,43 +42,13 @@ module Action
       # We need an exception for interceptors, and also in case the messages.error callable expects an argument
       exception = @context.exception || Action::Failure.new
 
-      # Try message handlers in order; pick first non-blank (non-static first)
-      unless only_default
-        Array(action.class._messages_registry&.for(:error)).each do |handler|
-          next if handler.respond_to?(:static?) && handler.static?
-
-          msg = handler.execute_if_matches(action:, exception:)
-          return msg if msg.present?
-        end
-      end
-
-      # Try static error message entries (registered via .error); else default
-      Array(action.class._messages_registry&.for(:error)).each do |handler|
-        next unless handler.respond_to?(:static?) && handler.static?
-
-        msg = handler.execute_if_matches(action:, exception:)
-        return msg if msg.present?
-      end
-
-      "Something went wrong"
+      msg = action.class._message_for(:error, action:, exception:, only_default:)
+      msg.presence || "Something went wrong"
     end
 
     def determine_success_message
-      # Prefer conditional success interceptors if any match; first non-blank wins
-      Array(action.class._messages_registry&.for(:success)).each do |handler|
-        msg = handler.execute_if_matches(action:, exception: nil)
-        return msg if msg.present?
-      end
-
-      # Try static success message entries (registered via .success); else default
-      Array(action.class._messages_registry&.for(:success)).each do |handler|
-        next unless handler.respond_to?(:static?) && handler.static?
-
-        msg = handler.execute_if_matches(action:, exception: nil)
-        return msg if msg.present?
-      end
-
-      "Action completed successfully"
+      msg = action.class._message_for(:success, action:, exception: nil)
+      msg.presence || "Action completed successfully"
     end
 
     # Adapter now lives in handlers

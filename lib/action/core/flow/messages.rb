@@ -16,6 +16,27 @@ module Action
         end
 
         module ClassMethods
+          # Internal: resolve a message for the given event
+          def _message_for(event_type, action:, exception: nil, only_default: false)
+            unless only_default
+              _messages_registry.for(event_type).each do |handler|
+                next if handler.respond_to?(:static?) && handler.static?
+
+                msg = handler.execute_if_matches(action:, exception:)
+                return msg if msg.present?
+              end
+            end
+
+            _messages_registry.for(event_type).each do |handler|
+              next unless handler.respond_to?(:static?) && handler.static?
+
+              msg = handler.execute_if_matches(action:, exception:)
+              return msg if msg.present?
+            end
+
+            nil
+          end
+
           # Internal introspection helper
           def _messages_for(event_type)
             Array(_messages_registry.for(event_type))

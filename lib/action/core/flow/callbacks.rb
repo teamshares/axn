@@ -20,6 +20,13 @@ module Action
             Array(_callbacks_registry.for(event_type))
           end
 
+          # Internal dispatcher
+          def _dispatch_callbacks(event_type, action:, exception: nil)
+            _callbacks_registry.for(event_type).each do |handler|
+              handler.execute_if_matches(action:, exception:)
+            end
+          end
+
           # ONLY raised exceptions (i.e. NOT fail!).
           def on_exception(matcher = nil, &handler)
             raise ArgumentError, "on_exception must be called with a block" unless block_given?
