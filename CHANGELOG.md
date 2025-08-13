@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* [BREAKING] Replaced `messages` declaration with separate `success` and `error` calls
 
 ## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`

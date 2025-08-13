@@ -33,7 +33,8 @@ RSpec.shared_examples "can build Axns from callables" do
   context "setting messages, expects, exposes" do
     let(:kwargs) do
       {
-        messages: { error: "error", success: "success" },
+        success: "success",
+        error: "error",
         exposes: [:num],
         expects: :arg,
       }

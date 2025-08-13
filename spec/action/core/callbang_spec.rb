@@ -37,7 +37,7 @@ RSpec.describe Action do
     context "with user-facing failure" do
       let(:action) do
         build_action do
-          messages error: "|||"
+          error "|||"
           def call
             fail! "User-facing error"
           end

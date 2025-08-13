@@ -11,7 +11,7 @@ module Action
       def ok(msg = nil, **exposures)
         exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
 
-        Axn::Factory.build(exposes:, messages: { success: msg }) do
+        Axn::Factory.build(exposes:, success: msg) do
           exposures.each do |key, value|
             expose(key, value)
           end

@@ -8,16 +8,14 @@ RSpec.describe Action do
       build_action do
         expects :klass, allow_blank: true
 
-        messages(
-          success: "great news",
-          error: lambda { |e|
-            case e
-            when RuntimeError then "RUN RUN RUN"
-            when ArgumentError then "Bad args: #{e.message}"
-            else "baseline message"
-            end
-          },
-        )
+        success "great news"
+        error lambda { |e|
+          case e
+          when RuntimeError then "RUN RUN RUN"
+          when ArgumentError then "Bad args: #{e.message}"
+          else "baseline message"
+          end
+        }
 
         def call
           return if klass.blank?

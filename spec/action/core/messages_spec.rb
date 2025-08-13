@@ -10,7 +10,7 @@ RSpec.describe Action do
       context "when static" do
         let(:action) do
           build_action do
-            messages(success: "Great news!")
+            success "Great news!"
           end
         end
 
@@ -22,7 +22,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :foo, default: "bar"
-            messages(success: -> { "Great news: #{@var} from #{foo}" })
+            success -> { "Great news: #{@var} from #{foo}" }
 
             def call
               @var = 123
@@ -40,7 +40,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             exposes :foo, default: "bar"
-            messages(success: -> { "Great news: #{@var} from #{result.foo}" })
+            success -> { "Great news: #{@var} from #{result.foo}" }
 
             def call
               expose foo: "baz"
@@ -59,7 +59,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             exposes :foo, default: "bar"
-            messages(success: -> { "Great news: #{@var} from #{foo}" })
+            success -> { "Great news: #{@var} from #{foo}" }
 
             def call
               expose foo: "baz"
@@ -78,7 +78,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :foo, default: "bar"
-            messages(success: -> { "Great news: #{@var} from #{foo} and #{some_undefined_var}" })
+            success -> { "Great news: #{@var} from #{foo} and #{some_undefined_var}" }
 
             def call
               @var = 123
@@ -95,7 +95,7 @@ RSpec.describe Action do
       context "when dynamic returns blank" do
         let(:action) do
           build_action do
-            messages(success: -> { "" })
+            success -> { "" }
           end
         end
 
@@ -113,7 +113,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :missing_param
-            messages(error: "Bad news!")
+            error "Bad news!"
           end
         end
 
@@ -129,7 +129,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :missing_param
-            messages(error: -> { "Bad news: #{@var}" })
+            error -> { "Bad news: #{@var}" }
 
             def call
               @var = 123
@@ -152,7 +152,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :missing_param
-            messages(error: ->(e) { "Bad news: #{e.class.name}" })
+            error ->(e) { "Bad news: #{e.class.name}" }
           end
         end
 
@@ -169,7 +169,7 @@ RSpec.describe Action do
         context "when fail! is called with custom message" do
           let(:action) do
             build_action do
-              messages(error: ->(e) { "Bad news: #{e.message}" })
+              error ->(e) { "Bad news: #{e.message}" }
 
               def call
                 fail! "Explicitly-set error message"
@@ -185,7 +185,7 @@ RSpec.describe Action do
         context "when fail! is called without message" do
           let(:action) do
             build_action do
-              messages(error: ->(e) { "Bad news: #{e.message}" })
+              error ->(e) { "Bad news: #{e.message}" }
 
               def call
                 fail!
@@ -203,7 +203,7 @@ RSpec.describe Action do
         let(:action) do
           build_action do
             expects :missing_param
-            messages(error: -> { "" })
+            error -> { "" }
           end
         end
 
@@ -221,7 +221,7 @@ RSpec.describe Action do
       context "when dynamic raises error in error message" do
         let(:action) do
           build_action do
-            messages(error: -> { raise ArgumentError, "fail message" })
+            error -> { raise ArgumentError, "fail message" }
 
             def call
               raise "triggering failure"
@@ -285,7 +285,7 @@ RSpec.describe Action do
     let(:action) do
       build_action do
         expects :param
-        messages(error: "Bad news!")
+        error "Bad news!"
 
         def call
           @var = 123

@@ -85,11 +85,11 @@ expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d)
 
 will succeed if given _either_ an actual Date object _or_ a string that Date.parse can convert into one.  If the preprocess callable raises an exception, that'll be swallowed and the action failed.
 
-## `.messages`
+## `.success` and `.error`
 
-The `messages` declaration allows you to customize the `error` and `success` messages on the returned result.
+The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
 
-Accepts `error` and/or `success` keys.  Values can be a string (returned directly) or a callable (evaluated in the action's context, so can access instance methods and variables).  If `error` is provided with a callable that expects a positional argument, the exception that was raised will be passed in as that value.
+Both methods accept a single argument that can be a string (returned directly) or a callable (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a callable that expects a positional argument, the exception that was raised will be passed in as that value.
 
 In callables, you can access:
 - **Input data**: Use field names directly (e.g., `name`)
@@ -97,20 +97,20 @@ In callables, you can access:
 - **Instance methods and variables**: Direct access
 
 ```ruby
-messages success: -> { "Hello #{name}, your greeting: #{result.greeting}" },
-         error: ->(e) { "Bad news: #{e.message}" }
+success -> { "Hello #{name}, your greeting: #{result.greeting}" }
+error ->(e) { "Bad news: #{e.message}" }
 ```
 
 ## `error_from` and `rescues`
 
-While `.messages` sets the _default_ error/success messages and is more commonly used, there are times when you want specific error messages for specific failure cases.
+While `.error` sets the _default_ error message and is more commonly used, there are times when you want specific error messages for specific failure cases.
 
 `error_from` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured exception handlers (global or specific to this class).
 
 Callable matchers and messages follow the same data access patterns as other callables: input fields directly, output fields via `result.field`, instance variables, and methods.
 
 ```ruby
-messages error: "bad"
+error "bad"
 
 # Note this will NOT trigger Action.config.on_exception
 rescues ActiveRecord::InvalidRecord => "Invalid params provided"

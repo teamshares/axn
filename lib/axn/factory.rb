@@ -13,7 +13,8 @@ module Axn
         # Expose standard class-level options
         exposes: [],
         expects: [],
-        messages: {},
+        success: nil,
+        error: nil,
         error_from: {},
         rescues: {},
 
@@ -81,7 +82,8 @@ module Axn
             axn.exposes(field, **opts)
           end
 
-          axn.messages(**messages) if messages.present? && messages.values.any?(&:present?)
+          axn.success(success) if success.present?
+          axn.error(error) if error.present?
 
           axn.error_from(**_array_to_hash(error_from)) if error_from.present?
           axn.rescues(**_array_to_hash(rescues)) if rescues.present?

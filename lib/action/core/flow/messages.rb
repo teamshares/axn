@@ -15,10 +15,13 @@ module Action
         end
 
         module ClassMethods
-          def messages(success: nil, error: nil)
-            self._success_msg = success if success.present?
-            self._error_msg = error if error.present?
+          def success(message)
+            self._success_msg = message if message.present?
+            true
+          end
 
+          def error(message)
+            self._error_msg = message if message.present?
             true
           end
 
