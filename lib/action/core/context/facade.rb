@@ -56,7 +56,6 @@ module Action
       # Try static error message entries (registered via .error); else default
       Array(action.class._messages_registry&.for(:error)).each do |handler|
         next unless handler.respond_to?(:static?) && handler.static?
-        next unless handler.matches?(exception:, action:)
 
         msg = stringified(handler.message, exception:)
         return msg if msg.present?
@@ -77,7 +76,6 @@ module Action
       # Try static success message entries (registered via .success); else default
       Array(action.class._messages_registry&.for(:success)).each do |handler|
         next unless handler.respond_to?(:static?) && handler.static?
-        next unless handler.matches?(exception: nil, action:)
 
         msg = stringified(handler.message)
         return msg if msg.present?

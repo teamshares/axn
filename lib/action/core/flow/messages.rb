@@ -28,11 +28,7 @@ module Action
 
             msg = block_given? ? block : message
 
-            if matcher
-              _add_message(:success, msg, matcher:, static: false)
-            else
-              _add_message(:success, msg, matcher: -> { true }, static: true)
-            end
+            _add_message(:success, msg, matcher:, static: matcher ? false : true)
             true
           end
 
@@ -43,11 +39,7 @@ module Action
 
             msg = block_given? ? block : message
 
-            if matcher
-              _add_message(:error, msg, matcher:, static: false)
-            else
-              _add_message(:error, msg, matcher: -> { true }, static: true)
-            end
+            _add_message(:error, msg, matcher:, static: matcher ? false : true)
             true
           end
 

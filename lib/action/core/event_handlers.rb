@@ -64,10 +64,15 @@ module Action
         @static = !!static
       end
 
-      delegate :matches?, to: :@matcher
       attr_reader :message
 
       def static? = @static
+
+      def matches?(exception:, action:)
+        return true if static?
+
+        @matcher.matches?(exception:, action:)
+      end
     end
 
     class Matcher
