@@ -29,39 +29,33 @@ module Action
 
           # ONLY raised exceptions (i.e. NOT fail!).
           def on_exception(matcher = nil, handler = nil, &block)
-            handler ||= block
-            raise ArgumentError, "on_exception must be called with a block or symbol" unless handler
-
-            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler:)
-            self._callbacks_registry = _callbacks_registry.register(event_type: :exception, entry:, prepend: true)
+            _add_callback(:exception, matcher:, handler:, block:)
           end
 
           # ONLY raised on fail! (i.e. NOT unhandled exceptions).
           def on_failure(matcher = nil, handler = nil, &block)
-            handler ||= block
-            raise ArgumentError, "on_failure must be called with a block or symbol" unless handler
-
-            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler:)
-            self._callbacks_registry = _callbacks_registry.register(event_type: :failure, entry:, prepend: true)
+            _add_callback(:failure, matcher:, handler:, block:)
           end
 
           # Handles both fail! and unhandled exceptions
           def on_error(matcher = nil, handler = nil, &block)
-            handler ||= block
-            raise ArgumentError, "on_error must be called with a block or symbol" unless handler
-
-            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler:)
-            self._callbacks_registry = _callbacks_registry.register(event_type: :error, entry:, prepend: true)
+            _add_callback(:error, matcher:, handler:, block:)
           end
 
           # Executes when the action completes successfully (after all after hooks complete successfully)
           # Runs in child-first order (child handlers before parent handlers)
           def on_success(matcher = nil, handler = nil, &block)
-            handler ||= block
-            raise ArgumentError, "on_success must be called with a block or symbol" unless handler
+            _add_callback(:success, matcher:, handler:, block:)
+          end
 
-            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler:)
-            self._callbacks_registry = _callbacks_registry.register(event_type: :success, entry:, prepend: true)
+          private
+
+          def _add_callback(event_type, matcher:, handler:, block:)
+            effective_handler = handler || block
+            raise ArgumentError, "on_#{event_type} must be called with a block or symbol" unless effective_handler
+
+            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler: effective_handler)
+            self._callbacks_registry = _callbacks_registry.register(event_type:, entry:, prepend: true)
           end
         end
       end
