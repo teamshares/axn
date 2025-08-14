@@ -7,22 +7,27 @@ module Action
     module Flow
       module Handlers
         class Matcher
-          def initialize(rule)
+          def initialize(rule, invert: false)
             @rule = rule
+            @invert = invert
           end
 
           def call(exception:, action:)
+            @invert ? !matches?(exception:, action:) : matches?(exception:, action:)
+          rescue StandardError => e
+            Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
+          end
+
+          private
+
+          def matches?(exception:, action:)
             return apply_callable(action:, exception:) if callable?
             return apply_symbol(action:, exception:) if symbol?
             return apply_string(exception:) if string?
             return apply_exception_class(exception:) if exception_class?
 
             handle_invalid(action:)
-          rescue StandardError => e
-            Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
           end
-
-          private
 
           def callable? = @rule.respond_to?(:call)
           def symbol? = @rule.is_a?(Symbol)

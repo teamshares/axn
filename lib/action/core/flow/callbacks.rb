@@ -46,10 +46,13 @@ module Action
           private
 
           def _add_callback(event_type, block:, **kwargs)
-            matcher = kwargs.key?(:if) ? kwargs[:if] : nil
+            raise ArgumentError, "on_#{event_type} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
+
+            matcher = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
             raise ArgumentError, "on_#{event_type} must be called with a block" unless block
 
-            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: block)
+            matcher_obj = matcher.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(matcher, invert: kwargs.key?(:unless))
+            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher: matcher_obj, handler: block)
             self._callbacks_registry = _callbacks_registry.register(event_type:, entry:, prepend: true)
           end
         end

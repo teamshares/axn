@@ -144,14 +144,11 @@ RSpec.describe Action do
         context "arity 0 method" do
           let(:action) do
             build_action do
-              success "Great news!"
-              error "Bad news!"
-
+              expects :missing_param
+              error "Default error"
               error "Argument problem", if: :bad_argument?
 
-              def call
-                raise ArgumentError, "nope"
-              end
+
 
               def bad_argument?
                 # local decision, no args
@@ -220,7 +217,7 @@ RSpec.describe Action do
         context "lambda predicate with keyword" do
           let(:action) do
             build_action do
-              success "Great news!"
+              error "Default error"
               error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
 
               def call
@@ -231,6 +228,124 @@ RSpec.describe Action do
 
           it { expect(result).not_to be_ok }
           it { expect(result.error).to eq("AE") }
+        end
+
+        context "unless matcher" do
+          context "simple test" do
+            let(:action) do
+              build_action do
+                expects :missing_param
+                error "Default error"
+                error "Custom error", unless: :should_skip?
+
+                def call
+                  # This method will be called during message selection
+                end
+
+                def should_skip?
+                  false
+                end
+              end
+            end
+
+            it "uses custom error when condition is false" do
+              expect(result.error).to eq("Custom error")
+            end
+          end
+
+          context "with symbol predicate" do
+            let(:action) do
+              build_action do
+                expects :missing_param
+                error "Default error"
+                error "Custom error", unless: :good_argument?
+
+                def good_argument?
+                  false
+                end
+              end
+            end
+
+            it { expect(result).not_to be_ok }
+            it { expect(result.error).to eq("Custom error") }
+
+            context "when condition is true" do
+              let(:action) do
+                build_action do
+                  expects :missing_param
+                  error "Default error"
+                  error "Custom error", unless: :good_argument?
+
+                  def good_argument?
+                    true
+                  end
+                end
+              end
+
+              it { expect(result).not_to be_ok }
+              it { expect(result.error).to eq("Default error") }
+            end
+          end
+
+          context "with callable" do
+            let(:action) do
+              build_action do
+                expects :missing_param
+                error "Default error"
+                error "Custom error", unless: :should_skip?
+
+                def call
+                  # Method will be called during message selection
+                end
+
+                def should_skip?
+                  false
+                end
+              end
+            end
+
+            it { expect(result).not_to be_ok }
+            it { expect(result.error).to eq("Custom error") }
+
+            context "when condition is true" do
+              let(:action) do
+                build_action do
+                  expects :missing_param
+                  error "Default error"
+                  error "Custom error", unless: :should_skip?
+
+                  def call
+                    # Method will be called during message selection
+                  end
+
+                  def should_skip?
+                    true
+                  end
+                end
+              end
+
+              it { expect(result).not_to be_ok }
+              it { expect(result.error).to eq("Default error") }
+            end
+          end
+        end
+
+        context "raises error when both if and unless provided" do
+          it "raises ArgumentError for success" do
+            expect do
+              build_action do
+                success "Great news!", if: :condition?, unless: :other_condition?
+              end
+            end.to raise_error(ArgumentError, /success cannot be called with both :if and :unless/)
+          end
+
+          it "raises ArgumentError for error" do
+            expect do
+              build_action do
+                error "Bad news!", if: :condition?, unless: :other_condition?
+              end
+            end.to raise_error(ArgumentError, /error cannot be called with both :if and :unless/)
+          end
         end
       end
     end

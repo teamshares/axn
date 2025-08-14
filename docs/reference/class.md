@@ -126,7 +126,7 @@ end
 
 ## Conditional messages
 
-While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` matcher. The matcher can be:
+While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` or `unless:` matcher. The matcher can be:
 
 - an exception class (e.g., `ArgumentError`)
 - a class name string (e.g., `"Action::InboundValidationError"`)
@@ -169,6 +169,18 @@ end
 
 # Lambda predicate with keyword
 error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
+
+# Using unless: for inverse logic
+error "Custom error", unless: :should_skip?
+
+def should_skip?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+::: warning
+You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
+:::
 ```
 
 ## Callbacks
@@ -212,7 +224,7 @@ class Foo
 end
 ```
 
-Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:`):
+Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:` or `unless:`):
 
 ```ruby
 class Foo
@@ -221,6 +233,19 @@ class Foo
   on_exception(if: NoMethodError) do |exception| # [!code focus]
     # e.g. trigger a slack error
   end
+
+on_exception(unless: :transient_error?) do |exception| # [!code focus]
+    # e.g. trigger a slack error for non-transient errors
+  end
+
+def transient_error?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+::: warning
+You cannot use both `if:` and `unless:` for the same callback - this will raise an `ArgumentError`.
+:::
 
   on_exception(if: ->(e) { e.is_a?(ZeroDivisionError) }) do # [!code focus]
     # e.g. trigger a slack error

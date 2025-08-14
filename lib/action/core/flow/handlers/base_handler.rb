@@ -10,7 +10,7 @@ module Action
       module Handlers
         class BaseHandler
           def initialize(matcher: nil)
-            @matcher = matcher.nil? ? nil : Matcher.new(matcher)
+            @matcher = matcher
           end
 
           def matches?(action:, exception:)
