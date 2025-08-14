@@ -23,36 +23,28 @@ module Action
           end
 
           # ONLY raised exceptions (i.e. NOT fail!).
-          def on_exception(**, &block)
-            _add_callback(:exception, **, block:)
-          end
+          def on_exception(**, &block) = _add_callback(:exception, **, block:)
 
           # ONLY raised on fail! (i.e. NOT unhandled exceptions).
-          def on_failure(**, &block)
-            _add_callback(:failure, **, block:)
-          end
+          def on_failure(**, &block) = _add_callback(:failure, **, block:)
 
           # Handles both fail! and unhandled exceptions
-          def on_error(**, &block)
-            _add_callback(:error, **, block:)
-          end
+          def on_error(**, &block) = _add_callback(:error, **, block:)
 
           # Executes when the action completes successfully (after all after hooks complete successfully)
           # Runs in child-first order (child handlers before parent handlers)
-          def on_success(**, &block)
-            _add_callback(:success, **, block:)
-          end
+          def on_success(**, &block) = _add_callback(:success, **, block:)
 
           private
 
           def _add_callback(event_type, block:, **kwargs)
             raise ArgumentError, "on_#{event_type} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
 
-            matcher = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
+            condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
             raise ArgumentError, "on_#{event_type} must be called with a block" unless block
 
-            matcher_obj = matcher.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(matcher, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher: matcher_obj, handler: block)
+            matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
+            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: block)
             self._callbacks_registry = _callbacks_registry.register(event_type:, entry:, prepend: true)
           end
         end
