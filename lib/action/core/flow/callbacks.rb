@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "action/core/event_handlers"
+require "action/core/flow/handlers"
 
 module Action
   module Core
@@ -8,22 +8,17 @@ module Action
       module Callbacks
         def self.included(base)
           base.class_eval do
-            class_attribute :_callbacks_registry, default: Action::EventHandlers::Registry.empty
+            class_attribute :_callbacks_registry, default: Action::Core::Flow::Handlers::Registry.empty
 
             extend ClassMethods
           end
         end
 
         module ClassMethods
-          # Internal introspection helper
-          def _callbacks_for(event_type)
-            Array(_callbacks_registry.for(event_type))
-          end
-
           # Internal dispatcher
           def _dispatch_callbacks(event_type, action:, exception: nil)
             _callbacks_registry.for(event_type).each do |handler|
-              handler.execute_if_matches(action:, exception:)
+              handler.apply(action:, exception:)
             end
           end
 
@@ -54,7 +49,7 @@ module Action
             effective_handler = handler || block
             raise ArgumentError, "on_#{event_type} must be called with a block or symbol" unless effective_handler
 
-            entry = Action::EventHandlers::CallbackHandler.new(matcher:, handler: effective_handler)
+            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: effective_handler)
             self._callbacks_registry = _callbacks_registry.register(event_type:, entry:, prepend: true)
           end
         end
