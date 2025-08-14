@@ -6,6 +6,7 @@
 * [BREAKING] Replaced `error_from` with an optional `if:` argument on `error`
   * [FEAT] Implemented conditional success message filtering as well
 * [FEAT] Added block support for `error` and `success`
+* [FEAT] `if:` now supports symbol predicates referencing instance methods (arity 0 or 1). If the method accepts one argument, the raised exception is passed; otherwise it is called with no args. If the method is missing, the symbol falls back to constant lookup (e.g., `:ArgumentError`).
 
 ## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`

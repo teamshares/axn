@@ -103,7 +103,14 @@ error { |e| "Bad news: #{e.message}" }
 
 ## Conditional messages
 
-While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` matcher. The matcher can be an exception class, a class name string, or a callable (arity 0 or 1). The first matching non-blank conditional message wins; otherwise the static defaults are used.
+While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` matcher. The matcher can be:
+
+- an exception class (e.g., `ArgumentError`)
+- a class name string (e.g., `"Action::InboundValidationError"`)
+- a symbol referencing a local instance method predicate (arity 0 or 1), e.g. `:bad_input?`
+- a callable (arity 0 or 1)
+
+Symbols are resolved as methods on the action instance. If the method accepts one argument, the raised exception is passed in; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`).
 
 ```ruby
 error "bad"
@@ -114,6 +121,21 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 # Custom message with callable matcher and message
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
+
+# Custom message with symbol predicate (arity 0)
+error "Transient error, please retry", if: :transient_error?
+
+def transient_error?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+# Symbol predicate (arity 1), receives the exception
+error(if: :argument_error?) { |e| "Bad argument: #{e.message}" }
+
+def argument_error?(e)
+  e.is_a?(ArgumentError)
+end
 ```
 
 ## Callbacks

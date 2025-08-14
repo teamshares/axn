@@ -122,6 +122,65 @@ RSpec.describe Action do
           is_expected.to eq("Action completed successfully")
         end
       end
+
+      context "with symbol predicate matcher" do
+        context "arity 0 method" do
+          let(:action) do
+            build_action do
+              success "Great news!"
+              error "Bad news!"
+
+              error "Argument problem", if: :bad_argument?
+
+              def call
+                raise ArgumentError, "nope"
+              end
+
+              def bad_argument?
+                # local decision, no args
+                true
+              end
+            end
+          end
+
+          it { expect(result).not_to be_ok }
+          it { expect(result.error).to eq("Argument problem") }
+        end
+
+        context "arity 1 method (receives exception)" do
+          let(:action) do
+            build_action do
+              error(if: :argument_error?) { |e| "Bad argument: #{e.message}" }
+
+              def call
+                raise ArgumentError, "too small"
+              end
+
+              def argument_error?(e)
+                e.is_a?(ArgumentError)
+              end
+            end
+          end
+
+          it { expect(result).not_to be_ok }
+          it { expect(result.error).to eq("Bad argument: too small") }
+        end
+
+        context "falls back to constant when method missing" do
+          let(:action) do
+            build_action do
+              error "AE", if: :ArgumentError
+
+              def call
+                raise ArgumentError, "boom"
+              end
+            end
+          end
+
+          it { expect(result).not_to be_ok }
+          it { expect(result.error).to eq("AE") }
+        end
+      end
     end
 
     describe "error message" do
