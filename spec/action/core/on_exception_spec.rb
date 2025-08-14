@@ -123,7 +123,7 @@ RSpec.describe Action do
     it "calls Axn::Util.piping_error when on_exception handler raises" do
       action.call
       expect(Axn::Util).to have_received(:piping_error).with(
-        a_string_including("executing handler"),
+        a_string_including("executing callback"),
         hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail in handler" }),
       )
     end

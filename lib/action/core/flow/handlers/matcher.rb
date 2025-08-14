@@ -6,14 +6,15 @@ module Action
   module Core
     module Flow
       module Handlers
-        class Matcher
+        class SingleRuleMatcher
           def initialize(rule, invert: false)
             @rule = rule
             @invert = invert
           end
 
           def call(exception:, action:)
-            @invert ? !matches?(exception:, action:) : matches?(exception:, action:)
+            result = matches?(exception:, action:)
+            @invert ? !result : result
           rescue StandardError => e
             Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
           end
@@ -77,6 +78,33 @@ module Action
           def handle_invalid(action:)
             action.warn("Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it")
             false
+          end
+        end
+
+        class Matcher
+          # NOTE: invert means it's an unless rather than an if.  This will apply to ALL rules (sufficient for current use case,
+          # but flagging if we ever extend this for complex matching)
+          def initialize(rules, invert: false)
+            @rules = Array(rules).compact
+            @invert = invert
+          end
+
+          def call(exception:, action:)
+            matches?(exception:, action:)
+          rescue StandardError => e
+            Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
+          end
+
+          def static? = @rules.empty?
+
+          private
+
+          def matches?(exception:, action:)
+            return true if @rules.empty?
+
+            @rules.all? do |rule|
+              SingleRuleMatcher.new(rule, invert: @invert).call(exception:, action:)
+            end
           end
         end
       end

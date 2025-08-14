@@ -5,11 +5,12 @@ require "action/context"
 require "action/strategies"
 require "action/core/hooks"
 require "action/core/logging"
-require "action/core/hoist_errors"
 require "action/core/flow"
 require "action/core/automatic_logging"
 require "action/core/use_strategy"
+require "action/core/timing"
 require "action/core/tracing"
+require "action/core/nesting_tracking"
 
 # CONSIDER: make class names match file paths?
 require "action/core/validation/validators/model_validator"
@@ -19,7 +20,6 @@ require "action/core/validation/validators/validate_validator"
 require "action/core/contract_validation"
 require "action/core/contract"
 require "action/core/contract_for_subfields"
-require "action/core/timing"
 
 module Action
   module Core
@@ -37,8 +37,8 @@ module Action
         include Core::ContractValidation
         include Core::Contract
         include Core::ContractForSubfields
+        include Core::NestingTracking
 
-        include Core::HoistErrors
         include Core::UseStrategy
       end
     end
@@ -52,6 +52,10 @@ module Action
         result = call(**)
         return result if result.ok?
 
+        # When we're nested, we want to raise a failure that includes the source action to support
+        # the error message generation's `from` filter
+        raise Action::Failure.new(result.error, source: result.__action__), cause: result.exception if _nested_in_another_axn?
+
         raise result.exception || Action::Failure.new(result.error)
       end
     end
@@ -62,13 +66,15 @@ module Action
 
     # Main entry point for action execution
     def _run
-      _with_tracing do
-        _with_logging do
-          _with_timing do
-            _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-              _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-                _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                  call
+      _tracking_nesting(self) do
+        _with_tracing do
+          _with_logging do
+            _with_timing do
+              _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+                _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+                  _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                    call
+                  end
                 end
               end
             end
@@ -83,6 +89,13 @@ module Action
     def call; end
 
     delegate :fail!, to: :@__context
+
+    # Stub for hoist_errors - this method has been removed in favor of the from filter
+    def hoist_errors(prefix: nil, &block)
+      raise NotImplementedError,
+            "hoist_errors has been removed. Use the 'from' filter on error messages instead:\n\t" \
+            "error from: ChildActionClass { 'Custom error message' }"
+    end
 
     private
 

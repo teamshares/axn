@@ -5,9 +5,12 @@ module Action
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    def initialize(message = nil, **)
+    attr_reader :source
+
+    def initialize(message = nil, source: nil)
+      @source = source
       @message = message
-      super(**)
+      super(message)
     end
 
     def message

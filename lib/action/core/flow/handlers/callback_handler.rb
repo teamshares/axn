@@ -9,10 +9,9 @@ module Action
       module Handlers
         class CallbackHandler < BaseHandler
           def apply(action:, exception:)
-            return false unless matches?(action:, exception:)
+            return unless matches?(action:, exception:)
 
-            Invoker.call(action:, handler:, exception:, operation: "executing handler")
-            true
+            Invoker.call(action:, handler:, exception:, operation: "executing callback")
           end
         end
       end
