@@ -9,12 +9,17 @@ module Action
       # relate to conditionally-invoked code blocks (e.g. callbacks, messages, etc.)
       module Handlers
         class BaseHandler
-          def initialize(matcher: nil)
+          def initialize(matcher: nil, handler: nil)
             @matcher = matcher
+            @handler = handler
           end
 
+          attr_reader :handler
+
+          def static? = @matcher.nil?
+
           def matches?(action:, exception:)
-            return true if @matcher.nil?
+            return true if static?
 
             @matcher.call(exception:, action:)
           end

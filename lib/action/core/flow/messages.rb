@@ -57,10 +57,10 @@ module Action
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            msg = block_given? ? block : message
+            handler = block_given? ? block : message
 
             matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, message: msg, static: condition ? false : true)
+            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:)
             self._messages_registry = _messages_registry.register(event_type: kind, entry:, prepend: true)
             true
           end

@@ -8,15 +8,10 @@ module Action
     module Flow
       module Handlers
         class CallbackHandler < BaseHandler
-          def initialize(matcher:, handler:)
-            @handler = handler
-            super(matcher:)
-          end
-
           def apply(action:, exception:)
             return false unless matches?(action:, exception:)
 
-            Invoker.call_block(action:, block: @handler, exception:, operation: "executing handler")
+            Invoker.call(action:, handler:, exception:, operation: "executing handler")
             true
           end
         end

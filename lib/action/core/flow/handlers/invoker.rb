@@ -8,11 +8,11 @@ module Action
         module Invoker
           extend self
 
-          def call_block(action:, block:, exception: nil, operation: "executing handler")
-            return call_symbol_handler(action:, symbol: block, exception:) if symbol?(block)
-            return call_callable_handler(action:, callable: block, exception:) if callable?(block)
+          def call(action:, handler:, exception: nil, operation: "executing handler")
+            return call_symbol_handler(action:, symbol: handler, exception:) if symbol?(handler)
+            return call_callable_handler(action:, callable: handler, exception:) if callable?(handler)
 
-            literal_value(block)
+            literal_value(handler)
           rescue StandardError => e
             Axn::Util.piping_error(operation, action:, exception: e)
           end
