@@ -79,6 +79,10 @@ module Action
       @context.elapsed_time
     end
 
+    # Internal accessor for the action instance
+    # TODO: exposed for errors :from support, but should be private if possible
+    def __action__ = @action
+
     private
 
     def context_data_source = @context.exposed_data

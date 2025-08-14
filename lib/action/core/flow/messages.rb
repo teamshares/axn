@@ -52,17 +52,31 @@ module Action
 
           def _add_message(kind, message:, **kwargs, &block)
             raise ArgumentError, "#{kind} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
-
-            condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
             handler = block_given? ? block : message
+            rules = [
+              kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless],
+              _build_from_rule(kwargs[:from]),
+            ].compact
 
-            matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
+            matcher = Action::Core::Flow::Handlers::Matcher.new(rules, invert: kwargs.key?(:unless))
             entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:)
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
+          end
+
+          def _build_from_rule(from_class)
+            return nil unless from_class
+
+            if from_class.is_a?(String)
+              lambda { |exception:, **|
+                exception.is_a?(Action::Failure) && exception.source&.class&.name == from_class
+              }
+            else
+              ->(exception:, **) { exception.is_a?(Action::Failure) && exception.source&.is_a?(from_class) }
+            end
           end
         end
 

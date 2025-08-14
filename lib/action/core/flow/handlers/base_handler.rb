@@ -16,7 +16,7 @@ module Action
 
           attr_reader :handler
 
-          def static? = @matcher.nil?
+          def static? = @matcher.nil? || @matcher.static?
 
           def matches?(action:, exception:)
             return true if static?
