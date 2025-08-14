@@ -54,6 +54,23 @@ RSpec.describe Action do
         end
       end
 
+      context "when dynamic (symbol method name)" do
+        let(:action) do
+          build_action do
+            success :my_success
+
+            def my_success
+              "Great news via symbol!"
+            end
+
+            def call; end
+          end
+        end
+
+        it { expect(result).to be_ok }
+        it { is_expected.to eq("Great news via symbol!") }
+      end
+
       context "when dynamic with exposed vars" do
         let(:action) do
           build_action do
@@ -301,6 +318,25 @@ RSpec.describe Action do
             is_expected.to eq("Bad news: Execution was halted")
           end
         end
+      end
+
+      context "when dynamic (symbol method name with exception)" do
+        let(:action) do
+          build_action do
+            error :error_with_exception
+
+            def call
+              raise ArgumentError, "boom"
+            end
+
+            def error_with_exception(e)
+              "Bad news via symbol: #{e.message}"
+            end
+          end
+        end
+
+        it { expect(result).not_to be_ok }
+        it { is_expected.to eq("Bad news via symbol: boom") }
       end
 
       context "when dynamic returns blank" do

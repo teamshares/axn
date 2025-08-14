@@ -89,9 +89,9 @@ will succeed if given _either_ an actual Date object _or_ a string that Date.par
 
 The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
 
-Both methods accept either a string (returned directly) or a block (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a block that expects a positional argument, the exception that was raised will be passed in as that value.
+Both methods accept a string (returned directly), a symbol (resolved as a local instance method on the action), or a block (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a block or symbol method that expects a positional argument, the exception that was raised will be passed in as that value.
 
-In callables, you can access:
+In callables and symbol-backed methods, you can access:
 - **Input data**: Use field names directly (e.g., `name`)
 - **Output data**: Use `result.field` pattern (e.g., `result.greeting`)
 - **Instance methods and variables**: Direct access
@@ -99,6 +99,18 @@ In callables, you can access:
 ```ruby
 success { "Hello #{name}, your greeting: #{result.greeting}" }
 error { |e| "Bad news: #{e.message}" }
+
+# Using symbol method names
+success :build_success_message
+error :build_error_message
+
+def build_success_message
+  "Hello #{name}, your greeting: #{result.greeting}"
+end
+
+def build_error_message(e)
+  "Bad news: #{e.message}"
+end
 ```
 
 ## Conditional messages
@@ -110,7 +122,7 @@ While `.error` and `.success` set the default messages, you can register conditi
 - a symbol referencing a local instance method predicate (arity 0 or 1), e.g. `:bad_input?`
 - a callable (arity 0 or 1)
 
-Symbols are resolved as methods on the action instance. If the method accepts one argument, the raised exception is passed in; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`).
+Symbols are resolved as methods on the action instance. If the method accepts one argument, the raised exception is passed in; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`). Symbols are also supported for the message itself (e.g., `success :method_name`), resolved via the same rules.
 
 ```ruby
 error "bad"

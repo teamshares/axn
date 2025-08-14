@@ -7,10 +7,27 @@ module Action
       module_function
 
       def call_block(action:, block:, exception: nil, operation: "executing handler")
-        if exception && block.respond_to?(:arity) && block.arity == 1
-          action.instance_exec(exception, &block)
+        if block.is_a?(Symbol)
+          unless action.respond_to?(block)
+            action.warn("Ignoring apparently-invalid symbol #{block.inspect} -- action does not respond to method")
+            return nil
+          end
+
+          method = action.method(block)
+          if exception && (method.arity == 1 || method.arity < 0)
+            action.public_send(block, exception)
+          else
+            action.public_send(block)
+          end
+        elsif block.respond_to?(:arity)
+          if exception && block.arity == 1
+            action.instance_exec(exception, &block)
+          else
+            action.instance_exec(&block)
+          end
         else
-          action.instance_exec(&block)
+          # Non-callable (e.g., String): return as-is
+          block
         end
       rescue StandardError => e
         Axn::Util.piping_error(operation, action:, exception: e)
@@ -89,7 +106,7 @@ module Action
       def execute_if_matches(action:, exception:)
         return nil unless matches?(exception:, action:)
 
-        value = if message.respond_to?(:call)
+        value = if message.is_a?(Symbol) || message.respond_to?(:call)
                   EvalAdapter.call_block(action:, block: message, exception:, operation: "determining message callable")
                 else
                   message
