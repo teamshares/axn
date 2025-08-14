@@ -159,15 +159,15 @@ RSpec.describe Action do
           # Callbacks with filters
           on_success { puts "on_success" }
 
-          on_failure ->(e) { e.message == "SPECIFIC" } do |e|
+          on_failure(if: ->(e) { e.message == "SPECIFIC" }) do |e|
             puts "on_failure: #{e.message}"
           end
 
-          on_error ->(e) { e.message == "ERROR" } do |e|
+          on_error(if: ->(e) { e.message == "ERROR" }) do |e|
             puts "on_error: #{e.message}"
           end
 
-          on_exception ArgumentError do |e|
+          on_exception(if: ArgumentError) do |e|
             puts "on_exception: #{e.message}"
           end
 

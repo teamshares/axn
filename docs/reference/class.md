@@ -218,11 +218,11 @@ Note that by default the `on_exception` block will be applied to _any_ `Standard
 class Foo
   include Action
 
-  on_exception NoMethodError do |exception| # [!code focus]
+  on_exception(if: NoMethodError) do |exception| # [!code focus]
     # e.g. trigger a slack error
   end
 
-  on_exception ->(e) { e.is_a?(ZeroDivisionError) } do # [!code focus]
+  on_exception(if: ->(e) { e.is_a?(ZeroDivisionError) }) do # [!code focus]
     # e.g. trigger a slack error
   end
 end
