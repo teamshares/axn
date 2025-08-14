@@ -42,42 +42,28 @@ module Action
             nil
           end
 
-          def success(message = nil, **kwargs, &block)
-            raise ArgumentError, "success cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
-
-            matcher = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
-            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message or a block" unless message || block_given?
-
-            msg = block_given? ? block : message
-
-            _add_message(:success, msg, matcher:, static: matcher ? false : true, invert: kwargs.key?(:unless))
-            true
-          end
-
-          def error(message = nil, **kwargs, &block)
-            raise ArgumentError, "error cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
-
-            matcher = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
-            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message or a block" unless message || block_given?
-
-            msg = block_given? ? block : message
-
-            _add_message(:error, msg, matcher:, static: matcher ? false : true, invert: kwargs.key?(:unless))
-            true
-          end
+          def success(message = nil, **, &) = _add_message(:success, message:, **, &)
+          def error(message = nil, **, &) = _add_message(:error, message:, **, &)
 
           def default_error = new.internal_context.default_error
           def default_success = new.internal_context.default_success
 
-          # Private helpers
-          def _add_message(kind, msg, matcher:, static:, invert: false)
-            matcher_obj = matcher.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(matcher, invert:)
-            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher: matcher_obj, message: msg, static:)
+          private
+
+          def _add_message(kind, message:, **kwargs, &block)
+            raise ArgumentError, "#{kind} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
+
+            condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
+            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
+            raise ArgumentError, "Provide a message or a block" unless message || block_given?
+
+            msg = block_given? ? block : message
+
+            matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
+            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, message: msg, static: condition ? false : true)
             self._messages_registry = _messages_registry.register(event_type: kind, entry:, prepend: true)
+            true
           end
-          private :_add_message
         end
 
         module InstanceMethods
