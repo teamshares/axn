@@ -197,6 +197,41 @@ RSpec.describe Action do
           it { expect(result).not_to be_ok }
           it { expect(result.error).to eq("AE") }
         end
+
+        context "keyword method (receives exception:)" do
+          let(:action) do
+            build_action do
+              error(if: :argument_error_kw?) { |exception:| "Bad argument: #{exception.message}" }
+
+              def call
+                raise ArgumentError, "too small"
+              end
+
+              def argument_error_kw?(exception:)
+                exception.is_a?(ArgumentError)
+              end
+            end
+          end
+
+          it { expect(result).not_to be_ok }
+          it { expect(result.error).to eq("Bad argument: too small") }
+        end
+
+        context "lambda predicate with keyword" do
+          let(:action) do
+            build_action do
+              success "Great news!"
+              error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
+
+              def call
+                raise ArgumentError, "boom"
+              end
+            end
+          end
+
+          it { expect(result).not_to be_ok }
+          it { expect(result.error).to eq("AE") }
+        end
       end
     end
 
@@ -320,6 +355,21 @@ RSpec.describe Action do
         end
       end
 
+      context "when dynamic wants exception (keyword)" do
+        let(:action) do
+          build_action do
+            expects :missing_param
+            error ->(exception:) { "Bad news: #{exception.class.name}" }
+          end
+        end
+
+        it { expect(result).not_to be_ok }
+
+        it "is evaluated within internal context" do
+          is_expected.to eq("Bad news: Action::InboundValidationError")
+        end
+      end
+
       context "when dynamic (symbol method name with exception)" do
         let(:action) do
           build_action do
@@ -337,6 +387,25 @@ RSpec.describe Action do
 
         it { expect(result).not_to be_ok }
         it { is_expected.to eq("Bad news via symbol: boom") }
+      end
+
+      context "when dynamic (symbol method name with exception keyword)" do
+        let(:action) do
+          build_action do
+            error :error_with_exception_kw
+
+            def call
+              raise ArgumentError, "boom"
+            end
+
+            def error_with_exception_kw(exception:)
+              "Bad news via symbol kw: #{exception.message}"
+            end
+          end
+        end
+
+        it { expect(result).not_to be_ok }
+        it { is_expected.to eq("Bad news via symbol kw: boom") }
       end
 
       context "when dynamic returns blank" do

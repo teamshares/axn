@@ -89,7 +89,13 @@ will succeed if given _either_ an actual Date object _or_ a string that Date.par
 
 The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
 
-Both methods accept a string (returned directly), a symbol (resolved as a local instance method on the action), or a block (evaluated in the action's context, so can access instance methods and variables). If `error` is provided with a block or symbol method that expects a positional argument, the exception that was raised will be passed in as that value.
+Both methods accept a string (returned directly), a symbol (resolved as a local instance method on the action), or a block (evaluated in the action's context, so can access instance methods and variables).
+
+When an exception is available (e.g., during `error`), handlers can receive it in either of two equivalent ways:
+- Keyword form: accept `exception:` and it will be passed as a keyword
+- Positional form: if the handler accepts a single positional argument, it will be passed positionally
+
+This applies to both blocks and symbol-backed instance methods. Choose the style that best fits your codebase (clarity vs concision).
 
 In callables and symbol-backed methods, you can access:
 - **Input data**: Use field names directly (e.g., `name`)
@@ -99,6 +105,7 @@ In callables and symbol-backed methods, you can access:
 ```ruby
 success { "Hello #{name}, your greeting: #{result.greeting}" }
 error { |e| "Bad news: #{e.message}" }
+error { |exception:| "Bad news: #{exception.message}" }
 
 # Using symbol method names
 success :build_success_message
@@ -111,6 +118,10 @@ end
 def build_error_message(e)
   "Bad news: #{e.message}"
 end
+
+def build_error_message(exception:)
+  "Bad news: #{exception.message}"
+end
 ```
 
 ## Conditional messages
@@ -119,10 +130,10 @@ While `.error` and `.success` set the default messages, you can register conditi
 
 - an exception class (e.g., `ArgumentError`)
 - a class name string (e.g., `"Action::InboundValidationError"`)
-- a symbol referencing a local instance method predicate (arity 0 or 1), e.g. `:bad_input?`
-- a callable (arity 0 or 1)
+- a symbol referencing a local instance method predicate (arity 0 or 1, or keyword `exception:`), e.g. `:bad_input?`
+- a callable (arity 0 or 1, or keyword `exception:`)
 
-Symbols are resolved as methods on the action instance. If the method accepts one argument, the raised exception is passed in; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`). Symbols are also supported for the message itself (e.g., `success :method_name`), resolved via the same rules.
+Symbols are resolved as methods on the action instance. If the method accepts `exception:` it will be passed as a keyword; otherwise, if it accepts one positional argument, the raised exception is passed positionally; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`). Symbols are also supported for the message itself (e.g., `success :method_name`), resolved via the same rules.
 
 ```ruby
 error "bad"
@@ -148,6 +159,16 @@ error(if: :argument_error?) { |e| "Bad argument: #{e.message}" }
 def argument_error?(e)
   e.is_a?(ArgumentError)
 end
+
+# Symbol predicate (keyword), receives the exception via keyword
+error(if: :argument_error_kw?) { |exception:| "Bad argument: #{exception.message}" }
+
+def argument_error_kw?(exception:)
+  exception.is_a?(ArgumentError)
+end
+
+# Lambda predicate with keyword
+error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
 ```
 
 ## Callbacks

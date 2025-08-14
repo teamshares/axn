@@ -27,7 +27,9 @@ module Action
         end
 
         method = action.method(symbol)
-        if exception && method_accepts_exception?(method)
+        if exception && accepts_exception_keyword?(method)
+          action.public_send(symbol, exception:)
+        elsif exception && accepts_positional_exception?(method)
           action.public_send(symbol, exception)
         else
           action.public_send(symbol)
@@ -35,14 +37,30 @@ module Action
       end
 
       def call_callable_handler(action:, callable:, exception: nil)
-        if exception && callable.arity == 1
+        if exception && accepts_exception_keyword?(callable)
+          action.instance_exec(exception:, &callable)
+        elsif exception && accepts_positional_exception?(callable)
           action.instance_exec(exception, &callable)
         else
           action.instance_exec(&callable)
         end
       end
 
-      def method_accepts_exception?(method) = method.arity == 1 || method.arity < 0
+      # Shared introspection helpers
+      def accepts_exception_keyword?(callable_or_method)
+        return false unless callable_or_method.respond_to?(:parameters)
+
+        params = callable_or_method.parameters
+        params.any? { |type, name| %i[keyreq key].include?(type) && name == :exception } ||
+          params.any? { |type, _| type == :keyrest }
+      end
+
+      def accepts_positional_exception?(callable_or_method)
+        return false unless callable_or_method.respond_to?(:arity)
+
+        arity = callable_or_method.arity
+        arity == 1 || arity < 0
+      end
 
       def literal_value(value) = value
 
@@ -153,7 +171,9 @@ module Action
       def exception_class? = @rule.is_a?(Class) && @rule <= Exception
 
       def apply_callable(action:, exception:)
-        if @rule.arity == 1
+        if exception && EvalAdapter.accepts_exception_keyword?(@rule)
+          !!action.instance_exec(exception:, &@rule)
+        elsif exception && EvalAdapter.accepts_positional_exception?(@rule)
           !!action.instance_exec(exception, &@rule)
         else
           !!action.instance_exec(&@rule)
@@ -163,7 +183,9 @@ module Action
       def apply_symbol(action:, exception:)
         if action.respond_to?(@rule)
           method = action.method(@rule)
-          if EvalAdapter.method_accepts_exception?(method)
+          if exception && EvalAdapter.accepts_exception_keyword?(method)
+            !!action.public_send(@rule, exception:)
+          elsif exception && EvalAdapter.accepts_positional_exception?(method)
             !!action.public_send(@rule, exception)
           else
             !!action.public_send(@rule)
