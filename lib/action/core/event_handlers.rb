@@ -7,32 +7,46 @@ module Action
       module_function
 
       def call_block(action:, block:, exception: nil, operation: "executing handler")
-        if block.is_a?(Symbol)
-          unless action.respond_to?(block)
-            action.warn("Ignoring apparently-invalid symbol #{block.inspect} -- action does not respond to method")
-            return nil
-          end
+        return call_symbol_handler(action:, symbol: block, exception:) if symbol?(block)
+        return call_callable_handler(action:, callable: block, exception:) if callable?(block)
 
-          method = action.method(block)
-          if exception && (method.arity == 1 || method.arity < 0)
-            action.public_send(block, exception)
-          else
-            action.public_send(block)
-          end
-        elsif block.respond_to?(:arity)
-          if exception && block.arity == 1
-            action.instance_exec(exception, &block)
-          else
-            action.instance_exec(&block)
-          end
-        else
-          # Non-callable (e.g., String): return as-is
-          block
-        end
+        literal_value(block)
       rescue StandardError => e
         Axn::Util.piping_error(operation, action:, exception: e)
-        nil
       end
+
+      # Helpers (kept simple and readable)
+      def symbol?(value) = value.is_a?(Symbol)
+
+      def callable?(value) = value.respond_to?(:arity)
+
+      def call_symbol_handler(action:, symbol:, exception: nil)
+        unless action.respond_to?(symbol)
+          action.warn("Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method")
+          return nil
+        end
+
+        method = action.method(symbol)
+        if exception && method_accepts_exception?(method)
+          action.public_send(symbol, exception)
+        else
+          action.public_send(symbol)
+        end
+      end
+
+      def call_callable_handler(action:, callable:, exception: nil)
+        if exception && callable.arity == 1
+          action.instance_exec(exception, &callable)
+        else
+          action.instance_exec(&callable)
+        end
+      end
+
+      def method_accepts_exception?(method) = method.arity == 1 || method.arity < 0
+
+      def literal_value(value) = value
+
+      private_class_method :symbol?, :callable?, :call_symbol_handler, :call_callable_handler, :literal_value
     end
 
     # Small, immutable, copy-on-write registry keyed by event_type.
@@ -149,7 +163,7 @@ module Action
       def apply_symbol(action:, exception:)
         if action.respond_to?(@rule)
           method = action.method(@rule)
-          if method_accepts_exception?(method)
+          if EvalAdapter.method_accepts_exception?(method)
             !!action.public_send(@rule, exception)
           else
             !!action.public_send(@rule)
@@ -178,8 +192,6 @@ module Action
         action.warn("Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it")
         false
       end
-
-      def method_accepts_exception?(method) = method.arity == 1 || method.arity < 0
     end
   end
 end
