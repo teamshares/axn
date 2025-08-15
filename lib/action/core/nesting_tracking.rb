@@ -24,7 +24,7 @@ module Action
 
       # Shared method for both class and instance access
       def self._current_axn_stack
-        Thread.current[:axn_stack] ||= []
+        ActiveSupport::IsolatedExecutionState[:_axn_stack] ||= []
       end
     end
   end
