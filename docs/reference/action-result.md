@@ -13,7 +13,7 @@ Every `call` invocation on an Action will return an `Action::Result` instance, w
 | `elapsed_time` | Execution time in milliseconds (Float)
 | any `expose`d values | guaranteed to be set if `ok?` (since they have outgoing presence validations by default; any missing would have failed the action)
 
-NOTE: `success` and `error` (and so implicitly `message`) can be configured per-action via [the `messages` declaration](/reference/class#messages).
+NOTE: `success` and `error` (and so implicitly `message`) can be configured per-action via [the `success` and `error` declarations](/reference/class#success-and-error).
 
 ### Clarification of exposed values
 
