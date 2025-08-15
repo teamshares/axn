@@ -12,7 +12,6 @@ module Action
       @failure = false
       @exception = nil
       @error_from_user = nil
-      @error_prefix = nil
       @elapsed_time = nil
     end
 
@@ -29,7 +28,7 @@ module Action
     def failed? = @failure || false
 
     # Framework field accessors
-    attr_accessor :exception, :error_from_user, :error_prefix, :elapsed_time
+    attr_accessor :exception, :error_from_user, :elapsed_time
 
     # Internal failure state setter (for framework use)
     attr_writer :failure

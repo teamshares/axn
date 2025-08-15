@@ -8,7 +8,7 @@ module Action
     # Available for use from within message callables
     def default_error
       msg = action.class._static_message_for(:error, action:, exception: @context.exception || Action::Failure.new)
-      [@context.error_prefix, msg.presence || "Something went wrong"].compact.join(" ").squeeze(" ")
+      msg.presence || "Something went wrong"
     end
 
     def default_success
