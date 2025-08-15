@@ -23,28 +23,29 @@ module Action
           end
 
           # ONLY raised exceptions (i.e. NOT fail!).
-          def on_exception(**, &block) = _add_callback(:exception, **, block:)
+          def on_exception(handler = nil, **, &block) = _add_callback(:exception, handler:, **, block:)
 
           # ONLY raised on fail! (i.e. NOT unhandled exceptions).
-          def on_failure(**, &block) = _add_callback(:failure, **, block:)
+          def on_failure(handler = nil, **, &block) = _add_callback(:failure, handler:, **, block:)
 
           # Handles both fail! and unhandled exceptions
-          def on_error(**, &block) = _add_callback(:error, **, block:)
+          def on_error(handler = nil, **, &block) = _add_callback(:error, handler:, **, block:)
 
           # Executes when the action completes successfully (after all after hooks complete successfully)
           # Runs in child-first order (child handlers before parent handlers)
-          def on_success(**, &block) = _add_callback(:success, **, block:)
+          def on_success(handler = nil, **, &block) = _add_callback(:success, handler:, **, block:)
 
           private
 
-          def _add_callback(event_type, block:, **kwargs)
+          def _add_callback(event_type, handler: nil, block: nil, **kwargs)
             raise ArgumentError, "on_#{event_type} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
 
             condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
-            raise ArgumentError, "on_#{event_type} must be called with a block" unless block
+            raise ArgumentError, "on_#{event_type} must be called with a block or symbol" unless block || handler
 
+            callback_handler = block || handler
             matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: block)
+            entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: callback_handler)
             self._callbacks_registry = _callbacks_registry.register(event_type:, entry:)
           end
         end
