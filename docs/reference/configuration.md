@@ -2,7 +2,6 @@
 
 Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call `Action.configure` to adjust a few global settings.
 
-
 ```ruby
 Action.configure do |c|
   c.log_level = :info
@@ -21,7 +20,6 @@ end
 By default any swallowed errors are noted in the logs, but it's _highly recommended_ to wire up an `on_exception` handler so those get reported to your error tracking service.
 
 For example, if you're using Honeybadger this could look something like:
-
 
 ```ruby
   Action.configure do |c|
@@ -56,12 +54,9 @@ A couple notes:
   * If your handler raises, the failure will _also_ be swallowed and logged
   * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
 
-
-## `top_level_around_hook`
+## `wrap_with_trace` and `emit_metrics`
 
 If you're using an APM provider, observability can be greatly enhanced by adding automatic _tracing_ of Action calls and/or emitting count metrics after each call completes.
-
-### Tracing and Metrics
 
 The framework provides two distinct hooks for observability:
 
@@ -92,7 +87,6 @@ A couple notes:
   * The `wrap_with_trace` hook is an around hook - you must call the provided block to execute the action
   * The `emit_metrics` hook is called after execution with the result - do not call any blocks
 
-
 ## `logger`
 
 Defaults to `Rails.logger`, if present, otherwise falls back to `Logger.new($stdout)`.  But can be set to a custom logger as necessary.
@@ -114,6 +108,10 @@ For a practical example of this in practice, see [our 'memoization' recipe](/rec
 ## `log_level`
 
 Sets the log level used when you call `log "Some message"` in your Action.  Note this is read via a `log_level` class method, so you can easily use inheritance to support different log levels for different sets of actions.
+
+## `env`
+
+Automatically detects the environment from `RACK_ENV` or `RAILS_ENV`, defaulting to `"development"`. This is used internally for conditional behavior (e.g., more verbose logging in non-production environments).
 
 ## Automatic Logging
 
@@ -148,3 +146,37 @@ end
 ```
 
 The `auto_log` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
+
+## Complete Configuration Example
+
+Here's a complete example showing all available configuration options:
+
+```ruby
+Action.configure do |c|
+  # Logging
+  c.log_level = :info
+  c.logger = Rails.logger
+
+  # Exception handling
+  c.on_exception = proc do |e, action:, context:|
+    message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
+    Rails.logger.warn(message)
+    Honeybadger.notify(message, context: { axn_context: context })
+  end
+
+  # Observability
+  c.wrap_with_trace = proc do |resource, &action|
+    Datadog::Tracing.trace("Action", resource:) do
+      action.call
+    end
+  end
+
+  c.emit_metrics = proc do |resource, result|
+    Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome })
+    Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
+  end
+
+  # Global includes
+  c.additional_includes = [MyCustomModule]
+end
+```
