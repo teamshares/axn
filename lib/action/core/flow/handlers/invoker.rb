@@ -30,7 +30,7 @@ module Action
             return false unless callable_or_method.respond_to?(:arity)
 
             arity = callable_or_method.arity
-            arity == 1 || arity < 0
+            arity == 1 || arity.negative?
           end
 
           private

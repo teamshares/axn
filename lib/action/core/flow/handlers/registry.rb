@@ -14,10 +14,11 @@ module Action
             @index = index.transform_values { |arr| Array(arr).freeze }.freeze
           end
 
-          def register(event_type:, entry:, prepend: true)
+          # Always register most-recent-first (last-defined wins). Simpler mental model.
+          def register(event_type:, entry:)
             key = event_type.to_sym
             existing = Array(@index[key])
-            updated = prepend ? [entry] + existing : existing + [entry]
+            updated = [entry] + existing
             self.class.new(@index.merge(key => updated.freeze))
           end
 

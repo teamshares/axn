@@ -45,7 +45,7 @@ module Action
 
             matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
             entry = Action::Core::Flow::Handlers::CallbackHandler.new(matcher:, handler: block)
-            self._callbacks_registry = _callbacks_registry.register(event_type:, entry:, prepend: true)
+            self._callbacks_registry = _callbacks_registry.register(event_type:, entry:)
           end
         end
       end

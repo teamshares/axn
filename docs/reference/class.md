@@ -181,15 +181,52 @@ end
 ::: warning
 You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
 :::
+
+### Message ordering and inheritance
+
+Messages are evaluated in **last-defined-first** order, meaning the most recently defined message that matches its conditions will be used. This applies to both success and error messages:
+
+```ruby
+class ParentAction
+  include Action
+
+  success "Parent success message"
+  error "Parent error message"
+end
+
+class ChildAction < ParentAction
+  success "Child success message"  # This will be used when action succeeds
+  error "Child error message"      # This will be used when action fails
+end
+```
+
+Within a single class, later definitions override earlier ones:
+
+```ruby
+class MyAction
+  include Action
+
+  success "First success message"           # Ignored
+  success "Second success message"          # Ignored
+  success "Final success message"           # This will be used
+
+  error "First error message"               # Ignored
+  error "Second error message"              # Ignored
+  error "Final error message"               # This will be used
+end
+```
+
+When using conditional messages, the system evaluates handlers in the order defined above until it finds one that matches and doesn't raise an exception. If a handler raises an exception, it falls back to the next matching handler, then to static messages, and finally to the default message.
 ```
 
 ## Callbacks
 
 In addition to the [global exception handler](/reference/configuration#on-exception), a number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails.
 
-::: danger ALPHA
-* The callbacks themselves are functional. Note the ordering _between_ callbacks is not well defined (currently a side effect of the order they're defined).
-  * Ordering may change at any time so while in alpha DO NOT MAKE ASSUMPTIONS ABOUT THE ORDER OF CALLBACK EXECUTION!
+::: tip Callback Ordering
+* Callbacks are executed in **last-defined-first** order, similar to messages
+* Child class callbacks execute before parent class callbacks
+* Multiple matching callbacks of the same type will *all* execute
 :::
 
 

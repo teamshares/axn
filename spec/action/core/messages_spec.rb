@@ -140,6 +140,178 @@ RSpec.describe Action do
         end
       end
 
+      context "when dynamic raises error in success message" do
+        let(:action) do
+          build_action do
+            success -> { raise ArgumentError, "fail message" }
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "calls Axn::Util.piping_error when success message callable raises" do
+          result = action.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Action completed successfully")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "fail message",
+          )
+        end
+
+        # no exception should bubble; it is piped and we fall back
+      end
+
+      context "when dynamic raises error in success message with fallback" do
+        let(:action) do
+          build_action do
+            # Define fallback first so the failing handler (defined last) is evaluated before it
+            success "Fallback success message"
+            success -> { raise ArgumentError, "fail message" }
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "falls back to next non-failing success message" do
+          result = action.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Fallback success message")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "fail message",
+          )
+        end
+      end
+
+      context "when dynamic raises error in success message with conditional fallback" do
+        let(:action) do
+          build_action do
+            expects :trigger, allow_blank: true, default: false
+            # Static fallback (used when no conditional matches)
+            success "Final fallback"
+            # Conditional fallback that should run if trigger is true
+            success "Conditional fallback", if: :trigger
+            # Failing conditional defined last so it's evaluated first within conditional handlers
+            success -> { raise ArgumentError, "fail message" }, if: :trigger
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "falls back to next non-failing success message when condition is false" do
+          result = action.call(trigger: false)
+          expect(result).to be_ok
+          expect(result.success).to eq("Final fallback")
+        end
+
+        it "falls back to conditional success message when condition is true" do
+          result = action.call(trigger: true)
+          expect(result).to be_ok
+          expect(result.success).to eq("Conditional fallback")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "fail message",
+          )
+        end
+      end
+
+      context "when dynamic raises error in success message with symbol method fallback" do
+        let(:action) do
+          build_action do
+            # Order to ensure failing runs first, then method, then static
+            success "Final fallback"
+            success :fallback_method
+            success -> { raise ArgumentError, "fail message" }
+
+            def fallback_method
+              "Method fallback"
+            end
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "falls back to next non-failing success message" do
+          result = action.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Method fallback")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "fail message",
+          )
+        end
+      end
+
+      context "when all success messages fail" do
+        let(:action) do
+          build_action do
+            # Order to evaluate failures first, leaving static as the last resort
+            success "Static fallback"
+            success :failing_method
+            success -> { raise "second fail" }
+            success -> { raise ArgumentError, "first fail" }
+
+            def failing_method
+              raise NameError, "method fail"
+            end
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "falls back to static message when all dynamic ones fail" do
+          result = action.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Static fallback")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "first fail",
+          )
+        end
+      end
+
+      context "when all success messages fail including static" do
+        let(:action) do
+          build_action do
+            # Order to ensure the first evaluated failure is the ArgumentError("first fail")
+            success -> { raise NameError, "third fail" }
+            success -> { raise "second fail" }
+            success -> { raise ArgumentError, "first fail" }
+          end
+        end
+
+        before do
+          allow(Axn::Util).to receive(:piping_error).and_call_original
+        end
+
+        it "falls back to default success message when all configured ones fail" do
+          result = action.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Action completed successfully")
+          expect_piping_error_called(
+            message_substring: "determining message callable",
+            error_class: ArgumentError,
+            error_message: "first fail",
+          )
+        end
+      end
+
       context "with symbol predicate matcher" do
         context "arity 0 method" do
           let(:action) do
@@ -147,8 +319,6 @@ RSpec.describe Action do
               expects :missing_param
               error "Default error"
               error "Argument problem", if: :bad_argument?
-
-
 
               def bad_argument?
                 # local decision, no args
