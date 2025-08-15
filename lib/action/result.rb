@@ -47,13 +47,18 @@ module Action
     def error
       return if ok?
 
-      determine_error_message
+      return @context.error_from_user if @context.error_from_user.present?
+
+      exception = @context.exception || Action::Failure.new
+      msg = action.class._message_for(:error, action:, exception:)
+      msg.presence || "Something went wrong"
     end
 
     def success
       return unless ok?
 
-      determine_success_message
+      msg = action.class._message_for(:success, action:, exception: nil)
+      msg.presence || "Action completed successfully"
     end
 
     def ok = success
@@ -86,19 +91,6 @@ module Action
     private
 
     def context_data_source = @context.exposed_data
-
-    def determine_error_message
-      return @context.error_from_user if @context.error_from_user.present?
-
-      exception = @context.exception || Action::Failure.new
-      msg = action.class._message_for(:error, action:, exception:)
-      msg.presence || "Something went wrong"
-    end
-
-    def determine_success_message
-      msg = action.class._message_for(:success, action:, exception: nil)
-      msg.presence || "Action completed successfully"
-    end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
       if @context.__combined_data.key?(method_name.to_sym)
