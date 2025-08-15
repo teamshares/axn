@@ -7,7 +7,7 @@ RSpec.describe Action do
     let(:subaction) do
       build_action do
         expects :sub_fail_or_raise
-        messages error: "sub bad"
+        error "sub bad"
         def call
           raise "inner action failed" unless sub_fail_or_raise == :fail
 
@@ -23,7 +23,7 @@ RSpec.describe Action do
         expects :bang, allow_blank: true
         expects :hoist, allow_blank: true
 
-        messages error: ->(e) { "Outer action failed on a #{e.class.name}" }
+        error ->(e) { "Outer action failed on a #{e.class.name}" }
 
         def call
           if hoist

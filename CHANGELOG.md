@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
-* N/A
+## 0.1.0-alpha.2.7
+* [BREAKING] Replaced `messages` declaration with separate `success` and `error` calls
+* [BREAKING] Removed `rescues` method (use `error_from` for custom error messages; all exceptions now report to `on_exception` handlers)
+* [BREAKING] Replaced `error_from` with an optional `if:` argument on `error`
+  * [FEAT] Implemented conditional success message filtering as well
+* [FEAT] Added block support for `error` and `success`
+* [FEAT] `if:` now supports symbol predicates referencing instance methods (arity 0, 1, or keyword `exception:`). If the method accepts `exception:` it is passed as a keyword; else if it accepts one positional arg, it is passed positionally; otherwise it is called with no args. If the method is missing, the symbol falls back to constant lookup (e.g., `:ArgumentError`).
+* [FEAT] `success`/`error` and callbacks now accept symbol method names (e.g., `success :local_method`). Handlers can receive the exception via keyword (`exception:`) or single positional argument; otherwise they are called with no args.
+* [BREAKING] Updated callback methods (`on_success`, `on_error`, `on_failure`, `on_exception`) to use consistent `if:` interface (matching messages)
+* [FEAT] Added `unless:` support to both `success`/`error` messages and callbacks (`on_success`, `on_error`, `on_failure`, `on_exception`)
 
 ## 0.1.0-alpha.2.6.1
 * [FEAT] Added `elapsed_time` and `outcome` methods to `Action::Result`

@@ -4,9 +4,9 @@ RSpec.describe Action do
   describe ".axnable_method" do
     let(:client) do
       build_action do
-        messages error: "bad"
+        error "bad"
 
-        axnable_method :number, messages: { error: "badbadbad" } do |arg:|
+        axnable_method :number, error: "badbadbad" do |arg:|
           fail! "arg was all 1s" if arg.to_s.chars.uniq == ["1"]
           raise "arg was all 2s" if arg.to_s.chars.uniq == ["2"]
 

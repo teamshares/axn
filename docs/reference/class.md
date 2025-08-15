@@ -85,48 +85,148 @@ expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d)
 
 will succeed if given _either_ an actual Date object _or_ a string that Date.parse can convert into one.  If the preprocess callable raises an exception, that'll be swallowed and the action failed.
 
-## `.messages`
+## `.success` and `.error`
 
-The `messages` declaration allows you to customize the `error` and `success` messages on the returned result.
+The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
 
-Accepts `error` and/or `success` keys.  Values can be a string (returned directly) or a callable (evaluated in the action's context, so can access instance methods and variables).  If `error` is provided with a callable that expects a positional argument, the exception that was raised will be passed in as that value.
+Both methods accept a string (returned directly), a symbol (resolved as a local instance method on the action), or a block (evaluated in the action's context, so can access instance methods and variables).
 
-In callables, you can access:
+When an exception is available (e.g., during `error`), handlers can receive it in either of two equivalent ways:
+- Keyword form: accept `exception:` and it will be passed as a keyword
+- Positional form: if the handler accepts a single positional argument, it will be passed positionally
+
+This applies to both blocks and symbol-backed instance methods. Choose the style that best fits your codebase (clarity vs concision).
+
+In callables and symbol-backed methods, you can access:
 - **Input data**: Use field names directly (e.g., `name`)
 - **Output data**: Use `result.field` pattern (e.g., `result.greeting`)
 - **Instance methods and variables**: Direct access
 
 ```ruby
-messages success: -> { "Hello #{name}, your greeting: #{result.greeting}" },
-         error: ->(e) { "Bad news: #{e.message}" }
+success { "Hello #{name}, your greeting: #{result.greeting}" }
+error { |e| "Bad news: #{e.message}" }
+error { |exception:| "Bad news: #{exception.message}" }
+
+# Using symbol method names
+success :build_success_message
+error :build_error_message
+
+def build_success_message
+  "Hello #{name}, your greeting: #{result.greeting}"
+end
+
+def build_error_message(e)
+  "Bad news: #{e.message}"
+end
+
+def build_error_message(exception:)
+  "Bad news: #{exception.message}"
+end
 ```
 
-## `error_from` and `rescues`
+## Conditional messages
 
-While `.messages` sets the _default_ error/success messages and is more commonly used, there are times when you want specific error messages for specific failure cases.
+While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` or `unless:` matcher. The matcher can be:
 
-`error_from` and `rescues` both register a matcher (exception class, exception class name (string), or callable) and a message to use if the matcher succeeds.  They act exactly the same, except if a matcher registered with `rescues` succeeds, the exception _will not_ trigger the configured exception handlers (global or specific to this class).
+- an exception class (e.g., `ArgumentError`)
+- a class name string (e.g., `"Action::InboundValidationError"`)
+- a symbol referencing a local instance method predicate (arity 0 or 1, or keyword `exception:`), e.g. `:bad_input?`
+- a callable (arity 0 or 1, or keyword `exception:`)
 
-Callable matchers and messages follow the same data access patterns as other callables: input fields directly, output fields via `result.field`, instance variables, and methods.
+Symbols are resolved as methods on the action instance. If the method accepts `exception:` it will be passed as a keyword; otherwise, if it accepts one positional argument, the raised exception is passed positionally; otherwise it is called with no arguments. If the action does not respond to the symbol, we fall back to constant lookup (e.g., `if: :ArgumentError` behaves like `if: ArgumentError`). Symbols are also supported for the message itself (e.g., `success :method_name`), resolved via the same rules.
 
 ```ruby
-messages error: "bad"
+error "bad"
 
-# Note this will NOT trigger Action.config.on_exception
-rescues ActiveRecord::InvalidRecord => "Invalid params provided"
+# Custom message with exception class matcher
+error "Invalid params provided", if: ActiveRecord::InvalidRecord
 
-# These WILL trigger error handler (callable matcher + message with data access)
-error_from ArgumentError, ->(e) { "Argument error: #{e.message}" }
-error_from -> { name == "bad" }, -> { "Bad input #{name}, result: #{result.status}" }
+# Custom message with callable matcher and message
+error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
+error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
+
+# Custom message with symbol predicate (arity 0)
+error "Transient error, please retry", if: :transient_error?
+
+def transient_error?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+# Symbol predicate (arity 1), receives the exception
+error(if: :argument_error?) { |e| "Bad argument: #{e.message}" }
+
+def argument_error?(e)
+  e.is_a?(ArgumentError)
+end
+
+# Symbol predicate (keyword), receives the exception via keyword
+error(if: :argument_error_kw?) { |exception:| "Bad argument: #{exception.message}" }
+
+def argument_error_kw?(exception:)
+  exception.is_a?(ArgumentError)
+end
+
+# Lambda predicate with keyword
+error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
+
+# Using unless: for inverse logic
+error "Custom error", unless: :should_skip?
+
+def should_skip?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+::: warning
+You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
+:::
+
+### Message ordering and inheritance
+
+Messages are evaluated in **last-defined-first** order, meaning the most recently defined message that matches its conditions will be used. This applies to both success and error messages:
+
+```ruby
+class ParentAction
+  include Action
+
+  success "Parent success message"
+  error "Parent error message"
+end
+
+class ChildAction < ParentAction
+  success "Child success message"  # This will be used when action succeeds
+  error "Child error message"      # This will be used when action fails
+end
+```
+
+Within a single class, later definitions override earlier ones:
+
+```ruby
+class MyAction
+  include Action
+
+  success "First success message"           # Ignored
+  success "Second success message"          # Ignored
+  success "Final success message"           # This will be used
+
+  error "First error message"               # Ignored
+  error "Second error message"              # Ignored
+  error "Final error message"               # This will be used
+end
+```
+
+When using conditional messages, the system evaluates handlers in the order defined above until it finds one that matches and doesn't raise an exception. If a handler raises an exception, it falls back to the next matching handler, then to static messages, and finally to the default message.
 ```
 
 ## Callbacks
 
 In addition to the [global exception handler](/reference/configuration#on-exception), a number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails.
 
-::: danger ALPHA
-* The callbacks themselves are functional. Note the ordering _between_ callbacks is not well defined (currently a side effect of the order they're defined).
-  * Ordering may change at any time so while in alpha DO NOT MAKE ASSUMPTIONS ABOUT THE ORDER OF CALLBACK EXECUTION!
+::: tip Callback Ordering
+* Callbacks are executed in **last-defined-first** order, similar to messages
+* Child class callbacks execute before parent class callbacks
+* Multiple matching callbacks of the same type will *all* execute
 :::
 
 
@@ -161,17 +261,30 @@ class Foo
 end
 ```
 
-Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for [`error_from` and `rescues`](#error-for-and-rescues):
+Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:` or `unless:`):
 
 ```ruby
 class Foo
   include Action
 
-  on_exception NoMethodError do |exception| # [!code focus]
+  on_exception(if: NoMethodError) do |exception| # [!code focus]
     # e.g. trigger a slack error
   end
 
-  on_exception ->(e) { e.is_a?(ZeroDivisionError) } do # [!code focus]
+on_exception(unless: :transient_error?) do |exception| # [!code focus]
+    # e.g. trigger a slack error for non-transient errors
+  end
+
+def transient_error?
+  # local decision based on inputs/outputs
+  name == "temporary"
+end
+
+::: warning
+You cannot use both `if:` and `unless:` for the same callback - this will raise an `ArgumentError`.
+:::
+
+  on_exception(if: ->(e) { e.is_a?(ZeroDivisionError) }) do # [!code focus]
     # e.g. trigger a slack error
   end
 end

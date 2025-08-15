@@ -5,9 +5,15 @@ require "action/core/context/facade"
 module Action
   # Inbound / Internal ContextFacade
   class InternalContext < ContextFacade
-    # So can be referenced from within e.g. rescues callables
+    # Available for use from within message callables
     def default_error
-      [@context.error_prefix, determine_error_message(only_default: true)].compact.join(" ").squeeze(" ")
+      msg = action.class._static_message_for(:error, action:, exception: @context.exception || Action::Failure.new)
+      [@context.error_prefix, msg.presence || "Something went wrong"].compact.join(" ").squeeze(" ")
+    end
+
+    def default_success
+      msg = action.class._static_message_for(:success, action:, exception: nil)
+      msg.presence || "Action completed successfully"
     end
 
     private

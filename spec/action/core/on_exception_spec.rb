@@ -38,7 +38,7 @@ RSpec.describe Action do
         build_action do
           expects :exception_klass, default: RuntimeError
 
-          on_exception RuntimeError do |e|
+          on_exception(if: RuntimeError) do |e|
             log "in on_exception handler: #{e.class.name} - #{e.message}: #{method_for_handler(e.class)}"
           end
 
@@ -66,7 +66,7 @@ RSpec.describe Action do
     context "triggers all that match" do
       let(:action) do
         build_action do
-          on_exception RuntimeError do
+          on_exception(if: RuntimeError) do
             log "Handling RuntimeError (specific)"
           end
 
@@ -107,7 +107,7 @@ RSpec.describe Action do
   context "when on_exception handler itself raises" do
     let(:action) do
       build_action do
-        on_exception RuntimeError do
+        on_exception(if: RuntimeError) do
           raise StandardError, "fail in handler"
         end
         def call
@@ -132,7 +132,7 @@ RSpec.describe Action do
   context "when event handler matcher raises" do
     let(:action) do
       build_action do
-        on_exception ->(_e) { raise StandardError, "fail in matcher" } do
+        on_exception(if: ->(_e) { raise StandardError, "fail in matcher" }) do
           # handler body doesn't matter
         end
         def call

@@ -9,13 +9,8 @@ module Action
             include InstanceMethods
 
             def _trigger_on_exception(exception)
-              interceptor = self.class._error_interceptor_for(exception:, action: self)
-              return if interceptor&.should_report_error == false
-
               # Call any handlers registered on *this specific action* class
-              self.class._exception_handlers.each do |handler|
-                handler.execute_if_matches(exception:, action: self)
-              end
+              self.class._dispatch_callbacks(:exception, action: self, exception:)
 
               # Call any global handlers
               Action.config.on_exception(exception, action: self, context: context_for_logging)
@@ -27,12 +22,7 @@ module Action
 
             def _trigger_on_success
               # Call success handlers in child-first order (like after hooks)
-              self.class._success_handlers.each do |handler|
-                instance_exec(&handler)
-              rescue StandardError => e
-                # Log the error but continue with other handlers
-                Axn::Util.piping_error("executing on_success hook", action: self, exception: e)
-              end
+              self.class._dispatch_callbacks(:success, action: self, exception: nil)
             end
           end
         end
@@ -44,17 +34,13 @@ module Action
             yield
           rescue StandardError => e
             # on_error handlers run for both unhandled exceptions and fail!
-            self.class._error_handlers.each do |handler|
-              handler.execute_if_matches(exception: e, action: self)
-            end
+            self.class._dispatch_callbacks(:error, action: self, exception: e)
 
             # on_failure handlers run ONLY for fail!
             if e.is_a?(Action::Failure)
-              self.class._failure_handlers.each do |handler|
-                handler.execute_if_matches(exception: e, action: self)
-              end
+              self.class._dispatch_callbacks(:failure, action: self, exception: e)
             else
-              # on_exception handlers run for ONLY for unhandled exceptions. AND NOTE: may be skipped if the exception is rescued via `rescues`.
+              # on_exception handlers run for ONLY for unhandled exceptions.
               _trigger_on_exception(e)
 
               @__context.exception = e

@@ -14,7 +14,7 @@ RSpec.describe Action do
 
         before { puts "before" }
 
-        rescues -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+        error ->(e) { "rescued: #{e.message}" }, if: -> { should_rescue }
 
         # Callbacks
         on_success { puts "on_success" }
@@ -154,20 +154,20 @@ RSpec.describe Action do
 
           before { puts "before" }
 
-          rescues -> { should_rescue } => ->(e) { puts "rescued: #{e.message}" }
+          error ->(e) { "rescued: #{e.message}" }, if: -> { should_rescue }
 
           # Callbacks with filters
           on_success { puts "on_success" }
 
-          on_failure ->(e) { e.message == "SPECIFIC" } do |e|
+          on_failure(if: ->(e) { e.message == "SPECIFIC" }) do |e|
             puts "on_failure: #{e.message}"
           end
 
-          on_error ->(e) { e.message == "ERROR" } do |e|
+          on_error(if: ->(e) { e.message == "ERROR" }) do |e|
             puts "on_error: #{e.message}"
           end
 
-          on_exception ArgumentError do |e|
+          on_exception(if: ArgumentError) do |e|
             puts "on_exception: #{e.message}"
           end
 
@@ -233,16 +233,6 @@ RSpec.describe Action do
               expect(result).not_to be_ok
             end.to output("before\ncalling\non_exception: SPECIFIC\n").to_stdout
           end
-
-          context "when rescues" do
-            let(:should_rescue) { true }
-
-            it "does not call on_exception" do
-              expect do
-                expect(result).not_to be_ok
-              end.to output("before\ncalling\n").to_stdout
-            end
-          end
         end
       end
 
@@ -265,6 +255,142 @@ RSpec.describe Action do
               expect(result).not_to be_ok
             end.to output("before\ncalling\non_error: ERROR\n").to_stdout
           end
+        end
+      end
+
+      context "with unless filtering" do
+        let(:action) do
+          build_action do
+            expects :trigger, type: Symbol
+            expects :should_skip, type: :boolean, default: false
+
+            before { puts "before" }
+
+            on_success(unless: :should_skip?) { puts "on_success_unless" }
+            on_failure(unless: :should_skip?) { puts "on_failure_unless" }
+            on_exception(unless: :should_skip?) { puts "on_exception_unless" }
+            on_error(unless: :should_skip?) { puts "on_error_unless" }
+
+            after do
+              puts "after"
+            end
+
+            def call
+              puts "calling"
+              case trigger
+              when :raise
+                raise "bad"
+              when :fail
+                fail!("Custom failure message")
+              end
+            end
+
+            def should_skip?
+              should_skip
+            end
+          end
+        end
+
+        context "when should_skip is false" do
+          let(:should_skip) { false }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "executes the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).to be_ok
+              end.to output("before\ncalling\nafter\non_success_unless\n").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "executes the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).not_to be_ok
+              end.to output("before\ncalling\non_error_unless\non_failure_unless\n").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "executes the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).not_to be_ok
+              end.to output("before\ncalling\non_error_unless\non_exception_unless\n").to_stdout
+            end
+          end
+        end
+
+        context "when should_skip is true" do
+          let(:should_skip) { true }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "does not execute the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).to be_ok
+              end.to output("before\ncalling\nafter\n").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "does not execute the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).not_to be_ok
+              end.to output("before\ncalling\n").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "does not execute the callback" do
+              expect do
+                expect(action.call(trigger:, should_skip:)).not_to be_ok
+              end.to output("before\ncalling\n").to_stdout
+            end
+          end
+        end
+      end
+
+      context "raises error when both if and unless provided" do
+        it "raises ArgumentError for on_success" do
+          expect do
+            build_action do
+              on_success(if: :condition?, unless: :other_condition?) { puts "success" }
+            end
+          end.to raise_error(ArgumentError, /on_success cannot be called with both :if and :unless/)
+        end
+
+        it "raises ArgumentError for on_failure" do
+          expect do
+            build_action do
+              on_failure(if: :condition?, unless: :other_condition?) { puts "failure" }
+            end
+          end.to raise_error(ArgumentError, /on_failure cannot be called with both :if and :unless/)
+        end
+
+        it "raises ArgumentError for on_exception" do
+          expect do
+            build_action do
+              on_exception(if: :condition?, unless: :other_condition?) { puts "exception" }
+            end
+          end.to raise_error(ArgumentError, /on_exception cannot be called with both :if and :unless/)
+        end
+
+        it "raises ArgumentError for on_error" do
+          expect do
+            build_action do
+              on_error(if: :condition?, unless: :other_condition?) { puts "error" }
+            end
+          end.to raise_error(ArgumentError, /on_error cannot be called with both :if and :unless/)
         end
       end
     end

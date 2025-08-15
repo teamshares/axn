@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
+require "action/core/flow/handlers"
+
 module Action
   module Core
     module Flow
       module Messages
         def self.included(base)
           base.class_eval do
-            class_attribute :_success_msg, :_error_msg
-            class_attribute :_custom_error_interceptors, default: []
+            class_attribute :_messages_registry, default: Action::Core::Flow::Handlers::Registry.empty
 
             extend ClassMethods
             include InstanceMethods
@@ -15,45 +16,58 @@ module Action
         end
 
         module ClassMethods
-          def messages(success: nil, error: nil)
-            self._success_msg = success if success.present?
-            self._error_msg = error if error.present?
-
-            true
+          # Internal: resolve a message for the given event (conditional first, then static)
+          def _message_for(event_type, action:, exception: nil)
+            _conditional_message_for(event_type, action:, exception:) ||
+              _static_message_for(event_type, action:, exception:)
           end
 
-          def error_from(matcher = nil, message = nil, **match_and_messages)
-            _register_error_interceptor(matcher, message, should_report_error: true, **match_and_messages)
+          def _conditional_message_for(event_type, action:, exception: nil)
+            _messages_registry.for(event_type).each do |handler|
+              next if handler.respond_to?(:static?) && handler.static?
+
+              msg = handler.apply(action:, exception:)
+              return msg if msg.present?
+            end
+            nil
           end
 
-          def rescues(matcher = nil, message = nil, **match_and_messages)
-            _register_error_interceptor(matcher, message, should_report_error: false, **match_and_messages)
+          def _static_message_for(event_type, action:, exception: nil)
+            _messages_registry.for(event_type).each do |handler|
+              next unless handler.respond_to?(:static?) && handler.static?
+
+              msg = handler.apply(action:, exception:)
+              return msg if msg.present?
+            end
+            nil
           end
+
+          def success(message = nil, **, &) = _add_message(:success, message:, **, &)
+          def error(message = nil, **, &) = _add_message(:error, message:, **, &)
 
           def default_error = new.internal_context.default_error
+          def default_success = new.internal_context.default_success
 
-          # Private helpers
+          private
 
-          def _error_interceptor_for(exception:, action:)
-            Array(_custom_error_interceptors).detect do |int|
-              int.matches?(exception:, action:)
-            end
-          end
+          def _add_message(kind, message:, **kwargs, &block)
+            raise ArgumentError, "#{kind} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
 
-          def _register_error_interceptor(matcher, message, should_report_error:, **match_and_messages)
-            method_name = should_report_error ? "error_from" : "rescues"
-            raise ArgumentError, "#{method_name} must be called with a key/value pair, or else keyword args" if [matcher, message].compact.size == 1
+            condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
+            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
+            raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            interceptors = { matcher => message }.compact.merge(match_and_messages).map do |(matcher, message)| # rubocop:disable Lint/ShadowingOuterLocalVariable
-              Action::EventHandlers::CustomErrorInterceptor.new(matcher:, message:, should_report_error:)
-            end
+            handler = block_given? ? block : message
 
-            self._custom_error_interceptors += interceptors
+            matcher = condition.nil? ? nil : Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless))
+            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:)
+            self._messages_registry = _messages_registry.register(event_type: kind, entry:)
+            true
           end
         end
 
         module InstanceMethods
-          delegate :default_error, to: :internal_context
+          delegate :default_error, :default_success, to: :internal_context
         end
       end
     end
