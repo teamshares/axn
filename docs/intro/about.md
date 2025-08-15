@@ -38,8 +38,8 @@ The core library provides many benefits for individual action calls, but also ai
   * Each layer `expects` and `exposes` its own accessor set, but internally all the values are passed down the chain (i.e. actor C can accept something A exposed that B didn’t touch and knows nothing about).
   * The top-level action must `expose` it’s own layer (effectively documenting public vs private exposures, which drastically eases refactoring)
 * Ad hoc (called arbitrarily from within other actions)
-  * `hoist_errors` (usage: `hoist_errors { Nested::Action.call }`) ensures any failure from a nested service is bubbled up to the top level (by default, as if the failure had happened there directly).
-  * Allows configurable handling at call site (e.g. setting `prefix`, so identical failures from different nested calls are distinguishable)
+  * Use `call!` to ensure any failure from a nested service raises an exception, or manually check `result.ok?` and handle failures appropriately
+  * The `from` filter on error messages can be used to distinguish failures from different nested calls
 
 ::: danger ALPHA
 * TODO: add links to sections showing usage guides/examples for the more complex flows
