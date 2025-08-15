@@ -235,6 +235,16 @@ In addition to the [global exception handler](/reference/configuration#on-except
   * *Callbacks* (defined below) are executed _after_ the `call` -- exceptions or `fail!`s here will _not_ change `result.ok?`
 :::
 
+
+**Note:** Symbol method handlers for all callback types follow the same argument pattern as [message handlers](#conditional-messages):
+- If the method accepts `exception:` as a keyword, the exception is passed as a keyword
+- If the method accepts one positional argument, the exception is passed positionally
+- Otherwise, the method is called with no arguments
+
+::: warning
+You cannot use both `if:` and `unless:` for the same callback - this will raise an `ArgumentError`.
+:::
+
 ### `on_success`
 
 This is triggered after the Axn completes, if it was successful.  Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
@@ -280,16 +290,14 @@ def transient_error?
   name == "temporary"
 end
 
-::: warning
-You cannot use both `if:` and `unless:` for the same callback - this will raise an `ArgumentError`.
-:::
-
   on_exception(if: ->(e) { e.is_a?(ZeroDivisionError) }) do # [!code focus]
     # e.g. trigger a slack error
   end
 end
 ```
 
+
 If multiple `on_exception` handlers are provided, ALL that match the raised exception will be triggered in the order provided.
 
 The _global_ handler will be triggered _after_ all class-specific handlers.
+

@@ -7,6 +7,44 @@ RSpec.describe Action do
     let(:trigger) { :ok }
     let(:should_rescue) { false }
 
+    # Shared examples for testing symbol method handlers
+    shared_examples "symbol method handler" do |callback_type, trigger_value, expected_output|
+      context "when #{trigger_value} is triggered" do
+        let(:trigger) { trigger_value }
+
+        it "calls the appropriate #{callback_type} handlers" do
+          expect do
+            if trigger_value == :ok
+              expect(action.call(trigger:)).to be_ok
+            else
+              expect(action.call(trigger:)).not_to be_ok
+            end
+          end.to output(expected_output).to_stdout
+        end
+      end
+    end
+
+    # Shared examples for testing conditional filtering
+    shared_examples "conditional filtering" do |callback_type, should_skip_value, expected_output|
+      context "when should_skip is #{should_skip_value}" do
+        let(:should_skip) { should_skip_value }
+
+        context "on #{callback_type}" do
+          let(:trigger) { callback_type == :success ? :ok : :raise }
+
+          it "#{should_skip_value ? "does not execute" : "executes"} the #{callback_type} callback" do
+            expect do
+              if callback_type == :success
+                expect(action.call(trigger:, should_skip:)).to be_ok
+              else
+                expect(action.call(trigger:, should_skip:)).not_to be_ok
+              end
+            end.to output(expected_output).to_stdout
+          end
+        end
+      end
+    end
+
     let(:action) do
       build_action do
         expects :trigger, type: Symbol
@@ -361,36 +399,181 @@ RSpec.describe Action do
       end
 
       context "raises error when both if and unless provided" do
-        it "raises ArgumentError for on_success" do
-          expect do
-            build_action do
-              on_success(if: :condition?, unless: :other_condition?) { puts "success" }
+        %i[success failure exception error].each do |callback_type|
+          it "raises ArgumentError for on_#{callback_type}" do
+            expect do
+              build_action do
+                public_send("on_#{callback_type}", if: :condition?, unless: :other_condition?) { puts callback_type }
+              end
+            end.to raise_error(ArgumentError, /on_#{callback_type} cannot be called with both :if and :unless/)
+          end
+        end
+      end
+    end
+
+    context "with symbol method handlers" do
+      let(:action) do
+        build_action do
+          expects :trigger, type: Symbol
+
+          # Test on_error with symbol method names
+          on_error :handle_error_no_args
+          on_error :handle_error_positional, if: ArgumentError
+          on_error :handle_error_keyword, if: TypeError
+
+          # Test other callbacks with symbol method names
+          on_success :handle_success_no_args
+          on_success :handle_success_positional
+          on_success :handle_success_keyword
+
+          on_failure :handle_failure_no_args
+          on_failure :handle_failure_positional, if: ->(e) { e.message == "SPECIFIC" }
+
+          on_exception :handle_exception_no_args
+          on_exception :handle_exception_positional, if: ZeroDivisionError
+
+          def call
+            case trigger
+            when :raise_argument_error
+              raise ArgumentError, "ARGUMENT_ERROR"
+            when :raise_type_error
+              raise TypeError, "TYPE_ERROR"
+            when :raise_zero_division
+              raise ZeroDivisionError, "ZERO_DIVISION"
+            when :fail_specific
+              fail!("SPECIFIC")
+            when :fail_generic
+              fail!("GENERIC")
             end
-          end.to raise_error(ArgumentError, /on_success cannot be called with both :if and :unless/)
+          end
+
+          # Error handlers
+          def handle_error_no_args
+            @error_handled = true
+            puts "error_handled_no_args"
+          end
+
+          def handle_error_positional(exception)
+            @error_handled = true
+            puts "error_handled_positional: #{exception.message}"
+          end
+
+          def handle_error_keyword(exception:)
+            @error_handled = true
+            puts "error_handled_keyword: #{exception.message}"
+          end
+
+          # Success handlers
+          def handle_success_no_args
+            @success_handled = true
+            puts "success_handled_no_args"
+          end
+
+          def handle_success_positional
+            @success_handled = true
+            puts "success_handled_positional: no_args"
+          end
+
+          def handle_success_keyword
+            @success_handled = true
+            puts "success_handled_keyword: no_args"
+          end
+
+          # Failure handlers
+          def handle_failure_no_args
+            @failure_handled = true
+            puts "failure_handled_no_args"
+          end
+
+          def handle_failure_positional(exception)
+            @failure_handled = true
+            puts "failure_handled_positional: #{exception.message}"
+          end
+
+          # Exception handlers
+          def handle_exception_no_args
+            @exception_handled = true
+            puts "exception_handled_no_args"
+          end
+
+          def handle_exception_positional(exception)
+            @exception_handled = true
+            puts "exception_handled_positional: #{exception.message}"
+          end
+        end
+      end
+
+      context "on_error with symbol methods" do
+        include_examples "symbol method handler", :error, :ok,
+                         "success_handled_keyword: no_args\nsuccess_handled_positional: no_args\nsuccess_handled_no_args\n"
+        include_examples "symbol method handler", :error, :raise_argument_error,
+                         "error_handled_positional: ARGUMENT_ERROR\nerror_handled_no_args\nexception_handled_no_args\n"
+        include_examples "symbol method handler", :error, :raise_type_error,
+                         "error_handled_keyword: TYPE_ERROR\nerror_handled_no_args\nexception_handled_no_args\n"
+        include_examples "symbol method handler", :error, :raise_zero_division,
+                         "error_handled_no_args\nexception_handled_positional: ZERO_DIVISION\nexception_handled_no_args\n"
+      end
+
+      context "on_failure with symbol methods" do
+        include_examples "symbol method handler", :failure, :fail_specific,
+                         "error_handled_no_args\nfailure_handled_positional: SPECIFIC\nfailure_handled_no_args\n"
+        include_examples "symbol method handler", :failure, :fail_generic, "error_handled_no_args\nfailure_handled_no_args\n"
+      end
+
+      context "on_success with symbol methods" do
+        include_examples "symbol method handler", :success, :ok,
+                         "success_handled_keyword: no_args\nsuccess_handled_positional: no_args\nsuccess_handled_no_args\n"
+      end
+
+      context "on_exception with symbol methods" do
+        include_examples "symbol method handler", :exception, :raise_zero_division,
+                         "error_handled_no_args\nexception_handled_positional: ZERO_DIVISION\nexception_handled_no_args\n"
+      end
+
+      context "with conditional filtering on symbol methods" do
+        let(:action) do
+          build_action do
+            expects :trigger, type: Symbol
+            expects :should_skip, type: :boolean, default: false
+
+            on_error :handle_error, unless: :should_skip?
+            on_success :handle_success, if: :should_proceed?
+
+            def call
+              case trigger
+              when :raise
+                raise "bad"
+              when :ok
+                # success
+              end
+            end
+
+            def handle_error
+              puts "error_handled"
+            end
+
+            def handle_success
+              puts "success_handled"
+            end
+
+            def should_skip?
+              should_skip
+            end
+
+            def should_proceed?
+              !should_skip
+            end
+          end
         end
 
-        it "raises ArgumentError for on_failure" do
-          expect do
-            build_action do
-              on_failure(if: :condition?, unless: :other_condition?) { puts "failure" }
-            end
-          end.to raise_error(ArgumentError, /on_failure cannot be called with both :if and :unless/)
+        context "when should_skip is false" do
+          include_examples "conditional filtering", :success, false, "success_handled\n"
+          include_examples "conditional filtering", :error, false, "error_handled\n"
         end
 
-        it "raises ArgumentError for on_exception" do
-          expect do
-            build_action do
-              on_exception(if: :condition?, unless: :other_condition?) { puts "exception" }
-            end
-          end.to raise_error(ArgumentError, /on_exception cannot be called with both :if and :unless/)
-        end
-
-        it "raises ArgumentError for on_error" do
-          expect do
-            build_action do
-              on_error(if: :condition?, unless: :other_condition?) { puts "error" }
-            end
-          end.to raise_error(ArgumentError, /on_error cannot be called with both :if and :unless/)
+        context "when should_skip is true" do
+          include_examples "conditional filtering", :success, true, ""
+          include_examples "conditional filtering", :error, true, ""
         end
       end
     end

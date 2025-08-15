@@ -68,7 +68,7 @@ See [the reference doc](/reference/instance) for a few more handy helper methods
 
 The default `error` and `success` message strings ("Something went wrong" / "Action completed successfully", respectively) _are_ technically safe to show users, but you'll often want to set them to something more useful.
 
-There's a `messages` declaration for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in).
+There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in).
 
 For instance, configuring the action like this:
 
@@ -79,8 +79,8 @@ class Foo
   expects :name, type: String
   exposes :meaning_of_life
 
-  messages success: -> { "Revealed to #{name}: #{result.meaning_of_life}" }, # [!code focus:2]
-           error: ->(e) { "No secret of life for you: #{e.message}" }
+  success { "Revealed to #{name}: #{result.meaning_of_life}" } # [!code focus:2]
+  error { |e| "No secret of life for you: #{e.message}" }
 
   def call
     fail! "Douglas already knows the meaning" if name == "Doug"
