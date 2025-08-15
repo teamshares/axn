@@ -47,7 +47,7 @@ module Action
     def error
       return if ok?
 
-      [@context.error_prefix, determine_error_message].compact.join(" ").squeeze(" ")
+      determine_error_message
     end
 
     def success
