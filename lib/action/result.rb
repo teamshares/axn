@@ -61,8 +61,6 @@ module Action
       msg.presence || "Action completed successfully"
     end
 
-    def ok = success
-
     def message = error || success
 
     def default_error = _find_first_static_message(:error) || "Something went wrong"
