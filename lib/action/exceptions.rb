@@ -17,6 +17,8 @@ module Action
       @message.presence || DEFAULT_MESSAGE
     end
 
+    def default_message? = message == DEFAULT_MESSAGE
+
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
 

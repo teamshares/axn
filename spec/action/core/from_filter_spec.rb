@@ -18,7 +18,10 @@ RSpec.describe Action do
         end
 
         def call
-          self.class.inner.call!
+          # Use _tracking_nesting to create the proper nesting context
+          _tracking_nesting(self) do
+            self.class.inner.call!
+          end
         end
       end.tap do |action|
         action.define_singleton_method(:inner) { inner_action_class }

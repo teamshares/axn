@@ -49,14 +49,12 @@ module Action
       return if ok?
 
       # First check for user-provided failure messages (these take precedence)
-      if @context.exception.is_a?(Action::Failure)
-        exception_message = @context.exception.message
-        # Only use exception message if it's not the default "Execution was halted"
-        return exception_message if exception_message != "Execution was halted"
-      end
+      # TODO: explain what cause means -- basically we created ourselves from nesting
+      # Don't treat Action::Failure with default message as user-provided
+      return exception.message if exception.is_a?(Action::Failure) && !exception.cause && !exception.default_message?
 
       # Then check for custom error messages
-      msg = action.class._custom_message_for(:error, action:, exception: @context.exception)
+      msg = action.class._custom_message_for(:error, action:, exception:)
       return msg if msg.present?
 
       # Finally use the default generic message

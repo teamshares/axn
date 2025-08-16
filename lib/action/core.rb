@@ -56,7 +56,7 @@ module Action
         # the error message generation's `from` filter
         raise Action::Failure.new(result.error, source: result.__action__), cause: result.exception if _nested_in_another_axn?
 
-        raise result.exception || Action::Failure.new(result.error)
+        raise result.exception
       end
     end
 
