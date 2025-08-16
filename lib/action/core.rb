@@ -88,7 +88,9 @@ module Action
     # User-defined action logic - override this method in your action classes
     def call; end
 
-    delegate :fail!, to: :@__context
+    def fail!(message = nil)
+      raise Action::Failure, message
+    end
 
     # Stub for hoist_errors - this method has been removed in favor of the from filter
     def hoist_errors(prefix: nil, &block)

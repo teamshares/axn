@@ -33,9 +33,7 @@ module Action
           def _with_exception_handling
             yield
           rescue StandardError => e
-            @__context.exception = e
-            # Set failure state using accessor method
-            @__context.send(:failure=, true)
+            @__context.__record_exception(e)
 
             # on_error handlers run for both unhandled exceptions and fail!
             self.class._dispatch_callbacks(:error, action: self, exception: e)

@@ -30,11 +30,10 @@ module Action
               block.call
             rescue StandardError => e
               # Set the exception directly without triggering on_exception handlers
-              @__context.exception = e
-              @__context.send(:failure=, true)
+              @__context.__record_exception(e)
             end
           else
-            fail!
+            fail! msg
           end
         end.call
       end
@@ -49,10 +48,19 @@ module Action
     def error
       return if ok?
 
-      return @context.error_from_user if @context.error_from_user.present?
+      # First check for user-provided failure messages (these take precedence)
+      if @context.exception.is_a?(Action::Failure)
+        exception_message = @context.exception.message
+        # Only use exception message if it's not the default "Execution was halted"
+        return exception_message if exception_message != "Execution was halted"
+      end
 
+      # Then check for custom error messages
       msg = action.class._custom_message_for(:error, action:, exception: @context.exception)
-      msg.presence || "Something went wrong"
+      return msg if msg.present?
+
+      # Finally use the default generic message
+      "Something went wrong"
     end
 
     def success
