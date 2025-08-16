@@ -40,7 +40,7 @@ RSpec.describe "Action spec helpers" do
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Custom error message") }
-      it { expect(result.exception).to be_nil }
+      it { expect(result.exception).to be_a(Action::Failure) }
       it { expect(result.still_exposable).to eq(456) }
     end
 
@@ -49,7 +49,7 @@ RSpec.describe "Action spec helpers" do
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Something went wrong") }
-      it { expect(result.exception).to be_nil }
+      it { expect(result.exception).to be_a(Action::Failure) }
       it { expect(result.still_exposable).to eq("") }
       it { expect(result.another).to be_nil }
     end

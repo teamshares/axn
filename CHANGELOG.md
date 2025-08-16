@@ -3,6 +3,7 @@
 ## Unreleased
 * [BREAKING] `default_error` and `default_success` now live on Action::Result (access via `result.default_error`)
 * [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
+* [CHANGE] `result.exception` will new return the internal Action::Failure, rather than nil, when user calls `fail!`
 
 ## 0.1.0-alpha.2.7.1
 * [FEAT] Implemented symbol method handler support for callbacks

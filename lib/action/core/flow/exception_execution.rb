@@ -33,6 +33,10 @@ module Action
           def _with_exception_handling
             yield
           rescue StandardError => e
+            @__context.exception = e
+            # Set failure state using accessor method
+            @__context.send(:failure=, true)
+
             # on_error handlers run for both unhandled exceptions and fail!
             self.class._dispatch_callbacks(:error, action: self, exception: e)
 
@@ -42,12 +46,7 @@ module Action
             else
               # on_exception handlers run for ONLY for unhandled exceptions.
               _trigger_on_exception(e)
-
-              @__context.exception = e
             end
-
-            # Set failure state using accessor method
-            @__context.send(:failure=, true)
           end
 
           def try
