@@ -100,6 +100,25 @@ Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
 
+::: warning Message Ordering
+**Important**: When using conditional messages, always define your static fallback messages **first** in your class, before any conditional messages. This ensures proper fallback behavior.
+
+**Correct order:**
+```ruby
+class Foo
+  include Action
+
+  # Static fallback messages first
+  success "Default success message"
+  error "Default error message"
+
+  # Then conditional messages
+  success "Special success", if: :special_condition?
+  error "Special error", if: ArgumentError
+end
+```
+:::
+
 ## Lifecycle methods
 
 In addition to `#call`, there are a few additional pieces to be aware of:
@@ -156,3 +175,5 @@ A number of custom callback are available for you as well, if you want to take s
 
 ## Strategies
 A number of [Strategies](/strategies/index), which are <abbr title="Don't Repeat Yourself">DRY</abbr>ed bits of commonly-used configuration, are available for your use as well.
+
+```
