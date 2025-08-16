@@ -40,7 +40,7 @@ module Action
             axn_klass.call(**kwargs)
           end
 
-          # TODO: do we also need an instance-level version that auto-wraps in hoist_errors(label: name)?
+          # TODO: do we also need an instance-level version that auto-creates the appropriate `error from:` to prefix with the name?
 
           define_singleton_method("#{name}!") do |**kwargs|
             axn_klass.call!(**kwargs)

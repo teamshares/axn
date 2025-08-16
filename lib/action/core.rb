@@ -92,13 +92,6 @@ module Action
       raise Action::Failure, message
     end
 
-    # Stub for hoist_errors - this method has been removed in favor of the from filter
-    def hoist_errors(prefix: nil, &block)
-      raise NotImplementedError,
-            "hoist_errors has been removed. Use the 'from' filter on error messages instead:\n\t" \
-            "error from: ChildActionClass { 'Custom error message' }"
-    end
-
     private
 
     def _emit_metrics

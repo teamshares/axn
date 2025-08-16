@@ -28,6 +28,9 @@ module Action
 
           # Add the step to the list of steps
           steps Entry.new(label: name, axn: axn_klass)
+          error from: axn_klass do |e|
+            "#{step.label} step #{e.message}"
+          end
         end
       end
 
@@ -37,10 +40,8 @@ module Action
           # TODO: should Axn have a default label passed in already that we could pull out?
           step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
 
-          hoist_errors(prefix: "#{step.label} step") do
-            step.axn.call(**merged_context_data).tap do |step_result|
-              merge_step_exposures!(step_result)
-            end
+          step.axn.call(**merged_context_data).tap do |step_result|
+            merge_step_exposures!(step_result)
           end
         end
       end
