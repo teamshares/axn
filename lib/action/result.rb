@@ -49,8 +49,7 @@ module Action
 
       return @context.error_from_user if @context.error_from_user.present?
 
-      exception = @context.exception || Action::Failure.new
-      msg = action.class._custom_message_for(:error, action:, exception:)
+      msg = action.class._custom_message_for(:error, action:, exception: @context.exception)
       msg.presence || "Something went wrong"
     end
 
@@ -96,12 +95,10 @@ module Action
     def _find_first_static_message(event_type)
       # The registry stores handlers in "last-defined-first" order, so we need to reverse
       # to get the order they were defined (first-defined-first)
-      handlers = action.class._messages_registry.for(event_type).reverse
-
-      handlers.each do |handler|
+      action.class._messages_registry.for(event_type).reverse.each do |handler|
         # A handler is static if it has no matcher (no conditions)
-        if handler.respond_to?(:static?) && handler.static?
-          msg = handler.apply(action:, exception: @context.exception || Action::Failure.new)
+        if handler.static?
+          msg = handler.apply(action:, exception: @context.exception)
           return msg if msg.present?
         end
       end
