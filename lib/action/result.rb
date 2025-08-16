@@ -31,9 +31,11 @@ module Action
             rescue StandardError => e
               # Set the exception directly without triggering on_exception handlers
               @__context.exception = e
+              @__context.send(:failure=, true)
             end
+          else
+            fail!
           end
-          fail!
         end.call
       end
     end
@@ -73,8 +75,8 @@ module Action
     ].freeze
 
     def outcome
+      return OUTCOME_FAILURE if exception&.is_a?(Action::Failure)
       return OUTCOME_EXCEPTION if exception
-      return OUTCOME_FAILURE if @context.failed?
 
       OUTCOME_SUCCESS
     end

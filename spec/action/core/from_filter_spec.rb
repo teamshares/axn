@@ -2,17 +2,18 @@
 
 RSpec.describe Action do
   describe "from filter" do
-    let(:inner) do
-      build_action do
-        def call
-          raise ArgumentError, "inner failed"
-        end
+    # Define the inner action class first
+    inner_action_class = Class.new do
+      include Action
+
+      def call
+        raise ArgumentError, "inner failed"
       end
     end
 
     let(:outer) do
       build_action do
-        error from: "InnerAction" do
+        error from: inner_action_class do
           "message about inner failure"
         end
 
@@ -20,8 +21,7 @@ RSpec.describe Action do
           self.class.inner.call!
         end
       end.tap do |action|
-        inner_action = inner # Capture the variable
-        action.define_singleton_method(:inner) { inner_action }
+        action.define_singleton_method(:inner) { inner_action_class }
       end
     end
 

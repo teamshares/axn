@@ -32,7 +32,8 @@ RSpec.describe Action do
         result = client.number_axn(arg: 111)
         expect(result).not_to be_ok
         expect(result.error).to eq("arg was all 1s")
-        expect(result.exception).to eq(nil)
+        expect(result.exception).to be_a(Action::Failure)
+        expect(result.exception.message).to eq("arg was all 1s")
         expect(result.value).to eq(nil)
       end
 
