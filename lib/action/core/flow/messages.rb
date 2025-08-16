@@ -11,11 +11,13 @@ module Action
             class_attribute :_messages_registry, default: Action::Core::Flow::Handlers::Registry.empty
 
             extend ClassMethods
-            include InstanceMethods
           end
         end
 
         module ClassMethods
+          def success(message = nil, **, &) = _add_message(:success, message:, **, &)
+          def error(message = nil, **, &) = _add_message(:error, message:, **, &)
+
           # Internal: resolve a message for the given event (conditional first, then static)
           def _custom_message_for(event_type, action:, exception: nil)
             _messages_registry.for(event_type).each do |handler|
@@ -25,12 +27,6 @@ module Action
 
             nil
           end
-
-          def success(message = nil, **, &) = _add_message(:success, message:, **, &)
-          def error(message = nil, **, &) = _add_message(:error, message:, **, &)
-
-          def default_error = new.internal_context.default_error
-          def default_success = new.internal_context.default_success
 
           private
 
@@ -62,10 +58,6 @@ module Action
               ->(exception:, **) { exception.is_a?(Action::Failure) && exception.source&.is_a?(from_class) }
             end
           end
-        end
-
-        module InstanceMethods
-          delegate :default_error, :default_success, to: :internal_context
         end
       end
     end

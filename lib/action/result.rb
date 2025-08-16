@@ -65,6 +65,9 @@ module Action
 
     def message = error || success
 
+    def default_error = _find_first_static_message(:error) || "Something went wrong"
+    def default_success = _find_first_static_message(:success) || "Action completed successfully"
+
     # Outcome constants for action execution results
     OUTCOMES = [
       OUTCOME_SUCCESS = :success,
@@ -91,6 +94,21 @@ module Action
     private
 
     def context_data_source = @context.exposed_data
+
+    def _find_first_static_message(event_type)
+      # The registry stores handlers in "last-defined-first" order, so we need to reverse
+      # to get the order they were defined (first-defined-first)
+      handlers = action.class._messages_registry.for(event_type).reverse
+
+      handlers.each do |handler|
+        # A handler is static if it has no matcher (no conditions)
+        if handler.respond_to?(:static?) && handler.static?
+          msg = handler.apply(action:, exception: @context.exception || Action::Failure.new)
+          return msg if msg.present?
+        end
+      end
+      nil
+    end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
       if @context.__combined_data.key?(method_name.to_sym)

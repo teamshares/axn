@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [BREAKING] `default_error` and `default_success` now live on Action::Result (access via `result.default_error`)
 * [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
 
 ## 0.1.0-alpha.2.7.1
