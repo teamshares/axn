@@ -534,16 +534,16 @@ RSpec.describe Action do
         it { expect(result).not_to be_ok }
         it { is_expected.to eq("Bad news!") }
 
-        it "supports class level default_error" do
-          expect(action.default_error).to eq("Bad news!")
+        it "supports result level default_error" do
+          expect(result.default_error).to eq("Bad news!")
         end
 
-        it "supports class level default_success" do
-          klass = build_action do
+        it "supports result level default_success" do
+          success_result = build_action do
             success "Great news!"
-          end
+          end.call
 
-          expect(klass.default_success).to eq("Great news!")
+          expect(success_result.default_success).to eq("Great news!")
         end
       end
 
@@ -565,8 +565,8 @@ RSpec.describe Action do
           is_expected.to eq("Bad news: ")
         end
 
-        it "supports class level default_error" do
-          expect(action.default_error).to eq("Bad news: ")
+        it "supports result level default_error" do
+          expect(result.default_error).to eq("Bad news: ")
         end
       end
 
@@ -603,8 +603,8 @@ RSpec.describe Action do
           is_expected.to eq("Bad news: Action::InboundValidationError")
         end
 
-        it "supports class level default_error" do
-          expect(action.default_error).to eq("Bad news: Action::Failure")
+        it "supports result level default_error" do
+          expect(result.default_error).to eq("Bad news: Action::InboundValidationError")
         end
 
         context "when fail! is called with custom message" do
@@ -707,8 +707,8 @@ RSpec.describe Action do
           is_expected.to eq("Something went wrong")
         end
 
-        it "supports class level default_error" do
-          expect(action.default_error).to eq("Something went wrong")
+        it "supports result level default_error" do
+          expect(result.default_error).to eq("Something went wrong")
         end
       end
 
@@ -767,7 +767,7 @@ RSpec.describe Action do
       end
 
       it "can reference configured error" do
-        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
+        expect(action.call(param: 4).error).to eq("Bad news!")
       end
 
       it "falls back correctly" do
