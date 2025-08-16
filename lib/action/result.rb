@@ -50,14 +50,14 @@ module Action
       return @context.error_from_user if @context.error_from_user.present?
 
       exception = @context.exception || Action::Failure.new
-      msg = action.class._message_for(:error, action:, exception:)
+      msg = action.class._custom_message_for(:error, action:, exception:)
       msg.presence || "Something went wrong"
     end
 
     def success
       return unless ok?
 
-      msg = action.class._message_for(:success, action:, exception: nil)
+      msg = action.class._custom_message_for(:success, action:, exception: nil)
       msg.presence || "Action completed successfully"
     end
 

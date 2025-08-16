@@ -1,7 +1,7 @@
 # Changelog
 
-## [Unreleased]
-* [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
+## Unreleased
+* [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
 
 ## 0.1.0-alpha.2.7.1
 * [FEAT] Implemented symbol method handler support for callbacks
