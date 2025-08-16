@@ -24,7 +24,7 @@ module Action
       return "[OK]" if context.ok?
 
       if context.exception&.is_a?(Action::Failure)
-        return context.error_from_user.present? ? "[failed with '#{context.error_from_user}']" : "[failed]"
+        return context.exception.message.present? ? "[failed with '#{context.exception.message}']" : "[failed]"
       end
 
       %([failed with #{context.exception.class.name}: '#{context.exception.message}'])

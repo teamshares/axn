@@ -32,7 +32,7 @@ module Action
           yield
         ensure
           elapsed_mils = Core::Timing.elapsed_ms(timing_start)
-          @__context.elapsed_time = elapsed_mils
+          @__context.send(:elapsed_time=, elapsed_mils)
         end
       end
     end

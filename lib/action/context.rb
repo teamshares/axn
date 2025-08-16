@@ -11,27 +11,24 @@ module Action
       # Framework-managed fields
       @failure = false
       @exception = nil
-      @error_from_user = nil
       @elapsed_time = nil
     end
-
-    def fail!(message = nil)
-      @error_from_user = message if message.present?
-      raise Action::Failure, message
-    end
-
-    # INTERNAL: base for further filtering (for logging) or providing user with usage hints
-    def __combined_data = @provided_data.merge(@exposed_data)
 
     # Framework state methods
     def ok? = !@failure
     def failed? = @failure || false
 
     # Framework field accessors
-    attr_accessor :exception, :error_from_user, :elapsed_time
+    attr_accessor :elapsed_time
+    attr_reader :exception
+    private :elapsed_time=
 
-    # Internal failure state setter (for framework use)
-    attr_writer :failure
-    private :failure=
+    # INTERNAL: base for further filtering (for logging) or providing user with usage hints
+    def __combined_data = @provided_data.merge(@exposed_data)
+
+    def __record_exception(e)
+      @exception = e
+      @failure = true
+    end
   end
 end
