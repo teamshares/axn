@@ -17,16 +17,11 @@ module Action
           def apply(action:, exception:)
             return nil unless matches?(action:, exception:)
 
-            # If we have a prefix but no handler, fall back to exception message
-            if @prefix && !handler
-              return "#{@prefix}#{exception.message}" if exception
-
-              return nil
-            end
-
             value =
               if handler.is_a?(Symbol) || handler.respond_to?(:call)
                 Invoker.call(action:, handler:, exception:, operation: "determining message callable")
+              elsif !handler && prefix
+                exception ? exception.message : "TODO: default_success"
               else
                 handler
               end

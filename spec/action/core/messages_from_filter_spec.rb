@@ -270,6 +270,11 @@ RSpec.describe Action do
       build_action do
         expects :type
 
+        # Static success with prefix
+        success prefix: "Default: " do
+          "Operation completed successfully"
+        end
+
         # Success with prefix and custom message
         success if: -> { type == :special }, prefix: "Success: " do
           "Special operation completed"
@@ -277,11 +282,6 @@ RSpec.describe Action do
 
         # Success with prefix only (should work for success messages)
         success if: -> { type == :basic }, prefix: "Success: "
-
-        # Static success with prefix
-        success prefix: "Default: " do
-          "Operation completed successfully"
-        end
       end
     end
 
