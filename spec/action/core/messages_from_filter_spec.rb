@@ -40,28 +40,6 @@ RSpec.describe Action do
     end)
   end
 
-  let(:prefix_action_class) do
-    stub_const("PrefixAction", Class.new do
-      include Action
-
-      expects :type
-
-      error if: StandardError, prefix: "Baz: "
-
-      error if: ArgumentError, prefix: "Foo: " do |e|
-        "bar"
-      end
-
-      def call
-        if type == :handled
-          raise ArgumentError, "handled"
-        elsif type == :unhandled
-          raise StandardError, "unhandled"
-        end
-      end
-    end)
-  end
-
   let(:prefix_with_from_action_class) do
     # Ensure InnerAction is defined first
     inner_action_class
@@ -146,8 +124,25 @@ RSpec.describe Action do
   end
 
   it "supports prefix keyword for error messages" do
-    expect(prefix_action_class.call(type: :handled).error).to eq("Foo: bar")
-    expect(prefix_action_class.call(type: :unhandled).error).to eq("Baz: unhandled")
+    action = build_action do
+      expects :type
+
+      error if: StandardError, prefix: "Baz: "
+      error if: ArgumentError, prefix: "Foo: " do |e|
+        "bar"
+      end
+
+      def call
+        if type == :handled
+          raise ArgumentError, "handled"
+        elsif type == :unhandled
+          raise StandardError, "unhandled"
+        end
+      end
+    end
+
+    expect(action.call(type: :handled).error).to eq("Foo: bar")
+    expect(action.call(type: :unhandled).error).to eq("Baz: unhandled")
   end
 
   it "combines prefix with from keyword" do
@@ -171,27 +166,48 @@ RSpec.describe Action do
   end
 
   it "handles mixed prefix scenarios correctly" do
+    # Test direct errors with prefix (no from: keyword needed)
+    action = build_action do
+      expects :type
+
+      # Static fallback first
+      error "Default error message"
+
+      # Conditional with prefix only (falls back to exception message)
+      error if: StandardError, prefix: "System Error: "
+
+      # Conditional with prefix and custom message
+      error if: ArgumentError, prefix: "Argument Error: " do |e|
+        "Invalid input: #{e.message}"
+      end
+
+      def call
+        if type == :handled
+          raise ArgumentError, "bad argument"
+        elsif type == :unhandled
+          raise StandardError, "system failure"
+        end
+      end
+    end
+
     # Direct ArgumentError with prefix and custom message
-    expect(mixed_prefix_action_class.call(type: :handled).error).to eq(
+    expect(action.call(type: :handled).error).to eq(
       "Argument Error: Invalid input: bad argument",
     )
 
     # Direct StandardError with prefix only (falls back to exception message)
-    expect(mixed_prefix_action_class.call(type: :unhandled).error).to eq(
+    expect(action.call(type: :unhandled).error).to eq(
       "System Error: system failure",
     )
 
-    # Nested action with prefix and custom message
+    # Nested action with prefix and custom message (requires from: keyword)
     expect(mixed_prefix_action_class.call(type: :nested).error).to eq(
       "Nested: Child failed: that wasn't a nice arg (handled)",
     )
   end
 
   it "maintains proper message precedence with prefix" do
-    # Test that more specific handlers take precedence even with prefixes
-    action_class = stub_const("PrecedenceAction", Class.new do
-      include Action
-
+    action = build_action do
       expects :type
 
       # General handler with prefix
@@ -209,23 +225,21 @@ RSpec.describe Action do
           raise StandardError, "general error"
         end
       end
-    end)
+    end
 
     # ArgumentError should use the specific handler
-    expect(action_class.call(type: :handled).error).to eq(
+    expect(action.call(type: :handled).error).to eq(
       "Specific: Argument issue: bad input",
     )
 
     # StandardError should use the general handler
-    expect(action_class.call(type: :unhandled).error).to eq(
+    expect(action.call(type: :unhandled).error).to eq(
       "General: general error",
     )
   end
 
   it "supports prefix keyword for success messages" do
-    action_class = stub_const("SuccessPrefixAction", Class.new do
-      include Action
-
+    action = build_action do
       expects :type
 
       # Success with prefix and custom message
@@ -244,20 +258,20 @@ RSpec.describe Action do
       def call
         # Always succeed for this test
       end
-    end)
+    end
 
     # Test conditional success with custom message
-    result = action_class.call(type: :special)
+    result = action.call(type: :special)
     expect(result).to be_ok
     expect(result.success).to eq("Success: Special operation completed")
 
     # Test conditional success with prefix only (should use default success message)
-    result = action_class.call(type: :basic)
+    result = action.call(type: :basic)
     expect(result).to be_ok
     expect(result.success).to eq("Success: Operation completed successfully")
 
     # Test static success with prefix
-    result = action_class.call(type: :other)
+    result = action.call(type: :other)
     expect(result).to be_ok
     expect(result.success).to eq("Default: Operation completed successfully")
   end
