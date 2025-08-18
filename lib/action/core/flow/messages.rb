@@ -33,7 +33,7 @@ module Action
           def _add_message(kind, message:, **kwargs, &block)
             raise ArgumentError, "#{kind} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message or a block" unless message || block_given?
+            raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix]
 
             handler = block_given? ? block : message
             rules = [
@@ -42,7 +42,7 @@ module Action
             ].compact
 
             matcher = Action::Core::Flow::Handlers::Matcher.new(rules, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:)
+            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:, prefix: kwargs[:prefix])
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
           end

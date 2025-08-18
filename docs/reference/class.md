@@ -179,6 +179,10 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
 
+# Custom message with prefix (falls back to exception message when no block/message provided)
+error(if: ArgumentError, prefix: "Foo: ") { "bar" }  # Results in "Foo: bar"
+error(if: StandardError, prefix: "Baz: ")            # Results in "Baz: [exception message]"
+
 # Custom message with symbol predicate (arity 0)
 error "Transient error, please retry", if: :transient_error?
 
@@ -256,6 +260,32 @@ This pattern is especially useful for:
 - Adding context to error messages from sub-actions
 - Implementing consistent error message formatting across action hierarchies
 - Providing user-friendly error messages that include details from underlying failures
+
+### Combining `from:` with `prefix:`
+
+You can also combine the `from:` parameter with the `prefix:` keyword to create consistent error message formatting:
+
+```ruby
+class OuterAction
+  include Action
+
+  # Add prefix to error messages from InnerAction
+  error from: InnerAction, prefix: "API Error: " do |e|
+    "Request failed: #{e.message}"
+  end
+
+  # Or use prefix only (falls back to exception message)
+  error from: InnerAction, prefix: "API Error: "
+
+  def call
+    InnerAction.call!
+  end
+end
+```
+
+This results in:
+- With custom message: "API Error: Request failed: Something went wrong in the inner action"
+- With prefix only: "API Error: Something went wrong in the inner action"
 
 ### Message ordering and inheritance
 

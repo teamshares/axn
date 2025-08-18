@@ -100,6 +100,52 @@ Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
 
+### Advanced Error Message Configuration
+
+You can also use conditional error messages with the `prefix:` keyword and combine them with the `from:` parameter for nested actions:
+
+```ruby
+class ValidationAction
+  include Action
+
+  expects :input
+
+  error if: ArgumentError, prefix: "Validation Error: " do |e|
+    "Invalid input: #{e.message}"
+  end
+
+  error if: StandardError, prefix: "System Error: "
+
+  def call
+    raise ArgumentError, "input too short" if input.length < 3
+    raise StandardError, "unexpected error" if input == "error"
+  end
+end
+
+class ApiAction
+  include Action
+
+  expects :data
+
+  # Combine prefix with from for consistent error formatting
+  error from: ValidationAction, prefix: "API Error: " do |e|
+    "Request validation failed: #{e.message}"
+  end
+
+  # Or use prefix only (falls back to exception message)
+  error from: ValidationAction, prefix: "API Error: "
+
+  def call
+    ValidationAction.call!(input: data)
+  end
+end
+```
+
+This configuration provides:
+- Consistent error message formatting with prefixes
+- Automatic fallback to exception messages when no custom message is provided
+- Proper error message inheritance from nested actions
+
 ::: warning Message Ordering
 **Important**: When using conditional messages, always define your static fallback messages **first** in your class, before any conditional messages. This ensures proper fallback behavior.
 
