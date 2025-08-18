@@ -262,48 +262,13 @@ RSpec.describe Action do
     expect(result.success).to eq("Default: Operation completed successfully")
   end
 
-  it "handles prefix with from for success messages" do
-    # Create an inner action that succeeds
-    inner_success_action = stub_const("InnerSuccessAction", Class.new do
-      include Action
+  it "raises ArgumentError when using from: with success messages" do
+    expect do
+      stub_const("InvalidSuccessAction", Class.new do
+        include Action
 
-      expects :type
-
-      success "Inner action succeeded"
-
-      def call
-        # Always succeed
-      end
-    end)
-
-    outer_action = stub_const("OuterSuccessAction", Class.new do
-      include Action
-
-      expects :type
-
-      # Success with from and prefix
-      success from: InnerSuccessAction, prefix: "Outer: " do |result|
-        "Wrapped: #{result.success}"
-      end
-
-      # Success with from and prefix only
-      success from: InnerSuccessAction, prefix: "Outer: "
-
-      def call
-        InnerSuccessAction.call!(type:)
-      end
-    end)
-
-    # Test with custom message
-    result = outer_action.call(type: :any)
-    expect(result).to be_ok
-    expect(result.success).to eq("Outer: Wrapped: Inner action succeeded")
-
-    # Test with prefix only (should fall back to inner success message)
-    # Note: This might not work as expected since 'from' is primarily for error handling
-    # Let's see what actually happens
-    result2 = outer_action.call(type: :any)
-    expect(result2).to be_ok
-    # The actual behavior will depend on how 'from' works with success messages
+        success from: Object, prefix: "Prefix: "
+      end)
+    end.to raise_error(ArgumentError, "from: only applies to error messages")
   end
 end
