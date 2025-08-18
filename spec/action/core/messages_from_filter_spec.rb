@@ -113,167 +113,195 @@ RSpec.describe Action do
     end)
   end
 
-  it "can be configured on an action" do
-    expect(outer_action_class.call(type: :handled).error).to eq(
-      "PREFIXED: that wasn't a nice arg (handled)",
-    )
+  context "when configured on an action" do
+    it "handles handled errors with custom message" do
+      expect(outer_action_class.call(type: :handled).error).to eq(
+        "PREFIXED: that wasn't a nice arg (handled)",
+      )
+    end
 
-    expect(outer_action_class.call(type: :unhandled).error).to eq(
-      "PREFIXED: default inner error",
-    )
+    it "handles unhandled errors with default message" do
+      expect(outer_action_class.call(type: :unhandled).error).to eq(
+        "PREFIXED: default inner error",
+      )
+    end
   end
 
-  it "supports prefix keyword for error messages" do
-    action = build_action do
-      expects :type
+  context "with prefix keyword for error messages" do
+    let(:action) do
+      build_action do
+        expects :type
 
-      error if: StandardError, prefix: "Baz: "
-      error if: ArgumentError, prefix: "Foo: " do |e|
-        "bar"
-      end
+        error if: StandardError, prefix: "Baz: "
+        error if: ArgumentError, prefix: "Foo: " do |e|
+          "bar"
+        end
 
-      def call
-        if type == :handled
-          raise ArgumentError, "handled"
-        elsif type == :unhandled
-          raise StandardError, "unhandled"
+        def call
+          if type == :handled
+            raise ArgumentError, "handled"
+          elsif type == :unhandled
+            raise StandardError, "unhandled"
+          end
         end
       end
     end
 
-    expect(action.call(type: :handled).error).to eq("Foo: bar")
-    expect(action.call(type: :unhandled).error).to eq("Baz: unhandled")
+    it "handles ArgumentError with custom message and prefix" do
+      expect(action.call(type: :handled).error).to eq("Foo: bar")
+    end
+
+    it "handles StandardError with prefix only" do
+      expect(action.call(type: :unhandled).error).to eq("Baz: unhandled")
+    end
   end
 
-  it "combines prefix with from keyword" do
-    expect(prefix_with_from_action_class.call(type: :handled).error).to eq(
-      "Outer: wrapped: that wasn't a nice arg (handled)",
-    )
+  context "combining prefix with from keyword" do
+    it "handles handled errors with custom message" do
+      expect(prefix_with_from_action_class.call(type: :handled).error).to eq(
+        "Outer: wrapped: that wasn't a nice arg (handled)",
+      )
+    end
 
-    expect(prefix_with_from_action_class.call(type: :unhandled).error).to eq(
-      "Outer: wrapped: default inner error",
-    )
+    it "handles unhandled errors with default message" do
+      expect(prefix_with_from_action_class.call(type: :unhandled).error).to eq(
+        "Outer: wrapped: default inner error",
+      )
+    end
   end
 
-  it "combines prefix with from keyword (prefix only)" do
-    expect(prefix_only_from_action_class.call(type: :handled).error).to eq(
-      "Outer: that wasn't a nice arg (handled)",
-    )
+  context "combining prefix with from keyword (prefix only)" do
+    it "handles handled errors with prefix only" do
+      expect(prefix_only_from_action_class.call(type: :handled).error).to eq(
+        "Outer: that wasn't a nice arg (handled)",
+      )
+    end
 
-    expect(prefix_only_from_action_class.call(type: :unhandled).error).to eq(
-      "Outer: default inner error",
-    )
+    it "handles unhandled errors with prefix only" do
+      expect(prefix_only_from_action_class.call(type: :unhandled).error).to eq(
+        "Outer: default inner error",
+      )
+    end
   end
 
-  it "handles mixed prefix scenarios correctly" do
-    # Test direct errors with prefix (no from: keyword needed)
-    action = build_action do
-      expects :type
+  context "with mixed prefix scenarios" do
+    let(:action) do
+      build_action do
+        expects :type
 
-      # Static fallback first
-      error "Default error message"
+        # Static fallback first
+        error "Default error message"
 
-      # Conditional with prefix only (falls back to exception message)
-      error if: StandardError, prefix: "System Error: "
+        # Conditional with prefix only (falls back to exception message)
+        error if: StandardError, prefix: "System Error: "
 
-      # Conditional with prefix and custom message
-      error if: ArgumentError, prefix: "Argument Error: " do |e|
-        "Invalid input: #{e.message}"
-      end
+        # Conditional with prefix and custom message
+        error if: ArgumentError, prefix: "Argument Error: " do |e|
+          "Invalid input: #{e.message}"
+        end
 
-      def call
-        if type == :handled
-          raise ArgumentError, "bad argument"
-        elsif type == :unhandled
-          raise StandardError, "system failure"
+        def call
+          if type == :handled
+            raise ArgumentError, "bad argument"
+          elsif type == :unhandled
+            raise StandardError, "system failure"
+          end
         end
       end
     end
 
-    # Direct ArgumentError with prefix and custom message
-    expect(action.call(type: :handled).error).to eq(
-      "Argument Error: Invalid input: bad argument",
-    )
+    it "handles ArgumentError with prefix and custom message" do
+      expect(action.call(type: :handled).error).to eq(
+        "Argument Error: Invalid input: bad argument",
+      )
+    end
 
-    # Direct StandardError with prefix only (falls back to exception message)
-    expect(action.call(type: :unhandled).error).to eq(
-      "System Error: system failure",
-    )
+    it "handles StandardError with prefix only" do
+      expect(action.call(type: :unhandled).error).to eq(
+        "System Error: system failure",
+      )
+    end
 
-    # Nested action with prefix and custom message (requires from: keyword)
-    expect(mixed_prefix_action_class.call(type: :nested).error).to eq(
-      "Nested: Child failed: that wasn't a nice arg (handled)",
-    )
+    it "handles nested action with prefix and custom message" do
+      expect(mixed_prefix_action_class.call(type: :nested).error).to eq(
+        "Nested: Child failed: that wasn't a nice arg (handled)",
+      )
+    end
   end
 
-  it "maintains proper message precedence with prefix" do
-    action = build_action do
-      expects :type
+  context "maintaining proper message precedence with prefix" do
+    let(:action) do
+      build_action do
+        expects :type
 
-      # General handler with prefix
-      error if: StandardError, prefix: "General: "
+        # General handler with prefix
+        error if: StandardError, prefix: "General: "
 
-      # Specific handler with prefix
-      error if: ArgumentError, prefix: "Specific: " do |e|
-        "Argument issue: #{e.message}"
-      end
+        # Specific handler with prefix
+        error if: ArgumentError, prefix: "Specific: " do |e|
+          "Argument issue: #{e.message}"
+        end
 
-      def call
-        if type == :handled
-          raise ArgumentError, "bad input"
-        elsif type == :unhandled
-          raise StandardError, "general error"
+        def call
+          if type == :handled
+            raise ArgumentError, "bad input"
+          elsif type == :unhandled
+            raise StandardError, "general error"
+          end
         end
       end
     end
 
-    # ArgumentError should use the specific handler
-    expect(action.call(type: :handled).error).to eq(
-      "Specific: Argument issue: bad input",
-    )
+    it "uses specific handler for ArgumentError" do
+      expect(action.call(type: :handled).error).to eq(
+        "Specific: Argument issue: bad input",
+      )
+    end
 
-    # StandardError should use the general handler
-    expect(action.call(type: :unhandled).error).to eq(
-      "General: general error",
-    )
+    it "uses general handler for StandardError" do
+      expect(action.call(type: :unhandled).error).to eq(
+        "General: general error",
+      )
+    end
   end
 
-  it "supports prefix keyword for success messages" do
-    action = build_action do
-      expects :type
+  context "with prefix keyword for success messages" do
+    let(:action) do
+      build_action do
+        expects :type
 
-      # Success with prefix and custom message
-      success if: -> { type == :special }, prefix: "Success: " do
-        "Special operation completed"
-      end
+        # Success with prefix and custom message
+        success if: -> { type == :special }, prefix: "Success: " do
+          "Special operation completed"
+        end
 
-      # Success with prefix only (should work for success messages)
-      success if: -> { type == :basic }, prefix: "Success: "
+        # Success with prefix only (should work for success messages)
+        success if: -> { type == :basic }, prefix: "Success: "
 
-      # Static success with prefix
-      success prefix: "Default: " do
-        "Operation completed successfully"
-      end
-
-      def call
-        # Always succeed for this test
+        # Static success with prefix
+        success prefix: "Default: " do
+          "Operation completed successfully"
+        end
       end
     end
 
-    # Test conditional success with custom message
-    result = action.call(type: :special)
-    expect(result).to be_ok
-    expect(result.success).to eq("Success: Special operation completed")
+    it "handles conditional success with custom message" do
+      result = action.call(type: :special)
+      expect(result).to be_ok
+      expect(result.success).to eq("Success: Special operation completed")
+    end
 
-    # Test conditional success with prefix only (should use default success message)
-    result = action.call(type: :basic)
-    expect(result).to be_ok
-    expect(result.success).to eq("Success: Operation completed successfully")
+    it "handles conditional success with prefix only" do
+      result = action.call(type: :basic)
+      expect(result).to be_ok
+      expect(result.success).to eq("Success: Operation completed successfully")
+    end
 
-    # Test static success with prefix
-    result = action.call(type: :other)
-    expect(result).to be_ok
-    expect(result.success).to eq("Default: Operation completed successfully")
+    it "handles static success with prefix" do
+      result = action.call(type: :other)
+      expect(result).to be_ok
+      expect(result.success).to eq("Default: Operation completed successfully")
+    end
   end
 
   it "raises ArgumentError when using from: with success messages" do
