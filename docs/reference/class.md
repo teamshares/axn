@@ -216,6 +216,47 @@ end
 You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
 :::
 
+## Error message inheritance with `from:`
+
+The `from:` parameter allows you to customize error messages when an action calls another action that fails. This is particularly useful for adding context or prefixing error messages from child actions.
+
+When using `from:`, the error handler receives the exception from the child action, and you can access the child's error message via `e.message` (which contains the `result.error` from the child action).
+
+```ruby
+class InnerAction
+  include Action
+
+  error "Something went wrong in the inner action"
+
+  def call
+    raise StandardError, "inner action failed"
+  end
+end
+
+class OuterAction
+  include Action
+
+  # Customize error messages from InnerAction
+  error from: InnerAction do |e|
+    "Outer action failed: #{e.message}"
+  end
+
+  def call
+    InnerAction.call!
+  end
+end
+```
+
+In this example:
+- When `InnerAction` fails, `OuterAction` will catch the exception
+- The `e.message` contains the error message from `InnerAction`'s result
+- The final error message will be "Outer action failed: Something went wrong in the inner action"
+
+This pattern is especially useful for:
+- Adding context to error messages from sub-actions
+- Implementing consistent error message formatting across action hierarchies
+- Providing user-friendly error messages that include details from underlying failures
+
 ### Message ordering and inheritance
 
 Messages are evaluated in **last-defined-first** order, meaning the most recently defined message that matches its conditions will be used. This applies to both success and error messages:
