@@ -506,7 +506,8 @@ RSpec.describe Action do
               build_action do
                 success "Great news!", if: :condition?, unless: :other_condition?
               end
-            end.to raise_error(ArgumentError, /success cannot be called with both :if and :unless/)
+            end.to raise_error(Action::UnsupportedArgument,
+                               "calling success with both :if and :unless is not currently supported.\n\nImplementation is technically possible but very complex. Please submit a Github Issue if you have a real-world need for this functionality.")
           end
 
           it "raises ArgumentError for error" do
@@ -514,7 +515,8 @@ RSpec.describe Action do
               build_action do
                 error "Bad news!", if: :condition?, unless: :other_condition?
               end
-            end.to raise_error(ArgumentError, /error cannot be called with both :if and :unless/)
+            end.to raise_error(Action::UnsupportedArgument,
+                               "calling error with both :if and :unless is not currently supported.\n\nImplementation is technically possible but very complex. Please submit a Github Issue if you have a real-world need for this functionality.")
           end
         end
       end

@@ -61,4 +61,17 @@ module Action
 
   class InboundValidationError < ValidationError; end
   class OutboundValidationError < ValidationError; end
+
+  class UnsupportedArgument < ArgumentError
+    def initialize(feature)
+      @feature = feature
+      super()
+    end
+
+    def message
+      "#{@feature} is not currently supported.\n\n" \
+        "Implementation is technically possible but very complex. " \
+        "Please submit a Github Issue if you have a real-world need for this functionality."
+    end
+  end
 end
