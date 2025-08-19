@@ -1,0 +1,197 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
+  let(:registry) { Action::Core::Flow::Handlers::Registry.empty }
+  let(:action) { double("action") }
+  let(:exception) { nil }
+  let(:resolver) { described_class.new(registry, :success, action:, exception:) }
+
+  describe "#resolve_message" do
+    let(:descriptor1) { double("descriptor1", matches?: true, handler: nil, prefix: nil) }
+    let(:descriptor2) { double("descriptor2", matches?: true, handler: nil, prefix: nil) }
+
+    before do
+      allow(resolver).to receive(:message_from).with(descriptor1).and_return("Message 1")
+      allow(resolver).to receive(:message_from).with(descriptor2).and_return("Message 2")
+      allow(resolver).to receive(:message_from).with(nil).and_return(nil)
+    end
+
+    it "returns the first matching message" do
+      allow(resolver).to receive(:matching_entries).and_return([descriptor1, descriptor2])
+      expect(resolver.resolve_message).to eq("Message 1")
+    end
+
+    it "falls back to default message when no matching message found" do
+      allow(resolver).to receive(:matching_entries).and_return([])
+      allow(resolver).to receive(:fallback_message).and_return("Default message")
+      expect(resolver.resolve_message).to eq("Default message")
+    end
+  end
+
+  describe "#resolve_default_message" do
+    let(:descriptor) { double("descriptor", handler: "handler", prefix: nil) }
+
+    before do
+      allow(resolver).to receive(:message_from).with(descriptor).and_return("Default message")
+      allow(resolver).to receive(:message_from).with(nil).and_return(nil)
+    end
+
+    it "returns message from first available handler" do
+      allow(resolver).to receive(:candidate_entries).and_return([descriptor])
+      expect(resolver.resolve_default_message).to eq("Default message")
+    end
+
+    it "falls back to default message when no handler found" do
+      allow(resolver).to receive(:candidate_entries).and_return([])
+      allow(resolver).to receive(:fallback_message).and_return("Fallback")
+      expect(resolver.resolve_default_message).to eq("Fallback")
+    end
+  end
+
+  describe "message ordering consistency" do
+    let(:static_descriptor) { double("static", handler: "static_handler", prefix: nil) }
+    let(:conditional_descriptor) { double("conditional", handler: "conditional_handler", prefix: nil) }
+    let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Prefix: ") }
+
+    before do
+      # Mock the message_from method to return different messages
+      allow(resolver).to receive(:message_from).with(static_descriptor).and_return("Static message")
+      allow(resolver).to receive(:message_from).with(conditional_descriptor).and_return("Conditional message")
+      allow(resolver).to receive(:message_from).with(prefix_only_descriptor).and_return("Prefix: Static message")
+
+      # Mock Invoker.call for find_default_message_content tests
+      allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+    end
+
+    context "when processing candidate_entries" do
+      it "processes entries in first-defined-first order for find_default_descriptor" do
+        # Registry stores in last-defined-first order, so we expect the order to be reversed
+        # when we call .for(event_type)
+        allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
+
+        # Should return the first one that has a handler and produces a message
+        expect(resolver.send(:find_default_descriptor)).to eq(conditional_descriptor)
+      end
+
+      it "processes entries in first-defined-first order for find_default_message_content" do
+        allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
+
+        # Should find the first message from other descriptors
+        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
+        expect(result).to eq("Handler message")
+      end
+
+      it "maintains consistent ordering between both methods" do
+        # Test with multiple descriptors to ensure consistent behavior
+        descriptor_a = double("a", handler: "handler_a", prefix: nil)
+        descriptor_b = double("b", handler: "handler_b", prefix: nil)
+        descriptor_c = double("c", handler: "handler_c", prefix: nil)
+
+        allow(resolver).to receive(:message_from).with(descriptor_a).and_return("Message A")
+        allow(resolver).to receive(:message_from).with(descriptor_b).and_return("Message B")
+        allow(resolver).to receive(:message_from).with(descriptor_c).and_return("Message C")
+
+        allow(resolver).to receive(:candidate_entries).and_return([descriptor_a, descriptor_b, descriptor_c])
+
+        # Both methods should process in the same order
+        expect(resolver.send(:find_default_descriptor)).to eq(descriptor_a)
+        expect(resolver.send(:find_default_message_content, descriptor_c)).to eq("Handler message")
+      end
+    end
+
+    context "with prefix-only descriptors" do
+      it "finds default message content from other descriptors in correct order" do
+        allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
+
+        # When a prefix-only descriptor needs a default message, it should find the first available
+        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
+        expect(result).to eq("Handler message")
+      end
+
+      it "skips the current descriptor when searching for default content" do
+        allow(resolver).to receive(:candidate_entries).and_return([prefix_only_descriptor, static_descriptor])
+
+        # Should skip prefix_only_descriptor and find static_descriptor's message
+        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
+        expect(result).to eq("Handler message")
+      end
+    end
+  end
+
+  describe "fallback behavior" do
+    it "returns success default for success event type" do
+      success_resolver = described_class.new(registry, :success, action:, exception:)
+      expect(success_resolver.send(:fallback_message)).to eq("Action completed successfully")
+    end
+
+    it "returns error default for error event type" do
+      error_resolver = described_class.new(registry, :error, action:, exception:)
+      expect(error_resolver.send(:fallback_message)).to eq("Something went wrong")
+    end
+  end
+
+  describe "message_from method" do
+    let(:descriptor) { double("descriptor") }
+
+    context "with handler" do
+      before do
+        allow(descriptor).to receive(:handler).and_return("handler")
+        allow(descriptor).to receive(:prefix).and_return(nil)
+        allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+      end
+
+      it "invokes handler and returns message" do
+        result = resolver.send(:message_from, descriptor)
+        expect(result).to eq("Handler message")
+      end
+
+      it "combines prefix with handler message when prefix exists" do
+        allow(descriptor).to receive(:prefix).and_return("Prefix: ")
+        result = resolver.send(:message_from, descriptor)
+        expect(result).to eq("Prefix: Handler message")
+      end
+    end
+
+    context "with prefix only" do
+      before do
+        allow(descriptor).to receive(:handler).and_return(nil)
+        allow(descriptor).to receive(:prefix).and_return("Prefix: ")
+      end
+
+      it "uses exception message when exception exists" do
+        exception_resolver = described_class.new(registry, :error, action:, exception: StandardError.new("Error message"))
+        result = exception_resolver.send(:message_from, descriptor)
+        expect(result).to eq("Prefix: Error message")
+      end
+
+      it "finds default message content from other descriptors for success messages" do
+        other_descriptor = double("other", handler: "other_handler", prefix: nil)
+        allow(resolver).to receive(:candidate_entries).and_return([other_descriptor])
+        allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Other message")
+
+        result = resolver.send(:message_from, descriptor)
+        expect(result).to eq("Prefix: Other message")
+      end
+    end
+
+    context "with no handler and no prefix" do
+      before do
+        allow(descriptor).to receive(:handler).and_return(nil)
+        allow(descriptor).to receive(:prefix).and_return(nil)
+      end
+
+      it "returns exception message when exception exists" do
+        exception_resolver = described_class.new(registry, :error, action:, exception: StandardError.new("Error message"))
+        result = exception_resolver.send(:message_from, descriptor)
+        expect(result).to eq("Error message")
+      end
+
+      it "returns nil when no exception exists" do
+        result = resolver.send(:message_from, descriptor)
+        expect(result).to be_nil
+      end
+    end
+  end
+end

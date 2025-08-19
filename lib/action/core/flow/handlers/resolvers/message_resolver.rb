@@ -28,9 +28,8 @@ module Action
 
             # Returns the first available message handler that produces a non-blank message
             def find_default_descriptor
-              candidate_entries.reverse.detect do |descriptor|
-                descriptor.handler && (descriptor.handler.respond_to?(:call) || descriptor.handler.is_a?(String)) &&
-                  message_from(descriptor)
+              candidate_entries.detect do |descriptor|
+                descriptor.handler && message_from(descriptor)
               end
             end
 
@@ -63,9 +62,9 @@ module Action
 
             # Finds a default message content from other descriptors (avoiding infinite loops)
             def find_default_message_content(current_descriptor)
-              candidate_entries.reverse.each do |candidate|
+              candidate_entries.each do |candidate|
                 next if candidate == current_descriptor
-                next unless candidate.handler && (candidate.handler.respond_to?(:call) || candidate.handler.is_a?(String))
+                next unless candidate.handler
 
                 message = Invoker.call(operation: "determining message callable", action:, handler: candidate.handler, exception:).presence
                 return message if message
