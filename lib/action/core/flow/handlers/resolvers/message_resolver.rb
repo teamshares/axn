@@ -42,56 +42,44 @@ module Action
               nil
             end
 
-            # Extracts the actual message content from a handler with prefix handling
+            # Extracts the actual message content from a descriptor
             def message_from(descriptor)
-              case descriptor.message_type
-              when :prefix_only
-                resolve_prefix_only_message(descriptor)
-              when :with_prefix
-                resolve_prefixed_message(descriptor)
-              when :core_default
-                resolve_core_default_message(descriptor)
-              else
-                resolve_standard_message(descriptor)
-              end
-            end
+              # If we have a handler, invoke it
+              if descriptor.handler
+                message = Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
+                return "#{descriptor.prefix}#{message}" if descriptor.prefix && message
 
-            # Handles descriptors with only a prefix (no handler)
-            def resolve_prefix_only_message(descriptor)
-              if exception
-                "#{descriptor.prefix}#{exception.message}"
-              else
-                default_message = resolve_default_message
+                return message
+              end
+
+              # If we only have a prefix, handle based on context
+              if descriptor.prefix
+                return "#{descriptor.prefix}#{exception.message}" if exception
+
+                # For error messages, use exception message with prefix
+
+                # For success messages, find a default message from other descriptors
+                default_message = find_default_message_content(descriptor)
                 return nil unless default_message.present?
 
-                "#{descriptor.prefix}#{default_message}"
+                return "#{descriptor.prefix}#{default_message}"
+
               end
-            end
 
-            # Handles descriptors with both prefix and handler
-            def resolve_prefixed_message(descriptor)
-              message = invoke_handler(descriptor)
-              return nil unless message
-
-              "#{descriptor.prefix}#{message}"
-            end
-
-            # Handles core default descriptors (no prefix, no handler)
-            def resolve_core_default_message(descriptor)
+              # If no handler and no prefix, use exception message
               exception&.message
             end
 
-            # Handles standard descriptors (with handler, no prefix)
-            def resolve_standard_message(descriptor)
-              invoke_handler(descriptor)
-            end
+            # Finds a default message content from other descriptors (avoiding infinite loops)
+            def find_default_message_content(current_descriptor)
+              candidate_entries.reverse.each do |candidate|
+                next if candidate == current_descriptor # Skip current descriptor to avoid loops
+                next unless candidate.handler && (candidate.handler.respond_to?(:call) || candidate.handler.is_a?(String))
 
-            # Invokes the handler to get the raw message content
-            def invoke_handler(descriptor)
-              handler = descriptor&.handler
-              return if handler.nil?
-
-              Invoker.call(operation: "determining message callable", action:, handler:, exception:).presence
+                message = Invoker.call(operation: "determining message callable", action:, handler: candidate.handler, exception:).presence
+                return message if message
+              end
+              nil
             end
           end
         end
