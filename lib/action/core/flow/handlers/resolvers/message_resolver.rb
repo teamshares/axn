@@ -12,13 +12,11 @@ module Action
             DEFAULT_ERROR = "Something went wrong"
             DEFAULT_SUCCESS = "Action completed successfully"
 
-            # Resolves the message using the standard strategy (conditional first, then static)
             def resolve_message
               descriptor = matching_entries.detect { |d| message_from(d) }
               message_from(descriptor) || fallback_message
             end
 
-            # Returns the raw message from the default handler (without prefix)
             def resolve_default_message
               descriptor = find_default_descriptor
               message_from(descriptor) || fallback_message
@@ -26,10 +24,10 @@ module Action
 
             private
 
-            # Returns the first available message handler that produces a non-blank message
+            # Returns the first available static message handler that produces a non-blank message
             def find_default_descriptor
               candidate_entries.detect do |descriptor|
-                descriptor.handler && message_from(descriptor)
+                descriptor.static? && descriptor.handler && message_from(descriptor)
               end
             end
 

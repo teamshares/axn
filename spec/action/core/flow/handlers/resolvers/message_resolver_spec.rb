@@ -31,7 +31,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
   end
 
   describe "#resolve_default_message" do
-    let(:descriptor) { double("descriptor", handler: "handler", prefix: nil) }
+    let(:descriptor) { double("descriptor", handler: "handler", prefix: nil, static?: true) }
 
     before do
       allow(resolver).to receive(:message_from).with(descriptor).and_return("Default message")
@@ -51,9 +51,9 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
   end
 
   describe "message ordering consistency" do
-    let(:static_descriptor) { double("static", handler: "static_handler", prefix: nil) }
-    let(:conditional_descriptor) { double("conditional", handler: "conditional_handler", prefix: nil) }
-    let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Prefix: ") }
+    let(:static_descriptor) { double("static", handler: "static_handler", prefix: nil, static?: true) }
+    let(:conditional_descriptor) { double("conditional", handler: "conditional_handler", prefix: nil, static?: false) }
+    let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Prefix: ", static?: true) }
 
     before do
       # Mock the message_from method to return different messages
@@ -71,8 +71,8 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
         # when we call .for(event_type)
         allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
 
-        # Should return the first one that has a handler and produces a message
-        expect(resolver.send(:find_default_descriptor)).to eq(conditional_descriptor)
+        # Should return the first static descriptor that has a handler and produces a message
+        expect(resolver.send(:find_default_descriptor)).to eq(static_descriptor)
       end
 
       it "processes entries in first-defined-first order for find_default_message_content" do
@@ -85,9 +85,9 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
 
       it "maintains consistent ordering between both methods" do
         # Test with multiple descriptors to ensure consistent behavior
-        descriptor_a = double("a", handler: "handler_a", prefix: nil)
-        descriptor_b = double("b", handler: "handler_b", prefix: nil)
-        descriptor_c = double("c", handler: "handler_c", prefix: nil)
+        descriptor_a = double("a", handler: "handler_a", prefix: nil, static?: true)
+        descriptor_b = double("b", handler: "handler_b", prefix: nil, static?: true)
+        descriptor_c = double("c", handler: "handler_c", prefix: nil, static?: true)
 
         allow(resolver).to receive(:message_from).with(descriptor_a).and_return("Message A")
         allow(resolver).to receive(:message_from).with(descriptor_b).and_return("Message B")
@@ -98,6 +98,13 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
         # Both methods should process in the same order
         expect(resolver.send(:find_default_descriptor)).to eq(descriptor_a)
         expect(resolver.send(:find_default_message_content, descriptor_c)).to eq("Handler message")
+      end
+
+      it "skips conditional descriptors when finding default" do
+        allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
+
+        # Should skip conditional descriptor and return static descriptor
+        expect(resolver.send(:find_default_descriptor)).to eq(static_descriptor)
       end
     end
 
