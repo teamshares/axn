@@ -13,7 +13,7 @@ module Action
           new_value = config.preprocess.call(initial_value)
           @__context.provided_data[config.field] = new_value
         rescue StandardError => e
-          raise Action::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}"
+          raise Action::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}", cause: e
         end
       end
 
