@@ -53,19 +53,19 @@ module Action
       # Don't treat Action::Failure with default message as user-provided
       return exception.message if exception.is_a?(Action::Failure) && !exception.cause && !exception.default_message?
 
-      _resolver(:error, exception: @context.exception).resolve_message.presence || "Something went wrong"
+      _resolver(:error, exception: @context.exception).resolve_message
     end
 
     def success
       return unless ok?
 
-      _resolver(:success, exception: nil).resolve_message.presence || "Action completed successfully"
+      _resolver(:success, exception: nil).resolve_message
     end
 
     def message = error || success
 
-    def default_error = _resolver(:error, exception: @context.exception).resolve_default_message || "Something went wrong"
-    def default_success = _resolver(:success, exception: nil).resolve_default_message || "Action completed successfully"
+    def default_error = _resolver(:error, exception: @context.exception).resolve_default_message
+    def default_success = _resolver(:success, exception: nil).resolve_default_message
 
     # Outcome constants for action execution results
     OUTCOMES = [

@@ -9,28 +9,35 @@ module Action
         module Resolvers
           # Internal: resolves messages with different strategies
           class MessageResolver < BaseResolver
+            DEFAULT_ERROR = "Something went wrong"
+            DEFAULT_SUCCESS = "Action completed successfully"
+
             # Resolves the message using the standard strategy (conditional first, then static)
             def resolve_message
-              matching_entries.find { |descriptor| message_from(descriptor).present? }&.then { |descriptor| message_from(descriptor) }
+              descriptor = matching_entries.detect { |d| message_from(d) }
+              message_from(descriptor) || fallback_message
             end
 
             # Returns the raw message from the default handler (without prefix)
             def resolve_default_message
-              find_default_descriptor&.then { |descriptor| message_from(descriptor) }
+              descriptor = find_default_descriptor
+              message_from(descriptor) || fallback_message
             end
 
             private
 
             # Returns the first available message handler that produces a non-blank message
             def find_default_descriptor
-              candidate_entries.reverse.find do |descriptor|
+              candidate_entries.reverse.detect do |descriptor|
                 descriptor.handler && (descriptor.handler.respond_to?(:call) || descriptor.handler.is_a?(String)) &&
-                  message_from(descriptor).present?
+                  message_from(descriptor)
               end
             end
 
             # Extracts the actual message content from a descriptor
             def message_from(descriptor)
+              return nil unless descriptor
+
               # If we have a handler, invoke it
               if descriptor.handler
                 message = Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
@@ -65,6 +72,8 @@ module Action
               end
               nil
             end
+
+            def fallback_message = event_type == :success ? DEFAULT_SUCCESS : DEFAULT_ERROR
           end
         end
       end
