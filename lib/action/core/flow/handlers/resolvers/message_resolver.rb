@@ -11,35 +11,22 @@ module Action
           class MessageResolver < BaseResolver
             # Resolves the message using the standard strategy (conditional first, then static)
             def resolve_message
-              matching_entries.each do |descriptor|
-                message = message_from(descriptor)
-                next unless message.present?
-
-                return message
-              end
-
-              nil
+              matching_entries.find { |descriptor| message_from(descriptor).present? }&.then { |descriptor| message_from(descriptor) }
             end
 
             # Returns the raw message from the default handler (without prefix)
             def resolve_default_message
-              descriptor = find_default_descriptor
-              return nil unless descriptor
-
-              message_from(descriptor)
+              find_default_descriptor&.then { |descriptor| message_from(descriptor) }
             end
 
             private
 
             # Returns the first available message handler that produces a non-blank message
             def find_default_descriptor
-              candidate_entries.reverse.each do |descriptor|
-                next unless descriptor.handler && (descriptor.handler.respond_to?(:call) || descriptor.handler.is_a?(String))
-
-                message = message_from(descriptor)
-                return descriptor if message
+              candidate_entries.reverse.find do |descriptor|
+                descriptor.handler && (descriptor.handler.respond_to?(:call) || descriptor.handler.is_a?(String)) &&
+                  message_from(descriptor).present?
               end
-              nil
             end
 
             # Extracts the actual message content from a descriptor
@@ -56,14 +43,11 @@ module Action
               if descriptor.prefix
                 return "#{descriptor.prefix}#{exception.message}" if exception
 
-                # For error messages, use exception message with prefix
-
                 # For success messages, find a default message from other descriptors
                 default_message = find_default_message_content(descriptor)
                 return nil unless default_message.present?
 
                 return "#{descriptor.prefix}#{default_message}"
-
               end
 
               # If no handler and no prefix, use exception message
@@ -73,7 +57,7 @@ module Action
             # Finds a default message content from other descriptors (avoiding infinite loops)
             def find_default_message_content(current_descriptor)
               candidate_entries.reverse.each do |candidate|
-                next if candidate == current_descriptor # Skip current descriptor to avoid loops
+                next if candidate == current_descriptor
                 next unless candidate.handler && (candidate.handler.respond_to?(:call) || candidate.handler.is_a?(String))
 
                 message = Invoker.call(operation: "determining message callable", action:, handler: candidate.handler, exception:).presence
