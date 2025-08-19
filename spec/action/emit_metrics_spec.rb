@@ -26,7 +26,7 @@ RSpec.describe "Action emit_metrics hook" do
 
       it "calls emit_metrics hook with success outcome and correct resource" do
         action.call
-        expect(@last_metrics_call[:result].outcome).to eq(:success)
+        expect(@last_metrics_call[:result].outcome.success?).to be true
         expect(@last_metrics_call[:resource]).to eq("AnonymousClass")
         expect(@last_metrics_call[:result].elapsed_time).to be_a(Float)
         expect(@last_metrics_call[:result].elapsed_time).to be >= 0
@@ -44,12 +44,12 @@ RSpec.describe "Action emit_metrics hook" do
 
       it "calls emit_metrics hook with failure outcome" do
         action.call
-        expect(@last_metrics_call[:result].outcome).to eq(:failure)
+        expect(@last_metrics_call[:result].outcome.failure?).to be true
       end
 
       it "calls emit_metrics hook with failure outcome when using call!" do
         expect { action.call! }.to raise_error(Action::Failure)
-        expect(@last_metrics_call[:result].outcome).to eq(:failure)
+        expect(@last_metrics_call[:result].outcome.failure?).to be true
       end
     end
 
@@ -64,12 +64,12 @@ RSpec.describe "Action emit_metrics hook" do
 
       it "calls emit_metrics hook with exception outcome" do
         action.call
-        expect(@last_metrics_call[:result].outcome).to eq(:exception)
+        expect(@last_metrics_call[:result].outcome.exception?).to be true
       end
 
       it "calls emit_metrics hook with exception outcome when using call!" do
         expect { action.call! }.to raise_error(RuntimeError)
-        expect(@last_metrics_call[:result].outcome).to eq(:exception)
+        expect(@last_metrics_call[:result].outcome.exception?).to be true
       end
     end
 
@@ -87,7 +87,7 @@ RSpec.describe "Action emit_metrics hook" do
       it "calls emit_metrics hook with success outcome" do
         result = action.call!(required_field: "test")
         expect(result).to be_ok
-        expect(@last_metrics_call[:result].outcome).to eq(:success)
+        expect(@last_metrics_call[:result].outcome.success?).to be true
       end
     end
 
@@ -104,7 +104,7 @@ RSpec.describe "Action emit_metrics hook" do
 
       it "calls emit_metrics hook with exception outcome" do
         expect { action.call! }.to raise_error(Action::InboundValidationError)
-        expect(@last_metrics_call[:result].outcome).to eq(:exception)
+        expect(@last_metrics_call[:result].outcome.exception?).to be true
       end
     end
 

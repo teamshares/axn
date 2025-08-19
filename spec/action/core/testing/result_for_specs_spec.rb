@@ -71,16 +71,22 @@ RSpec.describe "Action spec helpers" do
 
   describe "Action::Result#outcome" do
     it "returns success for ok results" do
-      expect(Action::Result.ok.outcome).to eq(Action::Result::OUTCOME_SUCCESS)
+      expect(Action::Result.ok.outcome.success?).to be true
+      expect(Action::Result.ok.outcome.failure?).to be false
+      expect(Action::Result.ok.outcome.exception?).to be false
     end
 
     it "returns failure for error results" do
-      expect(Action::Result.error.outcome).to eq(Action::Result::OUTCOME_FAILURE)
+      expect(Action::Result.error.outcome.success?).to be false
+      expect(Action::Result.error.outcome.failure?).to be true
+      expect(Action::Result.error.outcome.exception?).to be false
     end
 
     it "returns exception for results with exceptions" do
       result = Action::Result.error { raise "error" }
-      expect(result.outcome).to eq(Action::Result::OUTCOME_EXCEPTION)
+      expect(result.outcome.success?).to be false
+      expect(result.outcome.failure?).to be false
+      expect(result.outcome.exception?).to be true
     end
   end
 

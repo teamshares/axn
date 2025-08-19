@@ -61,16 +61,21 @@ module Action
 
     # Outcome constants for action execution results
     OUTCOMES = [
-      OUTCOME_SUCCESS = :success,
-      OUTCOME_FAILURE = :failure,
-      OUTCOME_EXCEPTION = :exception,
+      OUTCOME_SUCCESS = "success",
+      OUTCOME_FAILURE = "failure",
+      OUTCOME_EXCEPTION = "exception",
     ].freeze
 
     def outcome
-      return OUTCOME_FAILURE if exception&.is_a?(Action::Failure)
-      return OUTCOME_EXCEPTION if exception
+      label = if exception&.is_a?(Action::Failure)
+                OUTCOME_FAILURE
+              elsif exception
+                OUTCOME_EXCEPTION
+              else
+                OUTCOME_SUCCESS
+              end
 
-      OUTCOME_SUCCESS
+      ActiveSupport::StringInquirer.new(label)
     end
 
     # Internal accessor for the action instance

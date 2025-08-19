@@ -5,6 +5,7 @@
   * When no block or message is provided, falls back to `e.message` with the prefix
   * Example: `error if: ArgumentError, prefix: "Foo: " { "bar" }` results in "Foo: bar"
   * Example: `error if: StandardError, prefix: "Baz: "` results in "Baz: [exception message]"
+* [BREAKING] `result.outcome` now returns a string inquirer instead of a symbol
 * [BREAKING] `default_error` and `default_success` now live on Action::Result (access via `result.default_error`)
 * [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
 * [CHANGE] `result.exception` will new return the internal Action::Failure, rather than nil, when user calls `fail!`
