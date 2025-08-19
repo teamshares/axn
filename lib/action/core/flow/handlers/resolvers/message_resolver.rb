@@ -29,37 +29,27 @@ module Action
               static_entries.detect { |descriptor| descriptor.handler && message_from(descriptor) }
             end
 
-            # Extracts the actual message content from a descriptor
             def message_from(descriptor)
-              return nil unless descriptor
+              message = resolved_message_body(descriptor)
+              return nil unless message.present?
 
-              # If we have a handler, invoke it
-              if descriptor.handler
-                message = invoke_handler(descriptor.handler)
-                return "#{descriptor.prefix}#{message}" if descriptor.prefix && message
-
-                return message
-              end
-
-              # If we only have a prefix, handle based on context
-              if descriptor.prefix
-                return "#{descriptor.prefix}#{exception.message}" if exception
-
-                # For success messages, find a default message from other descriptors
-                default_descriptor_obj = default_descriptor
-                return nil unless default_descriptor_obj
-
-                default_message = invoke_handler(default_descriptor_obj.handler)
-                return nil unless default_message.present?
-
-                return "#{descriptor.prefix}#{default_message}"
-              end
-
-              # If no handler and no prefix, use exception message
-              exception&.message
+              descriptor.prefix ? "#{descriptor.prefix}#{message}" : message
             end
 
-            def invoke_handler(handler) = Invoker.call(operation: "determining message callable", action:, handler:, exception:).presence
+            def resolved_message_body(descriptor)
+              return nil unless descriptor
+
+              if descriptor.handler
+                invoke_handler(descriptor.handler)
+              elsif exception
+                exception.message
+              elsif descriptor.prefix
+                # For prefix-only success messages, find a default message from other descriptors
+                invoke_handler(default_descriptor&.handler)
+              end
+            end
+
+            def invoke_handler(handler) = handler ? Invoker.call(operation: "determining message callable", action:, handler:, exception:).presence : nil
             def fallback_message = event_type == :success ? DEFAULT_SUCCESS : DEFAULT_ERROR
           end
         end
