@@ -48,12 +48,7 @@ module Action
     def error
       return if ok?
 
-      # First check for user-provided failure messages (these take precedence)
-      # TODO: explain what cause means -- basically we created ourselves from nesting
-      # Don't treat Action::Failure with default message as user-provided
-      return exception.message if exception.is_a?(Action::Failure) && !exception.cause && !exception.default_message?
-
-      _resolver(:error, exception: @context.exception).resolve_message
+      _user_provided_error_message || _resolver(:error, exception: @context.exception).resolve_message
     end
 
     def success
@@ -93,6 +88,14 @@ module Action
     private
 
     def context_data_source = @context.exposed_data
+
+    def _user_provided_error_message
+      return unless exception.is_a?(Action::Failure)
+      return if exception.default_message?
+      return if exception.cause # We raised this ourselves from nesting
+
+      exception.message
+    end
 
     def _resolver(event_type, exception:)
       Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
