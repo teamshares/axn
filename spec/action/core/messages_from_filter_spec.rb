@@ -285,6 +285,18 @@ RSpec.describe Action do
       end
     end
 
+    let(:string_action) do
+      build_action do
+        expects :type
+
+        # Static success with prefix and string message
+        success "Operation completed successfully", prefix: "Default: "
+
+        # Success with prefix only (should work for success messages)
+        success if: -> { type == :basic }, prefix: "Success: "
+      end
+    end
+
     it "handles conditional success with custom message" do
       result = action.call(type: :special)
       expect(result).to be_ok
@@ -301,6 +313,12 @@ RSpec.describe Action do
       result = action.call(type: :other)
       expect(result).to be_ok
       expect(result.success).to eq("Default: Operation completed successfully")
+    end
+
+    it "handles conditional success with prefix only using static string message" do
+      result = string_action.call(type: :basic)
+      expect(result).to be_ok
+      expect(result.success).to eq("Success: Operation completed successfully")
     end
   end
 

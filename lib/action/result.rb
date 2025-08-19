@@ -53,25 +53,19 @@ module Action
       # Don't treat Action::Failure with default message as user-provided
       return exception.message if exception.is_a?(Action::Failure) && !exception.cause && !exception.default_message?
 
-      # Then check for custom error messages
-      msg = action.class._custom_message_for(:error, action:, exception:)
-      return msg if msg.present?
-
-      # Finally use the default generic message
-      "Something went wrong"
+      _resolver(:error, exception: @context.exception).resolve_message.presence || "Something went wrong"
     end
 
     def success
       return unless ok?
 
-      msg = action.class._custom_message_for(:success, action:, exception: nil)
-      msg.presence || "Action completed successfully"
+      _resolver(:success, exception: nil).resolve_message.presence || "Action completed successfully"
     end
 
     def message = error || success
 
-    def default_error = _find_first_static_message(:error) || "Something went wrong"
-    def default_success = _find_first_static_message(:success) || "Action completed successfully"
+    def default_error = _resolver(:error, exception: @context.exception).resolve_default_message || "Something went wrong"
+    def default_success = _resolver(:success, exception: nil).resolve_default_message || "Action completed successfully"
 
     # Outcome constants for action execution results
     OUTCOMES = [
@@ -100,17 +94,13 @@ module Action
 
     def context_data_source = @context.exposed_data
 
-    def _find_first_static_message(event_type)
-      # The registry stores handlers in "last-defined-first" order, so we need to reverse
-      # to get the order they were defined (first-defined-first)
-      action.class._messages_registry.for(event_type).reverse.each do |handler|
-        # A handler is static if it has no matcher (no conditions)
-        if handler.static?
-          msg = handler.apply(action:, exception: @context.exception)
-          return msg if msg.present?
-        end
-      end
-      nil
+    def _resolver(event_type, exception:)
+      Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
+        action.class._messages_registry,
+        event_type,
+        action:,
+        exception:,
+      )
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)

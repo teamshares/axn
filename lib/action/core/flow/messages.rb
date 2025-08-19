@@ -18,16 +18,6 @@ module Action
           def success(message = nil, **, &) = _add_message(:success, message:, **, &)
           def error(message = nil, **, &) = _add_message(:error, message:, **, &)
 
-          # Internal: resolve a message for the given event (conditional first, then static)
-          def _custom_message_for(event_type, action:, exception: nil)
-            _messages_registry.for(event_type).each do |handler|
-              msg = handler.apply(action:, exception:)
-              return msg if msg.present?
-            end
-
-            nil
-          end
-
           private
 
           def _add_message(kind, message:, **kwargs, &block)
