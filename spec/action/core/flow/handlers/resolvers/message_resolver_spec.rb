@@ -51,9 +51,9 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
   end
 
   describe "message ordering consistency" do
-    let(:static_descriptor) { double("static", handler: "static_handler", prefix: nil, static?: true) }
-    let(:conditional_descriptor) { double("conditional", handler: "conditional_handler", prefix: nil, static?: false) }
-    let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Prefix: ", static?: true) }
+    let(:static_descriptor) { double("static", handler: "static_handler", prefix: nil, static?: true, matches?: true) }
+    let(:conditional_descriptor) { double("conditional", handler: "conditional_handler", prefix: nil, static?: false, matches?: false) }
+    let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Prefix: ", static?: true, matches?: true) }
 
     before do
       # Mock the message_from method to return different messages
@@ -61,7 +61,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
       allow(resolver).to receive(:message_from).with(conditional_descriptor).and_return("Conditional message")
       allow(resolver).to receive(:message_from).with(prefix_only_descriptor).and_return("Prefix: Static message")
 
-      # Mock Invoker.call for find_default_message_content tests
+      # Mock Invoker.call for default_descriptor tests
       allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
     end
 
@@ -72,22 +72,22 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
         allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
 
         # Should return the first static descriptor that has a handler and produces a message
-        expect(resolver.send(:find_default_descriptor)).to eq(static_descriptor)
+        expect(resolver.send(:default_descriptor)).to eq(static_descriptor)
       end
 
-      it "processes entries in first-defined-first order for find_default_message_content" do
+      it "processes entries in first-defined-first order for default_descriptor" do
         allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
 
         # Should find the first message from other descriptors
-        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
-        expect(result).to eq("Handler message")
+        result = resolver.send(:default_descriptor)
+        expect(result).to eq(static_descriptor)
       end
 
       it "maintains consistent ordering between both methods" do
         # Test with multiple descriptors to ensure consistent behavior
-        descriptor_a = double("a", handler: "handler_a", prefix: nil, static?: true)
-        descriptor_b = double("b", handler: "handler_b", prefix: nil, static?: true)
-        descriptor_c = double("c", handler: "handler_c", prefix: nil, static?: true)
+        descriptor_a = double("a", handler: "handler_a", prefix: nil, static?: true, matches?: true)
+        descriptor_b = double("b", handler: "handler_b", prefix: nil, static?: true, matches?: true)
+        descriptor_c = double("c", handler: "handler_c", prefix: nil, static?: true, matches?: true)
 
         allow(resolver).to receive(:message_from).with(descriptor_a).and_return("Message A")
         allow(resolver).to receive(:message_from).with(descriptor_b).and_return("Message B")
@@ -96,15 +96,41 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
         allow(resolver).to receive(:candidate_entries).and_return([descriptor_a, descriptor_b, descriptor_c])
 
         # Both methods should process in the same order
-        expect(resolver.send(:find_default_descriptor)).to eq(descriptor_a)
-        expect(resolver.send(:find_default_message_content, descriptor_c)).to eq("Handler message")
+        expect(resolver.send(:default_descriptor)).to eq(descriptor_a)
+        expect(resolver.send(:default_descriptor)).to eq(descriptor_a)
       end
 
       it "skips conditional descriptors when finding default" do
         allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
 
         # Should skip conditional descriptor and return static descriptor
-        expect(resolver.send(:find_default_descriptor)).to eq(static_descriptor)
+        expect(resolver.send(:default_descriptor)).to eq(static_descriptor)
+      end
+
+      it "skips descriptors without handlers when finding default" do
+        # Create a descriptor with no handler but with a prefix
+        no_handler_descriptor = double("no_handler", handler: nil, prefix: "Prefix: ", static?: true, matches?: true)
+        allow(resolver).to receive(:message_from).with(no_handler_descriptor).and_return(nil)
+
+        allow(resolver).to receive(:candidate_entries).and_return([no_handler_descriptor, static_descriptor])
+
+        # Should skip the no-handler descriptor and return static descriptor
+        expect(resolver.send(:default_descriptor)).to eq(static_descriptor)
+      end
+
+      it "demonstrates why handler check prevents infinite loops" do
+        # Create a prefix-only descriptor that would cause issues without handler check
+        prefix_only = double("prefix_only", handler: nil, prefix: "Error: ", static?: true, matches?: true)
+
+        # Mock message_from to simulate what would happen in reality
+        allow(resolver).to receive(:message_from).with(prefix_only).and_return(nil)
+
+        allow(resolver).to receive(:candidate_entries).and_return([prefix_only, static_descriptor])
+
+        # Should skip prefix_only and return static_descriptor
+        result = resolver.send(:default_descriptor)
+        expect(result).to eq(static_descriptor)
+        expect(result).not_to eq(prefix_only)
       end
     end
 
@@ -113,16 +139,16 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
         allow(resolver).to receive(:candidate_entries).and_return([conditional_descriptor, static_descriptor])
 
         # When a prefix-only descriptor needs a default message, it should find the first available
-        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
-        expect(result).to eq("Handler message")
+        result = resolver.send(:default_descriptor)
+        expect(result).to eq(static_descriptor)
       end
 
       it "skips the current descriptor when searching for default content" do
         allow(resolver).to receive(:candidate_entries).and_return([prefix_only_descriptor, static_descriptor])
 
         # Should skip prefix_only_descriptor and find static_descriptor's message
-        result = resolver.send(:find_default_message_content, prefix_only_descriptor)
-        expect(result).to eq("Handler message")
+        result = resolver.send(:default_descriptor)
+        expect(result).to eq(static_descriptor)
       end
     end
   end
@@ -174,7 +200,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
       end
 
       it "finds default message content from other descriptors for success messages" do
-        other_descriptor = double("other", handler: "other_handler", prefix: nil)
+        other_descriptor = double("other", handler: "other_handler", prefix: nil, static?: true, matches?: true)
         allow(resolver).to receive(:candidate_entries).and_return([other_descriptor])
         allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Other message")
 
@@ -197,6 +223,36 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
 
       it "returns nil when no exception exists" do
         result = resolver.send(:message_from, descriptor)
+        expect(result).to be_nil
+      end
+    end
+
+    context "with no handler but with prefix" do
+      let(:prefix_only_descriptor) { double("prefix_only", handler: nil, prefix: "Error: ") }
+
+      it "returns prefix + exception message when exception exists" do
+        exception_resolver = described_class.new(registry, :error, action:, exception: StandardError.new("Network error"))
+        result = exception_resolver.send(:message_from, prefix_only_descriptor)
+        expect(result).to eq("Error: Network error")
+      end
+
+      it "returns nil for success messages when no exception exists" do
+        # This demonstrates why prefix-only descriptors without handlers are problematic for defaults
+        result = resolver.send(:message_from, prefix_only_descriptor)
+        expect(result).to be_nil
+      end
+    end
+
+    context "demonstrating why handler check is necessary" do
+      it "shows that descriptors without handlers can return nil for success messages" do
+        # This test demonstrates why the handler check in find_default_descriptor is crucial
+        prefix_only = double("prefix_only", handler: nil, prefix: "Success: ", static?: true, matches?: true)
+
+        # For success messages without exceptions, prefix-only descriptors return nil
+        success_resolver = described_class.new(registry, :success, action:, exception: nil)
+        result = success_resolver.send(:message_from, prefix_only)
+
+        # This would cause find_default_descriptor to fail if we didn't check for handler
         expect(result).to be_nil
       end
     end

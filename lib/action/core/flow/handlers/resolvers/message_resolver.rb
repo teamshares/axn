@@ -18,17 +18,15 @@ module Action
             end
 
             def resolve_default_message
-              descriptor = find_default_descriptor
-              message_from(descriptor) || fallback_message
+              message_from(default_descriptor) || fallback_message
             end
 
             private
 
-            # Returns the first available static message handler that produces a non-blank message
-            def find_default_descriptor
-              candidate_entries.detect do |descriptor|
-                descriptor.static? && descriptor.handler && message_from(descriptor)
-              end
+            def default_descriptor
+              # NOTE: descriptor.handler check avoids returning a prefix-only descriptor (which
+              # needs to look up a default handler via this method to return a message)
+              static_entries.detect { |descriptor| descriptor.handler && message_from(descriptor) }
             end
 
             # Extracts the actual message content from a descriptor
@@ -37,7 +35,7 @@ module Action
 
               # If we have a handler, invoke it
               if descriptor.handler
-                message = Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
+                message = invoke_handler(descriptor.handler)
                 return "#{descriptor.prefix}#{message}" if descriptor.prefix && message
 
                 return message
@@ -48,7 +46,10 @@ module Action
                 return "#{descriptor.prefix}#{exception.message}" if exception
 
                 # For success messages, find a default message from other descriptors
-                default_message = find_default_message_content(descriptor)
+                default_descriptor_obj = default_descriptor
+                return nil unless default_descriptor_obj
+
+                default_message = invoke_handler(default_descriptor_obj.handler)
                 return nil unless default_message.present?
 
                 return "#{descriptor.prefix}#{default_message}"
@@ -58,18 +59,7 @@ module Action
               exception&.message
             end
 
-            # Finds a default message content from other descriptors (avoiding infinite loops)
-            def find_default_message_content(current_descriptor)
-              candidate_entries.each do |candidate|
-                next if candidate == current_descriptor
-                next unless candidate.handler
-
-                message = Invoker.call(operation: "determining message callable", action:, handler: candidate.handler, exception:).presence
-                return message if message
-              end
-              nil
-            end
-
+            def invoke_handler(handler) = Invoker.call(operation: "determining message callable", action:, handler:, exception:).presence
             def fallback_message = event_type == :success ? DEFAULT_SUCCESS : DEFAULT_ERROR
           end
         end

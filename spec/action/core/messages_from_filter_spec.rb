@@ -306,8 +306,8 @@ RSpec.describe Action do
     it "handles conditional success with prefix only" do
       result = action.call(type: :basic)
       expect(result).to be_ok
-      # The prefix-only message should find content from the first available handler
-      expect(result.success).to eq("Success: Special operation completed")
+      # The prefix-only message should find content from the static handler since conditional doesn't match
+      expect(result.success).to eq("Success: Operation completed successfully")
     end
 
     it "handles static success with prefix" do

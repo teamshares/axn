@@ -19,6 +19,7 @@ module Action
 
             def candidate_entries = registry.for(event_type)
             def matching_entries = candidate_entries.select { |descriptor| descriptor.matches?(action:, exception:) }
+            def static_entries = candidate_entries.select(&:static?)
           end
         end
       end

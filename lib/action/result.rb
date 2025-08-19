@@ -56,7 +56,7 @@ module Action
 
     def message = exception ? error : success
 
-    def default_error = _resolver(:error, exception:).resolve_default_message
+    def default_error = _resolver(:error, exception: exception || Action::Failure.new).resolve_default_message
     def default_success = _resolver(:success, exception: nil).resolve_default_message
 
     # Outcome constants for action execution results
