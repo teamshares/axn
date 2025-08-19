@@ -8,30 +8,25 @@ module Action
       module Handlers
         module Resolvers
           # Internal: resolves messages with different strategies
-          class MessageResolver
-            def initialize(registry, event_type, action:, exception:)
-              @registry = registry
-              @event_type = event_type
-              @action = action
-              @exception = exception
-            end
-
+          class MessageResolver < BaseResolver
             # Resolves the message using the standard strategy (conditional first, then static)
             def resolve_message
-              @registry.for(@event_type).each do |handler|
-                msg = handler.apply(action: @action, exception: @exception)
+              matching_entries.each do |descriptor|
+                # Get the message from this descriptor
+                msg = resolve_descriptor_message(descriptor)
+                next unless msg.present?
 
-                # Handle prefix-only handlers by looking up the default message
+                # Handle prefix-only descriptors by looking up the default message
                 if msg == :prefix_only
                   default_msg = resolve_default_message
                   return nil unless default_msg.present?
 
-                  # Extract the prefix from the current handler and apply it to the default message
-                  prefix = handler.instance_variable_get(:@prefix)
+                  # Extract the prefix from the current descriptor and apply it to the default message
+                  prefix = descriptor.instance_variable_get(:@prefix)
                   return "#{prefix}#{default_msg}" if prefix
                 end
 
-                return msg if msg.present?
+                return msg
               end
 
               nil
@@ -39,13 +34,13 @@ module Action
 
             # Returns the first available message handler that produces a non-blank message
             def resolve_default_handler
-              @registry.for(@event_type).reverse.each do |handler|
+              candidate_entries.reverse.each do |handler|
                 # Skip handlers without content (just prefixes)
                 next unless handler.handler && (handler.handler.respond_to?(:call) || handler.handler.is_a?(String))
 
                 # Test if this handler produces a non-blank message
                 msg = if handler.handler.respond_to?(:call)
-                        Invoker.call(action: @action, handler: handler.handler, exception: @exception, operation: "determining message callable")
+                        Invoker.call(action:, handler: handler.handler, exception:, operation: "determining message callable")
                       elsif handler.handler.is_a?(String)
                         handler.handler
                       end
@@ -63,10 +58,39 @@ module Action
 
               # Get the message from this handler (we know it's non-blank because resolve_default_handler tested it)
               if handler.handler.respond_to?(:call)
-                Invoker.call(action: @action, handler: handler.handler, exception: @exception, operation: "determining message callable")
+                Invoker.call(action:, handler: handler.handler, exception:, operation: "determining message callable")
               elsif handler.handler.is_a?(String)
                 handler.handler
               end
+            end
+
+            private
+
+            # Resolves the message from a specific descriptor
+            def resolve_descriptor_message(descriptor)
+              value =
+                if descriptor.handler.is_a?(Symbol) || descriptor.handler.respond_to?(:call)
+                  Invoker.call(action:, handler: descriptor.handler, exception:, operation: "determining message callable")
+                elsif !descriptor.handler && descriptor.instance_variable_get(:@prefix)
+                  # For error messages, use the exception message; for success messages, return a marker
+                  if exception
+                    exception.message
+                  else
+                    # This is a success message with only a prefix
+                    :prefix_only
+                  end
+                else
+                  descriptor.handler
+                end
+
+              # Don't apply prefix to the special marker
+              return value if value == :prefix_only
+
+              message = value.respond_to?(:presence) ? value.presence : value
+              return message unless descriptor.instance_variable_get(:@prefix) && message.present?
+
+              # Apply prefix to the custom message
+              "#{descriptor.instance_variable_get(:@prefix)}#{message}"
             end
           end
         end

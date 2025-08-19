@@ -33,7 +33,7 @@ module Action
             ].compact
 
             matcher = Action::Core::Flow::Handlers::Matcher.new(rules, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::MessageHandler.new(matcher:, handler:, prefix: kwargs[:prefix])
+            entry = Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.new(matcher:, handler:, prefix: kwargs[:prefix])
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
           end
