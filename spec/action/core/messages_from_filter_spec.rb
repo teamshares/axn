@@ -323,6 +323,26 @@ RSpec.describe Action do
     end
   end
 
+  context "combining from: with if: keyword" do
+    it "raises ArgumentError when using from: with if:" do
+      expect do
+        stub_const("InvalidFromIfAction", Class.new do
+          include Action
+          error "Invalid combination", from: Object, if: StandardError
+        end)
+      end.to raise_error(ArgumentError, "from: cannot be combined with :if or :unless")
+    end
+
+    it "raises ArgumentError when using from: with unless:" do
+      expect do
+        stub_const("InvalidFromUnlessAction", Class.new do
+          include Action
+          error "Invalid combination", from: Object, unless: StandardError
+        end)
+      end.to raise_error(ArgumentError, "from: cannot be combined with :if or :unless")
+    end
+  end
+
   it "raises ArgumentError when using from: with success messages" do
     expect do
       stub_const("InvalidSuccessAction", Class.new do

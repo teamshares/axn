@@ -25,6 +25,7 @@ module Action
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix]
             raise ArgumentError, "from: only applies to error messages" if kwargs.key?(:from) && kind != :error
+            raise ArgumentError, "from: cannot be combined with :if or :unless" if kwargs.key?(:from) && (kwargs.key?(:if) || kwargs.key?(:unless))
 
             handler = block_given? ? block : message
             rules = [
