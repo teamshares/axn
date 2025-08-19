@@ -39,27 +39,24 @@ module Action
       end
     end
 
-    # Poke some holes for necessary internal control methods
-    delegate :each_pair, to: :context
-
     # External interface
-    delegate :ok?, :exception, to: :context
+    delegate :ok?, :exception, :elapsed_time, to: :context
 
     def error
       return if ok?
 
-      _user_provided_error_message || _resolver(:error, exception: @context.exception).resolve_message
+      _user_provided_error_message || _resolver(:error, exception:).resolve_message
     end
 
     def success
       return unless ok?
 
-      _resolver(:success, exception: nil).resolve_message
+      _user_provided_success_message || _resolver(:success, exception: nil).resolve_message
     end
 
-    def message = error || success
+    def message = exception ? error : success
 
-    def default_error = _resolver(:error, exception: @context.exception).resolve_default_message
+    def default_error = _resolver(:error, exception:).resolve_default_message
     def default_success = _resolver(:success, exception: nil).resolve_default_message
 
     # Outcome constants for action execution results
@@ -76,30 +73,28 @@ module Action
       OUTCOME_SUCCESS
     end
 
-    # Elapsed time in milliseconds
-    def elapsed_time
-      @context.elapsed_time
-    end
-
     # Internal accessor for the action instance
     # TODO: exposed for errors :from support, but should be private if possible
     def __action__ = @action
 
     private
 
-    def context_data_source = @context.exposed_data
+    def _context_data_source = @context.exposed_data
+
+    # TODO: hook for adding early-return success at some point
+    def _user_provided_success_message = nil
 
     def _user_provided_error_message
-      return unless exception.is_a?(Action::Failure)
+      return unless exception&.is_a?(Action::Failure)
       return if exception.default_message?
       return if exception.cause # We raised this ourselves from nesting
 
-      exception.message
+      exception.message.presence
     end
 
     def _resolver(event_type, exception:)
       Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
-        action.class._messages_registry,
+        action._messages_registry,
         event_type,
         action:,
         exception:,

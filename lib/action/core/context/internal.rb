@@ -7,7 +7,7 @@ module Action
   class InternalContext < ContextFacade
     private
 
-    def context_data_source = @context.provided_data
+    def _context_data_source = @context.provided_data
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
       if @context.__combined_data.key?(method_name.to_sym)
