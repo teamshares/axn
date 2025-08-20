@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
 * [FEAT] Added `prefix:` keyword support to `error` method for customizing error message prefixes
   * When no block or message is provided, falls back to `e.message` with the prefix
   * Example: `error if: ArgumentError, prefix: "Foo: " { "bar" }` results in "Foo: bar"
