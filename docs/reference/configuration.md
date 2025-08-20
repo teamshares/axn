@@ -91,6 +91,8 @@ A couple notes:
 
 Defaults to `Rails.logger`, if present, otherwise falls back to `Logger.new($stdout)`.  But can be set to a custom logger as necessary.
 
+
+
 ## `additional_includes`
 
 This is much less critical than the preceding options, but on the off chance you want to add additional customization to _all_ your actions you can set additional modules to be included alongside `include Action`.

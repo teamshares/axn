@@ -21,4 +21,8 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 
 If you're using an APM provider, observability can be greatly enhanced by [configuring tracing and metrics hooks](/reference/configuration#tracing-and-metrics).
 
+### Code Quality (Optional)
+
+For teams using RuboCop, Axn provides custom cops to enforce best practices. See the [RuboCop Integration guide](/recipes/rubocop-integration) for setup instructions.
+
 
