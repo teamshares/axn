@@ -67,7 +67,7 @@ module Action
     ].freeze
 
     def outcome
-      label = if exception&.is_a?(Action::Failure)
+      label = if exception.is_a?(Action::Failure)
                 OUTCOME_FAILURE
               elsif exception
                 OUTCOME_EXCEPTION
@@ -90,7 +90,7 @@ module Action
     def _user_provided_success_message = nil
 
     def _user_provided_error_message
-      return unless exception&.is_a?(Action::Failure)
+      return unless exception.is_a?(Action::Failure)
       return if exception.default_message?
       return if exception.cause # We raised this ourselves from nesting
 

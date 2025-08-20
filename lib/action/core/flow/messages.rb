@@ -47,7 +47,7 @@ module Action
                 exception.is_a?(Action::Failure) && exception.source&.class&.name == from_class
               }
             else
-              ->(exception:, **) { exception.is_a?(Action::Failure) && exception.source&.is_a?(from_class) }
+              ->(exception:, **) { exception.is_a?(Action::Failure) && exception.source.is_a?(from_class) }
             end
           end
         end

@@ -23,7 +23,7 @@ module Action
 
       return "[OK]" if context.ok?
 
-      if context.exception&.is_a?(Action::Failure)
+      if context.exception.is_a?(Action::Failure)
         return context.exception.message.present? ? "[failed with '#{context.exception.message}']" : "[failed]"
       end
 

@@ -102,11 +102,12 @@ RSpec.describe Action do
       end
 
       def call
-        if type == :handled
+        case type
+        when :handled
           raise ArgumentError, "bad argument"
-        elsif type == :unhandled
+        when :unhandled
           raise StandardError, "system failure"
-        elsif type == :nested
+        when :nested
           InnerAction.call!(type: :handled)
         end
       end
@@ -133,7 +134,7 @@ RSpec.describe Action do
         expects :type
 
         error if: StandardError, prefix: "Baz: "
-        error if: ArgumentError, prefix: "Foo: " do |e|
+        error if: ArgumentError, prefix: "Foo: " do |_e|
           "bar"
         end
 
@@ -331,7 +332,9 @@ RSpec.describe Action do
           error "Invalid combination", from: Object, if: StandardError
         end)
       end.to raise_error(Action::UnsupportedArgument,
-                         "Combining from: with if: or unless: is not currently supported.\n\nImplementation is technically possible but very complex. Please submit a Github Issue if you have a real-world need for this functionality.")
+                         "Combining from: with if: or unless: is not currently supported.\n\n" \
+                         "Implementation is technically possible but very complex. Please submit a " \
+                         "Github Issue if you have a real-world need for this functionality.")
     end
 
     it "raises ArgumentError when using from: with unless:" do
@@ -341,7 +344,9 @@ RSpec.describe Action do
           error "Invalid combination", from: Object, unless: StandardError
         end)
       end.to raise_error(Action::UnsupportedArgument,
-                         "Combining from: with if: or unless: is not currently supported.\n\nImplementation is technically possible but very complex. Please submit a Github Issue if you have a real-world need for this functionality.")
+                         "Combining from: with if: or unless: is not currently supported.\n\n" \
+                         "Implementation is technically possible but very complex. Please submit a " \
+                         "Github Issue if you have a real-world need for this functionality.")
     end
   end
 
