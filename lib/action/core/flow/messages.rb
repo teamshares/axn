@@ -27,10 +27,17 @@ module Action
             raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix]
             raise ArgumentError, "from: only applies to error messages" if kwargs.key?(:from) && kind != :error
 
-            entry = Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
-              handler: block_given? ? block : message,
-              **kwargs,
-            )
+            # If message is already a descriptor, use it directly
+            entry = if message.is_a?(Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+                      raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given?
+
+                      message
+                    else
+                      Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
+                        handler: block_given? ? block : message,
+                        **kwargs,
+                      )
+                    end
 
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true

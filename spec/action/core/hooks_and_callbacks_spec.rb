@@ -614,4 +614,27 @@ RSpec.describe Action do
       end
     end
   end
+
+  context "with prebuilt descriptors" do
+    let(:action) do
+      build_action do
+        on_success Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success from descriptor" })
+        on_error Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "error from descriptor" })
+      end
+    end
+
+    it "supports prebuilt descriptors" do
+      expect do
+        expect(action.call).to be_ok
+      end.to output("success from descriptor\n").to_stdout
+    end
+
+    it "raises error when combining descriptor with kwargs" do
+      expect do
+        build_action do
+          on_success Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success" }), if: -> { true }
+        end
+      end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
+    end
+  end
 end

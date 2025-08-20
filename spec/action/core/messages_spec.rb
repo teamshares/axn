@@ -803,4 +803,26 @@ RSpec.describe Action do
 
     it_behaves_like "action with custom error layers"
   end
+
+  context "with prebuilt descriptors" do
+    let(:action) do
+      build_action do
+        success Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success from descriptor")
+        error Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Error from descriptor")
+      end
+    end
+
+    it "supports prebuilt descriptors" do
+      expect(action.call).to be_ok
+      expect(action.call.success).to eq("Success from descriptor")
+    end
+
+    it "raises error when combining descriptor with kwargs" do
+      expect do
+        build_action do
+          success Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
+        end
+      end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
+    end
+  end
 end
