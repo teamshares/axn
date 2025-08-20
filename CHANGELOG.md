@@ -9,6 +9,7 @@
 * [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
 * [CHANGE] `result.exception` will new return the internal Action::Failure, rather than nil, when user calls `fail!`
 * [BREAKING] `hoist_errors` has been replaced by `error from:`
+* [FEAT] Improved Axn::Factory.build support for newly-added messaging and callback descriptors
 
 ## 0.1.0-alpha.2.7.1
 * [FEAT] Implemented symbol method handler support for callbacks
