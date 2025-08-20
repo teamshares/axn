@@ -1,5 +1,8 @@
 # Changelog
 
+## [Unreleased]
+* [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
+
 ## 0.1.0-alpha.2.7.1
 * [FEAT] Implemented symbol method handler support for callbacks
 

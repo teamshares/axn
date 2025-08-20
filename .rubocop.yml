@@ -1,8 +1,12 @@
+# RuboCop cops are not loaded by default in this repo
+# Downstream consumers can enable them by adding:
+# require:
+#   - axn/rubocop
+
 AllCops:
   TargetRubyVersion: 3.2
   SuggestExtensions: false
   NewCops: enable
-
 
 Style/MultilineBlockChain:
   Enabled: false
@@ -68,3 +72,5 @@ Metrics/ParameterLists:
 
 Layout/LineLength:
   Max: 160
+
+
