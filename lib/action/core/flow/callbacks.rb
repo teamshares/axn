@@ -47,12 +47,12 @@ module Action
             raise ArgumentError, "on_#{event_type} cannot be called with both a block and a handler" if block && handler
             raise ArgumentError, "on_#{event_type} must be called with a block or symbol" unless block || handler
 
-            condition = kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless]
-            matcher = condition ? Action::Core::Flow::Handlers::Matcher.new(condition, invert: kwargs.key?(:unless)) : nil
-            handler ||= block
-
-            entry = Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.new(matcher:, handler:)
+            entry = Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(
+              handler: handler || block,
+              **kwargs,
+            )
             self._callbacks_registry = _callbacks_registry.register(event_type:, entry:)
+            true
           end
         end
       end
