@@ -35,5 +35,14 @@ module Action
     def action_name = @action.class.name.presence || "The action"
 
     def _context_data_source = raise NotImplementedError
+
+    def _msg_resolver(event_type, exception:)
+      Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
+        action._messages_registry,
+        event_type,
+        action:,
+        exception:,
+      )
+    end
   end
 end
