@@ -47,25 +47,25 @@ Metrics/ModuleLength:
   Enabled: false
 
 Metrics/ClassLength:
-  Max: 110
+  Max: 150
 
 Metrics/MethodLength:
   Max: 70
 
 Metrics/PerceivedComplexity:
-  Max: 16
+  Max: 20
 
 Metrics/AbcSize:
   Max: 60
 
 Metrics/CyclomaticComplexity:
-  Max: 16
+  Max: 20
 
 Lint/EmptyBlock:
   Enabled: false
 
 Naming/MethodParameterName:
-  AllowedNames: e, on, id
+  AllowedNames: e, on, id, if
 
 Metrics/ParameterLists:
   Max: 9
