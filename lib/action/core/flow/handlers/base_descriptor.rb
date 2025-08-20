@@ -8,7 +8,7 @@ module Action
       # "Handlers" doesn't feel like *quite* the right name for this, but basically things in this namespace
       # relate to conditionally-invoked code blocks (e.g. callbacks, messages, etc.)
       module Handlers
-        class BaseHandler
+        class BaseDescriptor
           def initialize(matcher: nil, handler: nil)
             @matcher = matcher
             @handler = handler
@@ -16,7 +16,7 @@ module Action
 
           attr_reader :handler
 
-          def static? = @matcher.nil?
+          def static? = @matcher.nil? || @matcher.static?
 
           def matches?(action:, exception:)
             return true if static?
@@ -24,7 +24,7 @@ module Action
             @matcher.call(exception:, action:)
           end
 
-          # Subclasses should implement `apply(action:, exception:)`
+          # Base class for descriptors - just stores data, no behavior
         end
       end
     end

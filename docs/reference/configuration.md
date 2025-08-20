@@ -74,7 +74,7 @@ For example, to wire up Datadog:
     end
 
     c.emit_metrics = proc do |resource, result|
-      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome, resource: })
+      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s, resource: })
       TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
     end
   end
@@ -83,7 +83,7 @@ For example, to wire up Datadog:
 A couple notes:
 
   * `Datadog::Tracing` is provided by [the datadog gem](https://rubygems.org/gems/datadog)
-  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that the result object provides access to the outcome (`success`, `failure`, `exception`) and elapsed time of the action.
+  * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that the result object provides access to the outcome (`result.outcome.success?`, `result.outcome.failure?`, `result.outcome.exception?`) and elapsed time of the action.
   * The `wrap_with_trace` hook is an around hook - you must call the provided block to execute the action
   * The `emit_metrics` hook is called after execution with the result - do not call any blocks
 
@@ -174,7 +174,7 @@ Action.configure do |c|
   end
 
   c.emit_metrics = proc do |resource, result|
-    Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome })
+    Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
   end
 

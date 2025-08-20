@@ -30,70 +30,80 @@ module Action
               block.call
             rescue StandardError => e
               # Set the exception directly without triggering on_exception handlers
-              @__context.exception = e
+              @__context.__record_exception(e)
             end
+          else
+            fail! msg
           end
-          fail!
         end.call
       end
     end
 
-    # Poke some holes for necessary internal control methods
-    delegate :each_pair, to: :context
-
     # External interface
-    delegate :ok?, :exception, to: :context
+    delegate :ok?, :exception, :elapsed_time, to: :context
 
     def error
       return if ok?
 
-      [@context.error_prefix, determine_error_message].compact.join(" ").squeeze(" ")
+      _user_provided_error_message || _resolver(:error, exception:).resolve_message
     end
 
     def success
       return unless ok?
 
-      determine_success_message
+      _user_provided_success_message || _resolver(:success, exception: nil).resolve_message
     end
 
-    def ok = success
+    def message = exception ? error : success
 
-    def message = error || success
+    def default_error = _resolver(:error, exception: exception || Action::Failure.new).resolve_default_message
+    def default_success = _resolver(:success, exception: nil).resolve_default_message
 
     # Outcome constants for action execution results
     OUTCOMES = [
-      OUTCOME_SUCCESS = :success,
-      OUTCOME_FAILURE = :failure,
-      OUTCOME_EXCEPTION = :exception,
+      OUTCOME_SUCCESS = "success",
+      OUTCOME_FAILURE = "failure",
+      OUTCOME_EXCEPTION = "exception",
     ].freeze
 
     def outcome
-      return OUTCOME_EXCEPTION if exception
-      return OUTCOME_FAILURE if @context.failed?
+      label = if exception.is_a?(Action::Failure)
+                OUTCOME_FAILURE
+              elsif exception
+                OUTCOME_EXCEPTION
+              else
+                OUTCOME_SUCCESS
+              end
 
-      OUTCOME_SUCCESS
+      ActiveSupport::StringInquirer.new(label)
     end
 
-    # Elapsed time in milliseconds
-    def elapsed_time
-      @context.elapsed_time
-    end
+    # Internal accessor for the action instance
+    # TODO: exposed for errors :from support, but should be private if possible
+    def __action__ = @action
 
     private
 
-    def context_data_source = @context.exposed_data
+    def _context_data_source = @context.exposed_data
 
-    def determine_error_message
-      return @context.error_from_user if @context.error_from_user.present?
+    # TODO: hook for adding early-return success at some point
+    def _user_provided_success_message = nil
 
-      exception = @context.exception || Action::Failure.new
-      msg = action.class._message_for(:error, action:, exception:)
-      msg.presence || "Something went wrong"
+    def _user_provided_error_message
+      return unless exception.is_a?(Action::Failure)
+      return if exception.default_message?
+      return if exception.cause # We raised this ourselves from nesting
+
+      exception.message.presence
     end
 
-    def determine_success_message
-      msg = action.class._message_for(:success, action:, exception: nil)
-      msg.presence || "Action completed successfully"
+    def _resolver(event_type, exception:)
+      Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
+        action._messages_registry,
+        event_type,
+        action:,
+        exception:,
+      )
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)

@@ -1,7 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## Unreleased
 * [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
+* [FEAT] Added `prefix:` keyword support to `error` method for customizing error message prefixes
+  * When no block or message is provided, falls back to `e.message` with the prefix
+* [BREAKING] `result.outcome` now returns a string inquirer instead of a symbol
+* [BREAKING] `default_error` and `default_success` now live on Action::Result (access via `result.default_error`)
+* [BREAKING] **Message ordering change**: Static success/error messages (without conditions) should now be defined **first** in your action class, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed by static ones.
+* [CHANGE] `result.exception` will new return the internal Action::Failure, rather than nil, when user calls `fail!`
+* [BREAKING] `hoist_errors` has been replaced by `error from:`
 
 ## 0.1.0-alpha.2.7.1
 * [FEAT] Implemented symbol method handler support for callbacks

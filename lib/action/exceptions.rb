@@ -5,14 +5,19 @@ module Action
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    def initialize(message = nil, **)
+    attr_reader :source
+
+    def initialize(message = nil, source: nil)
+      @source = source
       @message = message
-      super(**)
+      super(message)
     end
 
     def message
       @message.presence || DEFAULT_MESSAGE
     end
+
+    def default_message? = message == DEFAULT_MESSAGE
 
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
@@ -56,4 +61,17 @@ module Action
 
   class InboundValidationError < ValidationError; end
   class OutboundValidationError < ValidationError; end
+
+  class UnsupportedArgument < ArgumentError
+    def initialize(feature)
+      @feature = feature
+      super()
+    end
+
+    def message
+      "#{@feature} is not currently supported.\n\n" \
+        "Implementation is technically possible but very complex. " \
+        "Please submit a Github Issue if you have a real-world need for this functionality."
+    end
+  end
 end

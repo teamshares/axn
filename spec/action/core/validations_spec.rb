@@ -529,6 +529,11 @@ RSpec.describe Action do
         expect(subject).not_to be_ok
         expect(subject.exception).to be_a(Action::ContractViolation::PreprocessingError)
       end
+
+      it "sets the cause to the original exception" do
+        expect(subject.exception.cause).to be_a(ArgumentError)
+        expect(subject.exception.cause.message).to include("invalid date")
+      end
     end
   end
 

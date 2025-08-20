@@ -124,6 +124,40 @@ def build_error_message(exception:)
 end
 ```
 
+::: warning Message Ordering
+**Important**: Static success/error messages (those without conditions) should be defined **first** in your action class. If you define conditional messages before static ones, the conditional messages will never be reached because the static message will always match first.
+
+**Correct order:**
+```ruby
+class MyAction
+  include Action
+
+  # Define static fallback first
+  success "Default success message"
+  error "Default error message"
+
+  # Then define conditional messages
+  success "Special success", if: :special_condition?
+  error "Special error", if: ArgumentError
+end
+```
+
+**Incorrect order (conditional messages will be shadowed):**
+```ruby
+class MyAction
+  include Action
+
+  # These conditional messages will never be reached!
+  success "Special success", if: :special_condition?
+  error "Special error", if: ArgumentError
+
+  # Static messages defined last will always match first
+  success "Default success message"
+  error "Default error message"
+end
+```
+:::
+
 ## Conditional messages
 
 While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` or `unless:` matcher. The matcher can be:
@@ -144,6 +178,10 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 # Custom message with callable matcher and message
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
+
+# Custom message with prefix (falls back to exception message when no block/message provided)
+error(if: ArgumentError, prefix: "Foo: ") { "bar" }  # Results in "Foo: bar"
+error(if: StandardError, prefix: "Baz: ")            # Results in "Baz: [exception message]"
 
 # Custom message with symbol predicate (arity 0)
 error "Transient error, please retry", if: :transient_error?
@@ -182,6 +220,73 @@ end
 You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
 :::
 
+## Error message inheritance with `from:`
+
+The `from:` parameter allows you to customize error messages when an action calls another action that fails. This is particularly useful for adding context or prefixing error messages from child actions.
+
+When using `from:`, the error handler receives the exception from the child action, and you can access the child's error message via `e.message` (which contains the `result.error` from the child action).
+
+```ruby
+class InnerAction
+  include Action
+
+  error "Something went wrong in the inner action"
+
+  def call
+    raise StandardError, "inner action failed"
+  end
+end
+
+class OuterAction
+  include Action
+
+  # Customize error messages from InnerAction
+  error from: InnerAction do |e|
+    "Outer action failed: #{e.message}"
+  end
+
+  def call
+    InnerAction.call!
+  end
+end
+```
+
+In this example:
+- When `InnerAction` fails, `OuterAction` will catch the exception
+- The `e.message` contains the error message from `InnerAction`'s result
+- The final error message will be "Outer action failed: Something went wrong in the inner action"
+
+This pattern is especially useful for:
+- Adding context to error messages from sub-actions
+- Implementing consistent error message formatting across action hierarchies
+- Providing user-friendly error messages that include details from underlying failures
+
+### Combining `from:` with `prefix:`
+
+You can also combine the `from:` parameter with the `prefix:` keyword to create consistent error message formatting:
+
+```ruby
+class OuterAction
+  include Action
+
+  # Add prefix to error messages from InnerAction
+  error from: InnerAction, prefix: "API Error: " do |e|
+    "Request failed: #{e.message}"
+  end
+
+  # Or use prefix only (falls back to exception message)
+  error from: InnerAction, prefix: "API Error: "
+
+  def call
+    InnerAction.call!
+  end
+end
+```
+
+This results in:
+- With custom message: "API Error: Request failed: Something went wrong in the inner action"
+- With prefix only: "API Error: Something went wrong in the inner action"
+
 ### Message ordering and inheritance
 
 Messages are evaluated in **last-defined-first** order, meaning the most recently defined message that matches its conditions will be used. This applies to both success and error messages:
@@ -216,8 +321,11 @@ class MyAction
 end
 ```
 
-When using conditional messages, the system evaluates handlers in the order defined above until it finds one that matches and doesn't raise an exception. If a handler raises an exception, it falls back to the next matching handler, then to static messages, and finally to the default message.
-```
+::: tip Message Evaluation Order
+The system evaluates handlers in the order they were defined until it finds one that matches and doesn't raise an exception. If a handler raises an exception, it falls back to the next matching handler, then to static messages, and finally to the default message.
+
+**Key point**: Static messages (without conditions) are evaluated **first** in the order they were defined. This means you should define your static fallback messages at the top of your class, before any conditional messages, to ensure proper fallback behavior.
+:::
 
 ## Callbacks
 

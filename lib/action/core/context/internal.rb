@@ -5,20 +5,9 @@ require "action/core/context/facade"
 module Action
   # Inbound / Internal ContextFacade
   class InternalContext < ContextFacade
-    # Available for use from within message callables
-    def default_error
-      msg = action.class._static_message_for(:error, action:, exception: @context.exception || Action::Failure.new)
-      [@context.error_prefix, msg.presence || "Something went wrong"].compact.join(" ").squeeze(" ")
-    end
-
-    def default_success
-      msg = action.class._static_message_for(:success, action:, exception: nil)
-      msg.presence || "Action completed successfully"
-    end
-
     private
 
-    def context_data_source = @context.provided_data
+    def _context_data_source = @context.provided_data
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
       if @context.__combined_data.key?(method_name.to_sym)

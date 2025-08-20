@@ -22,8 +22,9 @@ module Action
       return unless facade.is_a?(Action::Result)
 
       return "[OK]" if context.ok?
-      unless context.exception
-        return context.error_from_user.present? ? "[failed with '#{context.error_from_user}']" : "[failed]"
+
+      if context.exception.is_a?(Action::Failure)
+        return context.exception.message.present? ? "[failed with '#{context.exception.message}']" : "[failed]"
       end
 
       %([failed with #{context.exception.class.name}: '#{context.exception.message}'])

@@ -134,3 +134,21 @@ For _known_ failure modes, you can call `fail!("Some user-facing explanation")` 
 Any exceptions will be swallowed and the action failed (i.e. _not_ `ok?`). `result.error` will be set to a generic error message ("Something went wrong" by default, but [highly configurable](/reference/class#messages)).
 
 The swallowed exception will be available on `result.exception` for your introspection, but it'll also be passed to your `on_exception` handler so, [with a bit of configuration](/usage/setup), you can trust that any exceptions have been logged to your error tracking service automatically (one more thing the dev doesn't need to think about).
+
+::: tip Message Configuration Order
+When configuring custom error and success messages, remember to define your static fallback messages **first**, before any conditional messages. This ensures proper fallback behavior and prevents conditional messages from being shadowed.
+
+```ruby
+class MyAction
+  include Action
+
+  # Static fallback messages first
+  success "Default success message"
+  error "Default error message"
+
+  # Then conditional messages
+  success "Special success", if: :special_condition?
+  error "Special error", if: ArgumentError
+end
+```
+:::

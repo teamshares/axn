@@ -40,7 +40,7 @@ RSpec.describe "Action spec helpers" do
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Custom error message") }
-      it { expect(result.exception).to be_nil }
+      it { expect(result.exception).to be_a(Action::Failure) }
       it { expect(result.still_exposable).to eq(456) }
     end
 
@@ -49,7 +49,7 @@ RSpec.describe "Action spec helpers" do
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Something went wrong") }
-      it { expect(result.exception).to be_nil }
+      it { expect(result.exception).to be_a(Action::Failure) }
       it { expect(result.still_exposable).to eq("") }
       it { expect(result.another).to be_nil }
     end
@@ -71,16 +71,22 @@ RSpec.describe "Action spec helpers" do
 
   describe "Action::Result#outcome" do
     it "returns success for ok results" do
-      expect(Action::Result.ok.outcome).to eq(Action::Result::OUTCOME_SUCCESS)
+      expect(Action::Result.ok.outcome.success?).to be true
+      expect(Action::Result.ok.outcome.failure?).to be false
+      expect(Action::Result.ok.outcome.exception?).to be false
     end
 
     it "returns failure for error results" do
-      expect(Action::Result.error.outcome).to eq(Action::Result::OUTCOME_FAILURE)
+      expect(Action::Result.error.outcome.success?).to be false
+      expect(Action::Result.error.outcome.failure?).to be true
+      expect(Action::Result.error.outcome.exception?).to be false
     end
 
     it "returns exception for results with exceptions" do
       result = Action::Result.error { raise "error" }
-      expect(result.outcome).to eq(Action::Result::OUTCOME_EXCEPTION)
+      expect(result.outcome.success?).to be false
+      expect(result.outcome.failure?).to be false
+      expect(result.outcome.exception?).to be true
     end
   end
 

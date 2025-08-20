@@ -15,7 +15,7 @@ module Action
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
         singleton_class.define_method(field) do
-          context_data_source[field]
+          _context_data_source[field]
         end
       end
     end
@@ -34,6 +34,6 @@ module Action
 
     def action_name = @action.class.name.presence || "The action"
 
-    def context_data_source = raise NotImplementedError
+    def _context_data_source = raise NotImplementedError
   end
 end
