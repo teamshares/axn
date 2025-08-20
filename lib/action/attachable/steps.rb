@@ -29,7 +29,7 @@ module Action
           # Add the step to the list of steps
           steps Entry.new(label: name, axn: axn_klass)
           error from: axn_klass do |e|
-            "#{step.label} step #{e.message}"
+            "#{name} step #{e.message}"
           end
         end
       end
@@ -40,9 +40,19 @@ module Action
           # TODO: should Axn have a default label passed in already that we could pull out?
           step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
 
-          step.axn.call(**merged_context_data).tap do |step_result|
-            merge_step_exposures!(step_result)
+          step_result = step.axn.call(**merged_context_data)
+
+          # Check if the step failed and fail the parent action if so
+          unless step_result.ok?
+            # If the step has an exception, re-raise it to trigger the error from: handler
+            raise step_result.exception if step_result.exception
+
+            # If no exception but still failed, create a generic failure
+            fail! "Step '#{step.label}' failed"
+
           end
+
+          merge_step_exposures!(step_result)
         end
       end
 
