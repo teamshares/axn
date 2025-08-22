@@ -64,16 +64,117 @@ RSpec.describe Action::Attachable::Steps do
         exposes :output
 
         step :validate, expects: [:input], exposes: [:output] do
-          fail! "Invalid input" if input.empty?
+          fail! "Input too short" if input.length < 3
           expose :output, "Valid"
         end
       end
 
-      result = action.call(input: "")
+      result = action.call(input: "ab")
 
       expect(result).not_to be_ok
-      # Note: Error message format may vary based on error handling implementation
-      expect(result.error).to be_present
+      expect(result.error).to eq("validate: Input too short")
+    end
+
+    it "uses custom error_prefix when provided" do
+      action = build_action do
+        expects :input
+        exposes :output
+
+        step :validate, error_prefix: "Validation failed - ", expects: [:input], exposes: [:output] do
+          fail! "Input too short" if input.length < 3
+          expose :output, "Valid"
+        end
+      end
+
+      result = action.call(input: "ab")
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Validation failed - Input too short")
+    end
+
+    it "defaults to step name with colon when no error_prefix provided" do
+      action = build_action do
+        expects :input
+        exposes :output
+
+        step :custom_name, expects: [:input], exposes: [:output] do
+          fail! "Something went wrong"
+        end
+      end
+
+      result = action.call(input: "test")
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("custom_name: Something went wrong")
+    end
+  end
+
+  describe "steps without labels" do
+    it "defaults to 'Step N' prefix when step fails and no label is provided" do
+      # Create action classes separately using build_action
+      first_step = build_action do
+        expects :input
+        exposes :intermediate
+
+        def call
+          fail! "First step failed"
+        end
+      end
+
+      second_step = build_action do
+        expects :intermediate
+        exposes :output
+
+        def call
+          fail! "Second step failed"
+        end
+      end
+
+      action = build_action do
+        expects :input
+        exposes :output
+
+        # Add steps using the steps method (which creates entries without labels)
+        steps(first_step, second_step)
+      end
+
+      result = action.call(input: "test")
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Step 1: First step failed")
+    end
+
+    it "uses sequential numbering for multiple steps without labels" do
+      # Create action classes separately using build_action
+      first_step = build_action do
+        expects :input
+        exposes :intermediate
+
+        def call
+          expose :intermediate, "success"
+        end
+      end
+
+      second_step = build_action do
+        expects :intermediate
+        exposes :output
+
+        def call
+          fail! "Second step failed"
+        end
+      end
+
+      action = build_action do
+        expects :input
+        exposes :output
+
+        steps(first_step, second_step)
+      end
+
+      result = action.call(input: "test")
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Step 2: Second step failed")
     end
   end
 

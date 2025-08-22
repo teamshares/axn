@@ -13,6 +13,10 @@ module Action
 
       class_methods do
         def steps(*steps)
+          Array(steps).compact.each do |step|
+            raise ArgumentError, "Step #{step} must include Action module" if step.is_a?(Class) && !step.included_modules.include?(Action) && !step < Action
+          end
+
           # Convert action classes to Entry objects if they're not already
           converted_steps = Array(steps).compact.map do |step|
             if step.is_a?(Class)
@@ -22,10 +26,20 @@ module Action
             end
           end
 
+          # Set up error handling for steps without explicit labels
+          converted_steps.each_with_index do |entry, idx|
+            next unless entry.is_a?(Entry) && !entry.axn.name
+
+            step_num = _axn_steps.length + idx + 1
+            error from: entry.axn do |e|
+              "Step #{step_num}: #{e.message}"
+            end
+          end
+
           self._axn_steps += converted_steps
         end
 
-        def step(name, axn_klass = nil, **kwargs, &block)
+        def step(name, axn_klass = nil, error_prefix: nil, **kwargs, &block)
           axn_klass = axn_for_attachment(
             name:,
             axn_klass:,
@@ -37,39 +51,25 @@ module Action
 
           # Add the step to the list of steps
           steps Entry.new(label: name, axn: axn_klass)
+          error_prefix ||= "#{name}: "
           error from: axn_klass do |e|
-            "#{name} step #{e.message}"
+            "#{error_prefix}#{e.message}"
           end
         end
       end
 
       # Execute steps automatically when the action is called
       def call
-        # Execute steps first if any are defined
-        execute_steps if self.class._axn_steps.any?
+        _axn_steps.each_with_index do |step, idx|
+          step = Entry.new(label: "Step #{idx + 1}", axn: step) unless step.is_a?(Entry)
 
-        # Call the parent implementation (which is empty by default)
-        super
+          step_result = step.axn.call!(**merged_context_data)
+
+          merge_step_exposures!(step_result)
+        end
       end
 
       private
-
-      def execute_steps
-        self.class._axn_steps.each_with_index do |step, idx|
-          # Ensure step is an Entry object
-          step = Entry.new(label: "Step #{idx + 1}", axn: step) unless step.is_a?(Entry)
-
-          begin
-            step_result = step.axn.call!(**merged_context_data)
-            raise "Step #{step.label} returned nil result" if step_result.nil?
-
-            merge_step_exposures!(step_result)
-          rescue StandardError => e
-            # Re-raise with step context
-            raise "#{step.label} step #{e.message}"
-          end
-        end
-      end
 
       def merged_context_data
         @__context.__combined_data
