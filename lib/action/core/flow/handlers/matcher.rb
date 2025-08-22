@@ -96,6 +96,17 @@ module Action
           end
 
           def static? = @rules.empty?
+          def invert? = !!@invert
+
+          # Class method to build matcher from kwargs
+          def self.build(if: nil, unless: nil)
+            if_condition = binding.local_variable_get(:if)
+            unless_condition = binding.local_variable_get(:unless)
+
+            raise Action::UnsupportedArgument, "providing both :if and :unless" if if_condition && unless_condition
+
+            new(Array(if_condition || unless_condition).compact, invert: !!unless_condition)
+          end
 
           private
 

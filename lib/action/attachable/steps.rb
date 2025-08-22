@@ -9,14 +9,16 @@ module Action
         class_attribute :_axn_steps, default: []
       end
 
-      Entry = Data.define(:label, :axn)
-
       class_methods do
         def steps(*steps)
-          self._axn_steps += Array(steps).compact
+          Array(steps).compact.each do |step|
+            raise ArgumentError, "Step #{step} must include Action module" if step.is_a?(Class) && !step.included_modules.include?(Action) && !step < Action
+
+            step("Step #{_axn_steps.length + 1}", step)
+          end
         end
 
-        def step(name, axn_klass = nil, **kwargs, &block)
+        def step(name, axn_klass = nil, error_prefix: nil, **kwargs, &block)
           axn_klass = axn_for_attachment(
             name:,
             axn_klass:,
@@ -27,33 +29,31 @@ module Action
           )
 
           # Add the step to the list of steps
-          steps Entry.new(label: name, axn: axn_klass)
+          _axn_steps << axn_klass
+
+          # Set up error handling for steps without explicit labels
+          error_prefix ||= "#{name}: "
           error from: axn_klass do |e|
-            "#{step.label} step #{e.message}"
+            "#{error_prefix}#{e.message}"
           end
         end
       end
 
+      # Execute steps automatically when the action is called
       def call
-        self.class._axn_steps.each_with_index do |step, idx|
-          # Set a default label if we were just given an array of unlabeled steps
-          # TODO: should Axn have a default label passed in already that we could pull out?
-          step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
-
-          step.axn.call(**merged_context_data).tap do |step_result|
-            merge_step_exposures!(step_result)
-          end
+        _axn_steps.each do |axn|
+          _merge_step_exposures!(axn.call!(**_merged_context_data))
         end
       end
 
       private
 
-      def merged_context_data
+      def _merged_context_data
         @__context.__combined_data
       end
 
       # Each step can expect the data exposed from the previous steps
-      def merge_step_exposures!(step_result)
+      def _merge_step_exposures!(step_result)
         step_result.declared_fields.each do |field|
           @__context.exposed_data[field] = step_result.public_send(field)
         end

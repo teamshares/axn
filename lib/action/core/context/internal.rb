@@ -5,6 +5,9 @@ require "action/core/context/facade"
 module Action
   # Inbound / Internal ContextFacade
   class InternalContext < ContextFacade
+    def default_error = _msg_resolver(:error, exception: Action::Failure.new).resolve_default_message
+    def default_success = _msg_resolver(:success, exception: nil).resolve_default_message
+
     private
 
     def _context_data_source = @context.provided_data

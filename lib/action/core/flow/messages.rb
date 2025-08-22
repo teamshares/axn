@@ -27,28 +27,20 @@ module Action
             raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix]
             raise ArgumentError, "from: only applies to error messages" if kwargs.key?(:from) && kind != :error
 
-            handler = block_given? ? block : message
-            rules = [
-              kwargs.key?(:if) ? kwargs[:if] : kwargs[:unless],
-              _build_from_rule(kwargs[:from]),
-            ].compact
+            # If message is already a descriptor, use it directly
+            entry = if message.is_a?(Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+                      raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given?
 
-            matcher = Action::Core::Flow::Handlers::Matcher.new(rules, invert: kwargs.key?(:unless))
-            entry = Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.new(matcher:, handler:, prefix: kwargs[:prefix])
+                      message
+                    else
+                      Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
+                        handler: block_given? ? block : message,
+                        **kwargs,
+                      )
+                    end
+
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
-          end
-
-          def _build_from_rule(from_class)
-            return nil unless from_class
-
-            if from_class.is_a?(String)
-              lambda { |exception:, **|
-                exception.is_a?(Action::Failure) && exception.source&.class&.name == from_class
-              }
-            else
-              ->(exception:, **) { exception.is_a?(Action::Failure) && exception.source.is_a?(from_class) }
-            end
           end
         end
       end

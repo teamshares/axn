@@ -14,7 +14,7 @@ module Action
             @handler = handler
           end
 
-          attr_reader :handler
+          attr_reader :handler, :matcher
 
           def static? = @matcher.nil? || @matcher.static?
 
@@ -24,7 +24,10 @@ module Action
             @matcher.call(exception:, action:)
           end
 
-          # Base class for descriptors - just stores data, no behavior
+          def self.build(handler: nil, if: nil, unless: nil, **)
+            matcher = Matcher.build(if:, unless:)
+            new(matcher:, handler:)
+          end
         end
       end
     end

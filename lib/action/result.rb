@@ -45,19 +45,16 @@ module Action
     def error
       return if ok?
 
-      _user_provided_error_message || _resolver(:error, exception:).resolve_message
+      _user_provided_error_message || _msg_resolver(:error, exception:).resolve_message
     end
 
     def success
       return unless ok?
 
-      _user_provided_success_message || _resolver(:success, exception: nil).resolve_message
+      _user_provided_success_message || _msg_resolver(:success, exception: nil).resolve_message
     end
 
     def message = exception ? error : success
-
-    def default_error = _resolver(:error, exception: exception || Action::Failure.new).resolve_default_message
-    def default_success = _resolver(:success, exception: nil).resolve_default_message
 
     # Outcome constants for action execution results
     OUTCOMES = [
@@ -95,15 +92,6 @@ module Action
       return if exception.cause # We raised this ourselves from nesting
 
       exception.message.presence
-    end
-
-    def _resolver(event_type, exception:)
-      Action::Core::Flow::Handlers::Resolvers::MessageResolver.new(
-        action._messages_registry,
-        event_type,
-        action:,
-        exception:,
-      )
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)

@@ -72,17 +72,6 @@ module Axn
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn|
-          apply_message = lambda do |kind, value|
-            return unless value.present?
-
-            if value.is_a?(Array) && value.size == 2
-              matcher, msg = value
-              axn.public_send(kind, msg, if: matcher)
-            else
-              axn.public_send(kind, value)
-            end
-          end
-
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -91,8 +80,9 @@ module Axn
             axn.exposes(field, **opts)
           end
 
-          apply_message.call(:success, success)
-          apply_message.call(:error, error)
+          # Apply success and error handlers
+          _apply_handlers(axn, :success, success, Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+          _apply_handlers(axn, :error, error, Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
 
           # Hooks
           axn.before(before) if before.present?
@@ -100,10 +90,10 @@ module Axn
           axn.around(around) if around.present?
 
           # Callbacks
-          axn.on_success(&on_success) if on_success.present?
-          axn.on_failure(&on_failure) if on_failure.present?
-          axn.on_error(&on_error) if on_error.present?
-          axn.on_exception(&on_exception) if on_exception.present?
+          _apply_handlers(axn, :on_success, on_success, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_failure, on_failure, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_error, on_error, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_exception, on_exception, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
 
           # Strategies
           Array(use).each do |strategy|
@@ -130,12 +120,6 @@ module Axn
 
       def _hash_with_default_array = Hash.new { |h, k| h[k] = [] }
 
-      def _array_to_hash(given)
-        return given if given.is_a?(Hash)
-
-        [given].to_h
-      end
-
       def _hydrate_hash(given)
         return given if given.is_a?(Hash)
 
@@ -147,6 +131,21 @@ module Axn
           else
             acc[key] = {}
           end
+        end
+      end
+
+      def _apply_handlers(axn, method_name, value, _descriptor_class)
+        return unless value.present?
+
+        # Check if the value itself is a hash (this catches the case where someone passes a hash literal)
+        raise Action::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if value.is_a?(Hash)
+
+        # Wrap in Array() to handle both single values and arrays
+        Array(value).each do |handler|
+          raise Action::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if handler.is_a?(Hash)
+
+          # Both descriptor objects and simple cases (string/proc) can be used directly
+          axn.public_send(method_name, handler)
         end
       end
     end

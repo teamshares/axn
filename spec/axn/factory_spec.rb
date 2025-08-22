@@ -138,10 +138,93 @@ RSpec.shared_examples "can build Axns from callables" do
       -> { raise "error" }
     end
 
-    let(:kwargs) { { error: [-> { true }, "overridden msg"] } }
+    let(:kwargs) { { error: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "overridden msg", if: -> { true }) } }
 
     it "works correctly" do
       expect(axn.call.error).to eq("overridden msg")
+    end
+  end
+
+  context "setting handlers with descriptors" do
+    let(:callable) do
+      -> { raise "error" }
+    end
+
+    context "with success descriptor" do
+      let(:kwargs) do
+        {
+          success: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
+          error: "Default error",
+        }
+      end
+
+      it "works correctly" do
+        expect(axn.call.error).to eq("Default error")
+      end
+    end
+
+    context "with array of handlers" do
+      let(:callable) { -> { puts "call" } }
+      let(:kwargs) do
+        {
+          success: [
+            "Simple success",
+            Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Conditional success", if: -> { false }),
+          ],
+        }
+      end
+
+      it "works correctly" do
+        expect do
+          result = axn.call
+          expect(result).to be_ok
+          expect(result.success).to eq("Simple success")
+        end.to output("call\n").to_stdout
+      end
+    end
+
+    context "with callback descriptors" do
+      let(:kwargs) do
+        {
+          on_success: Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+          on_error: -> { puts "error callback" },
+        }
+      end
+
+      it "works correctly" do
+        expect do
+          expect(axn.call).not_to be_ok
+        end.to output("error callback\n").to_stdout
+      end
+    end
+
+    context "with array of callbacks" do
+      let(:kwargs) do
+        {
+          on_success: [
+            -> { puts "simple success" },
+            Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+          ],
+        }
+      end
+
+      let(:callable) { -> { puts "call" } }
+
+      it "works correctly" do
+        expect do
+          expect(axn.call).to be_ok
+        end.to output("call\nsimple success\n").to_stdout
+      end
+    end
+  end
+
+  context "error handling" do
+    let(:callable) { -> { puts "call" } }
+
+    it "raises error when passing hash directly" do
+      expect do
+        Axn::Factory.build(success: { message: "test", prefix: "user" }, &callable)
+      end.to raise_error(Action::UnsupportedArgument, /Cannot pass hash directly to success/)
     end
   end
 
