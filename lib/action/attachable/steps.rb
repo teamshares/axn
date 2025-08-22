@@ -13,7 +13,16 @@ module Action
 
       class_methods do
         def steps(*steps)
-          self._axn_steps += Array(steps).compact
+          # Convert action classes to Entry objects if they're not already
+          converted_steps = Array(steps).compact.map do |step|
+            if step.is_a?(Class)
+              Entry.new(label: step.name || "Step", axn: step)
+            else
+              step
+            end
+          end
+
+          self._axn_steps += converted_steps
         end
 
         def step(name, axn_klass = nil, **kwargs, &block)
@@ -34,29 +43,33 @@ module Action
         end
       end
 
+      # Execute steps automatically when the action is called
       def call
-        self.class._axn_steps.each_with_index do |step, idx|
-          # Set a default label if we were just given an array of unlabeled steps
-          # TODO: should Axn have a default label passed in already that we could pull out?
-          step = Entry.new(label: "Step #{idx + 1}", axn: step) if step.is_a?(Class)
+        # Execute steps first if any are defined
+        execute_steps if self.class._axn_steps.any?
 
-          step_result = step.axn.call(**merged_context_data)
-
-          # Check if the step failed and fail the parent action if so
-          unless step_result.ok?
-            # If the step has an exception, re-raise it to trigger the error from: handler
-            raise step_result.exception if step_result.exception
-
-            # If no exception but still failed, create a generic failure
-            fail! "Step '#{step.label}' failed"
-
-          end
-
-          merge_step_exposures!(step_result)
-        end
+        # Call the parent implementation (which is empty by default)
+        super
       end
 
       private
+
+      def execute_steps
+        self.class._axn_steps.each_with_index do |step, idx|
+          # Ensure step is an Entry object
+          step = Entry.new(label: "Step #{idx + 1}", axn: step) unless step.is_a?(Entry)
+
+          begin
+            step_result = step.axn.call!(**merged_context_data)
+            raise "Step #{step.label} returned nil result" if step_result.nil?
+
+            merge_step_exposures!(step_result)
+          rescue StandardError => e
+            # Re-raise with step context
+            raise "#{step.label} step #{e.message}"
+          end
+        end
+      end
 
       def merged_context_data
         @__context.__combined_data
