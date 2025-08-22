@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.0-alpha.2.8.1
+* [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues
+
 ## 0.1.0-alpha.2.8
 * [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
 * [FEAT] Added `prefix:` keyword support to `error` method for customizing error message prefixes

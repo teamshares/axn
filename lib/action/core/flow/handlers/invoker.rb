@@ -40,18 +40,18 @@ module Action
           def callable?(value) = value.respond_to?(:arity)
 
           def call_symbol_handler(action:, symbol:, exception: nil)
-            unless action.respond_to?(symbol)
+            unless action.respond_to?(symbol, true)
               action.warn("Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method")
               return nil
             end
 
             method = action.method(symbol)
             if exception && accepts_exception_keyword?(method)
-              action.public_send(symbol, exception:)
+              action.send(symbol, exception:)
             elsif exception && accepts_positional_exception?(method)
-              action.public_send(symbol, exception)
+              action.send(symbol, exception)
             else
-              action.public_send(symbol)
+              action.send(symbol)
             end
           end
 
