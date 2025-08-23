@@ -2,6 +2,7 @@
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues
+* [BUGFIX] `default_error` and `default_success` are now properly available for before hooks
 
 ## 0.1.0-alpha.2.8
 * [FEAT] Custom RuboCop cop `Axn/UncheckedResult` to enforce proper result handling in Actions with configurable nested/non-nested checking
