@@ -155,6 +155,8 @@ module Action
         def internal_context = @internal_context ||= _build_context_facade(:inbound)
         def result = @result ||= _build_context_facade(:outbound)
 
+        delegate :default_error, :default_success, to: :internal_context
+
         # Accepts either two positional arguments (key, value) or a hash of key/value pairs
         def expose(*args, **kwargs)
           if args.any?

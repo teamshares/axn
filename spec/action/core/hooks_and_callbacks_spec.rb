@@ -578,6 +578,36 @@ RSpec.describe Action do
       end
     end
 
+    context "before block with default_error" do
+      let(:action) do
+        build_action do
+          expects :should_fail, allow_blank: true, default: false
+
+          before do
+            fail! "#{default_error}: some detail" if should_fail
+          end
+
+          def call
+            # The before hook will run before this
+          end
+        end
+      end
+
+      it "can access default_error within before hook blocks" do
+        expect(action.call).to be_ok
+      end
+
+      it "fails with default_error when should_fail is true" do
+        result = action.call(should_fail: true)
+        expect(result).not_to be_ok
+        expect(result.error).to include("some detail")
+      end
+
+      it "succeeds when should_fail is false" do
+        expect { action.call(should_fail: false) }.not_to raise_error
+      end
+    end
+
     context "inheritance" do
       let(:parent_class) do
         build_action do

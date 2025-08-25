@@ -768,7 +768,7 @@ RSpec.describe Action do
       end
 
       it "can reference configured error" do
-        expect(action.call(param: 4).error).to eq("Bad news!")
+        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
       end
 
       it "falls back correctly" do
