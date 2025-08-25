@@ -409,6 +409,222 @@ RSpec.describe Action do
           end
         end
       end
+
+      context "with symbol method auto-expansion in conditional callbacks" do
+        let(:action) do
+          build_action do
+            expects :trigger, type: Symbol
+            expects :execute_flag, type: :boolean, default: false
+            expects :skip_flag, type: :boolean, default: false
+
+            # Test if: with symbol methods
+            on_success :handle_success, if: :should_execute_predicate?
+            on_failure :handle_failure, if: :should_execute_predicate?
+            on_error :handle_error, if: :should_execute_predicate?
+            on_exception :handle_exception, if: :should_execute_predicate?
+
+            # Test unless: with symbol methods
+            on_success :handle_success_unless, unless: :should_skip_predicate?
+            on_failure :handle_failure_unless, unless: :should_skip_predicate?
+            on_error :handle_error_unless, unless: :should_skip_predicate?
+            on_exception :handle_exception_unless, unless: :should_skip_predicate?
+
+            def call
+              case trigger
+              when :raise
+                raise "test exception"
+              when :fail
+                fail!("test failure")
+              when :ok
+                # success
+              end
+            end
+
+            # Conditional predicate methods - use the expects parameters
+            def should_execute_predicate?
+              execute_flag
+            end
+
+            def should_skip_predicate?
+              skip_flag
+            end
+
+            # Handler methods for if: conditions
+            def handle_success
+              puts "success_if_executed"
+            end
+
+            def handle_failure
+              puts "failure_if_executed"
+            end
+
+            def handle_error
+              puts "error_if_executed"
+            end
+
+            def handle_exception
+              puts "exception_if_executed"
+            end
+
+            # Handler methods for unless: conditions
+            def handle_success_unless
+              puts "success_unless_executed"
+            end
+
+            def handle_failure_unless
+              puts "failure_unless_executed"
+            end
+
+            def handle_error_unless
+              puts "error_unless_executed"
+            end
+
+            def handle_exception_unless
+              puts "exception_unless_executed"
+            end
+          end
+        end
+
+        context "when execute_flag is true and skip_flag is false" do
+          let(:execute_flag) { true }
+          let(:skip_flag) { false }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "executes both if: and unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).to be_ok
+              end.to output("success_unless_executed\nsuccess_if_executed\n").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "executes both if: and unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_unless_executed\nerror_if_executed\nfailure_unless_executed\nfailure_if_executed\n").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "executes both if: and unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_unless_executed\nerror_if_executed\nexception_unless_executed\nexception_if_executed\n").to_stdout
+            end
+          end
+        end
+
+        context "when execute_flag is false and skip_flag is false" do
+          let(:execute_flag) { false }
+          let(:skip_flag) { false }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "executes only unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).to be_ok
+              end.to output("success_unless_executed\n").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "executes only unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_unless_executed\nfailure_unless_executed\n").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "executes only unless: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_unless_executed\nexception_unless_executed\n").to_stdout
+            end
+          end
+        end
+
+        context "when execute_flag is true and skip_flag is true" do
+          let(:execute_flag) { true }
+          let(:skip_flag) { true }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "executes only if: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).to be_ok
+              end.to output("success_if_executed\n").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "executes only if: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_if_executed\nfailure_if_executed\n").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "executes only if: callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("error_if_executed\nexception_if_executed\n").to_stdout
+            end
+          end
+        end
+
+        context "when execute_flag is false and skip_flag is true" do
+          let(:execute_flag) { false }
+          let(:skip_flag) { true }
+
+          context "on success" do
+            let(:trigger) { :ok }
+
+            it "executes no callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).to be_ok
+              end.to output("").to_stdout
+            end
+          end
+
+          context "on failure" do
+            let(:trigger) { :fail }
+
+            it "executes no callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("").to_stdout
+            end
+          end
+
+          context "on exception" do
+            let(:trigger) { :raise }
+
+            it "executes no callbacks" do
+              expect do
+                expect(action.call(trigger:, execute_flag:, skip_flag:)).not_to be_ok
+              end.to output("").to_stdout
+            end
+          end
+        end
+      end
     end
 
     context "with symbol method handlers" do
