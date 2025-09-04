@@ -15,6 +15,9 @@ require "axn/core"
 require "axn/attachable"
 require "axn/enqueueable"
 
+# Rails integration (if in Rails context)
+require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
+
 module Axn
   def self.included(base)
     base.class_eval do

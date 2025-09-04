@@ -10,6 +10,11 @@ RSpec::Core::RakeTask.new(:spec_rubocop) do |task|
   task.pattern = "spec_rubocop/**/*_spec.rb"
 end
 
+# Rails specs (separate from main specs to avoid loading Rails unnecessarily)
+task :spec_rails do
+  sh "bundle exec ruby -e \"require_relative 'spec_rails/spec_helper'; require_relative 'spec_rails/rails_engine_spec'; require_relative 'spec_rails/autoload_paths_spec'; RSpec::Core::Runner.run([])\""
+end
+
 require "rubocop/rake_task"
 
 # RuboCop with Axn custom cops (targeting examples/rubocop directory)
@@ -21,4 +26,4 @@ end
 RuboCop::RakeTask.new
 
 task default: %i[spec rubocop]
-task all_specs: %i[spec spec_rubocop]
+task all_specs: %i[spec spec_rubocop spec_rails]

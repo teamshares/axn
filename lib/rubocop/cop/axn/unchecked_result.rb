@@ -104,7 +104,7 @@ module RuboCop
         def on_send(node)
           return unless axn_call?(node)
           return if bang_call?(node)
-          return unless inside_action_call_method?(node)
+          return unless inside_axn_call_method?(node)
 
           # Check if we should process this call based on configuration
           is_inside_action = inside_action_context?(node)
@@ -117,7 +117,7 @@ module RuboCop
 
         private
 
-        def inside_action_call_method?(node)
+        def inside_axn_call_method?(node)
           # Check if we're inside a call method of an Axn class
           current_node = node
           while current_node.parent
