@@ -9,7 +9,7 @@ module Action
         msg = begin
           options[:with].call(value)
         rescue StandardError => e
-          Axn::Util.piping_error("applying custom validation on field '#{attribute}'", exception: e)
+          Axn::Internal::Logging.piping_error("applying custom validation on field '#{attribute}'", exception: e)
 
           "failed validation: #{e.message}"
         end

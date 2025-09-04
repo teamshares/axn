@@ -4,7 +4,7 @@ require "active_support"
 
 module Axn; end
 require "axn/version"
-require "axn/util"
+require "axn/internal/logging"
 require "axn/factory"
 
 require "axn/configuration"

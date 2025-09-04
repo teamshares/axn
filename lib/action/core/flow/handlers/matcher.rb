@@ -16,7 +16,7 @@ module Action
             result = matches?(exception:, action:)
             @invert ? !result : result
           rescue StandardError => e
-            Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
+            Axn::Internal::Logging.piping_error("determining if handler applies to exception", action:, exception: e)
           end
 
           private
@@ -92,7 +92,7 @@ module Action
           def call(exception:, action:)
             matches?(exception:, action:)
           rescue StandardError => e
-            Axn::Util.piping_error("determining if handler applies to exception", action:, exception: e)
+            Axn::Internal::Logging.piping_error("determining if handler applies to exception", action:, exception: e)
           end
 
           def static? = @rules.empty?

@@ -32,7 +32,7 @@ def expect_piping_error_called(message_substring:, error_class:, error_message:,
     exception: an_object_satisfying { |e| e.is_a?(error_class) && e.message == error_message },
   }
   matcher[:action] = action unless action.nil?
-  expect(Axn::Util).to have_received(:piping_error).with(
+  expect(Axn::Internal::Logging).to have_received(:piping_error).with(
     a_string_including(message_substring),
     hash_including(matcher),
   )

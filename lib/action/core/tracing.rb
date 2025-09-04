@@ -10,7 +10,7 @@ module Action
 
         Axn.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)
       rescue StandardError => e
-        Axn::Util.piping_error("running trace hook", action: self, exception: e)
+        Axn::Internal::Logging.piping_error("running trace hook", action: self, exception: e)
       end
     end
   end

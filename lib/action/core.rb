@@ -102,7 +102,7 @@ module Action
         result,
       )
     rescue StandardError => e
-      Axn::Util.piping_error("running metrics hook", action: self, exception: e)
+      Axn::Internal::Logging.piping_error("running metrics hook", action: self, exception: e)
     end
   end
 end

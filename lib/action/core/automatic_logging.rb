@@ -42,7 +42,7 @@ module Action
             before: Axn.config.env.production? ? nil : "\n------\n",
           )
         rescue StandardError => e
-          Axn::Util.piping_error("logging before hook", action: self, exception: e)
+          Axn::Internal::Logging.piping_error("logging before hook", action: self, exception: e)
         end
 
         def _log_after
@@ -58,7 +58,7 @@ module Action
             after: Axn.config.env.production? ? nil : "\n------\n",
           )
         rescue StandardError => e
-          Axn::Util.piping_error("logging after hook", action: self, exception: e)
+          Axn::Internal::Logging.piping_error("logging after hook", action: self, exception: e)
         end
 
         def _log_context(direction)

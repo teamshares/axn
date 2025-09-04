@@ -26,7 +26,7 @@ module Action
         msg = id.blank? ? "not found (given a blank ID)" : "not found for class #{klass.name} and ID #{id}"
         record.errors.add(attribute, msg)
       rescue StandardError => e
-        Axn::Util.piping_error("applying model validation on field '#{attribute}'", exception: e)
+        Axn::Internal::Logging.piping_error("applying model validation on field '#{attribute}'", exception: e)
         record.errors.add(attribute, "error raised while trying to find a valid #{klass.name}")
       end
     end

@@ -14,7 +14,7 @@ module Action
 
             literal_value(handler)
           rescue StandardError => e
-            Axn::Util.piping_error(operation, action:, exception: e)
+            Axn::Internal::Logging.piping_error(operation, action:, exception: e)
           end
 
           # Shared introspection helpers

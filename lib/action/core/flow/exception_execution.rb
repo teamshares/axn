@@ -17,7 +17,7 @@ module Action
             rescue StandardError => e
               # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
               # we don't want exception *handling* failures to cascade and overwrite the original exception.
-              Axn::Util.piping_error("executing on_exception hooks", action: self, exception: e)
+              Axn::Internal::Logging.piping_error("executing on_exception hooks", action: self, exception: e)
             end
 
             def _trigger_on_success

@@ -134,12 +134,12 @@ RSpec.describe "Action wrap_with_trace hook" do
       let(:action) { build_action }
 
       before do
-        allow(Axn::Util).to receive(:piping_error).and_call_original
+        allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
       end
 
-      it "calls Axn::Util.piping_error when wrap_with_trace hook raises" do
+      it "calls Axn::Internal::Logging.piping_error when wrap_with_trace hook raises" do
         action.call
-        expect(Axn::Util).to have_received(:piping_error).with(
+        expect(Axn::Internal::Logging).to have_received(:piping_error).with(
           "running trace hook",
           hash_including(
             action:,
