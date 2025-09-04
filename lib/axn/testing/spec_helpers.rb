@@ -4,7 +4,7 @@ module Axn
   module Testing
     module SpecHelpers
       def build_action(&block)
-        action = Class.new.send(:include, Action)
+        action = Class.new.send(:include, Axn)
         action.class_eval(&block) if block
         action
       end

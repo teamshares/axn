@@ -56,7 +56,7 @@ A couple notes:
 
 ## `wrap_with_trace` and `emit_metrics`
 
-If you're using an APM provider, observability can be greatly enhanced by adding automatic _tracing_ of Action calls and/or emitting count metrics after each call completes.
+If you're using an APM provider, observability can be greatly enhanced by adding automatic _tracing_ of Axn calls and/or emitting count metrics after each call completes.
 
 The framework provides two distinct hooks for observability:
 

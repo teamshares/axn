@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Action::Core::AutomaticLogging do
+RSpec.describe Axn::Core::AutomaticLogging do
   describe "automatic logging" do
     let(:log_messages) { [] }
 

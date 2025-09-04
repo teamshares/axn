@@ -1,6 +1,6 @@
-# `Action::Result`
+# `Axn::Result`
 
-Every `call` invocation on an Action will return an `Action::Result` instance, which provides a consistent interface:
+Every `call` invocation on an Axn will return an `Axn::Result` instance, which provides a consistent interface:
 
 | Method | Description |
 | -- | -- |
@@ -22,7 +22,7 @@ In addition to the core interface, your Action's Result class will have methods 
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   exposes :bar, :baz # [!code focus]
 

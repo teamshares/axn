@@ -4,7 +4,7 @@ The `transaction` strategy wraps your action execution in a database transaction
 
 ```ruby
 class TransferFunds
-  include Action
+  include Axn
 
   use :transaction
 

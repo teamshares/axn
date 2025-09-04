@@ -11,7 +11,7 @@ RSpec.shared_examples "can build Axns from callables" do
     it "builds an Axn from a callable" do
       expect(Axn::Factory).to receive(:build).and_call_original
       expect(callable).to be_a(Proc)
-      expect(axn < Action).to eq(true)
+      expect(axn < Axn).to eq(true)
       expect(axn.call(expected: true, arg: 123)).to be_ok
       expect(axn.call).not_to be_ok
     end
@@ -138,7 +138,7 @@ RSpec.shared_examples "can build Axns from callables" do
       -> { raise "error" }
     end
 
-    let(:kwargs) { { error: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "overridden msg", if: -> { true }) } }
+    let(:kwargs) { { error: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "overridden msg", if: -> { true }) } }
 
     it "works correctly" do
       expect(axn.call.error).to eq("overridden msg")
@@ -153,7 +153,7 @@ RSpec.shared_examples "can build Axns from callables" do
     context "with success descriptor" do
       let(:kwargs) do
         {
-          success: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
+          success: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
           error: "Default error",
         }
       end
@@ -169,7 +169,7 @@ RSpec.shared_examples "can build Axns from callables" do
         {
           success: [
             "Simple success",
-            Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Conditional success", if: -> { false }),
+            Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Conditional success", if: -> { false }),
           ],
         }
       end
@@ -186,7 +186,7 @@ RSpec.shared_examples "can build Axns from callables" do
     context "with callback descriptors" do
       let(:kwargs) do
         {
-          on_success: Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+          on_success: Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
           on_error: -> { puts "error callback" },
         }
       end
@@ -203,7 +203,7 @@ RSpec.shared_examples "can build Axns from callables" do
         {
           on_success: [
             -> { puts "simple success" },
-            Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+            Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
           ],
         }
       end
@@ -224,7 +224,7 @@ RSpec.shared_examples "can build Axns from callables" do
     it "raises error when passing hash directly" do
       expect do
         Axn::Factory.build(success: { message: "test", prefix: "user" }, &callable)
-      end.to raise_error(Action::UnsupportedArgument, /Cannot pass hash directly to success/)
+      end.to raise_error(Axn::UnsupportedArgument, /Cannot pass hash directly to success/)
     end
   end
 
@@ -285,12 +285,12 @@ RSpec.shared_examples "can build Axns from callables" do
       end
 
       # Register it with the strategy system
-      Action::Strategies.register(:test_strategy, test_strategy)
+      Axn::Strategies.register(:test_strategy, test_strategy)
     end
 
     after do
       # Clean up the strategy registry
-      Action::Strategies.clear!
+      Axn::Strategies.clear!
     end
 
     context "with simple strategy name" do

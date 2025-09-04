@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "return shape" do
     subject { action.call }
 
@@ -24,7 +24,7 @@ RSpec.describe Action do
       it "is not ok" do
         is_expected.not_to be_ok
         expect(subject.error).to eq("User-facing error")
-        expect(subject.exception).to be_a(Action::Failure)
+        expect(subject.exception).to be_a(Axn::Failure)
         expect(subject.exception.message).to eq("User-facing error")
       end
     end

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "Hooks & Callbacks" do
     subject(:result) { action.call(trigger:, should_rescue:) }
 
@@ -864,8 +864,8 @@ RSpec.describe Action do
   context "with prebuilt descriptors" do
     let(:action) do
       build_action do
-        on_success Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success from descriptor" })
-        on_error Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "error from descriptor" })
+        on_success Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success from descriptor" })
+        on_error Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "error from descriptor" })
       end
     end
 
@@ -878,7 +878,7 @@ RSpec.describe Action do
     it "raises error when combining descriptor with kwargs" do
       expect do
         build_action do
-          on_success Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success" }), if: -> { true }
+          on_success Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success" }), if: -> { true }
         end
       end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
     end

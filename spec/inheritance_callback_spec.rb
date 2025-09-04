@@ -2,9 +2,9 @@
 
 require "spec_helper"
 
-# Base class that includes Action::Core
+# Base class that includes Axn::Core
 class BaseAction
-  include Action::Core
+  include Axn::Core
 
   expects :data
 

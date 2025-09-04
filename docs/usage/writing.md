@@ -8,7 +8,7 @@ The core boilerplate is pretty minimal:
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   def call
     # ... do some stuff here?
@@ -27,7 +27,7 @@ Both of these optionally accept `type:`, `allow_nil:`, `allow_blank:`, and any o
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   expects :name, type: String # [!code focus:2]
   exposes :meaning_of_life
@@ -48,7 +48,7 @@ If you declare that your action `exposes` anything, you need to actually `expose
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   expects :name, type: String
   exposes :meaning_of_life
@@ -74,7 +74,7 @@ For instance, configuring the action like this:
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   expects :name, type: String
   exposes :meaning_of_life
@@ -106,7 +106,7 @@ You can also use conditional error messages with the `prefix:` keyword and combi
 
 ```ruby
 class ValidationAction
-  include Action
+  include Axn
 
   expects :input
 
@@ -123,7 +123,7 @@ class ValidationAction
 end
 
 class ApiAction
-  include Action
+  include Axn
 
   expects :data
 
@@ -152,7 +152,7 @@ This configuration provides:
 **Correct order:**
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   # Static fallback messages first
   success "Default success message"
@@ -181,7 +181,7 @@ For instance, given this configuration:
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   before { log("before hook") } # [!code focus:2]
   after :log_after

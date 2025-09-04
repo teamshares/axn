@@ -3,7 +3,7 @@
 # These classes are only used to test Enqueueable
 
 class TestEnqueueableInteractor
-  include Action
+  include Axn
   queue_options retry: 10, retry_queue: "low"
 
   expects :name, :address
@@ -15,7 +15,7 @@ class TestEnqueueableInteractor
 end
 
 class AnotherEnqueueableInteractor
-  include Action
+  include Axn
   queue_options retry: 10, retry_queue: "low"
 
   expects :foo

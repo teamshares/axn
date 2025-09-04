@@ -130,7 +130,7 @@ end
 **Correct order:**
 ```ruby
 class MyAction
-  include Action
+  include Axn
 
   # Define static fallback first
   success "Default success message"
@@ -145,7 +145,7 @@ end
 **Incorrect order (conditional messages will be shadowed):**
 ```ruby
 class MyAction
-  include Action
+  include Axn
 
   # These conditional messages will never be reached!
   success "Special success", if: :special_condition?
@@ -163,7 +163,7 @@ end
 While `.error` and `.success` set the default messages, you can register conditional messages using an optional `if:` or `unless:` matcher. The matcher can be:
 
 - an exception class (e.g., `ArgumentError`)
-- a class name string (e.g., `"Action::InboundValidationError"`)
+- a class name string (e.g., `"Axn::InboundValidationError"`)
 - a symbol referencing a local instance method predicate (arity 0 or 1, or keyword `exception:`), e.g. `:bad_input?`
 - a callable (arity 0 or 1, or keyword `exception:`)
 
@@ -228,7 +228,7 @@ When using `from:`, the error handler receives the exception from the child acti
 
 ```ruby
 class InnerAction
-  include Action
+  include Axn
 
   error "Something went wrong in the inner action"
 
@@ -238,7 +238,7 @@ class InnerAction
 end
 
 class OuterAction
-  include Action
+  include Axn
 
   # Customize error messages from InnerAction
   error from: InnerAction do |e|
@@ -267,7 +267,7 @@ You can also combine the `from:` parameter with the `prefix:` keyword to create 
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
 
   # Add prefix to error messages from InnerAction
   error from: InnerAction, prefix: "API Error: " do |e|
@@ -293,7 +293,7 @@ Messages are evaluated in **last-defined-first** order, meaning the most recentl
 
 ```ruby
 class ParentAction
-  include Action
+  include Axn
 
   success "Parent success message"
   error "Parent error message"
@@ -309,7 +309,7 @@ Within a single class, later definitions override earlier ones:
 
 ```ruby
 class MyAction
-  include Action
+  include Axn
 
   success "First success message"           # Ignored
   success "Second success message"          # Ignored
@@ -371,7 +371,7 @@ Much like the [globally-configured on_exception hook](/reference/configuration#o
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   on_exception do |exception| # [!code focus:3]
     # e.g. trigger a slack error
@@ -383,7 +383,7 @@ Note that by default the `on_exception` block will be applied to _any_ `Standard
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   on_exception(if: NoMethodError) do |exception| # [!code focus]
     # e.g. trigger a slack error

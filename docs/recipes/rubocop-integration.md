@@ -4,7 +4,7 @@ Axn provides custom RuboCop cops to help enforce best practices and maintain cod
 
 ## Overview
 
-The `Axn/UncheckedResult` cop enforces proper result handling when calling Actions. It can detect when Action results are ignored and help ensure consistent error handling patterns.
+The `Axn/UncheckedResult` cop enforces proper result handling when calling Actions. It can detect when Axn results are ignored and help ensure consistent error handling patterns.
 
 ## Installation
 
@@ -17,8 +17,8 @@ require:
 # Enable Axn's custom cop
 Axn/UncheckedResult:
   Enabled: true
-  CheckNested: true      # Check nested Action calls
-  CheckNonNested: true   # Check non-nested Action calls
+  CheckNested: true      # Check nested Axn calls
+  CheckNonNested: true   # Check non-nested Axn calls
   Severity: warning      # or error
 ```
 
@@ -39,7 +39,7 @@ Axn/UncheckedResult
 
 ### CheckNested
 
-Controls whether the cop checks Action calls that are inside other Action classes.
+Controls whether the cop checks Axn calls that are inside other Axn classes.
 
 ```yaml
 Axn/UncheckedResult:
@@ -50,11 +50,11 @@ Axn/UncheckedResult:
 **When to use `CheckNested: false`:**
 - You're gradually adopting the rule and want to focus on top-level calls first
 - Your team has different standards for nested vs. non-nested calls
-- You're using a different pattern for nested Action handling
+- You're using a different pattern for nested Axn handling
 
 ### CheckNonNested
 
-Controls whether the cop checks Action calls that are outside Action classes.
+Controls whether the cop checks Axn calls that are outside Axn classes.
 
 ```yaml
 Axn/UncheckedResult:
@@ -63,8 +63,8 @@ Axn/UncheckedResult:
 ```
 
 **When to use `CheckNonNested: false`:**
-- You're only concerned about nested Action calls
-- Top-level Action calls are handled by other tools or processes
+- You're only concerned about nested Axn calls
+- Top-level Axn calls are handled by other tools or processes
 - You want to focus on the most critical use case first
 
 ### Severity
@@ -113,19 +113,19 @@ Axn/UncheckedResult:
 
 The cop analyzes your code to determine if you're:
 
-1. **Inside an Action class** - Classes that `include Action`
+1. **Inside an Axn class** - Classes that `include Action`
 2. **Inside the `call` method** - Only the main execution method
-3. **Calling another Action** - Using `.call` on Action classes
+3. **Calling another Action** - Using `.call` on Axn classes
 4. **Properly handling the result** - One of the acceptable patterns
 
 ## What the Cop Ignores
 
 The cop will NOT report offenses for:
 
-- Action calls outside of Action classes (if `CheckNonNested: false`)
-- Action calls in methods other than `call`
-- Action calls that use `call!` (bang method)
-- Action calls where the result is properly handled
+- Axn calls outside of Axn classes (if `CheckNonNested: false`)
+- Axn calls in methods other than `call`
+- Axn calls that use `call!` (bang method)
+- Axn calls where the result is properly handled
 
 ## Proper Result Handling Patterns
 
@@ -133,7 +133,7 @@ The cop will NOT report offenses for:
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     InnerAction.call!(param: "value")  # Exceptions bubble up
   end
@@ -144,7 +144,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     return result unless result.ok?
@@ -157,7 +157,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     if result.failed?
@@ -172,7 +172,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     if result.error
@@ -187,7 +187,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     result  # Result is returned, so it's properly handled
@@ -199,7 +199,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   exposes :nested_result
   def call
     result = InnerAction.call(param: "value")
@@ -212,7 +212,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     process_result(result)  # Result is used, so it's properly handled
@@ -226,7 +226,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     InnerAction.call(param: "value")  # Result ignored - will trigger offense
     # This continues even if InnerAction fails
@@ -238,7 +238,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")  # Assigned but never used
     # Will trigger offense unless result is properly handled
@@ -250,7 +250,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     some_other_method(result.some_other_attribute)  # Not checking success/failure
@@ -270,9 +270,9 @@ end
 ### For Existing Projects
 
 1. **Phase 1**: Enable with `CheckNested: true, CheckNonNested: false, Severity: warning`
-2. **Phase 2**: Fix all nested Action violations
+2. **Phase 2**: Fix all nested Axn violations
 3. **Phase 3**: Enable `CheckNonNested: true`
-4. **Phase 4**: Fix all non-nested Action violations
+4. **Phase 4**: Fix all non-nested Axn violations
 5. **Phase 5**: Set `Severity: error`
 
 ### Using RuboCop Disable Comments
@@ -281,7 +281,7 @@ For intentional violations, you can disable the cop:
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     # rubocop:disable Axn/UncheckedResult
     InnerAction.call(param: "value")  # Intentionally ignored

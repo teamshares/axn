@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe ".axn" do
     let(:client) do
       build_action do
@@ -67,7 +67,7 @@ RSpec.describe Action do
         it "exposes automatically" do
           expect(client).to respond_to(:foo)
           result = client.foo(char: "a", length: 5)
-          expect(result).to be_a(Action::Result)
+          expect(result).to be_a(Axn::Result)
           expect(result.barfoo).to eq("aaaaa")
         end
       end
@@ -101,7 +101,7 @@ RSpec.describe Action do
 
       it "handles explicit exposure" do
         result = client.foo(char: "a", length: 5)
-        expect(result).to be_a(Action::Result)
+        expect(result).to be_a(Axn::Result)
         expect(result.msg).to eq("aaaaa")
         expect { result.value }.to raise_error(NoMethodError) # Not set if there's an explicit exposure
       end

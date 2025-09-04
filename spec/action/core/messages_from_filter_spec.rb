@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   let(:inner_action_class) do
     stub_const("InnerAction", Class.new do
-      include Action
+      include Axn
 
       expects :type
 
@@ -26,7 +26,7 @@ RSpec.describe Action do
     inner_action_class
 
     stub_const("OuterAction", Class.new do
-      include Action
+      include Axn
 
       expects :type
 
@@ -45,7 +45,7 @@ RSpec.describe Action do
     inner_action_class
 
     stub_const("PrefixWithFromAction", Class.new do
-      include Action
+      include Axn
 
       expects :type
 
@@ -64,7 +64,7 @@ RSpec.describe Action do
     inner_action_class
 
     stub_const("PrefixOnlyFromAction", Class.new do
-      include Action
+      include Axn
 
       expects :type
 
@@ -81,7 +81,7 @@ RSpec.describe Action do
     inner_action_class
 
     stub_const("MixedPrefixAction", Class.new do
-      include Action
+      include Axn
 
       expects :type
 
@@ -328,10 +328,10 @@ RSpec.describe Action do
     it "raises ArgumentError when using from: with if:" do
       expect do
         stub_const("InvalidFromIfAction", Class.new do
-          include Action
+          include Axn
           error "Invalid combination", from: Object, if: StandardError
         end)
-      end.to raise_error(Action::UnsupportedArgument,
+      end.to raise_error(Axn::UnsupportedArgument,
                          "Combining from: with if: or unless: is not currently supported.\n\n" \
                          "Implementation is technically possible but very complex. Please submit a " \
                          "Github Issue if you have a real-world need for this functionality.")
@@ -340,10 +340,10 @@ RSpec.describe Action do
     it "raises ArgumentError when using from: with unless:" do
       expect do
         stub_const("InvalidFromUnlessAction", Class.new do
-          include Action
+          include Axn
           error "Invalid combination", from: Object, unless: StandardError
         end)
-      end.to raise_error(Action::UnsupportedArgument,
+      end.to raise_error(Axn::UnsupportedArgument,
                          "Combining from: with if: or unless: is not currently supported.\n\n" \
                          "Implementation is technically possible but very complex. Please submit a " \
                          "Github Issue if you have a real-world need for this functionality.")
@@ -353,7 +353,7 @@ RSpec.describe Action do
   it "raises ArgumentError when using from: with success messages" do
     expect do
       stub_const("InvalidSuccessAction", Class.new do
-        include Action
+        include Axn
 
         success from: Object, prefix: "Prefix: "
       end)

@@ -19,7 +19,7 @@ To use a strategy in your action, call the `use` method with the strategy name:
 
 ```ruby
 class CreateUser
-  include Action
+  include Axn
 
   use :transaction
 
@@ -39,7 +39,7 @@ Some strategies support configuration options. These strategies have a `setup` m
 
 ```ruby
 class ProcessPayment
-  include Action
+  include Axn
 
   use :retry, max_attempts: 3, backoff: :exponential
 
@@ -55,7 +55,7 @@ end
 
 ## Built-in Strategies
 
-The list of built in strategies is available via `Action::Strategies.built_in`.
+The list of built in strategies is available via `Axn::Strategies.built_in`.
 
 ## Registering Custom Strategies
 
@@ -79,14 +79,14 @@ end
 Then register it with the strategies system:
 
 ```ruby
-Action::Strategies.register(:my_custom, MyCustomStrategy)
+Axn::Strategies.register(:my_custom, MyCustomStrategy)
 ```
 
 Now you can use it in your actions:
 
 ```ruby
 class MyAction
-  include Action
+  include Axn
 
   use :my_custom
 
@@ -142,7 +142,7 @@ module RetryStrategy
 end
 
 # Register the strategy
-Action::Strategies.register(:retry, RetryStrategy)
+Axn::Strategies.register(:retry, RetryStrategy)
 ```
 
 ### Strategy Registration Best Practices
@@ -194,11 +194,11 @@ module PerformanceMonitoringStrategy
 end
 
 # Register the strategy
-Action::Strategies.register(:performance_monitoring, PerformanceMonitoringStrategy)
+Axn::Strategies.register(:performance_monitoring, PerformanceMonitoringStrategy)
 
 # Use it in an action
 class ExpensiveCalculation
-  include Action
+  include Axn
 
   use :performance_monitoring, threshold_ms: 500, notify_slow: true
 
@@ -227,7 +227,7 @@ end
 You can inspect all registered strategies:
 
 ```ruby
-Action::Strategies.all
+Axn::Strategies.all
 # Returns a hash of strategy names to their modules
 ```
 
@@ -236,11 +236,11 @@ Action::Strategies.all
 To find a specific strategy by name:
 
 ```ruby
-Action::Strategies.find(:transaction)
+Axn::Strategies.find(:transaction)
 # Returns the strategy module for the transaction strategy
 
-Action::Strategies.find(:nonexistent)
-# Raises Action::StrategyNotFound: Strategy 'nonexistent' not found
+Axn::Strategies.find(:nonexistent)
+# Raises Axn::StrategyNotFound: Strategy 'nonexistent' not found
 ```
 
 The `find` method is useful when you need to programmatically access a strategy module or verify that a strategy exists before using it.
@@ -250,15 +250,15 @@ The `find` method is useful when you need to programmatically access a strategy 
 To reset strategies to only built-in ones (useful in tests):
 
 ```ruby
-Action::Strategies.clear!
+Axn::Strategies.clear!
 ```
 
 ### Strategy Errors
 
 The following errors may be raised when using strategies:
 
-- `Action::StrategyNotFound`: When trying to use a strategy that hasn't been registered
-- `Action::DuplicateStrategyError`: When trying to register a strategy with a name that's already taken
+- `Axn::StrategyNotFound`: When trying to use a strategy that hasn't been registered
+- `Axn::DuplicateStrategyError`: When trying to register a strategy with a name that's already taken
 - `ArgumentError`: When providing configuration to a strategy that doesn't support it
 
 ## Best Practices

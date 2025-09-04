@@ -54,7 +54,7 @@ module Axn
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
         Class.new(superclass || Object) do
-          include Action unless self < Action
+          include Axn unless self < Axn
 
           define_singleton_method(:name) do
             [
@@ -81,8 +81,8 @@ module Axn
           end
 
           # Apply success and error handlers
-          _apply_handlers(axn, :success, success, Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
-          _apply_handlers(axn, :error, error, Action::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+          _apply_handlers(axn, :success, success, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+          _apply_handlers(axn, :error, error, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
 
           # Hooks
           axn.before(before) if before.present?
@@ -90,10 +90,10 @@ module Axn
           axn.around(around) if around.present?
 
           # Callbacks
-          _apply_handlers(axn, :on_success, on_success, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
-          _apply_handlers(axn, :on_failure, on_failure, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
-          _apply_handlers(axn, :on_error, on_error, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
-          _apply_handlers(axn, :on_exception, on_exception, Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_success, on_success, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_failure, on_failure, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_error, on_error, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
+          _apply_handlers(axn, :on_exception, on_exception, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
 
           # Strategies
           Array(use).each do |strategy|
@@ -138,11 +138,11 @@ module Axn
         return unless value.present?
 
         # Check if the value itself is a hash (this catches the case where someone passes a hash literal)
-        raise Action::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if value.is_a?(Hash)
+        raise Axn::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if value.is_a?(Hash)
 
         # Wrap in Array() to handle both single values and arrays
         Array(value).each do |handler|
-          raise Action::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if handler.is_a?(Hash)
+          raise Axn::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if handler.is_a?(Hash)
 
           # Both descriptor objects and simple cases (string/proc) can be used directly
           axn.public_send(method_name, handler)

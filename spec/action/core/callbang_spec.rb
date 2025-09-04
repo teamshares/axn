@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe ".call!" do
     subject { action.call! }
 

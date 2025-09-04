@@ -2,7 +2,7 @@
 
 ## `#expose`
 
-Used to set a value on the Action::Result. Remember you can only `expose` keys that you have declared in [the class-level interface](/reference/class).
+Used to set a value on the Axn::Result. Remember you can only `expose` keys that you have declared in [the class-level interface](/reference/class).
 
 * Accepts two positional arguments (the key and value to set, respectively): `expose :some_key, 123`
 * Accepts a hash with one or more key/value pairs: `expose some_key: 123, another: 456`

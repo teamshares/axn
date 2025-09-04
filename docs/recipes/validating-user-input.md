@@ -1,7 +1,7 @@
 # Validating _user_ input
 
 ::: danger ALPHA
-This has not yet been fully fleshed out.  For now, the general idea is that user-facing validation is a _separate layer_ from the declarative expectations about what inputs your Action takes (e.g. `expects :params` and pass to a form object, rather than accepting field-level params directly).
+This has not yet been fully fleshed out.  For now, the general idea is that user-facing validation is a _separate layer_ from the declarative expectations about what inputs your Axn takes (e.g. `expects :params` and pass to a form object, rather than accepting field-level params directly).
 :::
 
 

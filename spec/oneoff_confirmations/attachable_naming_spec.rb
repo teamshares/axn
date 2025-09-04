@@ -3,7 +3,7 @@
 # TODO: was used for manual testing -- clean up or remove when done
 
 class SomeFakeClient
-  include Action
+  include Axn
 
   axnable_method :onehunnid do |num:|
     raise "it was a zero" if num.zero?

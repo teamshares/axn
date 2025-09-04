@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-RSpec.describe Action::Core::Hooks do
+RSpec.describe Axn::Core::Hooks do
   describe "#_with_hooks" do
     def build_hooked(&block)
-      hooked = Class.new.send(:include, Action::Core::Hooks)
+      hooked = Class.new.send(:include, Axn::Core::Hooks)
 
       hooked.class_eval do
         attr_reader :steps

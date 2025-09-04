@@ -2,8 +2,8 @@
 
 require "spec_helper"
 
-RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
-  let(:registry) { Action::Core::Flow::Handlers::Registry.empty }
+RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
+  let(:registry) { Axn::Core::Flow::Handlers::Registry.empty }
   let(:action) { double("action") }
   let(:exception) { nil }
   let(:resolver) { described_class.new(registry, :success, action:, exception:) }
@@ -62,7 +62,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
       allow(resolver).to receive(:message_from).with(prefix_only_descriptor).and_return("Prefix: Static message")
 
       # Mock Invoker.call for default_descriptor tests
-      allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+      allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
     end
 
     context "when processing candidate_entries" do
@@ -172,7 +172,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
       before do
         allow(descriptor).to receive(:handler).and_return("handler")
         allow(descriptor).to receive(:prefix).and_return(nil)
-        allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
       end
 
       it "invokes handler and returns message" do
@@ -202,7 +202,7 @@ RSpec.describe Action::Core::Flow::Handlers::Resolvers::MessageResolver do
       it "finds default message content from other descriptors for success messages" do
         other_descriptor = double("other", handler: "other_handler", prefix: nil, static?: true, matches?: true)
         allow(resolver).to receive(:candidate_entries).and_return([other_descriptor])
-        allow(Action::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Other message")
+        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Other message")
 
         result = resolver.send(:message_from, descriptor)
         expect(result).to eq("Prefix: Other message")

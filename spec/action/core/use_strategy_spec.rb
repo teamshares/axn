@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Action::Core::UseStrategy do
+RSpec.describe Axn::Core::UseStrategy do
   let(:test_action) { build_action }
   let(:custom_strategy) do
     Module.new do
@@ -14,8 +14,8 @@ RSpec.describe Action::Core::UseStrategy do
   end
 
   before do
-    Action::Strategies.clear!
-    Action::Strategies.register(:custom, custom_strategy)
+    Axn::Strategies.clear!
+    Axn::Strategies.register(:custom, custom_strategy)
   end
 
   describe ".use" do
@@ -65,7 +65,7 @@ RSpec.describe Action::Core::UseStrategy do
       end
 
       before do
-        Action::Strategies.register(:setup_strategy, setup_strategy)
+        Axn::Strategies.register(:setup_strategy, setup_strategy)
       end
 
       it "calls setup method with config and block" do

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe ".expects" do
     context "with non-reserved attribute names" do
       let(:action) do
@@ -19,7 +19,7 @@ RSpec.describe Action do
         end
       end
 
-      it { expect { action.call(default_error: "whoa") }.to raise_error(Action::ContractViolation::ReservedAttributeError) }
+      it { expect { action.call(default_error: "whoa") }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 
@@ -43,7 +43,7 @@ RSpec.describe Action do
         end
       end
 
-      it { expect { subject }.to raise_error(Action::ContractViolation::ReservedAttributeError) }
+      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 end

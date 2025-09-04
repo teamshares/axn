@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "Axn.config#on_exception" do
     subject { action.call(name: "Foo", ssn: "abc", extra: "bang", outbound: 1) }
 

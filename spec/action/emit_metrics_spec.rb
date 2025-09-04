@@ -48,7 +48,7 @@ RSpec.describe "Action emit_metrics hook" do
       end
 
       it "calls emit_metrics hook with failure outcome when using call!" do
-        expect { action.call! }.to raise_error(Action::Failure)
+        expect { action.call! }.to raise_error(Axn::Failure)
         expect(@last_metrics_call[:result].outcome.failure?).to be true
       end
     end
@@ -103,7 +103,7 @@ RSpec.describe "Action emit_metrics hook" do
       end
 
       it "calls emit_metrics hook with exception outcome" do
-        expect { action.call! }.to raise_error(Action::InboundValidationError)
+        expect { action.call! }.to raise_error(Axn::InboundValidationError)
         expect(@last_metrics_call[:result].outcome.exception?).to be true
       end
     end

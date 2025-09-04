@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "inbound validation" do
     let(:action) do
       build_action do
@@ -20,7 +20,7 @@ RSpec.describe Action do
       it "fails" do
         expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
-        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception).to be_a(Axn::InboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
         expect(subject.exception.message).to eq("Foo must be greater than 10")
       end
@@ -31,7 +31,7 @@ RSpec.describe Action do
 
       it "fails inbound" do
         expect(subject).not_to be_ok
-        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception).to be_a(Axn::InboundValidationError)
       end
     end
 
@@ -47,7 +47,7 @@ RSpec.describe Action do
 
       it "fails" do
         expect(subject).not_to be_ok
-        expect(subject.exception).to be_a(Action::OutboundValidationError)
+        expect(subject.exception).to be_a(Axn::OutboundValidationError)
       end
     end
 
@@ -92,7 +92,7 @@ RSpec.describe Action do
 
         it "fails" do
           expect(subject).not_to be_ok
-          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception).to be_a(Axn::InboundValidationError)
           expect(subject.exception.message).to eq("Bar should numberz")
         end
       end
@@ -122,7 +122,7 @@ RSpec.describe Action do
 
         it "fails" do
           expect(subject).not_to be_ok
-          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception).to be_a(Axn::InboundValidationError)
           expect(subject.exception.message).to eq("Bar is not a Numeric")
         end
       end
@@ -137,7 +137,7 @@ RSpec.describe Action do
       end
 
       it "raises" do
-        expect { action.call(foo: 100) }.to raise_error(Action::DuplicateFieldError, "Duplicate field(s) declared: foo")
+        expect { action.call(foo: 100) }.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
       end
     end
   end
@@ -168,7 +168,7 @@ RSpec.describe Action do
       end
 
       it "prevents external access of non-exposed values" do
-        expect { result.foo }.to raise_error(Action::ContractViolation::MethodNotAllowed)
+        expect { result.foo }.to raise_error(Axn::ContractViolation::MethodNotAllowed)
       end
     end
 
@@ -178,7 +178,7 @@ RSpec.describe Action do
       it "fails" do
         expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
-        expect(subject.exception).to be_a(Action::OutboundValidationError)
+        expect(subject.exception).to be_a(Axn::OutboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
         expect(subject.exception.message).to eq("Bar must be greater than 10")
       end
@@ -200,7 +200,7 @@ RSpec.describe Action do
       it "fails" do
         expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
-        expect(subject.exception).to be_a(Action::ContractViolation::UnknownExposure)
+        expect(subject.exception).to be_a(Axn::ContractViolation::UnknownExposure)
       end
     end
 
@@ -267,7 +267,7 @@ RSpec.describe Action do
 
         it "fails" do
           expect(subject).not_to be_ok
-          expect(subject.exception).to be_a(Action::OutboundValidationError)
+          expect(subject.exception).to be_a(Axn::OutboundValidationError)
           expect(subject.exception.message).to eq("Foo is not a Numeric and Bar is not a Numeric")
         end
       end
@@ -282,7 +282,7 @@ RSpec.describe Action do
       end
 
       it "raises" do
-        expect { action.call(baz: 100) }.to raise_error(Action::DuplicateFieldError, "Duplicate field(s) declared: foo")
+        expect { action.call(baz: 100) }.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
       end
     end
 
@@ -365,7 +365,7 @@ RSpec.describe Action do
       it "fails" do
         expect(subject).not_to be_ok
         expect(subject.error).to eq("Something went wrong")
-        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception).to be_a(Axn::InboundValidationError)
         expect(subject.exception.errors).to be_a(ActiveModel::Errors)
         expect(subject.exception.message).to eq("Foo is not a String")
       end
@@ -441,7 +441,7 @@ RSpec.describe Action do
 
           it "fails" do
             expect(subject).not_to be_ok
-            expect(subject.exception).to be_a(Action::InboundValidationError)
+            expect(subject.exception).to be_a(Axn::InboundValidationError)
             expect(subject.exception.message).to eq("Foo is not a boolean")
           end
         end
@@ -466,7 +466,7 @@ RSpec.describe Action do
 
         it "fails" do
           expect(subject).not_to be_ok
-          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception).to be_a(Axn::InboundValidationError)
           expect(subject.exception.message).to eq("Foo is not one of String, Numeric")
         end
       end
@@ -476,7 +476,7 @@ RSpec.describe Action do
 
         it "fails" do
           expect(subject).not_to be_ok
-          expect(subject.exception).to be_a(Action::InboundValidationError)
+          expect(subject.exception).to be_a(Axn::InboundValidationError)
           expect(subject.exception.message).to eq("Foo can't be blank")
         end
       end
@@ -527,7 +527,7 @@ RSpec.describe Action do
 
       it "fails" do
         expect(subject).not_to be_ok
-        expect(subject.exception).to be_a(Action::ContractViolation::PreprocessingError)
+        expect(subject.exception).to be_a(Axn::ContractViolation::PreprocessingError)
       end
 
       it "sets the cause to the original exception" do
@@ -555,7 +555,7 @@ RSpec.describe Action do
 
       it "fails" do
         expect(subject).not_to be_ok
-        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception).to be_a(Axn::InboundValidationError)
         expect(subject.exception.message).to eq("Foo must be pretty big")
       end
     end
@@ -571,7 +571,7 @@ RSpec.describe Action do
 
       it "fails" do
         expect(subject).not_to be_ok
-        expect(subject.exception).to be_a(Action::InboundValidationError)
+        expect(subject.exception).to be_a(Axn::InboundValidationError)
         expect(subject.exception.message).to eq("Foo failed validation: oops")
       end
     end
@@ -713,7 +713,7 @@ RSpec.describe Action do
 
     it "calls Axn::Internal::Logging.piping_error when custom validation raises" do
       result = action.call(foo: 1)
-      expect(result.exception).to be_a(Action::InboundValidationError)
+      expect(result.exception).to be_a(Axn::InboundValidationError)
       expect_piping_error_called(
         message_substring: "applying custom validation",
         error_class: ArgumentError,
@@ -738,7 +738,7 @@ RSpec.describe Action do
 
     it "calls Axn::Internal::Logging.piping_error when model validation raises" do
       result = action.call(user_id: 1)
-      expect(result.exception).to be_a(Action::InboundValidationError)
+      expect(result.exception).to be_a(Axn::InboundValidationError)
       expect_piping_error_called(
         message_substring: "applying model validation",
         error_class: ArgumentError,

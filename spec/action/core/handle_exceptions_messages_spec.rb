@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "#error configuration (for #error when swallowing exceptions)" do
     let(:klass) { nil }
 

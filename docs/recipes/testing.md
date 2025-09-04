@@ -8,23 +8,23 @@
 
 Say you're writing unit specs for PrimaryAction that calls Subaction, and you want to mock out the Subaction call.
 
-To generate a successful Action::Result:
+To generate a successful Axn::Result:
 
-* Base case: `Action::Result.ok`
-* [Optional] Custom message: `Action::Result.ok("It went awesome")`
-* [Optional] Custom exposures: `Action::Result.ok("It went awesome", some_var: 123)`
+* Base case: `Axn::Result.ok`
+* [Optional] Custom message: `Axn::Result.ok("It went awesome")`
+* [Optional] Custom exposures: `Axn::Result.ok("It went awesome", some_var: 123)`
 
-To generate a failed Action::Result:
+To generate a failed Axn::Result:
 
-* Base case: `Action::Result.error`
-* [Optional] Custom message: `Action::Result.error("It went poorly")`
-* [Optional] Custom exposures: `Action::Result.error("It went poorly", some_var: 123)`
-* [Optional] Custom exception: `Action::Result.error(some_var: 123) { raise FooBarException.new("bad thing") }`
+* Base case: `Axn::Result.error`
+* [Optional] Custom message: `Axn::Result.error("It went poorly")`
+* [Optional] Custom exposures: `Axn::Result.error("It went poorly", some_var: 123)`
+* [Optional] Custom exception: `Axn::Result.error(some_var: 123) { raise FooBarException.new("bad thing") }`
 
 Either way, using those to mock an actual call would look something like this in your rspec:
 
 ```ruby
-let(:subaction_response) { Action::Result.ok("custom message", foo: 1) }
+let(:subaction_response) { Axn::Result.ok("custom message", foo: 1) }
 
 before do
   expect(Subaction).to receive(:call).and_return(subaction_response)
@@ -38,7 +38,7 @@ The semantics of call-bang are a little different -- if Subaction is called via 
 ### Success
 
 ```ruby
-let(:subaction_response) { Action::Result.ok("custom message", foo: 1) }
+let(:subaction_response) { Axn::Result.ok("custom message", foo: 1) }
 
 before do
   expect(Subaction).to receive(:call!).and_return(subaction_response)
@@ -57,7 +57,7 @@ before do
 end
 ```
 
-NOTE: to mock subaction failing via explicit `fail!` call, you'd use an `Action::Failure` exception class.
+NOTE: to mock subaction failing via explicit `fail!` call, you'd use an `Axn::Failure` exception class.
 
 ## Mocking Axn arguments
 

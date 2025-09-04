@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "Logging" do
     let(:action) do
       build_action do
@@ -24,7 +24,7 @@ RSpec.describe Action do
       is_expected.to be_ok
     end
 
-    Action::Core::Logging::LEVELS.each do |level|
+    Axn::Core::Logging::LEVELS.each do |level|
       describe "##{level}" do
         let(:level) { level }
 

@@ -8,7 +8,7 @@ RSpec.describe "One-off confirmation" do
       Module.new do
         def self.included(base)
           base.class_eval do
-            include Action
+            include Axn
             expects :wrapper_thing
             before do
               log "before from wrapper"

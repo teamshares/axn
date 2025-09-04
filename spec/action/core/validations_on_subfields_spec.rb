@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe "_expects_subfields" do
     shared_examples "raises when improperly configured" do |on:|
       it "raises" do

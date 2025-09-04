@@ -8,14 +8,14 @@ require "axn/internal/logging"
 require "axn/factory"
 
 require "axn/configuration"
-require "action/exceptions"
+require "axn/exceptions"
 
-require "action/core"
+require "axn/core"
 
-require "action/attachable"
-require "action/enqueueable"
+require "axn/attachable"
+require "axn/enqueueable"
 
-module Action
+module Axn
   def self.included(base)
     base.class_eval do
       include Core

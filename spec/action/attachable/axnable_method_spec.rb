@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   describe ".axnable_method" do
     let(:client) do
       build_action do
@@ -32,7 +32,7 @@ RSpec.describe Action do
         result = client.number_axn(arg: 111)
         expect(result).not_to be_ok
         expect(result.error).to eq("arg was all 1s")
-        expect(result.exception).to be_a(Action::Failure)
+        expect(result.exception).to be_a(Axn::Failure)
         expect(result.exception.message).to eq("arg was all 1s")
         expect(result.value).to eq(nil)
       end
@@ -53,7 +53,7 @@ RSpec.describe Action do
       end
 
       it "handles fail!" do
-        expect { client.number!(arg: 111) }.to raise_error(Action::Failure) do |error|
+        expect { client.number!(arg: 111) }.to raise_error(Axn::Failure) do |error|
           expect(error.message).to eq("arg was all 1s")
         end
       end

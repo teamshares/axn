@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Action::Core::Timing do
+RSpec.describe Axn::Core::Timing do
   describe ".now" do
     it "returns a monotonic time value" do
       time1 = described_class.now

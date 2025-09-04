@@ -33,13 +33,13 @@ RSpec.describe "Testing Action" do
         context "in development mode" do
           let(:env) { "development" }
 
-          it { expect { subject }.to raise_error(Action::InboundValidationError) }
+          it { expect { subject }.to raise_error(Axn::InboundValidationError) }
         end
 
         context "in production mode" do
           let(:env) { "production" }
 
-          it { expect { subject }.to raise_error(Action::InboundValidationError) }
+          it { expect { subject }.to raise_error(Axn::InboundValidationError) }
         end
       end
     end

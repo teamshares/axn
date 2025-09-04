@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 require "sidekiq/testing"
-require "action/enqueueable"
+require "axn/enqueueable"
 require "fixtures/enqueueable"
 
-RSpec.describe Action::Enqueueable::ViaSidekiq, type: :worker do
+RSpec.describe Axn::Enqueueable::ViaSidekiq, type: :worker do
   context "Interactor" do
     subject { TestEnqueueableInteractor.enqueue(this: "this", that: "that") }
 

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action::Attachable::Steps do
+RSpec.describe Axn::Attachable::Steps do
   describe "basic step functionality" do
     it "executes a simple step" do
       action = build_action do

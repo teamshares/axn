@@ -1,16 +1,16 @@
 # frozen_string_literal: true
 
 RSpec.describe "Action spec helpers" do
-  describe "Action::Result.ok" do
+  describe "Axn::Result.ok" do
     context "bare" do
-      subject(:result) { Action::Result.ok }
+      subject(:result) { Axn::Result.ok }
 
       it { is_expected.to be_ok }
       it { expect(result.success).to eq("Action completed successfully") }
     end
 
     context "allow blank exposures" do
-      subject(:result) { Action::Result.ok(still_exposable: "", another: nil) }
+      subject(:result) { Axn::Result.ok(still_exposable: "", another: nil) }
 
       it { is_expected.to be_ok }
       it { expect(result.success).to eq("Action completed successfully") }
@@ -19,7 +19,7 @@ RSpec.describe "Action spec helpers" do
     end
 
     context "with custom message and exposure" do
-      subject(:result) { Action::Result.ok("optional success message", custom_exposure: 123) }
+      subject(:result) { Axn::Result.ok("optional success message", custom_exposure: 123) }
 
       it { is_expected.to be_ok }
       it { expect(result.success).to eq("optional success message") }
@@ -27,36 +27,36 @@ RSpec.describe "Action spec helpers" do
     end
   end
 
-  describe "Action::Result.error" do
+  describe "Axn::Result.error" do
     context "bare" do
-      subject(:result) { Action::Result.error }
+      subject(:result) { Axn::Result.error }
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Something went wrong") }
     end
 
     context "with custom message and exposure" do
-      subject(:result) { Action::Result.error("Custom error message", still_exposable: 456) }
+      subject(:result) { Axn::Result.error("Custom error message", still_exposable: 456) }
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Custom error message") }
-      it { expect(result.exception).to be_a(Action::Failure) }
+      it { expect(result.exception).to be_a(Axn::Failure) }
       it { expect(result.still_exposable).to eq(456) }
     end
 
     context "allow blank exposures" do
-      subject(:result) { Action::Result.error(still_exposable: "", another: nil) }
+      subject(:result) { Axn::Result.error(still_exposable: "", another: nil) }
 
       it { is_expected.not_to be_ok }
       it { expect(result.error).to eq("Something went wrong") }
-      it { expect(result.exception).to be_a(Action::Failure) }
+      it { expect(result.exception).to be_a(Axn::Failure) }
       it { expect(result.still_exposable).to eq("") }
       it { expect(result.another).to be_nil }
     end
 
     context "with exception" do
       subject(:result) do
-        Action::Result.error("default msg", still_exposable: 456) do
+        Axn::Result.error("default msg", still_exposable: 456) do
           raise StandardError, "Custom error message"
         end
       end
@@ -69,28 +69,28 @@ RSpec.describe "Action spec helpers" do
     end
   end
 
-  describe "Action::Result#outcome" do
+  describe "Axn::Result#outcome" do
     it "returns success for ok results" do
-      expect(Action::Result.ok.outcome.success?).to be true
-      expect(Action::Result.ok.outcome.failure?).to be false
-      expect(Action::Result.ok.outcome.exception?).to be false
+      expect(Axn::Result.ok.outcome.success?).to be true
+      expect(Axn::Result.ok.outcome.failure?).to be false
+      expect(Axn::Result.ok.outcome.exception?).to be false
     end
 
     it "returns failure for error results" do
-      expect(Action::Result.error.outcome.success?).to be false
-      expect(Action::Result.error.outcome.failure?).to be true
-      expect(Action::Result.error.outcome.exception?).to be false
+      expect(Axn::Result.error.outcome.success?).to be false
+      expect(Axn::Result.error.outcome.failure?).to be true
+      expect(Axn::Result.error.outcome.exception?).to be false
     end
 
     it "returns exception for results with exceptions" do
-      result = Action::Result.error { raise "error" }
+      result = Axn::Result.error { raise "error" }
       expect(result.outcome.success?).to be false
       expect(result.outcome.failure?).to be false
       expect(result.outcome.exception?).to be true
     end
   end
 
-  describe "Action::Result#elapsed_time" do
+  describe "Axn::Result#elapsed_time" do
     it "returns elapsed time for action results" do
       action = build_action
       result = action.call
@@ -99,7 +99,7 @@ RSpec.describe "Action spec helpers" do
     end
 
     it "returns elapsed time for factory-created results" do
-      result = Action::Result.ok
+      result = Axn::Result.ok
       expect(result.elapsed_time).to be_a(Float)
       expect(result.elapsed_time).to be >= 0
     end

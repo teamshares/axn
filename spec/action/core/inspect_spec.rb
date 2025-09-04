@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   let(:action) do
     build_action do
       expects :foo, type: Numeric, numericality: { greater_than: 10 }
@@ -25,7 +25,7 @@ RSpec.describe Action do
   context "inbound facade #inspect" do
     subject { result.the_internal_context.inspect }
 
-    it { is_expected.to eq "#<Action::InternalContext foo: 11, ssn: [FILTERED]>" }
+    it { is_expected.to eq "#<Axn::InternalContext foo: 11, ssn: [FILTERED]>" }
   end
 
   context "outbound facade #inspect" do
@@ -33,7 +33,7 @@ RSpec.describe Action do
 
     context "when OK" do
       it {
-        is_expected.to eq "#<Action::Result [OK] bar: 110, phone: [FILTERED], the_internal_context: [FILTERED]>"
+        is_expected.to eq "#<Axn::Result [OK] bar: 110, phone: [FILTERED], the_internal_context: [FILTERED]>"
       }
     end
 
@@ -41,7 +41,7 @@ RSpec.describe Action do
       let(:foo) { 9 }
 
       it {
-        is_expected.to eq "#<Action::Result [failed with Action::InboundValidationError: 'Foo must be greater than 10'] bar: nil, phone: nil, the_internal_context: nil>" # rubocop:disable Layout/LineLength
+        is_expected.to eq "#<Axn::Result [failed with Axn::InboundValidationError: 'Foo must be greater than 10'] bar: nil, phone: nil, the_internal_context: nil>" # rubocop:disable Layout/LineLength
       }
     end
 
@@ -49,7 +49,7 @@ RSpec.describe Action do
       let(:foo) { 13 }
 
       it {
-        is_expected.to eq "#<Action::Result [failed with 'intentional error'] bar: 130, phone: [FILTERED], the_internal_context: [FILTERED]>"
+        is_expected.to eq "#<Axn::Result [failed with 'intentional error'] bar: 130, phone: [FILTERED], the_internal_context: [FILTERED]>"
       }
     end
   end

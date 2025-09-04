@@ -5,6 +5,7 @@
 * [BREAKING] Removed `Axn()` method sugar (use `Axn::Factory.build` directly)
 * [BREAKING] Renamed `Action::Configuration` + `Action.config` -> `Axn::Configuration` + `Axn.config`
 * [BREAKING] Move `Axn::Util` to `Axn::Internal::Logging`
+* [BREAKING] !! Move all `Action` to `Axn` (notably `include Action` is now `include Axn`)
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

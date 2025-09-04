@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action do
+RSpec.describe Axn do
   subject(:result) { action.call }
 
   describe "#messages configuration" do
@@ -506,7 +506,7 @@ RSpec.describe Action do
               build_action do
                 success "Great news!", if: :condition?, unless: :other_condition?
               end
-            end.to raise_error(Action::UnsupportedArgument,
+            end.to raise_error(Axn::UnsupportedArgument,
                                "calling success with both :if and :unless is not currently supported.\n\n" \
                                "Implementation is technically possible but very complex. Please submit a " \
                                "Github Issue if you have a real-world need for this functionality.")
@@ -517,7 +517,7 @@ RSpec.describe Action do
               build_action do
                 error "Bad news!", if: :condition?, unless: :other_condition?
               end
-            end.to raise_error(Action::UnsupportedArgument,
+            end.to raise_error(Axn::UnsupportedArgument,
                                "calling error with both :if and :unless is not currently supported.\n\n" \
                                "Implementation is technically possible but very complex. Please submit a " \
                                "Github Issue if you have a real-world need for this functionality.")
@@ -599,7 +599,7 @@ RSpec.describe Action do
         it { expect(result).not_to be_ok }
 
         it "is evaluated within internal context" do
-          is_expected.to eq("Bad news: Action::InboundValidationError")
+          is_expected.to eq("Bad news: Axn::InboundValidationError")
         end
 
         it "can access default_error within conditional message blocks" do
@@ -651,7 +651,7 @@ RSpec.describe Action do
         it { expect(result).not_to be_ok }
 
         it "is evaluated within internal context" do
-          is_expected.to eq("Bad news: Action::InboundValidationError")
+          is_expected.to eq("Bad news: Axn::InboundValidationError")
         end
       end
 
@@ -789,7 +789,7 @@ RSpec.describe Action do
         end
       end.tap do |a|
         a.error ->(e) { "Argument error: #{e.message}" }, if: ArgumentError
-        a.error "Inbound validation error!", if: "Action::InboundValidationError"
+        a.error "Inbound validation error!", if: "Axn::InboundValidationError"
         a.error -> { "whoa a #{param}" }, if: -> { param == 2 }
         a.error -> { "whoa: #{@var}" }, if: -> { param == 3 }
         a.error -> { "whoa: #{default_error}" }, if: -> { param == 4 }
@@ -802,8 +802,8 @@ RSpec.describe Action do
   context "with prebuilt descriptors" do
     let(:action) do
       build_action do
-        success Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success from descriptor")
-        error Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Error from descriptor")
+        success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success from descriptor")
+        error Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Error from descriptor")
       end
     end
 
@@ -815,7 +815,7 @@ RSpec.describe Action do
     it "raises error when combining descriptor with kwargs" do
       expect do
         build_action do
-          success Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
+          success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
         end
       end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
     end

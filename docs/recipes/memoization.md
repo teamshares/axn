@@ -29,7 +29,7 @@ And with those pieces in place `memo` is available in all Actions:
 
 ```ruby
 class ContrivedExample
-  include Action
+  include Axn
 
   exposes :nums
 

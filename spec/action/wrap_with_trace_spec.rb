@@ -49,7 +49,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       it "calls wrap_with_trace hook and executes action when using call!" do
-        expect { action.call! }.to raise_error(Action::Failure)
+        expect { action.call! }.to raise_error(Axn::Failure)
         expect(@last_trace_call[:action_called]).to eq(true)
       end
     end
@@ -105,7 +105,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       it "calls wrap_with_trace hook and executes action" do
-        expect { action.call! }.to raise_error(Action::InboundValidationError)
+        expect { action.call! }.to raise_error(Axn::InboundValidationError)
         expect(@last_trace_call[:action_called]).to eq(true)
       end
     end

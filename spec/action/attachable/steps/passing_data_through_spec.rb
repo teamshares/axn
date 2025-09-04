@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action::Attachable::Steps do
+RSpec.describe Axn::Attachable::Steps do
   subject(:result) { composed.call(num: 10, extra: 11) }
 
   let(:composed) do
