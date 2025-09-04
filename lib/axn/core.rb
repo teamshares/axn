@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/logging"
+
 require "axn/context"
 
 require "axn/strategies"

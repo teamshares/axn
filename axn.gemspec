@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.email = ["kali@teamshares.com"]
 
   spec.summary = "A terse convention for business logic"
-  spec.description = "Pattern for writing callable service objects with contract validation and error swallowing"
+  spec.description = "Pattern for writing callable service objects with contract validation and exception handling"
   spec.homepage = "https://github.com/teamshares/axn"
   spec.license = "MIT"
 

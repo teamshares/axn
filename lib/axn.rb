@@ -2,16 +2,16 @@
 
 require "active_support"
 
-module Axn; end
+# Standalone
 require "axn/version"
-require "axn/internal/logging"
 require "axn/factory"
-
 require "axn/configuration"
 require "axn/exceptions"
 
+# The core implementation
 require "axn/core"
 
+# Extensions
 require "axn/attachable"
 require "axn/enqueueable"
 

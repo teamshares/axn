@@ -346,7 +346,7 @@ jobs:
 
 ## Related Resources
 
-- [Action Result Reference](/reference/action-result)
+- [Axn::Result Reference](/reference/axn-result)
 - [Configuration Guide](/reference/configuration)
 - [Testing Recipes](/recipes/testing)
 - [Best Practices Guide](/advanced/conventions)

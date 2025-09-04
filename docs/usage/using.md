@@ -9,7 +9,7 @@ outline: deep
 
 An action executed via `#call` _always_ returns an instance of the `Axn::Result` class.
 
-This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/action-result)) as well as any variables that the action `exposes`.
+This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/axn-result)) as well as any variables that the action `exposes`.
 
 As a consumer, you usually want a conditional that surfaces `error` unless the result is `ok?` (remember that any exceptions have been swallowed), and otherwise takes whatever success action is relevant.
 

@@ -36,7 +36,7 @@ export default defineConfig({
           { text: 'Configuration', link: '/reference/configuration' },
           { text: 'Class Interface', link: '/reference/class' },
           { text: 'Instance Interface', link: '/reference/instance' },
-          { text: 'Result Interface', link: '/reference/action-result' },
+          { text: 'Result Interface', link: '/reference/axn-result' },
         ]
       },
       {

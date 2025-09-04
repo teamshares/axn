@@ -3,13 +3,13 @@
 module RuboCop
   module Cop
     module Axn
-      # This cop enforces that when calling Actions from within other Actions,
+      # This cop enforces that when calling Axns from within other Axns,
       # you must either use `call!` (with the bang) or check `result.ok?`.
       #
       # @example
       #   # bad
       #   class OuterAction
-      #     include Action
+      #     include Axn
       #     def call
       #       InnerAction.call(param: "value")  # Missing result check
       #     end
@@ -17,7 +17,7 @@ module RuboCop
       #
       #   # good
       #   class OuterAction
-      #     include Action
+      #     include Axn
       #     def call
       #       result = InnerAction.call(param: "value")
       #       return result unless result.ok?
@@ -27,7 +27,7 @@ module RuboCop
       #
       #   # also good
       #   class OuterAction
-      #     include Action
+      #     include Axn
       #     def call
       #       InnerAction.call!(param: "value")  # Using call! ensures exceptions bubble up
       #     end
@@ -37,7 +37,7 @@ module RuboCop
       class UncheckedResult < RuboCop::Cop::Base
         extend RuboCop::Cop::AutoCorrector
 
-        MSG = "Use `call!` or check `result.ok?` when calling Actions from within Actions"
+        MSG = "Use `call!` or check `result.ok?` when calling Axns from within Axns"
 
         # Configuration options
         def check_nested?
@@ -48,20 +48,20 @@ module RuboCop
           cop_config["CheckNonNested"] != false
         end
 
-        # Track whether we're inside an Action class and its call method
+        # Track whether we're inside an Axn class and its call method
         def_node_search :action_class?, <<~PATTERN
-          (class _ (const nil? :Action) ...)
+          (class _ (const nil? :Axn) ...)
         PATTERN
 
         def_node_search :includes_action?, <<~PATTERN
-          (send nil? :include (const nil? :Action))
+          (send nil? :include (const nil? :Axn))
         PATTERN
 
         def_node_search :call_method?, <<~PATTERN
           (def :call ...)
         PATTERN
 
-        def_node_search :action_call?, <<~PATTERN
+        def_node_search :axn_call?, <<~PATTERN
           (send (const _ _) :call ...)
         PATTERN
 
@@ -102,7 +102,7 @@ module RuboCop
         PATTERN
 
         def on_send(node)
-          return unless action_call?(node)
+          return unless axn_call?(node)
           return if bang_call?(node)
           return unless inside_action_call_method?(node)
 
@@ -118,7 +118,7 @@ module RuboCop
         private
 
         def inside_action_call_method?(node)
-          # Check if we're inside a call method of an Action class
+          # Check if we're inside a call method of an Axn class
           current_node = node
           while current_node.parent
             current_node = current_node.parent
@@ -126,19 +126,19 @@ module RuboCop
             # Check if we're inside a def :call
             next unless call_method?(current_node) && current_node.method_name == :call
 
-            # Now check if this class includes Action
+            # Now check if this class includes Axn
             class_node = find_enclosing_class(current_node)
             return includes_action?(class_node) if class_node
           end
           false
         rescue StandardError => _e
-          # If there's any error in the analysis, assume we're not in an Action call method
+          # If there's any error in the analysis, assume we're not in an Axn call method
           # This prevents the cop from crashing on complex or malformed code
           false
         end
 
         def inside_action_context?(node)
-          # Check if this Action call is inside an Action class's call method
+          # Check if this Axn call is inside an Axn class's call method
           current_node = node
           while current_node.parent
             current_node = current_node.parent
@@ -146,7 +146,7 @@ module RuboCop
             # Check if we're inside a def :call
             next unless call_method?(current_node) && current_node.method_name == :call
 
-            # Now check if this class includes Action
+            # Now check if this class includes Axn
             class_node = find_enclosing_class(current_node)
             return true if class_node && includes_action?(class_node)
           end
