@@ -2,6 +2,7 @@
 
 ## Unreleased
 * [BREAKING] Removed `#try` method
+* [BREAKING] Removed `Axn()` method sugar (use `Axn::Factory.build` directly)
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

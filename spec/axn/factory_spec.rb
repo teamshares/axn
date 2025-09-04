@@ -330,23 +330,3 @@ RSpec.describe Axn::Factory do
 
   it_behaves_like "can build Axns from callables"
 end
-
-RSpec.describe "Axn()" do
-  let(:builder) { -> { Axn(callable, **kwargs) } }
-  let(:kwargs) { {} }
-
-  it_behaves_like "can build Axns from callables"
-
-  context "when already Axn" do
-    subject(:axn) { builder.call }
-    let(:callable) { build_action { log "in action" } }
-
-    it "returns the Axn" do
-      expect(Axn::Factory).not_to receive(:build)
-
-      expect(callable < Action).to eq(true)
-      expect(axn < Action).to eq(true)
-      expect(axn.call).to be_ok
-    end
-  end
-end

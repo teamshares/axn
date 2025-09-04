@@ -15,12 +15,6 @@ require "action/core"
 require "action/attachable"
 require "action/enqueueable"
 
-def Axn(callable, **) # rubocop:disable Naming/MethodName
-  return callable if callable.is_a?(Class) && callable < Action
-
-  Axn::Factory.build(**, &callable)
-end
-
 module Action
   def self.included(base)
     base.class_eval do
