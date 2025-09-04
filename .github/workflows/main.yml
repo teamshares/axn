@@ -8,9 +8,9 @@ on:
   pull_request:
 
 jobs:
-  build:
+  main_specs:
     runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }}
+    name: Main Specs (Ruby ${{ matrix.ruby }})
     strategy:
       matrix:
         ruby:
@@ -25,7 +25,41 @@ jobs:
         bundler-cache: true
     - name: Run main specs
       run: bundle exec rake spec
-    - name: Run RuboCop specs
-      run: bundle exec rake spec_rubocop
     - name: Run RuboCop linting
       run: bundle exec rake rubocop
+
+  rubocop_specs:
+    runs-on: ubuntu-latest
+    name: RuboCop Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby:
+          - '3.2.2'
+
+    steps:
+    - uses: actions/checkout@v5
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: ${{ matrix.ruby }}
+        bundler-cache: true
+    - name: Run RuboCop specs
+      run: bundle exec rake spec_rubocop
+
+  rails_specs:
+    runs-on: ubuntu-latest
+    name: Rails Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby:
+          - '3.2.2'
+
+    steps:
+    - uses: actions/checkout@v5
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: ${{ matrix.ruby }}
+        bundler-cache: true
+    - name: Run Rails specs
+      run: bundle exec rake spec_rails
