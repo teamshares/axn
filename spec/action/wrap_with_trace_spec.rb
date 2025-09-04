@@ -11,13 +11,13 @@ RSpec.describe "Action wrap_with_trace hook" do
   end
 
   before do
-    Action.configure do |c|
+    Axn.configure do |c|
       c.wrap_with_trace = wrap_with_trace
     end
   end
 
   after do
-    Action.configure do |c|
+    Axn.configure do |c|
       c.wrap_with_trace = nil
     end
   end
@@ -112,7 +112,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when no wrap_with_trace hook is configured" do
       before do
-        Action.configure do |c|
+        Axn.configure do |c|
           c.wrap_with_trace = nil
         end
       end

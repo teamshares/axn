@@ -95,9 +95,9 @@ module Action
     private
 
     def _emit_metrics
-      return unless Action.config.emit_metrics
+      return unless Axn.config.emit_metrics
 
-      Action.config.emit_metrics.call(
+      Axn.config.emit_metrics.call(
         self.class.name || "AnonymousClass",
         result,
       )

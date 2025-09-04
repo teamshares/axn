@@ -1,9 +1,9 @@
 # Configuration
 
-Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call `Action.configure` to adjust a few global settings.
+Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call `Axn.configure` to adjust a few global settings.
 
 ```ruby
-Action.configure do |c|
+Axn.configure do |c|
   c.log_level = :info
   c.logger = ...
   c.on_exception = proc do |e, action:, context:|
@@ -22,7 +22,7 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 For example, if you're using Honeybadger this could look something like:
 
 ```ruby
-  Action.configure do |c|
+  Axn.configure do |c|
     c.on_exception = proc do |e, action:, context:|
       message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
 
@@ -66,7 +66,7 @@ The framework provides two distinct hooks for observability:
 For example, to wire up Datadog:
 
 ```ruby
-  Action.configure do |c|
+  Axn.configure do |c|
     c.wrap_with_trace = proc do |resource, &action|
       Datadog::Tracing.trace("Action", resource:) do
         action.call
@@ -100,7 +100,7 @@ This is much less critical than the preceding options, but on the off chance you
 For example:
 
 ```ruby
-  Action.configure do |c|
+  Axn.configure do |c|
     c.additional_includes = [SomeFancyCustomModule]
   end
 ```
@@ -124,11 +124,11 @@ By default, every `action.call` will emit log lines when it is called and after 
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-Automatic logging will log at `Action.config.log_level` by default, but can be overridden or disabled using the declarative `auto_log` method:
+Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `auto_log` method:
 
 ```ruby
 # Set default for all actions (affects both explicit logging and automatic logging)
-Action.configure do |c|
+Axn.configure do |c|
   c.log_level = :debug
 end
 
@@ -143,7 +143,7 @@ end
 
 # Use default level (no auto_log call needed)
 class DefaultAction
-  # Uses Action.config.log_level
+  # Uses Axn.config.log_level
 end
 ```
 
@@ -154,7 +154,7 @@ The `auto_log` method supports inheritance, so subclasses will inherit the setti
 Here's a complete example showing all available configuration options:
 
 ```ruby
-Action.configure do |c|
+Axn.configure do |c|
   # Logging
   c.log_level = :info
   c.logger = Rails.logger

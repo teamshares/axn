@@ -13,7 +13,7 @@ module Action
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
               # Call any global handlers
-              Action.config.on_exception(exception, action: self, context: context_for_logging)
+              Axn.config.on_exception(exception, action: self, context: context_for_logging)
             rescue StandardError => e
               # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
               # we don't want exception *handling* failures to cascade and overwrite the original exception.

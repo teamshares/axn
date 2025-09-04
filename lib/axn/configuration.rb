@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Action
+module Axn
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
     attr_writer :logger, :env, :on_exception, :additional_includes, :log_level
@@ -11,7 +11,7 @@ module Action
 
     def on_exception(e, action:, context: {})
       msg = "Handled exception (#{e.class.name}): #{e.message}"
-      msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Action.config.env.production?
+      msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       action.log(msg)
 
       return unless @on_exception

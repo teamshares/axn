@@ -9,7 +9,7 @@ module Action
           include InstanceMethods
 
           # Single class_attribute - nil means disabled, any level means enabled
-          class_attribute :auto_log_level, default: Action.config.log_level
+          class_attribute :auto_log_level, default: Axn.config.log_level
         end
       end
 
@@ -39,7 +39,7 @@ module Action
               "About to execute",
               _log_context(:inbound),
             ].compact.join(" with: "),
-            before: Action.config.env.production? ? nil : "\n------\n",
+            before: Axn.config.env.production? ? nil : "\n------\n",
           )
         rescue StandardError => e
           Axn::Util.piping_error("logging before hook", action: self, exception: e)
@@ -55,7 +55,7 @@ module Action
               "Execution completed (with outcome: #{result.outcome}) in #{result.elapsed_time} milliseconds",
               _log_context(:outbound),
             ].compact.join(". Set: "),
-            after: Action.config.env.production? ? nil : "\n------\n",
+            after: Axn.config.env.production? ? nil : "\n------\n",
           )
         rescue StandardError => e
           Axn::Util.piping_error("logging after hook", action: self, exception: e)

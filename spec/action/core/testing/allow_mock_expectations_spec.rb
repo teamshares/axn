@@ -17,7 +17,7 @@ RSpec.describe "Testing Action" do
         let(:sym) { double(to_s: "hello") }
 
         before do
-          allow_any_instance_of(Action::Configuration).to receive(:env).and_return(
+          allow_any_instance_of(Axn::Configuration).to receive(:env).and_return(
             ActiveSupport::StringInquirer.new(env),
           )
         end

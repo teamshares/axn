@@ -6,7 +6,7 @@ module Axn
       # Extract just filename/line number from backtrace
       src = exception.backtrace.first.split.first.split("/").last.split(":")[0, 2].join(":")
 
-      message = if Action.config.env.production?
+      message = if Axn.config.env.production?
                   "Ignoring exception raised while #{desc}: #{exception.class.name} - #{exception.message} (from #{src})"
                 else
                   msg = "!! IGNORING EXCEPTION RAISED WHILE #{desc.upcase} !!\n\n" \
@@ -16,7 +16,7 @@ module Axn
                   "#{"⌵" * 30}\n\n#{msg}\n\n#{"^" * 30}"
                 end
 
-      (action || Action.config.logger).send(:warn, message)
+      (action || Axn.config.logger).send(:warn, message)
 
       nil
     end

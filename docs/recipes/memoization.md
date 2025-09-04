@@ -6,7 +6,7 @@ For instance, at Teamshares we automatically add memoization support (via [memo_
 
 
 ```ruby
-  Action.configure do |c|
+  Axn.configure do |c|
     c.additional_includes = [TS::Memoization]
   end
 ```

@@ -7,7 +7,7 @@ require "axn/version"
 require "axn/util"
 require "axn/factory"
 
-require "action/configuration"
+require "axn/configuration"
 require "action/exceptions"
 
 require "action/core"
@@ -25,7 +25,7 @@ module Action
       include Enqueueable
 
       # Allow additional automatic includes to be configured
-      Array(Action.config.additional_includes).each { |mod| include mod }
+      Array(Axn.config.additional_includes).each { |mod| include mod }
     end
   end
 end

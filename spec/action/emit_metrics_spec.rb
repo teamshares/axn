@@ -9,13 +9,13 @@ RSpec.describe "Action emit_metrics hook" do
   end
 
   before do
-    Action.configure do |c|
+    Axn.configure do |c|
       c.emit_metrics = emit_metrics
     end
   end
 
   after do
-    Action.configure do |c|
+    Axn.configure do |c|
       c.emit_metrics = nil
     end
   end
@@ -110,7 +110,7 @@ RSpec.describe "Action emit_metrics hook" do
 
     context "when no metrics hook is configured" do
       before do
-        Action.configure do |c|
+        Axn.configure do |c|
           c.emit_metrics = nil
         end
       end

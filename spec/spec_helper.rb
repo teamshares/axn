@@ -20,7 +20,7 @@ RSpec.configure do |config|
   end
 
   config.before(:suite) do
-    Action.configure do |c|
+    Axn.configure do |c|
       # Hide default logging
       c.logger = Logger.new(File::NULL) unless ENV["DEBUG"]
     end

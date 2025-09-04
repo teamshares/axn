@@ -16,12 +16,12 @@ Called with a string, it immediately halts execution and sets `result.error` to 
 
 ## `#log`
 
-Helper method to log (via the [configurable](/reference/configuration#logger) `Action.config.logger`) the string you provide (prefixed with the Action's class name).
+Helper method to log (via the [configurable](/reference/configuration#logger) `Axn.config.logger`) the string you provide (prefixed with the Action's class name).
 
 * First argument (required) is a string message to log
 * Also accepts a `level:` keyword argument to change the log level (defaults to `info`)
 
-Primarily used for its side effects; returns whatever the underlying `Action.config.logger` instance returns but it does return a Hash with the key/value pair(s) you exposed.
+Primarily used for its side effects; returns whatever the underlying `Axn.config.logger` instance returns but it does return a Hash with the key/value pair(s) you exposed.
 
 
 

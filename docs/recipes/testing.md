@@ -61,7 +61,7 @@ NOTE: to mock subaction failing via explicit `fail!` call, you'd use an `Action:
 
 ## Mocking Axn arguments
 
-Be aware that in order to improve testing ergonomics, the `type` validation will return `true` for _any_ `RSpec::Mocks::` subclass _as long as `Action.config.env.test?` is `true`_.
+Be aware that in order to improve testing ergonomics, the `type` validation will return `true` for _any_ `RSpec::Mocks::` subclass _as long as `Axn.config.env.test?` is `true`_.
 
 This makes it much easier to test Axns, as you can pass in mocks without immediately failing the inbound validation.
 

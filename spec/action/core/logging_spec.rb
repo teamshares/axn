@@ -16,7 +16,7 @@ RSpec.describe Action do
     subject { action.call(level:) }
 
     before do
-      allow(Action.config).to receive(:logger).and_return(logger)
+      allow(Axn.config).to receive(:logger).and_return(logger)
     end
 
     it "logs" do

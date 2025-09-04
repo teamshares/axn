@@ -6,9 +6,9 @@ module Action
       private
 
       def _with_tracing(&)
-        return yield unless Action.config.wrap_with_trace
+        return yield unless Axn.config.wrap_with_trace
 
-        Action.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)
+        Axn.config.wrap_with_trace.call(self.class.name || "AnonymousClass", &)
       rescue StandardError => e
         Axn::Util.piping_error("running trace hook", action: self, exception: e)
       end

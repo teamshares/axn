@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 RSpec.describe Action do
-  describe "Action.config#on_exception" do
+  describe "Axn.config#on_exception" do
     subject { action.call(name: "Foo", ssn: "abc", extra: "bang", outbound: 1) }
 
     before do
-      allow(described_class.config).to receive(:on_exception)
+      allow(Axn.config).to receive(:on_exception)
     end
 
     let(:action) do
@@ -25,9 +25,9 @@ RSpec.describe Action do
     end
 
     it "is given a filtered context (sensitive values filtered + only declared inbound/outbound fields)" do
-      expect(described_class.config).to receive(:on_exception).with(anything,
-                                                                    action:,
-                                                                    context: filtered_context).and_call_original
+      expect(Axn.config).to receive(:on_exception).with(anything,
+                                                        action:,
+                                                        context: filtered_context).and_call_original
       is_expected.not_to be_ok
     end
   end
@@ -91,7 +91,7 @@ RSpec.describe Action do
 
       context "in production" do
         before do
-          allow(Action.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+          allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
         end
 
         it "logs less aggressively" do

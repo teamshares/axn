@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Action::Configuration do
+RSpec.describe Axn::Configuration do
   subject(:config) { described_class.new }
 
   describe "defaults (in test mode)" do

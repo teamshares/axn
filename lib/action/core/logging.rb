@@ -15,13 +15,13 @@ module Action
       end
 
       module ClassMethods
-        def log_level = Action.config.log_level
+        def log_level = Axn.config.log_level
 
         def log(message, level: log_level, before: nil, after: nil)
           msg = [_log_prefix, message].compact_blank.join(" ")
           msg = [before, msg, after].compact_blank.join if before || after
 
-          Action.config.logger.send(level, msg)
+          Axn.config.logger.send(level, msg)
         end
 
         LEVELS.each do |level|
