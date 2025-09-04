@@ -46,15 +46,6 @@ module Action
               _trigger_on_exception(e)
             end
           end
-
-          def try
-            yield
-          rescue Action::Failure => e
-            # NOTE: re-raising so we can still fail! from inside the block
-            raise e
-          rescue StandardError => e
-            _trigger_on_exception(e)
-          end
         end
       end
     end
