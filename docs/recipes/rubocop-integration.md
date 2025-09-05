@@ -6,6 +6,8 @@ Axn provides custom RuboCop cops to help enforce best practices and maintain cod
 
 The `Axn/UncheckedResult` cop enforces proper result handling when calling Actions. It can detect when Axn results are ignored and help ensure consistent error handling patterns.
 
+**Important**: The cop only applies to files in configured target directories to avoid false positives on standard library classes and other non-action classes that happen to have `call` methods.
+
 ## Installation
 
 ### 1. Add to Your .rubocop.yml
@@ -19,6 +21,11 @@ Axn/UncheckedResult:
   Enabled: true
   CheckNested: true      # Check nested Axn calls
   CheckNonNested: true   # Check non-nested Axn calls
+  TargetDirectories:     # Directories to check (default shown)
+    - app/actions
+    - app/services
+    - lib/actions
+    - lib/services
   Severity: warning      # or error
 ```
 
@@ -36,6 +43,21 @@ Axn/UncheckedResult
 ```
 
 ## Configuration Options
+
+### TargetDirectories
+
+Controls which directories the cop will analyze. The cop only applies to files within these directories to avoid false positives on standard library classes and other non-action classes.
+
+```yaml
+Axn/UncheckedResult:
+  TargetDirectories:
+    - app/actions
+    - app/services
+    - lib/actions
+    - lib/services
+    - custom/actions  # Add your own directories
+```
+
 
 ### CheckNested
 
@@ -77,51 +99,21 @@ Axn/UncheckedResult:
   Severity: error    # Show as errors (fails CI)
 ```
 
-## Common Configuration Patterns
-
-### Full Enforcement (Recommended for New Projects)
-
-```yaml
-Axn/UncheckedResult:
-  Enabled: true
-  CheckNested: true
-  CheckNonNested: true
-  Severity: error
-```
-
-### Gradual Adoption (Recommended for Existing Projects)
-
-```yaml
-Axn/UncheckedResult:
-  Enabled: true
-  CheckNested: true      # Start with nested calls
-  CheckNonNested: false  # Add this later
-  Severity: warning      # Start with warnings
-```
-
-### Nested-Only Focus
-
-```yaml
-Axn/UncheckedResult:
-  Enabled: true
-  CheckNested: true
-  CheckNonNested: false
-  Severity: warning
-```
-
 ## What the Cop Checks
 
 The cop analyzes your code to determine if you're:
 
-1. **Inside an Axn class** - Classes that `include Action`
-2. **Inside the `call` method** - Only the main execution method
-3. **Calling another Action** - Using `.call` on Axn classes
-4. **Properly handling the result** - One of the acceptable patterns
+1. **In a target directory** - File is within one of the configured `TargetDirectories`
+2. **Inside an Axn class** - Classes that `include Action`
+3. **Inside the `call` method** - Only the main execution method
+4. **Calling another Action** - Using `.call` on Axn classes
+5. **Properly handling the result** - One of the acceptable patterns
 
 ## What the Cop Ignores
 
 The cop will NOT report offenses for:
 
+- Files outside of target directories (prevents false positives on standard library classes)
 - Axn calls outside of Axn classes (if `CheckNonNested: false`)
 - Axn calls in methods other than `call`
 - Axn calls that use `call!` (bang method)
@@ -307,6 +299,7 @@ If the cop reports violations for properly handled results:
 1. Check that you're using the exact patterns shown above
 2. Ensure the result variable name matches exactly
 3. Verify the result is being used in an acceptable way
+
 
 ### Performance Issues
 

@@ -7,6 +7,11 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
   include RuboCop::RSpec::ExpectOffense
   subject(:cop) { described_class.new }
 
+  # Mock the file path to be in a target directory for testing
+  before do
+    allow_any_instance_of(described_class).to receive(:in_target_directory?).and_return(true)
+  end
+
   context "when calling Axns from within Axn classes" do
     context "with proper result handling" do
       it "accepts result.ok? check" do
@@ -285,6 +290,71 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
               another_param: "another_value"
             )
             return result unless result.ok?
+          end
+        end
+      RUBY
+    end
+  end
+
+  context "when not in target directories" do
+    before do
+      allow_any_instance_of(described_class).to receive(:in_target_directory?).and_return(false)
+    end
+
+    it "does not flag any calls when not in target directories" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            InnerAction.call(param: "value")
+            SomeAction.call(param: "value")
+            UserService.call(param: "value")
+            Proc.new { puts "hello" }.call
+            Time.now.call if Time.respond_to?(:call)
+            JSON.parse('{"key": "value"}').call if JSON.respond_to?(:call)
+          end
+        end
+      RUBY
+    end
+  end
+
+  context "when in target directories" do
+    before do
+      allow_any_instance_of(described_class).to receive(:in_target_directory?).and_return(true)
+    end
+
+    it "flags calls to action classes" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            SomeAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+
+    it "flags calls to service classes" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            UserService.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+
+    it "does not flag calls to standard library classes even in target directories" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            Proc.new { puts "hello" }.call
+            Time.now.call if Time.respond_to?(:call)
+            JSON.parse('{"key": "value"}').call if JSON.respond_to?(:call)
           end
         end
       RUBY

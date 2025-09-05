@@ -1,10 +1,15 @@
 # frozen_string_literal: true
 
+require "pathname"
+
 module RuboCop
   module Cop
     module Axn
       # This cop enforces that when calling Axns from within other Axns,
       # you must either use `call!` (with the bang) or check `result.ok?`.
+      #
+      # The cop only applies to files in configured target directories to avoid
+      # false positives on standard library classes and other non-action classes.
       #
       # @example
       #   # bad
@@ -33,6 +38,15 @@ module RuboCop
       #     end
       #   end
       #
+      # @example TargetDirectories configuration
+      #   # .rubocop.yml
+      #   Axn/UncheckedResult:
+      #     TargetDirectories:
+      #       - app/actions
+      #       - app/services
+      #       - lib/actions
+      #       - lib/services
+      #
       # rubocop:disable Metrics/ClassLength
       class UncheckedResult < RuboCop::Cop::Base
         extend RuboCop::Cop::AutoCorrector
@@ -46,6 +60,14 @@ module RuboCop
 
         def check_non_nested?
           cop_config["CheckNonNested"] != false
+        end
+
+        def target_directories
+          cop_config["TargetDirectories"] || default_target_directories
+        end
+
+        def default_target_directories
+          %w[app/actions app/services lib/actions lib/services]
         end
 
         # Track whether we're inside an Axn class and its call method
@@ -63,6 +85,10 @@ module RuboCop
 
         def_node_search :axn_call?, <<~PATTERN
           (send (const _ _) :call ...)
+        PATTERN
+
+        def_node_search :likely_axn_class?, <<~PATTERN
+          (const _ _)
         PATTERN
 
         def_node_search :bang_call?, <<~PATTERN
@@ -102,20 +128,63 @@ module RuboCop
         PATTERN
 
         def on_send(node)
+          # Fast pattern matches first
           return unless axn_call?(node)
           return if bang_call?(node)
+
+          # Directory check - expensive but can eliminate many files early
+          return unless in_target_directory?(node)
+
+          # AST traversal checks
           return unless inside_axn_call_method?(node)
 
           # Check if we should process this call based on configuration
           is_inside_action = inside_action_context?(node)
           return unless (is_inside_action && check_nested?) || (!is_inside_action && check_non_nested?)
 
+          # Most expensive check last - traverses entire method body
           return if result_properly_handled?(node)
 
           add_offense(node, message: MSG)
         end
 
         private
+
+        def in_target_directory?(node)
+          # Get the file path of the current node
+          file_path = node.location.expression.source_buffer.name
+          return false unless file_path
+
+          # Convert to relative path from project root
+          relative_path = relative_path_from_project_root(file_path)
+          return false unless relative_path
+
+          # Check if the file is in any of the target directories
+          target_directories.any? do |target_dir|
+            relative_path.start_with?("#{target_dir}/") || relative_path == target_dir
+          end
+        end
+
+        def relative_path_from_project_root(file_path)
+          # Try to find the project root by looking for common markers
+          current_path = File.expand_path(file_path)
+
+          # Look for project root markers
+          project_root_markers = %w[.git Gemfile Rakefile package.json]
+
+          # Walk up the directory tree to find project root
+          dir = File.dirname(current_path)
+          while dir != "/" && dir != File.dirname(dir)
+            if project_root_markers.any? { |marker| File.exist?(File.join(dir, marker)) }
+              return Pathname.new(current_path).relative_path_from(Pathname.new(dir)).to_s
+            end
+
+            dir = File.dirname(dir)
+          end
+
+          # If we can't find a project root, just return the filename
+          File.basename(file_path)
+        end
 
         def inside_axn_call_method?(node)
           # Check if we're inside a call method of an Axn class

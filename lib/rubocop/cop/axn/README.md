@@ -6,6 +6,8 @@ This directory contains custom RuboCop cops specifically designed for the Axn li
 
 This cop enforces proper result handling when calling Axns. It can be configured to check nested calls, non-nested calls, or both.
 
+**Important**: The cop only applies to files in configured target directories to avoid false positives on standard library classes and other non-action classes that happen to have `call` methods.
+
 ### Why This Rule Exists
 
 When Axns are nested, proper error handling becomes crucial. Without proper result checking, failures in nested Axns can be silently ignored, leading to:
@@ -21,10 +23,19 @@ The cop supports flexible configuration to match your team's needs:
 ```yaml
 Axn/UncheckedResult:
   Enabled: true
+  TargetDirectories:     # Directories to check (default shown)
+    - app/actions
+    - app/services
+    - lib/actions
+    - lib/services
   CheckNested: true      # Check nested Axn calls (default: true)
   CheckNonNested: true   # Check non-nested Axn calls (default: true)
   Severity: warning      # or error, if you want to enforce it strictly
 ```
+
+#### TargetDirectories
+
+Controls which directories the cop will analyze. The cop only applies to files within these directories to avoid false positives on standard library classes and other non-action classes.
 
 #### Configuration Modes
 
@@ -165,15 +176,17 @@ end
 
 The cop analyzes your code to determine if you're:
 
-1. **Inside an Axn class** - Classes that `include Axn`
-2. **Inside the `call` method** - Only the main execution method
-3. **Calling another Axn** - Using `.call` on Axn classes
-4. **Properly handling the result** - One of the acceptable patterns above
+1. **In a target directory** - File is within one of the configured `TargetDirectories`
+2. **Inside an Axn class** - Classes that `include Axn`
+3. **Inside the `call` method** - Only the main execution method
+4. **Calling another Axn** - Using `.call` on Axn classes
+5. **Properly handling the result** - One of the acceptable patterns above
 
 ### What the Cop Ignores
 
 The cop will NOT report offenses for:
 
+- Files outside of target directories (prevents false positives on standard library classes)
 - Axn calls outside of Axn classes
 - Axn calls in methods other than `call`
 - Axn calls that use `call!` (bang method)
@@ -185,10 +198,15 @@ Enable the cop in your `.rubocop.yml`:
 
 ```yaml
 require:
-  - ./lib/rubocop/cop/axn/unchecked_result
+  - axn/rubocop
 
 Axn/UncheckedResult:
   Enabled: true
+  TargetDirectories:
+    - app/actions
+    - app/services
+    - lib/actions
+    - lib/services
   CheckNested: true      # Check nested Axn calls
   CheckNonNested: true   # Check non-nested Axn calls
   Severity: warning      # or error, if you want to enforce it strictly
