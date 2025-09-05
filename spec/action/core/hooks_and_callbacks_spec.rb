@@ -46,7 +46,7 @@ RSpec.describe Axn do
     end
 
     let(:action) do
-      build_action do
+      build_axn do
         expects :trigger, type: Symbol
         expects :should_rescue, type: :boolean, default: false
 
@@ -128,7 +128,7 @@ RSpec.describe Axn do
 
     context "when after hook fails" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :trigger, type: Symbol
 
           before { puts "before" }
@@ -157,7 +157,7 @@ RSpec.describe Axn do
 
     context "when on_success callback fails" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :trigger, type: Symbol
 
           before { puts "before" }
@@ -186,7 +186,7 @@ RSpec.describe Axn do
 
     context "with filtering" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :trigger, type: Symbol
           expects :should_rescue, type: :boolean, default: false
 
@@ -298,7 +298,7 @@ RSpec.describe Axn do
 
       context "with unless filtering" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :trigger, type: Symbol
             expects :should_skip, type: :boolean, default: false
 
@@ -402,7 +402,7 @@ RSpec.describe Axn do
         %i[success failure exception error].each do |callback_type|
           it "raises ArgumentError for on_#{callback_type}" do
             expect do
-              build_action do
+              build_axn do
                 public_send("on_#{callback_type}", if: :condition?, unless: :other_condition?) { puts callback_type }
               end
             end.to raise_error(ArgumentError, /on_#{callback_type} cannot be called with both :if and :unless/)
@@ -412,7 +412,7 @@ RSpec.describe Axn do
 
       context "with symbol method auto-expansion in conditional callbacks" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :trigger, type: Symbol
             expects :execute_flag, type: :boolean, default: false
             expects :skip_flag, type: :boolean, default: false
@@ -629,7 +629,7 @@ RSpec.describe Axn do
 
     context "with symbol method handlers" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :trigger, type: Symbol
 
           # Test on_error with symbol method names
@@ -748,7 +748,7 @@ RSpec.describe Axn do
 
       context "with conditional filtering on symbol methods" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :trigger, type: Symbol
             expects :should_skip, type: :boolean, default: false
 
@@ -796,7 +796,7 @@ RSpec.describe Axn do
 
     context "before block with default_error" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :should_fail, allow_blank: true, default: false
 
           before do
@@ -826,7 +826,7 @@ RSpec.describe Axn do
 
     context "inheritance" do
       let(:parent_class) do
-        build_action do
+        build_axn do
           expects :trigger, type: Symbol
 
           before { puts "parent_before" }
@@ -863,7 +863,7 @@ RSpec.describe Axn do
 
   context "with prebuilt descriptors" do
     let(:action) do
-      build_action do
+      build_axn do
         on_success Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success from descriptor" })
         on_error Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "error from descriptor" })
       end
@@ -877,7 +877,7 @@ RSpec.describe Axn do
 
     it "raises error when combining descriptor with kwargs" do
       expect do
-        build_action do
+        build_axn do
           on_success Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "success" }), if: -> { true }
         end
       end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")

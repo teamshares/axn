@@ -3,14 +3,14 @@
 RSpec.describe Axn do
   describe ".axn" do
     let(:client) do
-      build_action do
+      build_axn do
         auto_log :debug
       end
     end
 
     context "with existing action class" do
       let(:subaction) do
-        build_action { log "in subaction" }
+        build_axn { log "in subaction" }
       end
 
       it "attaches subaction" do
@@ -143,7 +143,7 @@ RSpec.describe Axn do
       end
 
       let(:client) do
-        build_action do
+        build_axn do
           def self.awesome_thing = 123
         end
       end

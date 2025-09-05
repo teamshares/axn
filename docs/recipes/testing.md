@@ -68,7 +68,7 @@ This makes it much easier to test Axns, as you can pass in mocks without immedia
 ```ruby
 subject(:result) { action.call!(sym:) }
 
-let(:action) { build_action { expects :sym, type: Symbol } }
+let(:action) { build_axn { expects :sym, type: Symbol } }
 
 context "with a symbol" do
   let(:sym) { :hello }

@@ -3,7 +3,7 @@
 RSpec.describe Axn do
   describe ".axnable_method" do
     let(:client) do
-      build_action do
+      build_axn do
         error "bad"
 
         axnable_method :number, error: "badbadbad" do |arg:|

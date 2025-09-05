@@ -130,7 +130,7 @@ RSpec.describe Axn do
 
   context "with prefix keyword for error messages" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :type
 
         error if: StandardError, prefix: "Baz: "
@@ -187,7 +187,7 @@ RSpec.describe Axn do
 
   context "with mixed prefix scenarios" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :type
 
         # Static fallback first
@@ -232,7 +232,7 @@ RSpec.describe Axn do
 
   context "maintaining proper message precedence with prefix" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :type
 
         # General handler with prefix
@@ -268,7 +268,7 @@ RSpec.describe Axn do
 
   context "with prefix keyword for success messages" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :type
 
         # Static success with prefix
@@ -287,7 +287,7 @@ RSpec.describe Axn do
     end
 
     let(:string_action) do
-      build_action do
+      build_axn do
         expects :type
 
         # Static success with prefix and string message

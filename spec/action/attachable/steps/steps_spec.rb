@@ -3,7 +3,7 @@
 RSpec.describe Axn::Attachable::Steps do
   describe "basic step functionality" do
     it "executes a simple step" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -19,7 +19,7 @@ RSpec.describe Axn::Attachable::Steps do
     end
 
     it "executes multiple steps sequentially" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :final_output
 
@@ -41,7 +41,7 @@ RSpec.describe Axn::Attachable::Steps do
 
   describe "data flow between steps" do
     it "transforms data through steps" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -59,7 +59,7 @@ RSpec.describe Axn::Attachable::Steps do
 
   describe "step error handling" do
     it "handles step failures gracefully" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -76,7 +76,7 @@ RSpec.describe Axn::Attachable::Steps do
     end
 
     it "uses custom error_prefix when provided" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -93,7 +93,7 @@ RSpec.describe Axn::Attachable::Steps do
     end
 
     it "defaults to step name with colon when no error_prefix provided" do
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -111,8 +111,8 @@ RSpec.describe Axn::Attachable::Steps do
 
   describe "steps without labels" do
     it "defaults to 'Step N' prefix when step fails and no label is provided" do
-      # Create action classes separately using build_action
-      first_step = build_action do
+      # Create action classes separately using build_axn
+      first_step = build_axn do
         expects :input
         exposes :intermediate
 
@@ -121,7 +121,7 @@ RSpec.describe Axn::Attachable::Steps do
         end
       end
 
-      second_step = build_action do
+      second_step = build_axn do
         expects :intermediate
         exposes :output
 
@@ -130,7 +130,7 @@ RSpec.describe Axn::Attachable::Steps do
         end
       end
 
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -145,8 +145,8 @@ RSpec.describe Axn::Attachable::Steps do
     end
 
     it "uses sequential numbering for multiple steps without labels" do
-      # Create action classes separately using build_action
-      first_step = build_action do
+      # Create action classes separately using build_axn
+      first_step = build_axn do
         expects :input
         exposes :intermediate
 
@@ -155,7 +155,7 @@ RSpec.describe Axn::Attachable::Steps do
         end
       end
 
-      second_step = build_action do
+      second_step = build_axn do
         expects :intermediate
         exposes :output
 
@@ -164,7 +164,7 @@ RSpec.describe Axn::Attachable::Steps do
         end
       end
 
-      action = build_action do
+      action = build_axn do
         expects :input
         exposes :output
 
@@ -181,7 +181,7 @@ RSpec.describe Axn::Attachable::Steps do
   describe "using existing action classes" do
     it "composes multiple action classes as steps" do
       # Create reusable action classes
-      upcase_action = build_action do
+      upcase_action = build_axn do
         expects :text
         exposes :uppercased
 
@@ -190,7 +190,7 @@ RSpec.describe Axn::Attachable::Steps do
         end
       end
 
-      format_action = build_action do
+      format_action = build_axn do
         expects :uppercased
         exposes :formatted
 
@@ -200,7 +200,7 @@ RSpec.describe Axn::Attachable::Steps do
       end
 
       # Compose them as steps
-      composed_action = build_action do
+      composed_action = build_axn do
         expects :text
         exposes :uppercased, :formatted
 
@@ -218,7 +218,7 @@ RSpec.describe Axn::Attachable::Steps do
   describe "mixed step approaches" do
     it "combines existing actions with inline steps" do
       # Create a reusable action
-      validate_action = build_action do
+      validate_action = build_axn do
         expects :email
         exposes :validated_email
 
@@ -229,7 +229,7 @@ RSpec.describe Axn::Attachable::Steps do
       end
 
       # Use it alongside inline steps
-      action = build_action do
+      action = build_axn do
         expects :email
         exposes :validated_email, :welcome_message
 
@@ -250,7 +250,7 @@ RSpec.describe Axn::Attachable::Steps do
 
   describe "expose_return_as shorthand" do
     it "directly exposes return values" do
-      action = build_action do
+      action = build_axn do
         expects :value
         exposes :doubled
 

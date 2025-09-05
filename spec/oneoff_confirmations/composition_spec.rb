@@ -19,7 +19,7 @@ RSpec.describe "One-off confirmation" do
     end
 
     let(:action) do
-      build_action do
+      build_axn do
         expects :name, type: String
         exposes :greeting, type: String
 

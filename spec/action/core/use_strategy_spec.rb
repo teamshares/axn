@@ -3,7 +3,7 @@
 require "spec_helper"
 
 RSpec.describe Axn::Core::UseStrategy do
-  let(:test_action) { build_action }
+  let(:test_action) { build_axn }
   let(:custom_strategy) do
     Module.new do
       extend ActiveSupport::Concern

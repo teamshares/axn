@@ -4,7 +4,7 @@ RSpec.describe Axn do
   describe ".expects" do
     context "with non-reserved attribute names" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :success, type: String
         end
       end
@@ -14,7 +14,7 @@ RSpec.describe Axn do
 
     context "with reserved attribute names" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :default_error, type: String
         end
       end
@@ -28,7 +28,7 @@ RSpec.describe Axn do
 
     context "with non-reserved attribute names" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :some_field, allow_blank: true
         end
       end
@@ -38,7 +38,7 @@ RSpec.describe Axn do
 
     context "with reserved attribute names" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :success, allow_blank: true
         end
       end

@@ -9,7 +9,7 @@ RSpec.describe Axn do
     end
 
     let(:action) do
-      build_action do
+      build_axn do
         expects :name
         expects :ssn, sensitive: true
         exposes :outbound
@@ -35,7 +35,7 @@ RSpec.describe Axn do
   describe "Action #on_exception" do
     context "base case" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :exception_klass, default: RuntimeError
 
           on_exception(if: RuntimeError) do |e|
@@ -65,7 +65,7 @@ RSpec.describe Axn do
 
     context "triggers all that match" do
       let(:action) do
-        build_action do
+        build_axn do
           on_exception(if: RuntimeError) do
             log "Handling RuntimeError (specific)"
           end
@@ -106,7 +106,7 @@ RSpec.describe Axn do
 
   context "when on_exception handler itself raises" do
     let(:action) do
-      build_action do
+      build_axn do
         on_exception(if: RuntimeError) do
           raise StandardError, "fail in handler"
         end
@@ -131,7 +131,7 @@ RSpec.describe Axn do
 
   context "when event handler matcher raises" do
     let(:action) do
-      build_action do
+      build_axn do
         on_exception(if: ->(_e) { raise StandardError, "fail in matcher" }) do
           # handler body doesn't matter
         end

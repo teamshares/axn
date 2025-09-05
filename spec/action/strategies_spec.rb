@@ -3,7 +3,7 @@
 require "spec_helper"
 
 RSpec.describe Axn::Strategies do
-  let(:test_action) { build_action }
+  let(:test_action) { build_axn }
 
   describe ".built_in" do
     it "loads all strategy files from the strategies directory" do

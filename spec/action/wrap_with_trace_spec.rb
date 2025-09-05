@@ -24,7 +24,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
   describe "wrap_with_trace hook execution" do
     context "when action succeeds" do
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       it "calls wrap_with_trace hook with correct resource and executes action" do
         action.call
@@ -35,7 +35,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when action fails with fail!" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             fail! "intentional failure"
           end
@@ -56,7 +56,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when action raises an exception" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             raise "intentional exception"
           end
@@ -77,7 +77,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when call! succeeds" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :required_field
           exposes :value
           def call
@@ -95,7 +95,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "when call! raises an exception" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :required_field
           exposes :value
           def call
@@ -118,7 +118,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       it "does not call wrap_with_trace hook" do
-        action = build_action
+        action = build_axn
         action.call
         expect(@last_trace_call).to be_nil
       end
@@ -131,7 +131,7 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       before do
         allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
@@ -163,7 +163,7 @@ RSpec.describe "Action wrap_with_trace hook" do
       end
 
       let(:action) do
-        build_action do
+        build_axn do
           def call
             @called = true
           end
@@ -179,7 +179,7 @@ RSpec.describe "Action wrap_with_trace hook" do
 
     context "with named action class" do
       let(:action) do
-        build_action do
+        build_axn do
           def self.name
             "TestAction"
           end
@@ -193,7 +193,7 @@ RSpec.describe "Action wrap_with_trace hook" do
     end
 
     context "with anonymous class" do
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       it "passes AnonymousClass as resource name" do
         action.call

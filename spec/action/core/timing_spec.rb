@@ -57,7 +57,7 @@ RSpec.describe Axn::Core::Timing do
   end
 
   describe "InstanceMethods#_with_timing" do
-    let(:action) { build_action }
+    let(:action) { build_axn }
 
     it "stores elapsed time in the context" do
       result = action.call
@@ -66,7 +66,7 @@ RSpec.describe Axn::Core::Timing do
     end
 
     it "stores timing even when action fails" do
-      failing_action = build_action do
+      failing_action = build_axn do
         def call
           fail! "intentional failure"
         end
@@ -78,7 +78,7 @@ RSpec.describe Axn::Core::Timing do
     end
 
     it "stores timing even when action raises exception" do
-      exception_action = build_action do
+      exception_action = build_axn do
         def call
           raise "intentional exception"
         end

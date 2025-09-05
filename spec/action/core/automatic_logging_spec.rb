@@ -7,7 +7,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     let(:log_messages) { [] }
 
     context "when action succeeds" do
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       before do
         allow(action).to receive(:info) do |message, **options|
@@ -37,7 +37,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     end
 
     context "when action fails" do
-      let(:action) { build_action { def call = fail!("Something went wrong") } }
+      let(:action) { build_axn { def call = fail!("Something went wrong") } }
 
       before do
         allow(action).to receive(:info) do |message, **options|
@@ -60,7 +60,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     end
 
     context "when action raises exception" do
-      let(:action) { build_action { def call = raise("Unexpected error") } }
+      let(:action) { build_axn { def call = raise("Unexpected error") } }
 
       before do
         allow(action).to receive(:info) do |message, **options|
@@ -84,7 +84,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     context "when action uses auto_log with specific level" do
       let(:action) do
-        build_action do
+        build_axn do
           auto_log :warn
         end
       end
@@ -115,7 +115,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     context "when action disables logging with auto_log false" do
       let(:action) do
-        build_action do
+        build_axn do
           auto_log false
         end
       end
@@ -129,7 +129,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     context "when action disables logging with auto_log nil" do
       let(:action) do
-        build_action do
+        build_axn do
           auto_log nil
         end
       end
@@ -142,7 +142,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     end
 
     context "when action uses default auto_log level" do
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       before do
         allow(action).to receive(:info) do |message, **options|
@@ -173,7 +173,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     let(:log_messages) { [] }
 
     let(:parent_action_class) do
-      build_action do
+      build_axn do
         auto_log :debug
       end
     end

@@ -8,6 +8,7 @@
 * [BREAKING] !! Move all `Action` to `Axn` (notably `include Action` is now `include Axn`)
 * [FEAT] Continues to support plain ruby usage, but when used alongside Rails now includes a Rails Engine integrate automaticaly (e.g. providing generators).
 * [INTERNAL] Clearer hooks for supporting additional background providers in the future
+* [BREAKING] spec_helpers: removed rarely used `build_axn`; renamed existing `build_action` -> `build_axn`
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

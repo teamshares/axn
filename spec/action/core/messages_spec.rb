@@ -9,7 +9,7 @@ RSpec.describe Axn do
 
       context "when static" do
         let(:action) do
-          build_action do
+          build_axn do
             success "Great news!"
           end
         end
@@ -20,7 +20,7 @@ RSpec.describe Axn do
 
       context "when dynamic (callable)" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, default: "bar"
             success -> { "Great news: #{@var} from #{foo}" }
 
@@ -38,7 +38,7 @@ RSpec.describe Axn do
 
       context "when dynamic (block)" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, default: "bar"
             success { "Great news: #{@var} from #{foo}" }
 
@@ -56,7 +56,7 @@ RSpec.describe Axn do
 
       context "when dynamic (symbol method name)" do
         let(:action) do
-          build_action do
+          build_axn do
             success :my_success
 
             def my_success
@@ -73,7 +73,7 @@ RSpec.describe Axn do
 
       context "when dynamic with exposed vars" do
         let(:action) do
-          build_action do
+          build_axn do
             exposes :foo, default: "bar"
             success -> { "Great news: #{@var} from #{result.foo}" }
 
@@ -92,7 +92,7 @@ RSpec.describe Axn do
 
       context "when dynamic tries to access exposed vars directly" do
         let(:action) do
-          build_action do
+          build_axn do
             exposes :foo, default: "bar"
             success -> { "Great news: #{@var} from #{foo}" }
 
@@ -111,7 +111,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, default: "bar"
             success -> { "Great news: #{@var} from #{foo} and #{some_undefined_var}" }
 
@@ -129,7 +129,7 @@ RSpec.describe Axn do
 
       context "when dynamic returns blank" do
         let(:action) do
-          build_action do
+          build_axn do
             success -> { "" }
           end
         end
@@ -142,7 +142,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error in success message" do
         let(:action) do
-          build_action do
+          build_axn do
             success -> { raise ArgumentError, "fail message" }
           end
         end
@@ -167,7 +167,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error in success message with fallback" do
         let(:action) do
-          build_action do
+          build_axn do
             # Define fallback first so the failing handler (defined last) is evaluated before it
             success "Fallback success message"
             success -> { raise ArgumentError, "fail message" }
@@ -192,7 +192,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error in success message with conditional fallback" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :trigger, allow_blank: true, default: false
             # Static fallback (used when no conditional matches)
             success "Final fallback"
@@ -227,7 +227,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error in success message with symbol method fallback" do
         let(:action) do
-          build_action do
+          build_axn do
             # Order to ensure failing runs first, then method, then static
             success "Final fallback"
             success :fallback_method
@@ -257,7 +257,7 @@ RSpec.describe Axn do
 
       context "when all success messages fail" do
         let(:action) do
-          build_action do
+          build_axn do
             # Order to evaluate failures first, leaving static as the last resort
             success "Static fallback"
             success :failing_method
@@ -288,7 +288,7 @@ RSpec.describe Axn do
 
       context "when all success messages fail including static" do
         let(:action) do
-          build_action do
+          build_axn do
             # Order to ensure the first evaluated failure is the ArgumentError("first fail")
             success -> { raise NameError, "third fail" }
             success -> { raise "second fail" }
@@ -315,7 +315,7 @@ RSpec.describe Axn do
       context "with symbol predicate matcher" do
         context "arity 0 method" do
           let(:action) do
-            build_action do
+            build_axn do
               expects :missing_param
               error "Default error"
               error "Argument problem", if: :bad_argument?
@@ -333,7 +333,7 @@ RSpec.describe Axn do
 
         context "arity 1 method (receives exception)" do
           let(:action) do
-            build_action do
+            build_axn do
               error(if: :argument_error?) { |e| "Bad argument: #{e.message}" }
 
               def call
@@ -352,7 +352,7 @@ RSpec.describe Axn do
 
         context "falls back to constant when method missing" do
           let(:action) do
-            build_action do
+            build_axn do
               error "AE", if: :ArgumentError
 
               def call
@@ -367,7 +367,7 @@ RSpec.describe Axn do
 
         context "keyword method (receives exception:)" do
           let(:action) do
-            build_action do
+            build_axn do
               error(if: :argument_error_kw?) { |exception:| "Bad argument: #{exception.message}" }
 
               def call
@@ -386,7 +386,7 @@ RSpec.describe Axn do
 
         context "lambda predicate with keyword" do
           let(:action) do
-            build_action do
+            build_axn do
               error "Default error"
               error "AE", if: ->(exception:) { exception.is_a?(ArgumentError) }
 
@@ -403,7 +403,7 @@ RSpec.describe Axn do
         context "unless matcher" do
           context "simple test" do
             let(:action) do
-              build_action do
+              build_axn do
                 expects :missing_param
                 error "Default error"
                 error "Custom error", unless: :should_skip?
@@ -425,7 +425,7 @@ RSpec.describe Axn do
 
           context "with symbol predicate" do
             let(:action) do
-              build_action do
+              build_axn do
                 expects :missing_param
                 error "Default error"
                 error "Custom error", unless: :good_argument?
@@ -441,7 +441,7 @@ RSpec.describe Axn do
 
             context "when condition is true" do
               let(:action) do
-                build_action do
+                build_axn do
                   expects :missing_param
                   error "Default error"
                   error "Custom error", unless: :good_argument?
@@ -459,7 +459,7 @@ RSpec.describe Axn do
 
           context "with callable" do
             let(:action) do
-              build_action do
+              build_axn do
                 expects :missing_param
                 error "Default error"
                 error "Custom error", unless: :should_skip?
@@ -479,7 +479,7 @@ RSpec.describe Axn do
 
             context "when condition is true" do
               let(:action) do
-                build_action do
+                build_axn do
                   expects :missing_param
                   error "Default error"
                   error "Custom error", unless: :should_skip?
@@ -503,7 +503,7 @@ RSpec.describe Axn do
         context "raises error when both if and unless provided" do
           it "raises ArgumentError for success" do
             expect do
-              build_action do
+              build_axn do
                 success "Great news!", if: :condition?, unless: :other_condition?
               end
             end.to raise_error(Axn::UnsupportedArgument,
@@ -514,7 +514,7 @@ RSpec.describe Axn do
 
           it "raises ArgumentError for error" do
             expect do
-              build_action do
+              build_axn do
                 error "Bad news!", if: :condition?, unless: :other_condition?
               end
             end.to raise_error(Axn::UnsupportedArgument,
@@ -531,7 +531,7 @@ RSpec.describe Axn do
 
       context "when static" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error "Bad news!"
           end
@@ -547,7 +547,7 @@ RSpec.describe Axn do
 
       context "when dynamic (callable)" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error -> { "Bad news: #{@var}" }
 
@@ -571,7 +571,7 @@ RSpec.describe Axn do
 
       context "when dynamic (block)" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error { "Bad news: #{@var}" }
 
@@ -590,7 +590,7 @@ RSpec.describe Axn do
 
       context "when dynamic wants exception" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error ->(e) { "Bad news: #{e.class.name}" }
           end
@@ -609,7 +609,7 @@ RSpec.describe Axn do
 
         context "when fail! is called with custom message" do
           let(:action) do
-            build_action do
+            build_axn do
               error ->(e) { "Bad news: #{e.message}" }
 
               def call
@@ -625,7 +625,7 @@ RSpec.describe Axn do
 
         context "when fail! is called without message" do
           let(:action) do
-            build_action do
+            build_axn do
               error ->(e) { "Bad news: #{e.message}" }
 
               def call
@@ -642,7 +642,7 @@ RSpec.describe Axn do
 
       context "when dynamic wants exception (keyword)" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error ->(exception:) { "Bad news: #{exception.class.name}" }
           end
@@ -657,7 +657,7 @@ RSpec.describe Axn do
 
       context "when dynamic (symbol method name with exception)" do
         let(:action) do
-          build_action do
+          build_axn do
             error :error_with_exception
 
             def call
@@ -676,7 +676,7 @@ RSpec.describe Axn do
 
       context "when dynamic (symbol method name with exception keyword)" do
         let(:action) do
-          build_action do
+          build_axn do
             error :error_with_exception_kw
 
             def call
@@ -695,7 +695,7 @@ RSpec.describe Axn do
 
       context "when dynamic returns blank" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :missing_param
             error -> { "" }
           end
@@ -715,7 +715,7 @@ RSpec.describe Axn do
 
       context "when dynamic raises error in error message" do
         let(:action) do
-          build_action do
+          build_axn do
             error -> { raise ArgumentError, "fail message" }
 
             def call
@@ -777,7 +777,7 @@ RSpec.describe Axn do
     end
 
     let(:action) do
-      build_action do
+      build_axn do
         expects :param
         error "Bad news!"
 
@@ -801,7 +801,7 @@ RSpec.describe Axn do
 
   context "with prebuilt descriptors" do
     let(:action) do
-      build_action do
+      build_axn do
         success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success from descriptor")
         error Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Error from descriptor")
       end
@@ -814,7 +814,7 @@ RSpec.describe Axn do
 
     it "raises error when combining descriptor with kwargs" do
       expect do
-        build_action do
+        build_axn do
           success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
         end
       end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")

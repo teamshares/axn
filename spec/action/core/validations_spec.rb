@@ -3,7 +3,7 @@
 RSpec.describe Axn do
   describe "inbound validation" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :foo, type: Numeric, numericality: { greater_than: 10 }
       end
     end
@@ -37,7 +37,7 @@ RSpec.describe Axn do
 
     context "with outbound missing" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: Numeric, numericality: { greater_than: 10 }
           exposes :bar
         end
@@ -53,7 +53,7 @@ RSpec.describe Axn do
 
     context "allow_blank is passed to further validators as well" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: Numeric, numericality: { greater_than: 10 }, allow_blank: true
           exposes :bar, allow_blank: true
         end
@@ -66,7 +66,7 @@ RSpec.describe Axn do
 
     context "inbound defaults" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: Numeric, default: 99
           exposes :foo
         end
@@ -82,7 +82,7 @@ RSpec.describe Axn do
 
     context "multiple fields validations per call" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, :bar, type: { with: Numeric, message: "should numberz" }
         end
       end
@@ -106,7 +106,7 @@ RSpec.describe Axn do
 
     context "with multiple fields per expects line" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, :bar, type: Numeric
         end
       end
@@ -130,7 +130,7 @@ RSpec.describe Axn do
 
     context "with multiple expectations on the same field" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: String
           expects :foo, numericality: { greater_than: 10 }
         end
@@ -144,7 +144,7 @@ RSpec.describe Axn do
 
   describe "outbound validation" do
     let(:action) do
-      build_action do
+      build_axn do
         exposes :bar, type: Numeric, numericality: { greater_than: 10 }
         exposes :qux, type: Numeric
 
@@ -188,7 +188,7 @@ RSpec.describe Axn do
       subject { action.call(foo: 10, bar: 11, baz: 1) }
 
       let(:action) do
-        build_action do
+        build_axn do
           exposes :bar, type: Numeric, numericality: { greater_than: 10 }
 
           def call
@@ -206,7 +206,7 @@ RSpec.describe Axn do
 
     context "outbound defaults" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :foo, default: 99
         end
       end
@@ -221,7 +221,7 @@ RSpec.describe Axn do
 
     context "support optional outbound exposures" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: :boolean
           exposes :bar, allow_blank: true
 
@@ -246,7 +246,7 @@ RSpec.describe Axn do
 
     context "with multiple fields per exposes line" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :baz
           exposes :foo, :bar, type: Numeric
 
@@ -275,7 +275,7 @@ RSpec.describe Axn do
 
     context "with multiple expectations on the same field" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :foo, type: String
           exposes :foo, numericality: { greater_than: 10 }
         end
@@ -288,7 +288,7 @@ RSpec.describe Axn do
 
     context "is accessible on internal context" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :foo, default: "bar"
 
           def call
@@ -308,7 +308,7 @@ RSpec.describe Axn do
 
     context "with default that is a callable" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :foo, default: -> { "bar #{helper_method}" }
 
           private
@@ -326,7 +326,7 @@ RSpec.describe Axn do
 
     describe "#expose" do
       let(:action) do
-        build_action do
+        build_axn do
           exposes :qux
 
           def call
@@ -347,7 +347,7 @@ RSpec.describe Axn do
 
   describe "complex validation" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :foo, type: String
         exposes :bar, type: String
       end
@@ -375,7 +375,7 @@ RSpec.describe Axn do
   describe "type" do
     describe "boolean" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: :boolean
         end
       end
@@ -391,7 +391,7 @@ RSpec.describe Axn do
 
       context "and allow_blank" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, type: :boolean, allow_blank: true
           end
         end
@@ -408,7 +408,7 @@ RSpec.describe Axn do
 
       context "and allow_nil" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, type: :boolean, allow_nil: true
           end
         end
@@ -425,7 +425,7 @@ RSpec.describe Axn do
 
       context "explicit presence settings override implicit validation" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo, type: :boolean
           end
         end
@@ -450,7 +450,7 @@ RSpec.describe Axn do
 
     describe "array of types" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: [String, Numeric]
         end
       end
@@ -484,7 +484,7 @@ RSpec.describe Axn do
 
     describe "uuid" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, type: :uuid
         end
       end
@@ -503,7 +503,7 @@ RSpec.describe Axn do
 
   describe "preprocessing" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :date_as_date, type: Date, preprocess: ->(raw) { Date.parse(raw) }
         exposes :date_as_date
 
@@ -539,7 +539,7 @@ RSpec.describe Axn do
 
   describe "custom validations" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
       end
     end
@@ -562,7 +562,7 @@ RSpec.describe Axn do
 
     context "when validator raises" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo, validate: ->(_value) { raise "oops" }
         end
       end
@@ -581,7 +581,7 @@ RSpec.describe Axn do
     context "top level" do
       context "when field does not end in _id" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :user, model: true
           end
         end
@@ -592,7 +592,7 @@ RSpec.describe Axn do
       end
 
       let(:action) do
-        build_action do
+        build_axn do
           expects :user_id, model: true
           exposes :the_user, :user_id
 
@@ -628,7 +628,7 @@ RSpec.describe Axn do
     context "subfield" do
       context "when field does not end in _id" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo
             expects :user, model: true, on: :foo
           end
@@ -640,7 +640,7 @@ RSpec.describe Axn do
       end
 
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo
           expects :user_id, model: true, on: :foo
           exposes :the_user, :user_id
@@ -677,7 +677,7 @@ RSpec.describe Axn do
         subject(:result) { action.call!(foo: { user_id: 1 }) }
 
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo
             expects :user_id, model: true, on: :foo
             exposes :user, :user_id
@@ -702,7 +702,7 @@ RSpec.describe Axn do
 
   describe "Axn::Internal::Logging.piping_error integration" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :foo, validate: { with: ->(_v) { raise ArgumentError, "fail message" } }
       end
     end
@@ -725,7 +725,7 @@ RSpec.describe Axn do
   describe "Axn::Internal::Logging.piping_error integration for model validation" do
     let(:test_model) { double("User", is_a?: true, name: "User") }
     let(:action) do
-      build_action do
+      build_axn do
         expects :user_id, model: true
       end
     end

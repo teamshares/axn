@@ -12,13 +12,13 @@ RSpec.describe Axn do
     end
 
     context "when missing expects declaration" do
-      let(:action) { build_action { expects :bar, on: :baz } }
+      let(:action) { build_axn { expects :bar, on: :baz } }
       it_behaves_like "raises when improperly configured", on: :baz
     end
 
     context "when missing nested expects declaration" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :baz
           expects :bar, on: :baz
           expects :quux, on: :qux
@@ -29,7 +29,7 @@ RSpec.describe Axn do
 
     let(:readers) { true }
     let(:action) do
-      build_action do
+      build_axn do
         expects :foo
         expects :bar, :baz, on: :foo
         exposes :output
@@ -68,7 +68,7 @@ RSpec.describe Axn do
 
     context "digging to nested fields" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo
           expects "bar.baz", on: :foo
         end
@@ -82,7 +82,7 @@ RSpec.describe Axn do
 
       context "with duplicate sub-keys" do
         let(:action) do
-          build_action do
+          build_axn do
             expects :foo
             expects :bar, on: :foo
           end.tap do |a|
@@ -112,7 +112,7 @@ RSpec.describe Axn do
 
     context "with objects rather than hashes" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :foo
           expects :bar, on: :foo
         end

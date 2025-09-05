@@ -2,7 +2,7 @@
 
 RSpec.describe Axn::Enqueueable::NullImplementation do
   let(:action) do
-    build_action do
+    build_axn do
       expects :foo
       def call
         # simple action

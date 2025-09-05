@@ -6,7 +6,7 @@ RSpec.describe Axn do
 
     context "with success" do
       let(:action) do
-        build_action {}
+        build_axn {}
       end
 
       it "is ok" do
@@ -16,7 +16,7 @@ RSpec.describe Axn do
 
     context "with exception" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             raise ZeroDivisionError, "manual bad thing"
           end
@@ -36,7 +36,7 @@ RSpec.describe Axn do
 
     context "with user-facing failure" do
       let(:action) do
-        build_action do
+        build_axn do
           error "|||"
           def call
             fail! "User-facing error"

@@ -5,7 +5,7 @@
 RSpec.describe "One-off confirmation" do
   describe "modifying exposed object" do
     let(:action) do
-      build_action do
+      build_axn do
         exposes :preferences, type: Hash
 
         def call
@@ -25,7 +25,7 @@ RSpec.describe "One-off confirmation" do
 
   describe "modifying expected and re-exposed object" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :preferences, type: Hash
         exposes :preferences, type: Hash
 

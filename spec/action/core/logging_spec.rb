@@ -3,7 +3,7 @@
 RSpec.describe Axn do
   describe "Logging" do
     let(:action) do
-      build_action do
+      build_axn do
         expects :level, default: :info
         def call
           log("Hello, World!", level:)
@@ -36,7 +36,7 @@ RSpec.describe Axn do
 
       describe "with .log_level set to #{level}" do
         let(:action) do
-          build_action do
+          build_axn do
             def call
               log("Hello!")
             end

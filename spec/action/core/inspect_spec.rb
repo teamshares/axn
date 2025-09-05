@@ -2,7 +2,7 @@
 
 RSpec.describe Axn do
   let(:action) do
-    build_action do
+    build_axn do
       expects :foo, type: Numeric, numericality: { greater_than: 10 }
       expects :ssn, sensitive: true
 

@@ -6,7 +6,7 @@ RSpec.describe "One-off confirmation" do
   describe "Interface interdependencies" do
     describe "default accepts proc" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :channel, default: -> { valid_channels.first }
 
           def call
@@ -34,7 +34,7 @@ RSpec.describe "One-off confirmation" do
       # TODO: how to support this? necessary to have some expected values dependent on others...
       # describe "validations can reference instance methods" do
       #   let(:action) do
-      #     build_action do
+      #     build_axn do
       #       expects :channel, inclusion: { in: :valid_channels_for_number }
       #       expects :number
 
@@ -63,7 +63,7 @@ RSpec.describe "One-off confirmation" do
 
       describe "validations can reference class methods methods" do
         let(:action) do
-          build_action do
+          build_axn do
             # NOTE: only works if method already defined!
             def self.valid_channels_for_number = ["overridden_valid_channels"]
 

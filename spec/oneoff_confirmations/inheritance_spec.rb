@@ -47,7 +47,7 @@ RSpec.describe "One-off confirmation: inheritance via explicit" do
   end
 
   context "when called directly" do
-    let(:action) { build_action { include CustomActionWithFoo } }
+    let(:action) { build_axn { include CustomActionWithFoo } }
     it_behaves_like "an action", 110
   end
 

@@ -4,7 +4,7 @@ RSpec.describe Axn::Attachable::Steps do
   subject(:result) { composed.call(num: 10, extra: 11) }
 
   let(:composed) do
-    build_action do
+    build_axn do
       expects :num
       exposes :num, :third
 

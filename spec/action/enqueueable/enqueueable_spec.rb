@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn::Enqueueable do
-  let(:action) { build_action }
+  let(:action) { build_axn }
 
   context "when Sidekiq is not available" do
     before do

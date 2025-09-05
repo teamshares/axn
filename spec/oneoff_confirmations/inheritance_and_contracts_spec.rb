@@ -6,7 +6,7 @@
 
 RSpec.describe "One-off confirmation: inheritance and contracts" do
   let(:base) do
-    build_action do
+    build_axn do
       expects :foo, type: Numeric, numericality: { greater_than: 10 }
       exposes :bar, type: Numeric
 

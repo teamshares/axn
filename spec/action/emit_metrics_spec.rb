@@ -22,7 +22,7 @@ RSpec.describe "Action emit_metrics hook" do
 
   describe "emit_metrics hook execution" do
     context "when action succeeds" do
-      let(:action) { build_action }
+      let(:action) { build_axn }
 
       it "calls emit_metrics hook with success outcome and correct resource" do
         action.call
@@ -35,7 +35,7 @@ RSpec.describe "Action emit_metrics hook" do
 
     context "when action fails with fail!" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             fail! "intentional failure"
           end
@@ -55,7 +55,7 @@ RSpec.describe "Action emit_metrics hook" do
 
     context "when action raises an exception" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             raise "intentional exception"
           end
@@ -75,7 +75,7 @@ RSpec.describe "Action emit_metrics hook" do
 
     context "when call! succeeds" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :required_field
           exposes :value
           def call
@@ -93,7 +93,7 @@ RSpec.describe "Action emit_metrics hook" do
 
     context "when call! raises an exception" do
       let(:action) do
-        build_action do
+        build_axn do
           expects :required_field
           exposes :value
           def call
@@ -116,7 +116,7 @@ RSpec.describe "Action emit_metrics hook" do
       end
 
       it "does not call emit_metrics hook" do
-        action = build_action
+        action = build_axn
         action.call
         expect(@last_metrics_call).to be_nil
       end

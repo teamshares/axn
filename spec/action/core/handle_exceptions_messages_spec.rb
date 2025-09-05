@@ -5,7 +5,7 @@ RSpec.describe Axn do
     let(:klass) { nil }
 
     let(:action) do
-      build_action do
+      build_axn do
         expects :klass, allow_blank: true
 
         success "great news"

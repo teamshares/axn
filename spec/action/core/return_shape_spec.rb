@@ -5,7 +5,7 @@ RSpec.describe Axn do
     subject { action.call }
 
     context "when successful" do
-      let(:action) { build_action {} }
+      let(:action) { build_axn {} }
 
       it "is ok" do
         is_expected.to be_ok
@@ -14,7 +14,7 @@ RSpec.describe Axn do
 
     context "when fail! (user facing error)" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             fail!("User-facing error")
           end
@@ -31,7 +31,7 @@ RSpec.describe Axn do
 
     context "when exception raised" do
       let(:action) do
-        build_action do
+        build_axn do
           def call
             raise "Some internal issue!"
           end

@@ -17,7 +17,7 @@ RSpec.describe "One-off confirmation" do
   end
 
   let(:action) do
-    build_action do
+    build_axn do
       def call
         model_id # this confirms with_indifferent_access is working
         error_message # this confirms that the subfield reader is working when field given validations

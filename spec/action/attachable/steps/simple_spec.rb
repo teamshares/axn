@@ -13,7 +13,7 @@ RSpec.describe Axn::Attachable::Steps do
 
   context "when applied via .step" do
     let(:composed) do
-      build_action do
+      build_axn do
         exposes :num
 
         step :step1, expects: [:name], exposes: [:num] do
@@ -32,14 +32,14 @@ RSpec.describe Axn::Attachable::Steps do
 
   context "when applied via .steps" do
     let(:step1) do
-      build_axn(expects: [:name], exposes: [:num]) do
+      Axn::Factory.build(expects: [:name], exposes: [:num]) do
         puts "Step1:#{name}"
         expose :num, 11
       end
     end
 
     let(:step2) do
-      build_axn(expects: [:num]) do
+      Axn::Factory.build(expects: [:num]) do
         puts "Step2:#{num}"
       end
     end
@@ -48,7 +48,7 @@ RSpec.describe Axn::Attachable::Steps do
       stub_const("Step1", step1)
       stub_const("Step2", step2)
 
-      build_action do
+      build_axn do
         exposes :num
 
         steps(Step1, Step2)

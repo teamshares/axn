@@ -5,7 +5,7 @@ RSpec.describe "Testing Action" do
     context "with a mock" do
       subject(:result) { action.call!(sym:) }
 
-      let(:action) { build_action { expects :sym, type: Symbol } }
+      let(:action) { build_axn { expects :sym, type: Symbol } }
 
       context "with a symbol" do
         let(:sym) { :hello }
