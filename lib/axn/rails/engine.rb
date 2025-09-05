@@ -38,6 +38,11 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
             # No additional action needed
           end
         end
+
+        # Register the generator
+        generators do
+          require_relative "generators/axn_generator"
+        end
       end
     end
   end

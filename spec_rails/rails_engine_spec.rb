@@ -2,7 +2,12 @@
 
 require_relative "spec_helper"
 
-RSpec.describe Axn::Rails::Engine do
+RSpec.describe "Axn::Rails::Engine" do
+  before(:all) do
+    # Ensure Rails is fully initialized
+    Rails.application.initialize! unless Rails.application.initialized?
+  end
+
   describe "Engine loading" do
     it "loads the Engine when Rails is available" do
       expect(defined?(Axn::Rails::Engine)).to be_truthy

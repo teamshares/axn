@@ -12,7 +12,9 @@ end
 
 # Rails specs (separate from main specs to avoid loading Rails unnecessarily)
 task :spec_rails do
-  sh "bundle exec ruby -e \"require_relative 'spec_rails/spec_helper'; require_relative 'spec_rails/rails_engine_spec'; require_relative 'spec_rails/autoload_paths_spec'; RSpec::Core::Runner.run([])\""
+  Dir.chdir("spec_rails") do
+    sh "bundle exec rspec ."
+  end
 end
 
 require "rubocop/rake_task"

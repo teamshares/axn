@@ -3,6 +3,11 @@
 require_relative "spec_helper"
 
 RSpec.describe "Axn Rails autoload paths" do
+  before(:all) do
+    # Ensure Rails is fully initialized
+    Rails.application.initialize! unless Rails.application.initialized?
+  end
+
   describe "app/actions directory" do
     it "is added to autoload paths" do
       actions_path = Rails.root.join("app/actions")
@@ -24,10 +29,10 @@ RSpec.describe "Axn Rails autoload paths" do
 
   describe "Rails version compatibility" do
     it "handles Rails 7.1+ autoload path configuration" do
+      actions_path = Rails.root.join("app/actions")
       if Rails.version.to_f >= 7.1
         # For Rails 7.1+, we check if add_autoload_paths_to_load_path is enabled
         # and only add to $LOAD_PATH if it's explicitly enabled
-        actions_path = Rails.root.join("app/actions")
 
         if Rails.application.config.respond_to?(:add_autoload_paths_to_load_path) &&
            Rails.application.config.add_autoload_paths_to_load_path == true
@@ -38,7 +43,6 @@ RSpec.describe "Axn Rails autoload paths" do
         end
       else
         # For Rails < 7.1, autoload paths were automatically added to $LOAD_PATH
-        actions_path = Rails.root.join("app/actions")
         expect($LOAD_PATH).to include(actions_path.to_s)
       end
     end

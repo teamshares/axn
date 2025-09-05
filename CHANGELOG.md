@@ -7,6 +7,7 @@
 * [BREAKING] Move `Axn::Util` to `Axn::Internal::Logging`
 * [BREAKING] !! Move all `Action` to `Axn` (notably `include Action` is now `include Axn`)
 * [FEAT] Continues to support plain ruby usage, but when used alongside Rails now includes a Rails Engine integrate automaticaly (e.g. providing generators).
+* [FEAT] Added Rails generator `rails generate axn Some::Action::Name foo bar` to create action classes with expectations
 * [INTERNAL] Clearer hooks for supporting additional background providers in the future
 * [BREAKING] spec_helpers: removed rarely used `build_axn`; renamed existing `build_action` -> `build_axn`
 
