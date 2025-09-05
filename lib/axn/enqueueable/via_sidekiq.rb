@@ -5,13 +5,7 @@ module Axn
     module ViaSidekiq
       def self.included(base)
         base.class_eval do
-          begin
-            require "sidekiq"
-            include Sidekiq::Job
-          rescue LoadError
-            puts "Sidekiq not available -- skipping Enqueueable"
-            return
-          end
+          include Sidekiq::Job
 
           define_method(:perform) do |*args|
             context = self.class._params_from_global_id(args.first)
