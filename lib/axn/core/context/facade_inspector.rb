@@ -23,8 +23,8 @@ module Axn
 
       return "[OK]" if context.ok?
 
-      if context.exception.is_a?(Axn::Failure)
-        return context.exception.message.present? ? "[failed with '#{context.exception.message}']" : "[failed]"
+      if facade.outcome.failure?
+        return context.exception.default_message? ? "[failed]" : "[failed with '#{context.exception.message}']"
       end
 
       %([failed with #{context.exception.class.name}: '#{context.exception.message}'])
