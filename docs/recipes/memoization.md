@@ -6,7 +6,7 @@ For instance, at Teamshares we automatically add memoization support (via [memo_
 
 
 ```ruby
-  Action.configure do |c|
+  Axn.configure do |c|
     c.additional_includes = [TS::Memoization]
   end
 ```
@@ -29,7 +29,7 @@ And with those pieces in place `memo` is available in all Actions:
 
 ```ruby
 class ContrivedExample
-  include Action
+  include Axn
 
   exposes :nums
 

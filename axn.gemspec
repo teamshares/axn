@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.email = ["kali@teamshares.com"]
 
   spec.summary = "A terse convention for business logic"
-  spec.description = "Pattern for writing callable service objects with contract validation and error swallowing"
+  spec.description = "Pattern for writing callable service objects with contract validation and exception handling"
   spec.homepage = "https://github.com/teamshares/axn"
   spec.license = "MIT"
 
@@ -30,7 +30,11 @@ Gem::Specification.new do |spec|
   spec.files = Dir.chdir(__dir__) do
     `git ls-files -z`.split("\x0").reject do |f|
       (File.expand_path(f) == __FILE__) ||
-        f.start_with?(*%w[bin/ test/ spec/ spec_rubocop/ features/ examples/ .git .github appveyor Gemfile])
+        f.start_with?(*%w[
+                        bin/ test/ spec/ spec_rubocop/ spec_rails/ features/ examples/
+                        .git .github appveyor Gemfile Gemfile.lock yarn.lock .rspec_status pkg/
+                        node_modules/ tmp/ .rspec .rubocop .tool-versions package.json
+                      ])
     end
   end
   spec.bindir = "exe"
@@ -38,6 +42,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   # Core dependencies
-  spec.add_dependency "activemodel", "> 7.0"    # For contract validation
-  spec.add_dependency "activesupport", "> 7.0"  # For compact_blank and friends
+  spec.add_dependency "activemodel", ">= 7.2"    # For contract validation
+  spec.add_dependency "activesupport", ">= 7.2"  # For compact_blank and friends
 end

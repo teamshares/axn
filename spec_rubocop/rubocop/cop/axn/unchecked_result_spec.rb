@@ -7,12 +7,12 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
   include RuboCop::RSpec::ExpectOffense
   subject(:cop) { described_class.new }
 
-  context "when calling Actions from within Action classes" do
+  context "when calling Axns from within Axn classes" do
     context "with proper result handling" do
       it "accepts result.ok? check" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               return result unless result.ok?
@@ -25,7 +25,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result.failed? check" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               if result.failed?
@@ -40,7 +40,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result.error access" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               if result.error
@@ -55,7 +55,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result.exception access" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               if result.exception
@@ -70,7 +70,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result return" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               result
@@ -82,7 +82,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result used in expose" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             exposes :nested_result
             def call
               result = InnerAction.call(param: "value")
@@ -95,7 +95,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts result passed to method" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               process_result(result)
@@ -107,7 +107,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "accepts call! usage" do
         expect_no_offenses(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               InnerAction.call!(param: "value")
             end
@@ -120,10 +120,10 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "reports offense when result is not checked" do
         expect_offense(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               InnerAction.call(param: "value")
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Actions from within Actions
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Axns from within Axns
             end
           end
         RUBY
@@ -132,10 +132,10 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "reports offense when result is assigned but not used" do
         expect_offense(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
-                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Actions from within Actions
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Axns from within Axns
               # result is assigned but never checked
             end
           end
@@ -145,10 +145,10 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       it "reports offense when result is assigned but only used in unrelated context" do
         expect_offense(<<~RUBY)
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
-                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Actions from within Actions
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Axn/UncheckedResult: Use `call!` or check `result.ok?` when calling Axns from within Axns
               some_other_method(result.some_other_attribute)
             end
           end
@@ -157,8 +157,8 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
     end
   end
 
-  context "when not inside Action classes" do
-    it "accepts Action calls in regular classes" do
+  context "when not inside Axn classes" do
+    it "accepts Axn calls in regular classes" do
       expect_no_offenses(<<~RUBY)
         class RegularClass
           def some_method
@@ -168,7 +168,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
       RUBY
     end
 
-    it "accepts Action calls in regular methods" do
+    it "accepts Axn calls in regular methods" do
       expect_no_offenses(<<~RUBY)
         class SomeClass
           include Action
@@ -180,8 +180,8 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
     end
   end
 
-  context "when inside Action classes but not in call method" do
-    it "accepts Action calls in other methods" do
+  context "when inside Axn classes but not in call method" do
+    it "accepts Axn calls in other methods" do
       expect_no_offenses(<<~RUBY)
         class OuterAction
           include Action
@@ -248,12 +248,93 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
     end
   end
 
+  context "with Actions namespace configured" do
+    subject(:cop) { described_class.new(config) }
+    let(:config) { RuboCop::Config.new({ "Axn/UncheckedResult" => { "ActionsNamespace" => "Actions" } }) }
+
+    it "only checks calls on Actions::* classes" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # This should NOT trigger the cop since SomeService is not under Actions::
+            SomeService.call(param: "value")
+
+            # This should trigger the cop since it's under Actions::
+            result = Actions::InnerAction.call(param: "value")
+            return result unless result.ok?
+          end
+        end
+      RUBY
+    end
+
+    it "reports offense for Actions::* calls without proper handling" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            Actions::InnerAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+
+    it "ignores non-Actions::* calls even without proper handling" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # These should NOT trigger the cop since they're not under Actions::
+            SomeService.call(param: "value")
+            AnotherService.call(param: "value")
+            MyClass.call(param: "value")
+          end
+        end
+      RUBY
+    end
+
+    it "handles nested Actions::* calls correctly" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            Actions::InnerAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+
+            # This should also trigger since it's under Actions::
+            Actions::AnotherAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+  end
+
+  context "without Actions namespace configured" do
+    subject(:cop) { described_class.new(config) }
+    let(:config) { RuboCop::Config.new({ "Axn/UncheckedResult" => {} }) }
+
+    it "falls back to checking all .call methods" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # Without namespace, this should trigger the cop
+            SomeService.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+  end
+
   context "edge cases" do
     it "handles nested class definitions" do
       expect_no_offenses(<<~RUBY)
         module Actions
           class OuterAction
-            include Action
+            include Axn
             def call
               result = InnerAction.call(param: "value")
               return result unless result.ok?

@@ -21,6 +21,20 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 
 If you're using an APM provider, observability can be greatly enhanced by [configuring tracing and metrics hooks](/reference/configuration#tracing-and-metrics).
 
+### Rails Integration (Optional)
+
+When using Axn in a Rails application, you can configure how actions are autoloaded from the `app/actions` directory. By default, actions are loaded without any namespace, but you can configure a namespace to help differentiate them from existing service objects:
+
+```ruby
+# config/initializers/axn.rb
+Axn.configure do |c|
+  # Use :Actions namespace to differentiate from existing service objects
+  c.rails.app_actions_autoload_namespace = :Actions
+end
+```
+
+This is particularly useful when migrating from existing service object patterns, as it makes it easy to distinguish between new Axn actions and legacy service objects when you see `action.call` in your codebase.
+
 ### Code Quality (Optional)
 
 For teams using RuboCop, Axn provides custom cops to enforce best practices. See the [RuboCop Integration guide](/recipes/rubocop-integration) for setup instructions.

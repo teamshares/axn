@@ -3,14 +3,10 @@
 module Axn
   module Testing
     module SpecHelpers
-      def build_action(&block)
-        action = Class.new.send(:include, Action)
+      def build_axn(&block)
+        action = Class.new.send(:include, Axn)
         action.class_eval(&block) if block
         action
-      end
-
-      def build_axn(**, &)
-        Axn::Factory.build(**, &)
       end
     end
   end

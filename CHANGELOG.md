@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+* [BREAKING] Removed `#try` method
+* [BREAKING] Removed `Axn()` method sugar (use `Axn::Factory.build` directly)
+* [BREAKING] Renamed `Action::Configuration` + `Action.config` -> `Axn::Configuration` + `Axn.config`
+* [BREAKING] Move `Axn::Util` to `Axn::Internal::Logging`
+* [BREAKING] !! Move all `Action` to `Axn` (notably `include Action` is now `include Axn`)
+* [FEAT] Continues to support plain ruby usage, but when used alongside Rails now includes a Rails Engine integrate automatically (e.g. providing generators).
+  * Added Rails generator `rails generate axn Some::Action::Name foo bar` to create action classes with expectations
+  * Autoload actions from `app/actions` (add config.rails.app_actions_autoload_namespace to allow setting custom namespace)
+* [INTERNAL] Clearer hooks for supporting additional background providers in the future
+* [BREAKING] spec_helpers: removed rarely used `build_axn`; renamed existing `build_action` -> `build_axn`
+* [FEAT] `Axn::Factory.build` can receive a callable OR a block
+* [FEAT] Added `#finalized?` method to `Axn::Result` to check if result has completed execution
+
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues
 * [BUGFIX] `default_error` and `default_success` are now properly available for before hooks

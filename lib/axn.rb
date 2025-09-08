@@ -2,26 +2,23 @@
 
 require "active_support"
 
-module Axn; end
+# Standalone
 require "axn/version"
-require "axn/util"
 require "axn/factory"
+require "axn/configuration"
+require "axn/exceptions"
 
-require "action/configuration"
-require "action/exceptions"
+# The core implementation
+require "axn/core"
 
-require "action/core"
+# Extensions
+require "axn/attachable"
+require "axn/enqueueable"
 
-require "action/attachable"
-require "action/enqueueable"
+# Rails integration (if in Rails context)
+require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 
-def Axn(callable, **) # rubocop:disable Naming/MethodName
-  return callable if callable.is_a?(Class) && callable < Action
-
-  Axn::Factory.build(**, &callable)
-end
-
-module Action
+module Axn
   def self.included(base)
     base.class_eval do
       include Core
@@ -31,7 +28,7 @@ module Action
       include Enqueueable
 
       # Allow additional automatic includes to be configured
-      Array(Action.config.additional_includes).each { |mod| include mod }
+      Array(Axn.config.additional_includes).each { |mod| include mod }
     end
   end
 end

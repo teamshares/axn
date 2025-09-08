@@ -17,7 +17,7 @@ Your logic goes in a <abbr title="Plain Old Ruby Object">PORO</abbr>. The only r
 
 ```ruby
 class Foo
-  include Action
+  include Axn
 
   def call
     log "Doesn't do much, but this technically works..."
@@ -52,7 +52,7 @@ If any declared expectations or exposures are _not_ met the action will fail, se
 
 ```ruby
 class Actions::Slack::Post
-  include Action
+  include Axn
   VALID_CHANNELS = [ ... ]
 
   expects :channel, default: VALID_CHANNELS.first, inclusion: { in: VALID_CHANNELS } # [!code focus:4]
@@ -76,7 +76,7 @@ end
 ## Return interface {#return-interface}
 
 
-The return value of an Action call is always an `Action::Result`, which provides a consistent interface:
+The return value of an Axn call is always an `Axn::Result`, which provides a consistent interface:
 
 * `ok?` will return a boolean (false if any errors or exceptions occurred, otherwise true)
   * if OK, `success` will return a string that is _safe to show end users_
@@ -140,7 +140,7 @@ When configuring custom error and success messages, remember to define your stat
 
 ```ruby
 class MyAction
-  include Action
+  include Axn
 
   # Static fallback messages first
   success "Default success message"

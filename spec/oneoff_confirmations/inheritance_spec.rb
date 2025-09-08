@@ -7,7 +7,7 @@
 module CustomActionWithFoo
   def self.included(base)
     base.class_eval do
-      include Action
+      include Axn
       expects :foo, type: Numeric, numericality: { greater_than: 10 }
       exposes :bar, type: Numeric
       def call
@@ -42,12 +42,12 @@ RSpec.describe "One-off confirmation: inheritance via explicit" do
       subject { action.call(foo: 1) }
 
       it { is_expected.not_to be_ok }
-      it { expect(subject.exception).to be_a(Action::InboundValidationError) }
+      it { expect(subject.exception).to be_a(Axn::InboundValidationError) }
     end
   end
 
   context "when called directly" do
-    let(:action) { build_action { include CustomActionWithFoo } }
+    let(:action) { build_axn { include CustomActionWithFoo } }
     it_behaves_like "an action", 110
   end
 

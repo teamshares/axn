@@ -1,0 +1,25 @@
+# frozen_string_literal: true
+
+RSpec.describe <%= class_name %> do
+<% if expectations.any? -%>
+<% expectations.each do |expectation| -%>
+  let(:<%= expectation %>) { "<%= expectation %>" }
+<% end -%>
+
+<% end -%>
+  describe ".call" do
+    subject(:result) { described_class.call(<%= expectations.any? ? expectations.map { |exp| "#{exp}:" }.join(", ") : "" %>) }
+
+    it "executes successfully" do
+      expect(result).to be_ok
+    end
+<% if expectations.any? -%>
+
+    it "TODO: replace with a meaningful failure case" do
+      result = described_class.call
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Something went wrong")
+    end
+<% end -%>
+  end
+end

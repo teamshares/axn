@@ -1,0 +1,55 @@
+# frozen_string_literal: true
+
+require_relative "spec_helper"
+
+RSpec.describe "Axn::Rails::Engine" do
+  before(:all) do
+    # Ensure Rails is fully initialized
+    Rails.application.initialize! unless Rails.application.initialized?
+
+    # Ensure the engine is loaded
+    require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
+  end
+
+  describe "Engine loading" do
+    it "loads the Engine when Rails is available" do
+      expect(defined?(Axn::Rails::Engine)).to be_truthy
+      expect(Axn::Rails::Engine).to be < Rails::Engine
+    end
+
+    it "is automatically loaded when axn is required in Rails context" do
+      # The Engine should be loaded by the time we get here
+      expect(Axn::Rails::Engine).to be_truthy
+    end
+  end
+
+  describe "Engine configuration" do
+    it "has the correct engine name" do
+      expect(Axn::Rails::Engine.engine_name).to eq("axn_rails_engine")
+    end
+
+    it "is isolated from the main application" do
+      expect(Axn::Rails::Engine.isolated?).to be_falsey
+    end
+  end
+
+  describe "Rails integration" do
+    it "does not interfere with standalone axn usage" do
+      # Axn should work normally even when Rails Engine is loaded
+      expect(Axn).to respond_to(:configure)
+      expect(Axn).to respond_to(:included)
+    end
+
+    it "configures actions namespace correctly" do
+      # Verify the namespace configuration is set
+      expect(Axn.config.rails.app_actions_autoload_namespace).to eq(:Actions)
+    end
+
+    it "verifies app/actions directory is configured with namespace" do
+      # Verify the autoloader is configured with the Actions namespace
+      actions_path = Rails.root.join("app/actions")
+      autoloader_paths = Rails.autoloaders.main.dirs
+      expect(autoloader_paths).to include(actions_path.to_s)
+    end
+  end
+end

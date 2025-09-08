@@ -4,11 +4,11 @@ This directory contains custom RuboCop cops specifically designed for the Axn li
 
 ## Axn/UncheckedResult
 
-This cop enforces proper result handling when calling Actions. It can be configured to check nested calls, non-nested calls, or both.
+This cop enforces proper result handling when calling Axns. It can be configured to check nested calls, non-nested calls, or both.
 
 ### Why This Rule Exists
 
-When Actions are nested, proper error handling becomes crucial. Without proper result checking, failures in nested Actions can be silently ignored, leading to:
+When Axns are nested, proper error handling becomes crucial. Without proper result checking, failures in nested Axns can be silently ignored, leading to:
 
 - Silent failures that are hard to debug
 - Inconsistent error handling patterns
@@ -21,8 +21,8 @@ The cop supports flexible configuration to match your team's needs:
 ```yaml
 Axn/UncheckedResult:
   Enabled: true
-  CheckNested: true      # Check nested Action calls (default: true)
-  CheckNonNested: true   # Check non-nested Action calls (default: true)
+  CheckNested: true      # Check nested Axn calls (default: true)
+  CheckNonNested: true   # Check non-nested Axn calls (default: true)
   Severity: warning      # or error, if you want to enforce it strictly
 ```
 
@@ -33,21 +33,21 @@ Axn/UncheckedResult:
    CheckNested: true
    CheckNonNested: true
    ```
-   Checks all Action calls regardless of nesting.
+   Checks all Axn calls regardless of nesting.
 
 2. **Nested Only**:
    ```yaml
    CheckNested: true
    CheckNonNested: false
    ```
-   Only checks Action calls from within other Actions.
+   Only checks Axn calls from within other Axns.
 
 3. **Non-Nested Only**:
    ```yaml
    CheckNested: false
    CheckNonNested: true
    ```
-   Only checks top-level Action calls.
+   Only checks top-level Axn calls.
 
 4. **Disabled**:
    ```yaml
@@ -62,7 +62,7 @@ Axn/UncheckedResult:
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     InnerAction.call(param: "value")  # Missing result check
     # This will always continue even if InnerAction fails
@@ -74,7 +74,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     InnerAction.call!(param: "value")  # Using call! ensures exceptions bubble up
   end
@@ -85,7 +85,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     return result unless result.ok?
@@ -98,7 +98,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     if result.failed?
@@ -113,7 +113,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     if result.error
@@ -128,7 +128,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     result  # Result is returned, so it's properly handled
@@ -140,7 +140,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   exposes :nested_result
   def call
     result = InnerAction.call(param: "value")
@@ -153,7 +153,7 @@ end
 
 ```ruby
 class OuterAction
-  include Action
+  include Axn
   def call
     result = InnerAction.call(param: "value")
     process_result(result)  # Result is used, so it's properly handled
@@ -165,19 +165,19 @@ end
 
 The cop analyzes your code to determine if you're:
 
-1. **Inside an Action class** - Classes that `include Action`
+1. **Inside an Axn class** - Classes that `include Axn`
 2. **Inside the `call` method** - Only the main execution method
-3. **Calling another Action** - Using `.call` on Action classes
+3. **Calling another Axn** - Using `.call` on Axn classes
 4. **Properly handling the result** - One of the acceptable patterns above
 
 ### What the Cop Ignores
 
 The cop will NOT report offenses for:
 
-- Action calls outside of Action classes
-- Action calls in methods other than `call`
-- Action calls that use `call!` (bang method)
-- Action calls where the result is properly handled
+- Axn calls outside of Axn classes
+- Axn calls in methods other than `call`
+- Axn calls that use `call!` (bang method)
+- Axn calls where the result is properly handled
 
 ### Configuration
 
@@ -189,8 +189,8 @@ require:
 
 Axn/UncheckedResult:
   Enabled: true
-  CheckNested: true      # Check nested Action calls
-  CheckNonNested: true   # Check non-nested Action calls
+  CheckNested: true      # Check nested Axn calls
+  CheckNonNested: true   # Check non-nested Axn calls
   Severity: warning      # or error, if you want to enforce it strictly
 ```
 

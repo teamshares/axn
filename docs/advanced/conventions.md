@@ -32,7 +32,7 @@ More generally, we've adopted the convention of passing in the responsible user 
 
   ```ruby
   class Foo
-    include Action
+    include Axn
     expects :actor, type: User # [!code focus]
   end
   ```

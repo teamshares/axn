@@ -8,7 +8,7 @@
 
 * `context_for_logging` (and decent #inspect support)
 
-* Configuring logging (will default to Rails.logger if available, else fall back to basic Logger (but can explicitly set via e.g. `Action.config.logger = Logger.new($stdout`))
+* Configuring logging (will default to Rails.logger if available, else fall back to basic Logger (but can explicitly set via e.g. `Axn.config.logger = Logger.new($stdout`))
 
     * Note `context_for_logging` is available (filtered to accessible attrs, filtering out sensitive values). Automatically passed into `on_exception` hook.
 

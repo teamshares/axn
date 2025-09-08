@@ -11,7 +11,7 @@ RSpec.shared_examples "can build Axns from callables" do
     it "builds an Axn from a callable" do
       expect(Axn::Factory).to receive(:build).and_call_original
       expect(callable).to be_a(Proc)
-      expect(axn < Action).to eq(true)
+      expect(axn < Axn).to eq(true)
       expect(axn.call(expected: true, arg: 123)).to be_ok
       expect(axn.call).not_to be_ok
     end
@@ -138,7 +138,7 @@ RSpec.shared_examples "can build Axns from callables" do
       -> { raise "error" }
     end
 
-    let(:kwargs) { { error: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "overridden msg", if: -> { true }) } }
+    let(:kwargs) { { error: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "overridden msg", if: -> { true }) } }
 
     it "works correctly" do
       expect(axn.call.error).to eq("overridden msg")
@@ -153,7 +153,7 @@ RSpec.shared_examples "can build Axns from callables" do
     context "with success descriptor" do
       let(:kwargs) do
         {
-          success: Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
+          success: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
           error: "Default error",
         }
       end
@@ -169,7 +169,7 @@ RSpec.shared_examples "can build Axns from callables" do
         {
           success: [
             "Simple success",
-            Action::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Conditional success", if: -> { false }),
+            Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Conditional success", if: -> { false }),
           ],
         }
       end
@@ -186,7 +186,7 @@ RSpec.shared_examples "can build Axns from callables" do
     context "with callback descriptors" do
       let(:kwargs) do
         {
-          on_success: Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+          on_success: Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
           on_error: -> { puts "error callback" },
         }
       end
@@ -203,7 +203,7 @@ RSpec.shared_examples "can build Axns from callables" do
         {
           on_success: [
             -> { puts "simple success" },
-            Action::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
+            Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "conditional success" }, if: -> { false }),
           ],
         }
       end
@@ -224,7 +224,7 @@ RSpec.shared_examples "can build Axns from callables" do
     it "raises error when passing hash directly" do
       expect do
         Axn::Factory.build(success: { message: "test", prefix: "user" }, &callable)
-      end.to raise_error(Action::UnsupportedArgument, /Cannot pass hash directly to success/)
+      end.to raise_error(Axn::UnsupportedArgument, /Cannot pass hash directly to success/)
     end
   end
 
@@ -285,12 +285,12 @@ RSpec.shared_examples "can build Axns from callables" do
       end
 
       # Register it with the strategy system
-      Action::Strategies.register(:test_strategy, test_strategy)
+      Axn::Strategies.register(:test_strategy, test_strategy)
     end
 
     after do
       # Clean up the strategy registry
-      Action::Strategies.clear!
+      Axn::Strategies.clear!
     end
 
     context "with simple strategy name" do
@@ -325,28 +325,66 @@ RSpec.shared_examples "can build Axns from callables" do
 end
 
 RSpec.describe Axn::Factory do
+  context "with proc/lambda as positional argument" do
+    let(:callable) do
+      ->(arg:, expected:) { log "got expected=#{expected}, arg=#{arg}" }
+    end
+
+    it "builds an Axn from a proc" do
+      axn = Axn::Factory.build(callable, expects: %i[arg expected])
+      expect(axn < Axn).to eq(true)
+      expect(axn.call(expected: true, arg: 123)).to be_ok
+      expect(axn.call).not_to be_ok
+    end
+
+    it "builds an Axn from a lambda" do
+      lambda_callable = ->(arg:, expected:) { log "got expected=#{expected}, arg=#{arg}" }
+      axn = Axn::Factory.build(lambda_callable, expects: %i[arg expected])
+      expect(axn < Axn).to eq(true)
+      expect(axn.call(expected: true, arg: 123)).to be_ok
+    end
+
+    it "works with expose_return_as" do
+      axn = Axn::Factory.build(-> { 123 }, expose_return_as: :value)
+      expect(axn.call).to be_ok
+      expect(axn.call.value).to eq(123)
+    end
+
+    it "works with expects and exposes" do
+      axn = Axn::Factory.build(
+        -> { expose :num, arg * 10 },
+        expects: :arg,
+        exposes: [:num],
+        success: "success",
+        error: "error",
+      )
+
+      expect(axn.call).not_to be_ok
+      expect(axn.call.error).to eq("error")
+
+      expect(axn.call(arg: 1)).to be_ok
+      expect(axn.call(arg: 1).success).to eq("success")
+      expect(axn.call(arg: 1).num).to eq(10)
+    end
+
+    it "raises error when neither callable nor block provided" do
+      expect do
+        Axn::Factory.build
+      end.to raise_error(ArgumentError, /Must provide either a callable or a block/)
+    end
+
+    it "raises error when both callable and block provided" do
+      callable = -> { "from callable" }
+      block = -> { "from block" }
+
+      expect do
+        Axn::Factory.build(callable, expose_return_as: :value, &block)
+      end.to raise_error(ArgumentError, /Cannot receive both a callable and a block/)
+    end
+  end
+
   let(:builder) { -> { Axn::Factory.build(**kwargs, &callable) } }
   let(:kwargs) { {} }
 
   it_behaves_like "can build Axns from callables"
-end
-
-RSpec.describe "Axn()" do
-  let(:builder) { -> { Axn(callable, **kwargs) } }
-  let(:kwargs) { {} }
-
-  it_behaves_like "can build Axns from callables"
-
-  context "when already Axn" do
-    subject(:axn) { builder.call }
-    let(:callable) { build_action { log "in action" } }
-
-    it "returns the Axn" do
-      expect(Axn::Factory).not_to receive(:build)
-
-      expect(callable < Action).to eq(true)
-      expect(axn < Action).to eq(true)
-      expect(axn.call).to be_ok
-    end
-  end
 end

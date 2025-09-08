@@ -31,7 +31,7 @@ The `step` method allows you to define steps inline with blocks:
 
 ```ruby
 class UserRegistration
-  include Action
+  include Axn
   expects :email, :password, :name
   exposes :user_id, :welcome_message
 
@@ -66,7 +66,7 @@ The `steps` method allows you to compose existing action classes:
 
 ```ruby
 class ValidateInput
-  include Action
+  include Axn
   expects :email, :password, :name
   exposes :validated_data
 
@@ -80,7 +80,7 @@ class ValidateInput
 end
 
 class CreateUser
-  include Action
+  include Axn
   expects :validated_data
   exposes :user_id
 
@@ -91,7 +91,7 @@ class CreateUser
 end
 
 class SendWelcome
-  include Action
+  include Axn
   expects :user_id, :validated_data
   exposes :welcome_message
 
@@ -102,7 +102,7 @@ class SendWelcome
 end
 
 class UserRegistration
-  include Action
+  include Axn
   expects :email, :password, :name
   exposes :user_id, :welcome_message
 
@@ -117,7 +117,7 @@ You can combine both approaches:
 
 ```ruby
 class UserRegistration
-  include Action
+  include Axn
   expects :email, :password, :name
   exposes :user_id, :welcome_message
 
@@ -292,7 +292,7 @@ end
 
 ```ruby
 class ProcessAPIRequest
-  include Action
+  include Axn
   expects :request_data
   exposes :response_data
 

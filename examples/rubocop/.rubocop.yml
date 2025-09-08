@@ -1,0 +1,17 @@
+# Example RuboCop configuration for Axn with Actions namespace
+# This configuration reduces false positives by only checking Actions::* classes
+
+require:
+  - axn/rubocop
+
+AllCops:
+  NewCops: enable
+
+Axn/UncheckedResult:
+  # Only check calls on Actions::* classes when this is set
+  # This reduces false positives from other service objects
+  ActionsNamespace: "Actions"
+
+  # Other configuration options
+  CheckNested: true
+  CheckNonNested: true

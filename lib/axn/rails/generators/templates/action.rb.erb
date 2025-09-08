@@ -1,0 +1,17 @@
+# frozen_string_literal: true
+
+class <%= class_name %>
+  include Axn
+<% if expectations.any? -%>
+
+<% expectations.each do |expectation| -%>
+  expects :<%= expectation %>
+<% end -%>
+
+<% else -%>
+
+<% end -%>
+  def call
+    # TODO: Implement action logic
+  end
+end
