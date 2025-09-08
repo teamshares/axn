@@ -6,6 +6,10 @@ module RuboCop
       # This cop enforces that when calling Axns from within other Axns,
       # you must either use `call!` (with the bang) or check `result.ok?`.
       #
+      # When the ActionsNamespace configuration is set (e.g., to "Actions"),
+      # the cop will only check calls on classes under that namespace,
+      # reducing false positives from other service objects.
+      #
       # @example
       #   # bad
       #   class OuterAction
@@ -33,11 +37,47 @@ module RuboCop
       #     end
       #   end
       #
+      # @example With ActionsNamespace configured
+      #   # .rubocop.yml
+      #   Axn/UncheckedResult:
+      #     ActionsNamespace: "Actions"
+      #
+      #   # This will only check Actions::* classes, not other service objects
+      #   class OuterAction
+      #     include Axn
+      #     def call
+      #       SomeService.call(param: "value")  # Won't trigger cop
+      #       Actions::InnerAction.call(param: "value")  # Will trigger cop
+      #     end
+      #   end
+      #
       # rubocop:disable Metrics/ClassLength
       class UncheckedResult < RuboCop::Cop::Base
         extend RuboCop::Cop::AutoCorrector
 
         MSG = "Use `call!` or check `result.ok?` when calling Axns from within Axns"
+
+        # Define the configuration schema
+        def self.configuration_schema
+          @configuration_schema ||= RuboCop::ConfigSchema::Schema.new(
+            {
+              "ActionsNamespace" => {
+                "type" => "string",
+                "description" => 'Only check calls on classes under this namespace (e.g., "Actions")',
+              },
+              "CheckNested" => {
+                "type" => "boolean",
+                "description" => "Check nested Axn calls",
+                "default" => true,
+              },
+              "CheckNonNested" => {
+                "type" => "boolean",
+                "description" => "Check non-nested Axn calls",
+                "default" => true,
+              },
+            },
+          )
+        end
 
         # Configuration options
         def check_nested?
@@ -103,6 +143,7 @@ module RuboCop
 
         def on_send(node)
           return unless axn_call?(node)
+          return unless axn_action_call?(node)
           return if bang_call?(node)
           return unless inside_axn_call_method?(node)
 
@@ -116,6 +157,51 @@ module RuboCop
         end
 
         private
+
+        def axn_action_call?(node)
+          # Get the receiver of the call method
+          receiver = node.children[0]
+          return false unless receiver&.type == :const
+
+          # Get the constant name - handle both simple constants and namespaced constants
+          const_name = get_constant_name(receiver)
+          return false unless const_name
+
+          # Check if we have the Actions namespace configured
+          namespace = actions_namespace
+
+          return const_name.start_with?("#{namespace}::") if namespace
+
+          # If Actions namespace is configured, only check calls on Actions::* classes
+
+          # If no namespace is configured, we can't be as precise
+          # Fall back to checking if the class includes Axn (more complex)
+          true
+        rescue StandardError => _e
+          # If there's any error, assume it's not an Axn action call
+          false
+        end
+
+        def get_constant_name(const_node)
+          # Handle both simple constants (const :SomeClass) and namespaced constants (const (const nil :Actions) :SomeClass)
+          if const_node.children[0]&.type == :const
+            # This is a namespaced constant like Actions::SomeClass
+            namespace = get_constant_name(const_node.children[0])
+            class_name = const_node.children[1]
+            "#{namespace}::#{class_name}"
+          else
+            # This is a simple constant like SomeClass
+            const_node.children[1]
+          end
+        end
+
+        def actions_namespace
+          # First try to get from RuboCop configuration
+          cop_config["ActionsNamespace"]&.to_s
+        rescue StandardError => _e
+          # If there's any error accessing the configuration, return nil
+          nil
+        end
 
         def inside_axn_call_method?(node)
           # Check if we're inside a call method of an Axn class

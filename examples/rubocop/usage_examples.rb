@@ -8,7 +8,7 @@ class BadOuterAction
   include Axn
 
   def call
-    InnerAction.call(param: "value") # Offense: Use `call!` or check `result.ok?`
+    InnerAction.call(param: 'value') # Offense: Use `call!` or check `result.ok?`
     # This will always continue even if InnerAction fails
   end
 end
@@ -19,7 +19,7 @@ class AnotherBadAction
 
   def call
     # rubocop:disable Lint/UselessAssignment
-    result = InnerAction.call(param: "value") # Offense: Use `call!` or check `result.ok?`
+    result = InnerAction.call(param: 'value') # Offense: Use `call!` or check `result.ok?`
     # rubocop:enable Lint/UselessAssignment
     # result is assigned but never checked
   end
@@ -30,7 +30,7 @@ class GoodBangAction
   include Axn
 
   def call
-    InnerAction.call!(param: "value") # Good: Using call! ensures exceptions bubble up
+    InnerAction.call!(param: 'value') # Good: Using call! ensures exceptions bubble up
   end
 end
 
@@ -39,7 +39,7 @@ class GoodCheckAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     result unless result.ok?
     # Process successful result...
   end
@@ -50,7 +50,7 @@ class GoodFailedCheckAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     return unless result.failed?
 
     result
@@ -64,7 +64,7 @@ class GoodErrorCheckAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     return unless result.error
 
     result
@@ -78,7 +78,7 @@ class GoodReturnAction
   include Axn
 
   def call
-    InnerAction.call(param: "value")
+    InnerAction.call(param: 'value')
     # Good: Result is returned, so it's properly handled
   end
 end
@@ -90,7 +90,7 @@ class GoodExposeAction
   exposes :nested_result
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     expose nested_result: result # Good: Result is used, so it's properly handled
   end
 end
@@ -100,7 +100,7 @@ class GoodMethodPassAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     process_result(result) # Good: Result is used, so it's properly handled
   end
 
@@ -116,7 +116,7 @@ class GoodComplexAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
 
     if result.ok?
       process_success(result)
@@ -141,10 +141,10 @@ class GoodEarlyReturnAction
   include Axn
 
   def call
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     return result unless result.ok?
 
-    another_result = AnotherAction.call(param: "value")
+    another_result = AnotherAction.call(param: 'value')
     another_result unless another_result.ok?
 
     # Process both successful results...
@@ -173,18 +173,18 @@ class MixedAction
 
   def call
     # This is fine
-    result = InnerAction.call(param: "value")
+    result = InnerAction.call(param: 'value')
     result unless result.ok?
   end
 
   def other_method
-    InnerAction.call(param: "value") # No offense: not in call method
+    InnerAction.call(param: 'value') # No offense: not in call method
   end
 end
 
 # ❌ BAD: Action call in regular class - no offense (cop only checks Axn classes)
 class RegularClass
   def some_method
-    InnerAction.call(param: "value") # No offense: not in Axn class
+    InnerAction.call(param: 'value') # No offense: not in Axn class
   end
 end
