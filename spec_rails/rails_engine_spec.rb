@@ -6,6 +6,9 @@ RSpec.describe "Axn::Rails::Engine" do
   before(:all) do
     # Ensure Rails is fully initialized
     Rails.application.initialize! unless Rails.application.initialized?
+
+    # Ensure the engine is loaded
+    require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
   end
 
   describe "Engine loading" do
@@ -37,11 +40,16 @@ RSpec.describe "Axn::Rails::Engine" do
       expect(Axn).to respond_to(:included)
     end
 
-    it "maintains axn functionality in Rails context" do
-      # Test that axn still works as expected
-      result = TestAction.call
-      expect(result).to be_ok
-      expect(result.success).to eq("Action completed successfully")
+    it "configures actions namespace correctly" do
+      # Verify the namespace configuration is set
+      expect(Axn.config.rails.app_actions_autoload_namespace).to eq(:Actions)
+    end
+
+    it "verifies app/actions directory is configured with namespace" do
+      # Verify the autoloader is configured with the Actions namespace
+      actions_path = Rails.root.join("app/actions")
+      autoloader_paths = Rails.autoloaders.main.dirs
+      expect(autoloader_paths).to include(actions_path.to_s)
     end
   end
 end

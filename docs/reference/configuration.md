@@ -115,6 +115,33 @@ Sets the log level used when you call `log "Some message"` in your Action.  Note
 
 Automatically detects the environment from `RACK_ENV` or `RAILS_ENV`, defaulting to `"development"`. This is used internally for conditional behavior (e.g., more verbose logging in non-production environments).
 
+## Rails-specific Configuration
+
+When using Axn in a Rails application, additional configuration options are available under `Axn.config.rails`:
+
+### `app_actions_autoload_namespace`
+
+Controls the namespace for actions in `app/actions`. Defaults to `nil` (no namespace).
+
+```ruby
+Axn.configure do |c|
+  # No namespace (default behavior)
+  c.rails.app_actions_autoload_namespace = nil
+
+  # Use Actions namespace
+  c.rails.app_actions_autoload_namespace = :Actions
+
+  # Use any other namespace
+  c.rails.app_actions_autoload_namespace = :MyApp
+end
+```
+
+When `nil` (default), actions in `app/actions/user_management/create_user.rb` will be available as `UserManagement::CreateUser`.
+
+When set to `:Actions`, the same action will be available as `Actions::UserManagement::CreateUser`.
+
+When set to any other symbol (e.g., `:MyApp`), the action will be available as `MyApp::UserManagement::CreateUser`.
+
 ## Automatic Logging
 
 By default, every `action.call` will emit log lines when it is called and after it completes:
@@ -180,5 +207,8 @@ Axn.configure do |c|
 
   # Global includes
   c.additional_includes = [MyCustomModule]
+
+  # Rails-specific configuration
+  c.rails.app_actions_autoload_namespace = :Actions
 end
 ```

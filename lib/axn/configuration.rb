@@ -1,13 +1,19 @@
 # frozen_string_literal: true
 
 module Axn
+  class RailsConfiguration
+    attr_accessor :app_actions_autoload_namespace
+  end
+
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
 
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
+
+    def rails = @rails ||= RailsConfiguration.new
 
     def on_exception(e, action:, context: {})
       msg = "Handled exception (#{e.class.name}): #{e.message}"

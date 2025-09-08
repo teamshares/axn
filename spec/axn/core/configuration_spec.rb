@@ -1,5 +1,25 @@
 # frozen_string_literal: true
 
+RSpec.describe Axn::RailsConfiguration do
+  subject(:config) { described_class.new }
+
+  describe "#app_actions_autoload_namespace" do
+    it "defaults to nil" do
+      expect(config.app_actions_autoload_namespace).to be_nil
+    end
+
+    it "can be set to a symbol" do
+      config.app_actions_autoload_namespace = :Actions
+      expect(config.app_actions_autoload_namespace).to eq(:Actions)
+    end
+
+    it "can be set to nil explicitly" do
+      config.app_actions_autoload_namespace = nil
+      expect(config.app_actions_autoload_namespace).to be_nil
+    end
+  end
+end
+
 RSpec.describe Axn::Configuration do
   subject(:config) { described_class.new }
 
@@ -8,6 +28,16 @@ RSpec.describe Axn::Configuration do
     it { expect(config.additional_includes).to eq([]) }
     it { expect(config.logger).to be_a(Logger) }
     it { expect(config.env.test?).to eq(true) }
+  end
+
+  describe "#rails" do
+    it "returns a RailsConfiguration instance" do
+      expect(config.rails).to be_a(Axn::RailsConfiguration)
+    end
+
+    it "returns the same instance on subsequent calls" do
+      expect(config.rails).to be(config.rails)
+    end
   end
 
   describe "#env" do

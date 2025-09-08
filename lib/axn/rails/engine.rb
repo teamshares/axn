@@ -12,30 +12,29 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
         # as a standalone library that can be used in any Ruby context
 
         # However, when used alongside Rails, we ensure that the app/actions
-        # directory is automatically added to the autoload paths so that Rails can
+        # directory is automatically added to the autoloader so that Rails can
         # automatically load the actions.
-        initializer "axn.add_app_actions_to_autoload" do |app|
+        initializer "axn.add_app_actions_to_autoload", after: :load_config_initializers do |app|
           actions_path = app.root.join("app/actions")
 
           # Only add if the directory exists
           return unless File.directory?(actions_path)
 
-          # Add to autoload paths (works for all Rails versions)
-          app.config.autoload_paths += [actions_path] unless app.config.autoload_paths.include?(actions_path)
-          app.config.eager_load_paths += [actions_path] unless app.config.eager_load_paths.include?(actions_path)
+          # Use modern Rails autoloader API (Rails 7.2+)
+          # Namespace is configurable via Axn.config.rails.app_actions_autoload_namespace
+          autoload_namespace = Axn.config.rails.app_actions_autoload_namespace
 
-          # Handle Rails 7.1+ changes to autoloading
-          # In Rails 7.1+, autoload paths are no longer automatically added to $LOAD_PATH
-          # This is generally fine for autoloading, but we can add it if needed for compatibility
-          if ::Rails.version.to_f >= 7.1
-            # Check if the app has explicitly enabled adding autoload paths to load path
-            if app.config.respond_to?(:add_autoload_paths_to_load_path) &&
-               app.config.add_autoload_paths_to_load_path == true && !$LOAD_PATH.include?(actions_path.to_s)
-              $LOAD_PATH << actions_path.to_s
+          if autoload_namespace
+            # Create the namespace module if it doesn't exist
+            namespace = Object.const_get(autoload_namespace) if Object.const_defined?(autoload_namespace)
+            unless namespace
+              namespace = Module.new
+              Object.const_set(autoload_namespace, namespace)
             end
-          else # rubocop:disable Style/EmptyElse
-            # For Rails < 7.1, autoload paths were automatically added to $LOAD_PATH
-            # No additional action needed
+            ::Rails.autoloaders.main.push_dir(actions_path, namespace:)
+          else
+            # No namespace - load directly
+            ::Rails.autoloaders.main.push_dir(actions_path)
           end
         end
 
