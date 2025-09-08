@@ -104,4 +104,64 @@ RSpec.describe "Action spec helpers" do
       expect(result.elapsed_time).to be >= 0
     end
   end
+
+  describe "Axn::Result#finalized?" do
+    context "for factory-created results" do
+      it "returns true for newly created ok results" do
+        result = Axn::Result.ok
+        expect(result.finalized?).to be true
+      end
+
+      it "returns true for newly created error results" do
+        result = Axn::Result.error
+        expect(result.finalized?).to be true
+      end
+    end
+
+    context "for action execution results" do
+      let(:action) { build_axn }
+
+      it "returns true after successful execution" do
+        result = action.call
+        expect(result.finalized?).to be true
+      end
+
+      it "returns true after failed execution" do
+        action = build_axn do
+          def call
+            fail! "intentional error"
+          end
+        end
+        result = action.call
+        expect(result.finalized?).to be true
+      end
+
+      it "returns true after exception during execution" do
+        action = build_axn do
+          def call
+            raise "unhandled error"
+          end
+        end
+        result = action.call
+        expect(result.finalized?).to be true
+      end
+    end
+
+    context "for factory methods" do
+      it "returns finalized results from Axn::Result.ok" do
+        result = Axn::Result.ok
+        expect(result.finalized?).to be true
+      end
+
+      it "returns finalized results from Axn::Result.error" do
+        result = Axn::Result.error
+        expect(result.finalized?).to be true
+      end
+
+      it "returns finalized results from Axn::Result.error with block" do
+        result = Axn::Result.error { raise "test error" }
+        expect(result.finalized?).to be true
+      end
+    end
+  end
 end

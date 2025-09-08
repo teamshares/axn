@@ -40,7 +40,7 @@ module Axn
     end
 
     # External interface
-    delegate :ok?, :exception, :elapsed_time, to: :context
+    delegate :ok?, :exception, :elapsed_time, :finalized?, to: :context
 
     def error
       return if ok?

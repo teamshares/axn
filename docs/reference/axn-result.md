@@ -11,6 +11,7 @@ Every `call` invocation on an Axn will return an `Axn::Result` instance, which p
 | `exception` | If not `ok?` because an exception was swallowed, will be set to the swallowed exception (note: rarely used outside development; prefer to let the library automatically handle exception handling for you)
 | `outcome` | The execution outcome as a string inquirer (`success?`, `failure?`, `exception?`)
 | `elapsed_time` | Execution time in milliseconds (Float)
+| `finalized?` | `true` if the result has completed execution (either successfully or with an exception), `false` if still in progress
 | any `expose`d values | guaranteed to be set if `ok?` (since they have outgoing presence validations by default; any missing would have failed the action)
 
 NOTE: `success` and `error` (and so implicitly `message`) can be configured per-action via [the `success` and `error` declarations](/reference/class#success-and-error).

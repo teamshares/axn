@@ -29,6 +29,16 @@ module Axn
     def __record_exception(e)
       @exception = e
       @failure = true
+      @finalized = true
+    end
+
+    def finalized?
+      @finalized ||= false
+    end
+
+    def _finalize!
+      @finalized = true
+      self
     end
   end
 end
