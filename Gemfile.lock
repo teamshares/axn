@@ -231,6 +231,9 @@ GEM
       logger
       rack (>= 2.2.4)
       redis-client (>= 0.22.2)
+    sqlite3 (1.7.3)
+      mini_portile2 (~> 2.8.0)
+    sqlite3 (1.7.3-arm64-darwin)
     stringio (3.1.7)
     thor (1.4.0)
     timeout (0.4.3)
@@ -258,6 +261,7 @@ DEPENDENCIES
   rspec (~> 3.2)
   rubocop (~> 1.21)
   sidekiq (~> 7)
+  sqlite3 (~> 1.4)
 
 BUNDLED WITH
    2.5.6
