@@ -5,6 +5,7 @@ module Axn
     class << self
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
+        callable = nil,
         # Builder-specific options
         name: nil,
         superclass: nil,
@@ -32,17 +33,22 @@ module Axn
 
         &block
       )
-        args = block.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
+        raise ArgumentError, "[Axn::Factory] Cannot receive both a callable and a block" if callable.present? && block_given?
+
+        executable = callable || block
+        raise ArgumentError, "[Axn::Factory] Must provide either a callable or a block" unless executable
+
+        args = executable.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
 
         if args[:opt].present? || args[:req].present? || args[:rest].present?
           raise ArgumentError,
-                "[Axn::Factory] Cannot convert block to action: block expects positional arguments"
+                "[Axn::Factory] Cannot convert callable to action: callable expects positional arguments"
         end
-        raise ArgumentError, "[Axn::Factory] Cannot convert block to action: block expects a splat of keyword arguments" if args[:keyrest].present?
+        raise ArgumentError, "[Axn::Factory] Cannot convert callable to action: callable expects a splat of keyword arguments" if args[:keyrest].present?
 
         if args[:key].present?
           raise ArgumentError,
-                "[Axn::Factory] Cannot convert block to action: block expects keyword arguments with defaults (ruby does not allow introspecting)"
+                "[Axn::Factory] Cannot convert callable to action: callable expects keyword arguments with defaults (ruby does not allow introspecting)"
         end
 
         expects = _hydrate_hash(expects)
@@ -68,7 +74,7 @@ module Axn
               hash[field] = public_send(field)
             end
 
-            retval = instance_exec(**unwrapped_kwargs, &block)
+            retval = instance_exec(**unwrapped_kwargs, &executable)
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end.tap do |axn|

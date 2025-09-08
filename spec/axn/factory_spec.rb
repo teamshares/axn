@@ -325,6 +325,64 @@ RSpec.shared_examples "can build Axns from callables" do
 end
 
 RSpec.describe Axn::Factory do
+  context "with proc/lambda as positional argument" do
+    let(:callable) do
+      ->(arg:, expected:) { log "got expected=#{expected}, arg=#{arg}" }
+    end
+
+    it "builds an Axn from a proc" do
+      axn = Axn::Factory.build(callable, expects: %i[arg expected])
+      expect(axn < Axn).to eq(true)
+      expect(axn.call(expected: true, arg: 123)).to be_ok
+      expect(axn.call).not_to be_ok
+    end
+
+    it "builds an Axn from a lambda" do
+      lambda_callable = ->(arg:, expected:) { log "got expected=#{expected}, arg=#{arg}" }
+      axn = Axn::Factory.build(lambda_callable, expects: %i[arg expected])
+      expect(axn < Axn).to eq(true)
+      expect(axn.call(expected: true, arg: 123)).to be_ok
+    end
+
+    it "works with expose_return_as" do
+      axn = Axn::Factory.build(-> { 123 }, expose_return_as: :value)
+      expect(axn.call).to be_ok
+      expect(axn.call.value).to eq(123)
+    end
+
+    it "works with expects and exposes" do
+      axn = Axn::Factory.build(
+        -> { expose :num, arg * 10 },
+        expects: :arg,
+        exposes: [:num],
+        success: "success",
+        error: "error",
+      )
+
+      expect(axn.call).not_to be_ok
+      expect(axn.call.error).to eq("error")
+
+      expect(axn.call(arg: 1)).to be_ok
+      expect(axn.call(arg: 1).success).to eq("success")
+      expect(axn.call(arg: 1).num).to eq(10)
+    end
+
+    it "raises error when neither callable nor block provided" do
+      expect do
+        Axn::Factory.build
+      end.to raise_error(ArgumentError, /Must provide either a callable or a block/)
+    end
+
+    it "raises error when both callable and block provided" do
+      callable = -> { "from callable" }
+      block = -> { "from block" }
+
+      expect do
+        Axn::Factory.build(callable, expose_return_as: :value, &block)
+      end.to raise_error(ArgumentError, /Cannot receive both a callable and a block/)
+    end
+  end
+
   let(:builder) { -> { Axn::Factory.build(**kwargs, &callable) } }
   let(:kwargs) { {} }
 

@@ -49,7 +49,7 @@ RSpec.describe Axn do
 
         it "fails to attach" do
           expect(client).not_to respond_to(:foo)
-          expect { client.axn(:foo, &subaction) }.to raise_error(ArgumentError, /block expects keyword arguments with defaults/)
+          expect { client.axn(:foo, &subaction) }.to raise_error(ArgumentError, /callable expects keyword arguments with defaults/)
         end
       end
     end
