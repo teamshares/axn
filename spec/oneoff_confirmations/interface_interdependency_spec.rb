@@ -31,35 +31,34 @@ RSpec.describe "One-off confirmation" do
     end
 
     context "interdependencies to consider for future support" do
-      # TODO: how to support this? necessary to have some expected values dependent on others...
-      # describe "validations can reference instance methods" do
-      #   let(:action) do
-      #     build_axn do
-      #       expects :channel, inclusion: { in: :valid_channels_for_number }
-      #       expects :number
+      describe "validations can reference instance methods" do
+        let(:action) do
+          build_axn do
+            expects :channel, inclusion: { in: :valid_channels_for_number }
+            expects :number
 
-      #       def call
-      #         log "Got channel: #{channel}"
-      #       end
+            def call
+              log "Got channel: #{channel}"
+            end
 
-      #       private
+            private
 
-      #       VALID_CHANNELS = %w[web email sms].freeze
+            def base_channels = %w[web email sms]
 
-      #       def valid_channels_for_number
-      #         return ["channel_for_1"] if number == 1
+            def valid_channels_for_number
+              return ["channel_for_1"] if number == 1
 
-      #         VALID_CHANNELS
-      #       end
-      #     end
-      #   end
+              base_channels
+            end
+          end
+        end
 
-      #   it { expect(action.call(number: 1, channel: "channel_for_1")).to be_ok }
-      #   it { expect(action.call(number: 2, channel: "channel_for_1")).not_to be_ok }
+        it { expect(action.call(number: 1, channel: "channel_for_1")).to be_ok }
+        it { expect(action.call(number: 2, channel: "channel_for_1")).not_to be_ok }
 
-      #   it { expect(action.call(number: 2, channel: "sms")).to be_ok }
-      #   it { expect(action.call(number: 2, channel: "channel_for_1")).not_to be_ok }
-      # end
+        it { expect(action.call(number: 2, channel: "sms")).to be_ok }
+        it { expect(action.call(number: 1, channel: "sms")).not_to be_ok }
+      end
 
       describe "validations can reference class methods methods" do
         let(:action) do

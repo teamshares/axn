@@ -14,6 +14,7 @@
 * [FEAT] `Axn::Factory.build` can receive a callable OR a block
 * [FEAT] Added `#finalized?` method to `Axn::Result` to check if result has completed execution
 * [FEAT] Added `type: :params` validation option for `expects`/`exposes` that accepts Hash or ActionController::Parameters (Rails-compatible)
+* [FEAT] Allow validations to access instance methods (e.g. `inclusion: { in: :some_method }`)
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues
