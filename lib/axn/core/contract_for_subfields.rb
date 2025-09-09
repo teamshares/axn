@@ -81,8 +81,6 @@ module Axn
 
       module InstanceMethods
         def _apply_inbound_preprocessing_for_subfields!
-          return if subfield_configs.blank?
-
           subfield_configs.each do |config|
             next unless config.preprocess
 
@@ -104,15 +102,11 @@ module Axn
         end
 
         def _apply_defaults_for_subfields!
-          return if subfield_configs.blank?
-
           subfield_configs.each do |config|
             next unless config.default
 
             parent_field = config.on
             subfield = config.field
-
-            # Check if the parent field exists
             parent_value = @__context.provided_data[parent_field]
 
             # Check if the subfield already exists (key check to avoid applying defaults when nil was explicitly given)
@@ -132,8 +126,6 @@ module Axn
         end
 
         def _validate_subfields_contract!
-          return if subfield_configs.blank?
-
           subfield_configs.each do |config|
             Validation::Subfields.validate!(
               field: config.field,
@@ -149,29 +141,35 @@ module Axn
         def _update_subfield_value(parent_field, subfield, new_value)
           parent_value = @__context.provided_data[parent_field]
 
-          if parent_value.is_a?(Hash) && !subfield.to_s.include?(".")
-            # Handle simple hash-based parent fields - update the actual nested structure
-            parent_value = parent_value.dup
-            parent_value[subfield] = new_value
-            @__context.provided_data[parent_field] = parent_value
-          elsif parent_value.respond_to?("#{subfield}=")
-            # Handle object-based parent fields with setter methods
-            parent_value.public_send("#{subfield}=", new_value)
-          else
-            # For nested paths (e.g., "profile.bio"), update the actual nested structure
+          if _is_nested_subfield?(subfield)
             _update_nested_subfield_value(parent_field, subfield, new_value)
+          elsif parent_value.is_a?(Hash)
+            _update_simple_hash_subfield(parent_field, subfield, new_value)
+          elsif parent_value.respond_to?("#{subfield}=")
+            _update_object_subfield(parent_value, subfield, new_value)
           end
+        end
+
+        def _is_nested_subfield?(subfield)
+          subfield.to_s.include?(".")
+        end
+
+        def _update_simple_hash_subfield(parent_field, subfield, new_value)
+          parent_value = @__context.provided_data[parent_field].dup
+          parent_value[subfield] = new_value
+          @__context.provided_data[parent_field] = parent_value
+        end
+
+        def _update_object_subfield(parent_value, subfield, new_value)
+          parent_value.public_send("#{subfield}=", new_value)
         end
 
         def _update_nested_subfield_value(parent_field, subfield, new_value)
           parent_value = @__context.provided_data[parent_field]
-
-          # Split the subfield path (e.g., "profile.bio" -> ["profile", "bio"])
           path_parts = subfield.to_s.split(".")
 
           # Navigate to the parent of the target field
           target_parent = path_parts[0..-2].reduce(parent_value) do |current, part|
-            # Try both symbol and string keys
             current[part.to_sym] || current[part] || (current[part.to_sym] = {})
           end
 
@@ -181,29 +179,43 @@ module Axn
 
         def _subfield_exists?(parent_value, subfield)
           if parent_value.is_a?(Hash)
-            # For simple subfields, check if the key exists
-            if subfield.to_s.include?(".")
-              # For nested subfields, check if the path exists
-              path_parts = subfield.to_s.split(".")
-              current = parent_value
-              path_parts.each do |part|
-                return false unless current.is_a?(Hash)
-                return false unless current.key?(part.to_sym) || current.key?(part)
-
-                current = current[part.to_sym] || current[part]
-              end
-              true
-            else
-              # Simple subfield
-              parent_value.key?(subfield.to_sym) || parent_value.key?(subfield)
-            end
+            _hash_subfield_exists?(parent_value, subfield)
           elsif parent_value.respond_to?(subfield)
-            # For object-based parent fields, check if the attribute exists and is not nil
-            # This ensures we apply defaults for nil values on objects
-            !parent_value.public_send(subfield).nil?
+            _object_subfield_exists?(parent_value, subfield)
           else
             false
           end
+        end
+
+        def _hash_subfield_exists?(parent_value, subfield)
+          if _is_nested_subfield?(subfield)
+            _nested_hash_subfield_exists?(parent_value, subfield)
+          else
+            _simple_hash_subfield_exists?(parent_value, subfield)
+          end
+        end
+
+        def _simple_hash_subfield_exists?(parent_value, subfield)
+          parent_value.key?(subfield.to_sym) || parent_value.key?(subfield)
+        end
+
+        def _nested_hash_subfield_exists?(parent_value, subfield)
+          path_parts = subfield.to_s.split(".")
+          current = parent_value
+
+          path_parts.each do |part|
+            return false unless current.is_a?(Hash)
+            return false unless current.key?(part.to_sym) || current.key?(part)
+
+            current = current[part.to_sym] || current[part]
+          end
+
+          true
+        end
+
+        def _object_subfield_exists?(parent_value, subfield)
+          # This ensures we apply defaults for nil values on objects
+          !parent_value.public_send(subfield).nil?
         end
       end
     end
