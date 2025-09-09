@@ -857,4 +857,206 @@ RSpec.describe Axn do
       )
     end
   end
+
+  describe "inheritance and contracts" do
+    let(:base) do
+      build_axn do
+        expects :foo, type: Numeric, numericality: { greater_than: 10 }
+        exposes :bar, type: Numeric
+
+        def call
+          expose bar: base_thing
+        end
+
+        def base_thing = foo * 10
+      end
+    end
+
+    let(:version_a) do
+      Class.new(base) do
+        expects :baz, default: 123
+      end
+    end
+
+    let(:version_b) do
+      Class.new(base) do
+        expects :baz
+        exposes :quz
+
+        def call
+          expose bar: baz
+          expose quz: 999
+        end
+      end
+    end
+
+    it "does not modify other classes' configs when inheriting" do
+      config_ids = [base, version_a, version_b].map(&:internal_field_configs).map(&:object_id)
+      expect(config_ids.uniq.size).to eq(3)
+      expect(base.call(foo: 11).bar).to eq(110)
+
+      a = version_a.call(foo: 11)
+      expect(a).to be_ok
+      expect(a.bar).to eq(110)
+
+      b = version_b.call(foo: 11, baz: 10)
+      expect(b).to be_ok
+      expect(b.bar).to eq(10)
+      expect(b.quz).to eq(999)
+
+      expect(version_b.call(baz: 10)).not_to be_ok
+    end
+  end
+
+  describe "inheritance via explicit inclusion" do
+    let(:custom_action_with_foo) do
+      Module.new do
+        def self.included(base)
+          base.class_eval do
+            include Axn
+            expects :foo, type: Numeric, numericality: { greater_than: 10 }
+            exposes :bar, type: Numeric
+            def call
+              expose bar: foo * 10
+            end
+          end
+        end
+      end
+    end
+
+    before do
+      stub_const("CustomActionWithFoo", custom_action_with_foo)
+    end
+
+    let(:composed_class) do
+      Class.new do
+        include CustomActionWithFoo
+        expects :baz, default: 123
+
+        def call
+          # Override the module's call method but still validate foo
+          expose bar: baz
+        end
+      end
+    end
+
+    let(:inherited_class) do
+      Class.new(composed_class)
+    end
+
+    before do
+      stub_const("ComposedClass", composed_class)
+      stub_const("InheritedClass", inherited_class)
+    end
+
+    shared_examples "an action" do |bar_value|
+      context "when valid" do
+        subject { action.call(foo: 11) }
+
+        it { is_expected.to be_ok }
+        it { expect(subject.bar).to eq bar_value }
+      end
+
+      context "when invalid" do
+        subject { action.call(foo: 1) }
+
+        it { is_expected.not_to be_ok }
+        it { expect(subject.exception).to be_a(Axn::InboundValidationError) }
+      end
+    end
+
+    context "when called directly" do
+      let(:action) { build_axn { include CustomActionWithFoo } }
+      it_behaves_like "an action", 110
+    end
+
+    context "when called on composed class" do
+      let(:action) { ComposedClass }
+
+      it_behaves_like "an action", 123
+    end
+
+    context "when called on inherited class" do
+      let(:action) { InheritedClass }
+
+      it_behaves_like "an action", 123
+    end
+  end
+
+  describe "interface interdependencies" do
+    describe "default accepts proc" do
+      let(:action) do
+        build_axn do
+          expects :channel, default: -> { valid_channels.first }
+
+          def call
+            log "Got channel: #{channel}"
+          end
+
+          private
+
+          def valid_channels = %w[web email sms].freeze
+        end
+      end
+
+      subject { action.call }
+
+      it { is_expected.to be_ok }
+      it "sets the default channel value" do
+        # Create an action instance to access its internal context for verification
+        action_instance = action.new
+        action_instance._run
+        expect(action_instance.instance_variable_get("@__context").provided_data[:channel]).to eq("web")
+      end
+    end
+
+    context "interdependencies to consider for future support" do
+      describe "validations can reference instance methods" do
+        let(:action) do
+          build_axn do
+            expects :channel, inclusion: { in: :valid_channels_for_number }
+            expects :number
+
+            def call
+              log "Got channel: #{channel}"
+            end
+
+            private
+
+            def base_channels = %w[web email sms]
+
+            def valid_channels_for_number
+              return ["channel_for_1"] if number == 1
+
+              base_channels
+            end
+          end
+        end
+
+        it { expect(action.call(number: 1, channel: "channel_for_1")).to be_ok }
+        it { expect(action.call(number: 2, channel: "channel_for_1")).not_to be_ok }
+
+        it { expect(action.call(number: 2, channel: "sms")).to be_ok }
+        it { expect(action.call(number: 1, channel: "sms")).not_to be_ok }
+      end
+
+      describe "validations can reference class methods methods" do
+        let(:action) do
+          build_axn do
+            # NOTE: only works if method already defined!
+            def self.valid_channels_for_number = ["overridden_valid_channels"]
+
+            expects :channel, inclusion: { in: valid_channels_for_number }
+
+            def call
+              log "Got channel: #{channel}"
+            end
+          end
+        end
+
+        it { expect(action.call(channel: "overridden_valid_channels")).to be_ok }
+        it { expect(action.call(channel: "any_other_value")).not_to be_ok }
+      end
+    end
+  end
 end
