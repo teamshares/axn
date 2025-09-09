@@ -18,6 +18,7 @@
 * [FEAT] Allow message `prefix` to invoke callables/method name symbols the same way e.g. `if` does
 * [BREAKING] `default`s for `expects` and `exposes` are only applied if no value is passed in (previous applied if given value was blank, which caused bugs for boolean handling)
 * [FEAT] Support `sensitive: true` on subfields (with `on:`)
+* [FEAT] Support `preprocess` on subfields (with `on:`)
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

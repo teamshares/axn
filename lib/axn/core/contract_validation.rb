@@ -15,6 +15,8 @@ module Axn
         rescue StandardError => e
           raise Axn::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}", cause: e
         end
+
+        _apply_inbound_preprocessing_for_subfields!
       end
 
       def _validate_contract!(direction)

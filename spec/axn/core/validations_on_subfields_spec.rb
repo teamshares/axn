@@ -276,4 +276,97 @@ RSpec.describe Axn do
       end
     end
   end
+
+  context "subfield preprocessing" do
+    let(:user_data) do
+      {
+        name: "John Doe",
+        email: "  JOHN@EXAMPLE.COM  ",
+        profile: {
+          bio: "Software developer",
+          website: "https://example.com",
+        },
+      }
+    end
+
+    context "when preprocessing is successful" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(email) { email.downcase.strip }
+          expects :name, on: :user_data # No preprocessing
+          expects "profile.bio", on: :user_data, preprocess: lambda(&:upcase) # Nested subfield from profile.bio
+          expects "profile.website", on: :user_data, preprocess: ->(url) { url.gsub(%r{^https?://}, "") } # Nested subfield from profile.website
+        end
+      end
+
+      it "preprocesses subfield values" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that preprocessing was applied by accessing the action instance
+        expect(result.__action__.email).to eq("john@example.com")
+        expect(result.__action__.name).to eq("John Doe") # Unchanged
+
+        # Check nested subfield preprocessing by accessing the context data
+        user_data = result.__action__.user_data
+
+        # Check if the nested structure is correctly updated (symbol keys)
+        expect(user_data.dig(:profile, :bio)).to eq("SOFTWARE DEVELOPER") # Should be preprocessed
+        expect(user_data.dig(:profile, :website)).to eq("example.com") # Should be preprocessed
+      end
+
+      it "preserves original parent field structure" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # The parent field should still be accessible
+        expect(result.__action__.user_data).to be_a(Hash)
+        expect(result.__action__.user_data[:name]).to eq("John Doe")
+      end
+    end
+
+    context "when preprocessing fails" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(email) { Date.parse(email) }
+        end
+      end
+
+      it "raises PreprocessingError" do
+        result = action.call(user_data:)
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::ContractViolation::PreprocessingError)
+        expect(result.exception.message).to include("Error preprocessing subfield 'email' on 'user_data'")
+      end
+
+      it "preserves the original exception as cause" do
+        result = action.call(user_data:)
+        expect(result.exception.cause).to be_a(ArgumentError)
+        expect(result.exception.cause.message).to include("invalid date")
+      end
+    end
+
+    context "with object-based parent fields" do
+      let(:user_object) do
+        Struct.new(:name, :email).new("John Doe", "JOHN@EXAMPLE.COM")
+      end
+
+      let(:action) do
+        build_axn do
+          expects :user
+          expects :email, on: :user, preprocess: lambda(&:downcase)
+        end
+      end
+
+      it "handles object-based parent fields with setter methods" do
+        result = action.call(user: user_object)
+        expect(result).to be_ok
+
+        expect(result.__action__.email).to eq("john@example.com")
+        expect(user_object.email).to eq("john@example.com") # Modified in place
+      end
+    end
+  end
 end
