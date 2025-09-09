@@ -509,10 +509,10 @@ RSpec.describe Axn do
         end
       end
 
-      it "fails with DefaultError when default application fails" do
+      it "fails with DefaultAssignmentError when default application fails" do
         result = action.call(user_data:)
         expect(result).not_to be_ok
-        expect(result.exception).to be_a(Axn::ContractViolation::DefaultError)
+        expect(result.exception).to be_a(Axn::ContractViolation::DefaultAssignmentError)
         expect(result.exception.message).to include("Error applying default for subfield 'missing_field' on 'user_data'")
         expect(result.exception.cause).to be_a(RuntimeError)
         expect(result.exception.cause.message).to eq("Default error")

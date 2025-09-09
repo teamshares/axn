@@ -46,7 +46,8 @@ module Axn
           # Update the parent field with the default subfield value
           _update_subfield_value(parent_field, subfield, default_value)
         rescue StandardError => e
-          raise Axn::ContractViolation::DefaultError, "Error applying default for subfield '#{config.field}' on '#{config.on}': #{e.message}", cause: e
+          raise Axn::ContractViolation::DefaultAssignmentError, "Error applying default for subfield '#{config.field}' on '#{config.on}': #{e.message}",
+                cause: e
         end
       end
 

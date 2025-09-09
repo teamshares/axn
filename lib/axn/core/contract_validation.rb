@@ -60,6 +60,8 @@ module Axn
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
 
           data_hash[field] = default_value
+        rescue StandardError => e
+          raise Axn::ContractViolation::DefaultAssignmentError, "Error applying default for field '#{field}': #{e.message}", cause: e
         end
 
         # Apply subfield defaults for inbound direction

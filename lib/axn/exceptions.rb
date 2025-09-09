@@ -34,7 +34,7 @@ module Axn
 
     class MethodNotAllowed < ContractViolation; end
     class PreprocessingError < ContractViolation; end
-    class DefaultError < ContractViolation; end
+    class DefaultAssignmentError < ContractViolation; end
 
     class UnknownExposure < ContractViolation
       def initialize(key)
