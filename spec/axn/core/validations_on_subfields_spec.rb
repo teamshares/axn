@@ -369,4 +369,154 @@ RSpec.describe Axn do
       end
     end
   end
+
+  context "subfield defaults" do
+    let(:user_data) do
+      {
+        name: "John Doe",
+        email: "john@example.com",
+        profile: {
+          bio: "Software developer",
+          website: "https://example.com",
+        },
+      }
+    end
+
+    context "when defaults are applied successfully" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :bio, on: :user_data, default: "No bio provided"
+          expects "profile.website", on: :user_data, default: "No website"
+          expects "profile.location", on: :user_data, default: "Unknown location"
+        end
+      end
+
+      it "applies defaults for missing simple subfields" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that the default was applied
+        expect(result.__action__.bio).to eq("No bio provided")
+      end
+
+      it "applies defaults for missing nested subfields" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that the default was applied to nested structure
+        user_data = result.__action__.user_data
+        expect(user_data.dig(:profile, :location)).to eq("Unknown location")
+      end
+
+      it "does not apply defaults when field already exists" do
+        # Add bio to user_data to test that existing values are preserved
+        user_data[:bio] = "Existing bio"
+
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that existing value was preserved
+        expect(result.__action__.bio).to eq("Existing bio")
+      end
+
+      it "does not apply defaults when field is explicitly nil" do
+        # Set bio to nil explicitly to test key check
+        user_data[:bio] = nil
+
+        # Create a separate action that allows nil for bio
+        action_with_nil_bio = build_axn do
+          expects :user_data
+          expects :bio, on: :user_data, default: "No bio provided", allow_nil: true, type: String
+        end
+
+        result = action_with_nil_bio.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that nil was preserved (key check prevents default application)
+        expect(result.__action__.bio).to be_nil
+      end
+    end
+
+    context "with callable defaults" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :bio, on: :user_data, default: -> { "Generated bio #{Time.now.to_i}" }
+          expects "profile.timestamp", on: :user_data, default: -> { "Generated at #{Time.now.to_i}" }
+        end
+      end
+
+      it "evaluates callable defaults in action context" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that callable defaults were evaluated
+        bio = result.__action__.bio
+        expect(bio).to match(/Generated bio \d+/)
+
+        user_data = result.__action__.user_data
+        timestamp = user_data.dig(:profile, :timestamp)
+        expect(timestamp).to match(/Generated at \d+/)
+      end
+    end
+
+    context "with object-based parent fields" do
+      let(:user_object) do
+        Struct.new(:name, :email, :bio).new("John Doe", "john@example.com", nil)
+      end
+
+      let(:action) do
+        build_axn do
+          expects :user_object
+          expects :bio, on: :user_object, default: "Default bio", allow_nil: true, type: String
+        end
+      end
+
+      it "applies defaults to object-based parent fields" do
+        result = action.call(user_object:)
+        expect(result).to be_ok
+
+        # Check that the default was applied to the object
+        expect(result.__action__.bio).to eq("Default bio")
+        expect(user_object.bio).to eq("Default bio")
+      end
+    end
+
+    context "when parent field is missing" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :missing_profile, allow_nil: true, type: Hash # Declare the parent field as optional
+          expects :bio, on: :missing_profile, default: "Default bio", allow_nil: true, type: String
+        end
+      end
+
+      it "creates parent field and applies default" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that the parent field was created and default applied
+        expect(result.__action__.missing_profile).to eq({ bio: "Default bio" })
+      end
+    end
+
+    context "when default application fails" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :missing_field, on: :user_data, default: -> { raise "Default error" }, allow_nil: true, type: String
+        end
+      end
+
+      it "fails with DefaultError when default application fails" do
+        result = action.call(user_data:)
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::ContractViolation::DefaultError)
+        expect(result.exception.message).to include("Error applying default for subfield 'missing_field' on 'user_data'")
+        expect(result.exception.cause).to be_a(RuntimeError)
+        expect(result.exception.cause.message).to eq("Default error")
+      end
+    end
+  end
 end

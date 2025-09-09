@@ -30,6 +30,9 @@ module Axn
         exception_klass = direction == :inbound ? Axn::InboundValidationError : Axn::OutboundValidationError
 
         Validation::Fields.validate!(validations:, context:, exception_klass:)
+
+        # Validate subfields for inbound direction
+        _validate_subfields_contract! if direction == :inbound
       end
 
       def _apply_defaults!(direction)
@@ -58,6 +61,9 @@ module Axn
 
           data_hash[field] = default_value
         end
+
+        # Apply subfield defaults for inbound direction
+        _apply_defaults_for_subfields! if direction == :inbound
       end
     end
   end

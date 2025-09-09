@@ -5,7 +5,7 @@ require "axn/core/validation/subfields"
 module Axn
   module Core
     module ContractForSubfields
-      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess)
+      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess, :default)
 
       def self.included(base)
         base.class_eval do
@@ -13,8 +13,6 @@ module Axn
 
           extend ClassMethods
           include InstanceMethods
-
-          before { _validate_subfields_contract! }
         end
       end
 
@@ -32,8 +30,6 @@ module Axn
 
           **validations
         )
-          raise ArgumentError, "expects does not support :default key when also given :on" if default.present?
-
           unless internal_field_configs.map(&:field).include?(on) || subfield_configs.map(&:field).include?(on)
             raise ArgumentError,
                   "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)"
@@ -41,7 +37,7 @@ module Axn
 
           raise ArgumentError, "expects does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
-          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, preprocess:, sensitive:, **validations).tap do |configs|
+          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, preprocess:, sensitive:, default:, **validations).tap do |configs|
             duplicated = subfield_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -60,11 +56,12 @@ module Axn
           allow_nil: false,
           preprocess: nil,
           sensitive: false,
+          default: nil,
           **validations
         )
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_subfield_reader(field, on:, validations: parsed_validations) if readers
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:)
+            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:)
           end
         end
 
@@ -103,6 +100,34 @@ module Axn
             _update_subfield_value(parent_field, subfield, preprocessed_value)
           rescue StandardError => e
             raise Axn::ContractViolation::PreprocessingError, "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{e.message}", cause: e
+          end
+        end
+
+        def _apply_defaults_for_subfields!
+          return if subfield_configs.blank?
+
+          subfield_configs.each do |config|
+            next unless config.default
+
+            parent_field = config.on
+            subfield = config.field
+
+            # Check if the parent field exists
+            parent_value = @__context.provided_data[parent_field]
+
+            # Check if the subfield already exists (key check to avoid applying defaults when nil was explicitly given)
+            next if parent_value && _subfield_exists?(parent_value, subfield)
+
+            # Ensure parent field exists if it's nil
+            @__context.provided_data[parent_field] = {} if parent_value.nil?
+
+            # Apply default value
+            default_value = config.default.respond_to?(:call) ? instance_exec(&config.default) : config.default
+
+            # Update the parent field with the default subfield value
+            _update_subfield_value(parent_field, subfield, default_value)
+          rescue StandardError => e
+            raise Axn::ContractViolation::DefaultError, "Error applying default for subfield '#{config.field}' on '#{config.on}': #{e.message}", cause: e
           end
         end
 
@@ -152,6 +177,33 @@ module Axn
 
           # Set the final field value
           target_parent[path_parts.last.to_sym] = new_value
+        end
+
+        def _subfield_exists?(parent_value, subfield)
+          if parent_value.is_a?(Hash)
+            # For simple subfields, check if the key exists
+            if subfield.to_s.include?(".")
+              # For nested subfields, check if the path exists
+              path_parts = subfield.to_s.split(".")
+              current = parent_value
+              path_parts.each do |part|
+                return false unless current.is_a?(Hash)
+                return false unless current.key?(part.to_sym) || current.key?(part)
+
+                current = current[part.to_sym] || current[part]
+              end
+              true
+            else
+              # Simple subfield
+              parent_value.key?(subfield.to_sym) || parent_value.key?(subfield)
+            end
+          elsif parent_value.respond_to?(subfield)
+            # For object-based parent fields, check if the attribute exists and is not nil
+            # This ensures we apply defaults for nil values on objects
+            !parent_value.public_send(subfield).nil?
+          else
+            false
+          end
         end
       end
     end
