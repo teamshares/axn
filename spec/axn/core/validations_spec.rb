@@ -446,6 +446,80 @@ RSpec.describe Axn do
           end
         end
       end
+
+      context "boolean defaults with explicit false values" do
+        context "default: false should not override explicit false" do
+          let(:action) do
+            build_axn do
+              expects :is_retirement_age, :has_tenure, type: :boolean, default: false
+              exposes :is_retirement_age, :has_tenure, type: :boolean
+
+              def call
+                expose :is_retirement_age, is_retirement_age
+                expose :has_tenure, has_tenure
+              end
+            end
+          end
+
+          it "preserves explicit false values" do
+            result = action.call(is_retirement_age: false, has_tenure: false)
+
+            expect(result).to be_ok
+            expect(result.is_retirement_age).to be false
+            expect(result.has_tenure).to be false
+          end
+
+          it "applies defaults when not provided" do
+            result = action.call
+
+            expect(result).to be_ok
+            expect(result.is_retirement_age).to be false
+            expect(result.has_tenure).to be false
+          end
+
+          it "preserves explicit true values" do
+            result = action.call(is_retirement_age: true, has_tenure: true)
+
+            expect(result).to be_ok
+            expect(result.is_retirement_age).to be true
+            expect(result.has_tenure).to be true
+          end
+        end
+
+        context "default: true should not override explicit false" do
+          let(:action) do
+            build_axn do
+              expects :is_enabled, type: :boolean, default: true
+              exposes :is_enabled, type: :boolean
+
+              def call
+                expose :is_enabled, is_enabled
+              end
+            end
+          end
+
+          it "preserves explicit false values" do
+            result = action.call(is_enabled: false)
+
+            expect(result).to be_ok
+            expect(result.is_enabled).to be false
+          end
+
+          it "applies default when not provided" do
+            result = action.call
+
+            expect(result).to be_ok
+            expect(result.is_enabled).to be true
+          end
+
+          it "preserves explicit true values" do
+            result = action.call(is_enabled: true)
+
+            expect(result).to be_ok
+            expect(result.is_enabled).to be true
+          end
+        end
+      end
     end
 
     describe "array of types" do

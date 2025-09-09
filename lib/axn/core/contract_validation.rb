@@ -37,9 +37,9 @@ module Axn
           # For outbound defaults, first copy values from provided_data for fields that are both expected and exposed
           external_field_configs.each do |config|
             field = config.field
-            next if @__context.exposed_data[field].present? # Already has a value
+            next if @__context.exposed_data.key?(field) # Already has a value
 
-            @__context.exposed_data[field] = @__context.provided_data[field] if @__context.provided_data[field].present?
+            @__context.exposed_data[field] = @__context.provided_data[field] if @__context.provided_data.key?(field)
           end
         end
 
@@ -50,7 +50,7 @@ module Axn
 
         defaults_mapping.each do |field, default_value_getter|
           data_hash = direction == :inbound ? @__context.provided_data : @__context.exposed_data
-          next if data_hash[field].present?
+          next if data_hash.key?(field)
 
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
 
