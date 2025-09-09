@@ -74,12 +74,20 @@ module Axn
           fail! ok?
           inspect default_error
           each_pair
+          default_success
+          action_name
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
           fail! ok?
           inspect each_pair default_error
           ok error success message
+          result
+          outcome
+          exception
+          elapsed_time
+          finalized?
+          __action__
         ].freeze
 
         def _parse_field_configs(
