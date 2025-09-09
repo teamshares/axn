@@ -359,4 +359,144 @@ RSpec.describe Axn do
       end)
     end.to raise_error(ArgumentError, "from: only applies to error messages")
   end
+
+  context "with callable prefixes" do
+    let(:callable_prefix_action_class) do
+      Class.new do
+        include Axn
+
+        expects :type
+
+        # String prefix (backward compatibility)
+        error if: -> { type == :string }, prefix: "String: " do
+          "string error"
+        end
+
+        # Symbol prefix
+        error if: -> { type == :symbol }, prefix: :prefix_method do
+          "symbol error"
+        end
+
+        # Block prefix
+        error if: -> { type == :block }, prefix: -> { "Block: " } do
+          "block error"
+        end
+
+        # Block prefix with exception
+        error if: -> { type == :exception }, prefix: ->(exception:) { "Exception #{exception.class}: " } do
+          "exception error"
+        end
+
+        # Block prefix with positional exception
+        error if: -> { type == :positional }, prefix: ->(exception) { "Positional #{exception.class}: " } do
+          "positional error"
+        end
+
+        # Block prefix with no args
+        error if: -> { type == :no_args }, prefix: -> { "No args: " } do
+          "no args error"
+        end
+
+        def call
+          case type
+          when :string
+            raise ArgumentError, "string error"
+          when :symbol
+            raise ArgumentError, "symbol error"
+          when :block
+            raise ArgumentError, "block error"
+          when :exception
+            raise ArgumentError, "exception error"
+          when :positional
+            raise ArgumentError, "positional error"
+          when :no_args
+            raise ArgumentError, "no args error"
+          end
+        end
+
+        private
+
+        def prefix_method
+          "Symbol: "
+        end
+      end
+    end
+
+    it "handles string prefixes (backward compatibility)" do
+      result = callable_prefix_action_class.call(type: :string)
+      expect(result.error).to eq("String: string error")
+    end
+
+    it "handles symbol prefixes" do
+      result = callable_prefix_action_class.call(type: :symbol)
+      expect(result.error).to eq("Symbol: symbol error")
+    end
+
+    it "handles block prefixes" do
+      result = callable_prefix_action_class.call(type: :block)
+      expect(result.error).to eq("Block: block error")
+    end
+
+    it "handles block prefixes with exception keyword" do
+      result = callable_prefix_action_class.call(type: :exception)
+      expect(result.error).to eq("Exception ArgumentError: exception error")
+    end
+
+    it "handles block prefixes with positional exception" do
+      result = callable_prefix_action_class.call(type: :positional)
+      expect(result.error).to eq("Positional ArgumentError: positional error")
+    end
+
+    it "handles block prefixes with no arguments" do
+      result = callable_prefix_action_class.call(type: :no_args)
+      expect(result.error).to eq("No args: no args error")
+    end
+  end
+
+  context "with callable prefixes and exception messages" do
+    let(:callable_prefix_exception_action_class) do
+      Class.new do
+        include Axn
+
+        expects :type
+
+        # Symbol prefix with exception message fallback
+        error if: -> { type == :symbol }, prefix: :prefix_method
+
+        # Block prefix with exception message fallback
+        error if: -> { type == :block }, prefix: -> { "Block: " }
+
+        # Block prefix with exception keyword and exception message fallback
+        error if: -> { type == :exception }, prefix: ->(exception:) { "Exception #{exception.class}: " }
+
+        def call
+          case type
+          when :symbol, :block, :exception
+            raise StandardError, "test exception"
+          end
+        end
+
+        private
+
+        def prefix_method
+          "Symbol: "
+        end
+      end
+    end
+
+    it "handles symbol prefixes with exception messages" do
+      result = callable_prefix_exception_action_class.call(type: :symbol)
+      expect(result.error).to eq("Symbol: test exception")
+    end
+
+    it "handles block prefixes with exception messages" do
+      result = callable_prefix_exception_action_class.call(type: :block)
+      expect(result.error).to eq("Block: test exception")
+    end
+
+    it "handles block prefixes with exception keyword and exception messages" do
+      result = callable_prefix_exception_action_class.call(type: :exception)
+      expect(result.error).to eq("Exception StandardError: test exception")
+    end
+  end
 end

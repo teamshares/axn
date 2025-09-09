@@ -33,7 +33,7 @@ module Axn
               message = resolved_message_body(descriptor)
               return nil unless message.present?
 
-              descriptor.prefix ? "#{descriptor.prefix}#{message}" : message
+              "#{resolved_prefix(descriptor)}#{message}"
             end
 
             def resolved_message_body(descriptor)
@@ -47,6 +47,15 @@ module Axn
                 # For prefix-only success messages, find a default message from other descriptors
                 invoke_handler(default_descriptor&.handler)
               end
+            end
+
+            def resolved_prefix(descriptor)
+              return nil unless descriptor.prefix
+              return descriptor.prefix if descriptor.prefix.is_a?(String)
+
+              Invoker.call(action:, handler: descriptor.prefix, exception:, operation: "determining prefix callable")
+            rescue StandardError
+              nil
             end
 
             def invoke_handler(handler) = handler ? Invoker.call(operation: "determining message callable", action:, handler:, exception:).presence : nil

@@ -243,6 +243,134 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
       end
     end
 
+    context "with callable prefixes" do
+      let(:descriptor) { double("descriptor", handler: "handler", prefix:) }
+      let(:exception) { StandardError.new("Test error") }
+      let(:exception_resolver) { described_class.new(registry, :error, action:, exception:) }
+
+      before do
+        allow(descriptor).to receive(:handler).and_return("handler")
+        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+        # Mock Invoker.call for prefix resolution
+        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).with(
+          action:, handler: prefix, exception:, operation: "determining prefix callable",
+        ).and_return(prefix_result)
+      end
+
+      let(:prefix_result) { "Prefix: " }
+
+      context "with symbol prefix" do
+        let(:prefix) { :prefix_method }
+        let(:prefix_result) { "Symbol: " }
+
+        before do
+          allow(action).to receive(:respond_to?).with(:prefix_method, true).and_return(true)
+          allow(action).to receive(:prefix_method).and_return("Symbol: ")
+        end
+
+        it "calls the symbol method on the action" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Symbol: Handler message")
+          expect(Axn::Core::Flow::Handlers::Invoker).to have_received(:call).with(
+            action:, handler: :prefix_method, exception:, operation: "determining prefix callable",
+          )
+        end
+      end
+
+      context "with callable prefix that accepts exception keyword" do
+        let(:prefix) { ->(exception:) { "Exception #{exception.class}: " } }
+        let(:prefix_result) { "Exception StandardError: " }
+
+        it "calls the callable with exception keyword" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Exception StandardError: Handler message")
+          expect(Axn::Core::Flow::Handlers::Invoker).to have_received(:call).with(
+            action:, handler: prefix, exception:, operation: "determining prefix callable",
+          )
+        end
+      end
+
+      context "with callable prefix that accepts positional exception" do
+        let(:prefix) { ->(exception) { "Positional #{exception.class}: " } }
+        let(:prefix_result) { "Positional StandardError: " }
+
+        it "calls the callable with positional exception" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Positional StandardError: Handler message")
+          expect(Axn::Core::Flow::Handlers::Invoker).to have_received(:call).with(
+            action:, handler: prefix, exception:, operation: "determining prefix callable",
+          )
+        end
+      end
+
+      context "with callable prefix that accepts no arguments" do
+        let(:prefix) { -> { "No args: " } }
+        let(:prefix_result) { "No args: " }
+
+        it "calls the callable with no arguments" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("No args: Handler message")
+          expect(Axn::Core::Flow::Handlers::Invoker).to have_received(:call).with(
+            action:, handler: prefix, exception:, operation: "determining prefix callable",
+          )
+        end
+      end
+
+      context "with callable that returns nil" do
+        let(:prefix) { -> {} }
+        let(:prefix_result) { nil }
+
+        it "treats nil prefix as no prefix" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Handler message")
+        end
+      end
+
+      context "with callable that returns empty string" do
+        let(:prefix) { -> { "" } }
+        let(:prefix_result) { "" }
+
+        it "uses empty string prefix" do
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Handler message")
+        end
+      end
+
+      context "with callable that raises an error" do
+        let(:prefix) { -> { raise "Prefix error" } }
+        let(:prefix_result) { nil }
+
+        before do
+          allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).with(
+            action:, handler: prefix, exception:, operation: "determining prefix callable",
+          ).and_raise("Prefix error")
+        end
+
+        it "handles prefix resolution errors gracefully" do
+          expect { exception_resolver.send(:message_from, descriptor) }.not_to raise_error
+          result = exception_resolver.send(:message_from, descriptor)
+          expect(result).to eq("Handler message") # Falls back to no prefix
+        end
+      end
+    end
+
+    context "with string prefixes (backward compatibility)" do
+      let(:descriptor) { double("descriptor", handler: "handler", prefix: "String: ") }
+
+      before do
+        allow(descriptor).to receive(:handler).and_return("handler")
+        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call).and_return("Handler message")
+      end
+
+      it "uses string prefix directly without invoking" do
+        result = resolver.send(:message_from, descriptor)
+        expect(result).to eq("String: Handler message")
+        expect(Axn::Core::Flow::Handlers::Invoker).not_to have_received(:call).with(
+          action:, handler: "String: ", exception:, operation: "determining prefix callable",
+        )
+      end
+    end
+
     context "demonstrating why handler check is necessary" do
       it "shows that descriptors without handlers can return nil for success messages" do
         # This test demonstrates why the handler check in find_default_descriptor is crucial
