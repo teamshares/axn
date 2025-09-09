@@ -221,7 +221,7 @@ module Axn
         end
 
         def sensitive_fields
-          (internal_field_configs + external_field_configs).select(&:sensitive).map(&:field)
+          (internal_field_configs + external_field_configs + subfield_configs).select(&:sensitive).map(&:field)
         end
 
         def _declared_fields(direction)

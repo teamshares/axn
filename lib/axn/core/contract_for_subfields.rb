@@ -5,9 +5,9 @@ require "axn/core/validation/subfields"
 module Axn
   module Core
     module ContractForSubfields
-      # TODO: add default, preprocess, sensitive options for subfields?
+      # TODO: add default, preprocess options for subfields?
       # SubfieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive)
-      SubfieldConfig = Data.define(:field, :validations, :on)
+      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive)
 
       def self.included(base)
         base.class_eval do
@@ -28,17 +28,16 @@ module Axn
           allow_blank: false,
           allow_nil: false,
 
-          # TODO: add support for these three options for subfields
+          # TODO: add support for default, preprocess options for subfields
           default: nil,
           preprocess: nil,
           sensitive: false,
 
           **validations
         )
-          # TODO: add support for these three options for subfields
+          # TODO: add support for default, preprocess options for subfields
           raise ArgumentError, "expects does not support :default key when also given :on" if default.present?
           raise ArgumentError, "expects does not support :preprocess key when also given :on" if preprocess.present?
-          raise ArgumentError, "expects does not support :sensitive key when also given :on" if sensitive.present?
 
           unless internal_field_configs.map(&:field).include?(on) || subfield_configs.map(&:field).include?(on)
             raise ArgumentError,
@@ -47,8 +46,8 @@ module Axn
 
           raise ArgumentError, "expects does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
-          # TODO: consider adding support for default, preprocess, sensitive options for subfields?
-          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, **validations).tap do |configs|
+          # TODO: consider adding support for default, preprocess options for subfields?
+          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, sensitive:, **validations).tap do |configs|
             duplicated = subfield_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -67,12 +66,12 @@ module Axn
           allow_nil: false,
           # default: nil,
           # preprocess: nil,
-          # sensitive: false,
+          sensitive: false,
           **validations
         )
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_subfield_reader(field, on:, validations: parsed_validations) if readers
-            SubfieldConfig.new(field:, validations: parsed_validations, on:)
+            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:)
           end
         end
 
