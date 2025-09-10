@@ -420,8 +420,8 @@ RSpec.describe Axn do
         expect(result.__action__.bio).to eq("Existing bio")
       end
 
-      it "does not apply defaults when field is explicitly nil" do
-        # Set bio to nil explicitly to test key check
+      it "applies defaults when field is explicitly nil" do
+        # Set bio to nil explicitly to test nil value handling
         user_data[:bio] = nil
 
         # Create a separate action that allows nil for bio
@@ -433,8 +433,19 @@ RSpec.describe Axn do
         result = action_with_nil_bio.call(user_data:)
         expect(result).to be_ok
 
-        # Check that nil was preserved (key check prevents default application)
-        expect(result.__action__.bio).to be_nil
+        # Check that default was applied for nil value
+        expect(result.__action__.bio).to eq("No bio provided")
+      end
+
+      it "applies defaults when field is missing" do
+        # Remove bio key entirely to test missing key handling
+        user_data.delete(:bio)
+
+        result = action.call(user_data:)
+        expect(result).to be_ok
+
+        # Check that default was applied for missing key
+        expect(result.__action__.bio).to eq("No bio provided")
       end
     end
 

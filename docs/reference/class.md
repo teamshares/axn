@@ -13,7 +13,7 @@ Both `expects` and `exposes` support the same core options:
 | Option | Example (same for `exposes`) | Meaning |
 | -- | -- | -- |
 | `sensitive` | `expects :password, sensitive: true` | Filters the field's value when logging, reporting errors, or calling `inspect`
-| `default` | `expects :foo, default: 123` | If `foo` isn't explicitly set, it'll default to this value
+| `default` | `expects :foo, default: 123` | If `foo` is missing or explicitly `nil`, it'll default to this value (not applied for blank values)
 | `allow_nil` | `expects :foo, allow_nil: true` | Don't fail if the value is `nil`
 | `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
@@ -63,13 +63,14 @@ Remember that you'll need [a corresponding `expose` call](/reference/instance#ex
 
 #### Nested/Subfield expectations
 
-`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well, _except default, preprocess, and sensitive_):
+`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well):
 
 ```ruby
 class Foo
   expects :event
   expects :data, type: Hash, on: :event  # [!code focus:2]
   expects :some, :random, :fields, on: :data
+  expects :optional_field, on: :data, default: "default value"  # [!code focus]
 
   def call
     puts "THe event.data.random field's value is: #{random}"
@@ -77,8 +78,12 @@ class Foo
 end
 ```
 
+::: tip Subfield Defaults
+Defaults work the same way for subfields as they do for top-level fields - they are applied when the subfield is missing or explicitly `nil`, but not for blank values.
+:::
+
 #### `preprocess`
-`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any validations.  This can be useful for type coercion, e.g.:
+`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
 
 ```ruby
 expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d) }

@@ -16,7 +16,7 @@
 * [FEAT] Added `type: :params` validation option for `expects`/`exposes` that accepts Hash or ActionController::Parameters (Rails-compatible)
 * [FEAT] Allow validations to access instance methods (e.g. `inclusion: { in: :some_method }`)
 * [FEAT] Allow message `prefix` to invoke callables/method name symbols the same way e.g. `if` does
-* [BREAKING] `default`s for `expects` and `exposes` are only applied if no value is passed in (previous applied if given value was blank, which caused bugs for boolean handling)
+* [BREAKING] `default`s for `expects` and `exposes` are only applied to explicitly `nil` values (previous applied if given value was blank, which caused bugs for boolean handling)
 * [FEAT] Support `sensitive: true` on subfields (with `on:`)
 * [FEAT] Support `preprocess` on subfields (with `on:`)
 * [FEAT] Support `default` on subfields (with `on:`)

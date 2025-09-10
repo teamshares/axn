@@ -55,7 +55,7 @@ module Axn
 
         defaults_mapping.each do |field, default_value_getter|
           data_hash = direction == :inbound ? @__context.provided_data : @__context.exposed_data
-          next if data_hash.key?(field)
+          next if data_hash.key?(field) && !data_hash[field].nil?
 
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
 

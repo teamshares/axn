@@ -19,7 +19,7 @@ module Axn
       # Applies default values to all subfield configurations
       def _apply_defaults_for_subfields!
         _for_each_relevant_subfield_config(:default) do |config, parent_field, subfield, parent_value|
-          next if parent_value && _subfield_exists?(parent_value, subfield)
+          next if parent_value && !Axn::Validation::Subfields.extract(subfield, parent_value).nil?
 
           @__context.provided_data[parent_field] = {} if parent_value.nil?
 

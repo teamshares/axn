@@ -72,11 +72,31 @@ RSpec.describe Axn do
         end
       end
 
-      subject { action.call }
+      context "when field is missing" do
+        subject { action.call }
 
-      it "are set correctly" do
-        is_expected.to be_ok
-        expect(subject.foo).to eq 99
+        it "applies default" do
+          is_expected.to be_ok
+          expect(subject.foo).to eq 99
+        end
+      end
+
+      context "when field is explicitly nil" do
+        subject { action.call(foo: nil) }
+
+        it "applies default" do
+          is_expected.to be_ok
+          expect(subject.foo).to eq 99
+        end
+      end
+
+      context "when field has a value" do
+        subject { action.call(foo: 42) }
+
+        it "preserves existing value" do
+          is_expected.to be_ok
+          expect(subject.foo).to eq 42
+        end
       end
     end
 
