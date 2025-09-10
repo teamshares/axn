@@ -15,6 +15,8 @@ module Axn
         rescue StandardError => e
           raise Axn::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}", cause: e
         end
+
+        _apply_inbound_preprocessing_for_subfields!
       end
 
       def _validate_contract!(direction)
@@ -28,6 +30,9 @@ module Axn
         exception_klass = direction == :inbound ? Axn::InboundValidationError : Axn::OutboundValidationError
 
         Validation::Fields.validate!(validations:, context:, exception_klass:)
+
+        # Validate subfields for inbound direction
+        _validate_subfields_contract! if direction == :inbound
       end
 
       def _apply_defaults!(direction)
@@ -37,9 +42,9 @@ module Axn
           # For outbound defaults, first copy values from provided_data for fields that are both expected and exposed
           external_field_configs.each do |config|
             field = config.field
-            next if @__context.exposed_data[field].present? # Already has a value
+            next if @__context.exposed_data.key?(field) # Already has a value
 
-            @__context.exposed_data[field] = @__context.provided_data[field] if @__context.provided_data[field].present?
+            @__context.exposed_data[field] = @__context.provided_data[field] if @__context.provided_data.key?(field)
           end
         end
 
@@ -50,12 +55,17 @@ module Axn
 
         defaults_mapping.each do |field, default_value_getter|
           data_hash = direction == :inbound ? @__context.provided_data : @__context.exposed_data
-          next if data_hash[field].present?
+          next if data_hash.key?(field) && !data_hash[field].nil?
 
           default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
 
           data_hash[field] = default_value
+        rescue StandardError => e
+          raise Axn::ContractViolation::DefaultAssignmentError, "Error applying default for field '#{field}': #{e.message}", cause: e
         end
+
+        # Apply subfield defaults for inbound direction
+        _apply_defaults_for_subfields! if direction == :inbound
       end
     end
   end

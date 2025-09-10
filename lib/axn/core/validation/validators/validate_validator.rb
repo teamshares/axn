@@ -5,6 +5,10 @@ require "active_model"
 module Axn
   module Validators
     class ValidateValidator < ActiveModel::EachValidator
+      def check_validity!
+        raise ArgumentError, "must supply :with" if options[:with].nil?
+      end
+
       def validate_each(record, attribute, value)
         msg = begin
           options[:with].call(value)

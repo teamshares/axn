@@ -18,7 +18,14 @@ module Axn
         klass.find_by(id:)
       end
 
+      def check_validity!
+        raise ArgumentError, "must supply :with" if options[:with].nil?
+      end
+
       def validate_each(record, attribute, id)
+        return if options[:allow_nil] && id.nil?
+        return if options[:allow_blank] && id.blank?
+
         klass = self.class.model_for(field: attribute, klass: options[:with])
         instance = self.class.instance_for(field: attribute, klass:, id:)
         return if instance.present?

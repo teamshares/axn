@@ -13,7 +13,7 @@ Both `expects` and `exposes` support the same core options:
 | Option | Example (same for `exposes`) | Meaning |
 | -- | -- | -- |
 | `sensitive` | `expects :password, sensitive: true` | Filters the field's value when logging, reporting errors, or calling `inspect`
-| `default` | `expects :foo, default: 123` | If `foo` isn't explicitly set, it'll default to this value
+| `default` | `expects :foo, default: 123` | If `foo` is missing or explicitly `nil`, it'll default to this value (not applied for blank values)
 | `allow_nil` | `expects :foo, allow_nil: true` | Don't fail if the value is `nil`
 | `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
@@ -26,10 +26,11 @@ Both `expects` and `exposes` support the same core options:
 While we _support_ complex interface validations, in practice you usually just want a `type`, if anything.  Remember this is your validation about how the action is called, _not_ pretty user-facing errors (there's [a different pattern for that](/recipes/validating-user-input)).
 :::
 
-In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support three additional custom validators:
+In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support four additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
   * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
   * Edge case: use `type: :uuid` to handle a confirming given string is a UUID (with or without `-` chars)
+  * Edge case: use `type: :params` to accept either a Hash or ActionController::Parameters (Rails-compatible)
 * `validate: [callable]` - Support custom validations (fails if any string is returned OR if it raises an exception)
   * Example:
     ```ruby
@@ -53,6 +54,16 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
     :::
 
+#### How `allow_blank` and `allow_nil` work with validators
+
+When you specify `allow_blank: true` or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
+
+- **ActiveModel validations** (like `inclusion`, `length`, etc.) will respect these options
+- **Custom validators** (`type`, `validate`, `model`) will also respect these options
+- **Type validator edge case**: Note passing `allow_blank` is nonsensical for type: :params and type: :boolean
+
+If neither `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
+
 ### Details specific to `.exposes`
 
 Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
@@ -62,13 +73,14 @@ Remember that you'll need [a corresponding `expose` call](/reference/instance#ex
 
 #### Nested/Subfield expectations
 
-`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well, _except default, preprocess, and sensitive_):
+`expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well):
 
 ```ruby
 class Foo
   expects :event
   expects :data, type: Hash, on: :event  # [!code focus:2]
   expects :some, :random, :fields, on: :data
+  expects :optional_field, on: :data, default: "default value"  # [!code focus]
 
   def call
     puts "THe event.data.random field's value is: #{random}"
@@ -76,8 +88,12 @@ class Foo
 end
 ```
 
+::: tip Subfield Defaults
+Defaults work the same way for subfields as they do for top-level fields - they are applied when the subfield is missing or explicitly `nil`, but not for blank values.
+:::
+
 #### `preprocess`
-`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any validations.  This can be useful for type coercion, e.g.:
+`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
 
 ```ruby
 expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d) }

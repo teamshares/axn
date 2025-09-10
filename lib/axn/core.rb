@@ -20,6 +20,7 @@ require "axn/core/validation/validators/type_validator"
 require "axn/core/validation/validators/validate_validator"
 
 require "axn/core/contract_validation"
+require "axn/core/contract_validation_for_subfields"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
 
@@ -37,6 +38,7 @@ module Axn
         include Core::Flow
 
         include Core::ContractValidation
+        include Core::ContractValidationForSubfields
         include Core::Contract
         include Core::ContractForSubfields
         include Core::NestingTracking
