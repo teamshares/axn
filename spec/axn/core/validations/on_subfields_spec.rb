@@ -424,13 +424,7 @@ RSpec.describe Axn do
         # Set bio to nil explicitly to test nil value handling
         user_data[:bio] = nil
 
-        # Create a separate action that allows nil for bio
-        action_with_nil_bio = build_axn do
-          expects :user_data
-          expects :bio, on: :user_data, default: "No bio provided", allow_nil: true, type: String
-        end
-
-        result = action_with_nil_bio.call(user_data:)
+        result = action.call(user_data:)
         expect(result).to be_ok
 
         # Check that default was applied for nil value
@@ -480,7 +474,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :user_object
-          expects :bio, on: :user_object, default: "Default bio", allow_nil: true, type: String
+          expects :bio, on: :user_object, default: "Default bio", type: String
         end
       end
 
@@ -499,7 +493,7 @@ RSpec.describe Axn do
         build_axn do
           expects :user_data
           expects :missing_profile, allow_nil: true, type: Hash # Declare the parent field as optional
-          expects :bio, on: :missing_profile, default: "Default bio", allow_nil: true, type: String
+          expects :bio, on: :missing_profile, default: "Default bio", type: String
         end
       end
 
@@ -516,7 +510,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :user_data
-          expects :missing_field, on: :user_data, default: -> { raise "Default error" }, allow_nil: true, type: String
+          expects :missing_field, on: :user_data, default: -> { raise "Default error" }, type: String
         end
       end
 
@@ -527,6 +521,130 @@ RSpec.describe Axn do
         expect(result.exception.message).to include("Error applying default for subfield 'missing_field' on 'user_data'")
         expect(result.exception.cause).to be_a(RuntimeError)
         expect(result.exception.cause.message).to eq("Default error")
+      end
+    end
+
+    context "subfield defaults with blank values" do
+      let(:user_data) do
+        {
+          name: "John Doe",
+          email: "john@example.com",
+          profile: {
+            bio: "Software developer",
+            website: "https://example.com",
+          },
+        }
+      end
+
+      shared_examples "subfield default behavior with blank values" do |default_value, allow_blank, expected_behavior|
+        let(:action) do
+          build_axn do
+            expects :user_data
+            expects :bio, on: :user_data, default: default_value, allow_blank:, type: String
+            expects "profile.description", on: :user_data, default: default_value, allow_blank:, type: String
+          end
+        end
+
+        context "when subfield is missing" do
+          it "applies default and #{expected_behavior[:missing]}" do
+            result = action.call(user_data:)
+            if expected_behavior[:missing][:success]
+              expect(result).to be_ok
+              expect(result.__action__.bio).to eq default_value
+              expect(user_data.dig(:profile, :description)).to eq default_value
+            else
+              expect(result).not_to be_ok
+              expect(result.exception).to be_a(Axn::InboundValidationError)
+              expect(result.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when subfield is explicitly nil" do
+          before do
+            user_data[:bio] = nil
+            user_data[:profile][:description] = nil
+          end
+
+          it "applies default and #{expected_behavior[:nil]}" do
+            result = action.call(user_data:)
+            if expected_behavior[:nil][:success]
+              expect(result).to be_ok
+              expect(result.__action__.bio).to eq default_value
+              expect(user_data.dig(:profile, :description)).to eq default_value
+            else
+              expect(result).not_to be_ok
+              expect(result.exception).to be_a(Axn::InboundValidationError)
+              expect(result.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when subfield has blank string value" do
+          before do
+            user_data[:bio] = ""
+            user_data[:profile][:description] = ""
+          end
+
+          it "preserves existing blank value and #{expected_behavior[:blank]}" do
+            result = action.call(user_data:)
+            if expected_behavior[:blank][:success]
+              expect(result).to be_ok
+              expect(result.__action__.bio).to eq ""
+              expect(user_data.dig(:profile, :description)).to eq ""
+            else
+              expect(result).not_to be_ok
+              expect(result.exception).to be_a(Axn::InboundValidationError)
+              expect(result.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when subfield has non-blank value" do
+          before do
+            user_data[:bio] = "Existing bio"
+            user_data[:profile][:description] = "Existing description"
+          end
+
+          it "preserves existing value and passes validation" do
+            result = action.call(user_data:)
+            expect(result).to be_ok
+            expect(result.__action__.bio).to eq "Existing bio"
+            expect(user_data.dig(:profile, :description)).to eq "Existing description"
+          end
+        end
+      end
+
+      context "with blank string default and allow_blank: true" do
+        include_examples "subfield default behavior with blank values", "", true, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: true, description: "passes validation (does not apply default)" },
+        }
+      end
+
+      context "with blank string default and allow_blank: false" do
+        include_examples "subfield default behavior with blank values", "", false, {
+          missing: { success: false, description: "fails validation" },
+          nil: { success: false, description: "fails validation" },
+          blank: { success: false, description: "fails validation" },
+        }
+      end
+
+      context "with non-blank default and allow_blank: true" do
+        include_examples "subfield default behavior with blank values", "Default bio", true, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: true, description: "passes validation (does not apply default)" },
+        }
+      end
+
+      context "with non-blank default and allow_blank: false" do
+        include_examples "subfield default behavior with blank values", "Default bio", false, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: false, description: "fails validation" },
+        }
       end
     end
   end

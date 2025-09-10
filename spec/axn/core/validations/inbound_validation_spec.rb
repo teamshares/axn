@@ -100,6 +100,103 @@ RSpec.describe Axn do
       end
     end
 
+    context "inbound defaults with blank values" do
+      shared_examples "default behavior with blank values" do |default_value, allow_blank, expected_behavior|
+        let(:action) do
+          build_axn do
+            expects(:field, type: String, default: default_value, allow_blank:)
+            exposes :field, allow_blank:
+          end
+        end
+
+        context "when field is missing" do
+          subject { action.call }
+
+          it "applies default and #{expected_behavior[:missing]}" do
+            if expected_behavior[:missing][:success]
+              is_expected.to be_ok
+              expect(subject.field).to eq default_value
+            else
+              is_expected.not_to be_ok
+              expect(subject.exception).to be_a(Axn::InboundValidationError)
+              expect(subject.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when field is explicitly nil" do
+          subject { action.call(field: nil) }
+
+          it "applies default and #{expected_behavior[:nil]}" do
+            if expected_behavior[:nil][:success]
+              is_expected.to be_ok
+              expect(subject.field).to eq default_value
+            else
+              is_expected.not_to be_ok
+              expect(subject.exception).to be_a(Axn::InboundValidationError)
+              expect(subject.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when field has blank string value" do
+          subject { action.call(field: "") }
+
+          it "preserves existing blank value and #{expected_behavior[:blank]}" do
+            if expected_behavior[:blank][:success]
+              is_expected.to be_ok
+              expect(subject.field).to eq ""
+            else
+              is_expected.not_to be_ok
+              expect(subject.exception).to be_a(Axn::InboundValidationError)
+              expect(subject.exception.message).to include("can't be blank")
+            end
+          end
+        end
+
+        context "when field has non-blank value" do
+          subject { action.call(field: "hello") }
+
+          it "preserves existing value and passes validation" do
+            is_expected.to be_ok
+            expect(subject.field).to eq "hello"
+          end
+        end
+      end
+
+      context "with blank string default and allow_blank: true" do
+        include_examples "default behavior with blank values", "", true, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: true, description: "passes validation (does not apply default)" },
+        }
+      end
+
+      context "with blank string default and allow_blank: false" do
+        include_examples "default behavior with blank values", "", false, {
+          missing: { success: false, description: "fails validation" },
+          nil: { success: false, description: "fails validation" },
+          blank: { success: false, description: "fails validation" },
+        }
+      end
+
+      context "with non-blank default and allow_blank: true" do
+        include_examples "default behavior with blank values", "default_value", true, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: true, description: "passes validation (does not apply default)" },
+        }
+      end
+
+      context "with non-blank default and allow_blank: false" do
+        include_examples "default behavior with blank values", "default_value", false, {
+          missing: { success: true, description: "passes validation" },
+          nil: { success: true, description: "passes validation" },
+          blank: { success: false, description: "fails validation" },
+        }
+      end
+    end
+
     context "multiple fields validations per call" do
       let(:action) do
         build_axn do
