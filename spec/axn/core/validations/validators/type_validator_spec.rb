@@ -1,15 +1,18 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn::Validators::TypeValidator do
+  let(:allow_blank) { false }
+  let(:allow_nil) { false }
+  let(:type) { :boolean }
+  let(:action) do
+    build_axn.tap do |klass|
+      klass.expects :foo, type:, allow_blank:, allow_nil:
+    end
+  end
+
   describe "type validation" do
     describe "standalone value format" do
       describe "boolean" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: :boolean
-          end
-        end
-
         it "validates" do
           expect(action.call(foo: true)).to be_ok
           expect(action.call(foo: false)).to be_ok
@@ -20,11 +23,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: :boolean, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: true)).to be_ok
@@ -37,11 +36,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_nil" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: :boolean, allow_nil: true
-            end
-          end
+          let(:allow_nil) { true }
 
           it "validates" do
             expect(action.call(foo: true)).to be_ok
@@ -55,11 +50,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "params" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: :params
-          end
-        end
+        let(:type) { :params }
 
         it "validates" do
           expect(action.call(foo: {})).to be_ok
@@ -72,11 +63,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: :params, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: {})).to be_ok
@@ -110,11 +97,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "uuid" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: :uuid
-          end
-        end
+        let(:type) { :uuid }
 
         it "validates" do
           expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
@@ -127,11 +110,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: :uuid, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: "123e4567-e89b-12d3-a456-426614174000")).to be_ok
@@ -146,11 +125,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "class types" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: String
-          end
-        end
+        let(:type) { String }
 
         it "validates" do
           expect(action.call(foo: "hello")).to be_ok
@@ -162,11 +137,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: String, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: "hello")).to be_ok
@@ -180,11 +151,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "array of types" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: [String, Numeric]
-          end
-        end
+        let(:type) { [String, Numeric] }
 
         context "when valid" do
           subject { action.call(foo: 123) }
@@ -213,11 +180,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: [String, Numeric], allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: 123)).to be_ok
@@ -231,12 +194,15 @@ RSpec.describe Axn::Validators::TypeValidator do
     end
 
     describe "hash format with with key" do
-      describe "boolean" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: { with: :boolean }
-          end
+      let(:message) { nil }
+      let(:action) do
+        build_axn.tap do |klass|
+          klass.expects :foo, type: { with: type, message: }, allow_blank:
         end
+      end
+
+      describe "boolean" do
+        let(:type) { :boolean }
 
         it "validates" do
           expect(action.call(foo: true)).to be_ok
@@ -248,11 +214,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "with custom message" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: :boolean, message: "must be true or false" }
-            end
-          end
+          let(:message) { "must be true or false" }
 
           it "uses custom message" do
             result = action.call(foo: 1)
@@ -262,11 +224,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: :boolean, allow_blank: true }
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: true)).to be_ok
@@ -279,11 +237,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "params" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: { with: :params }
-          end
-        end
+        let(:type) { :params }
 
         it "validates" do
           expect(action.call(foo: {})).to be_ok
@@ -296,11 +250,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: :params, allow_blank: true }
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: {})).to be_ok
@@ -314,11 +264,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "class types" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: { with: String }
-          end
-        end
+        let(:type) { String }
 
         it "validates" do
           expect(action.call(foo: "hello")).to be_ok
@@ -330,11 +276,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "with custom message" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: String, message: "must be a string" }
-            end
-          end
+          let(:message) { "must be a string" }
 
           it "uses custom message" do
             result = action.call(foo: 1)
@@ -344,11 +286,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: String }, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: "hello")).to be_ok
@@ -361,11 +299,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       end
 
       describe "array of types" do
-        let(:action) do
-          build_axn do
-            expects :foo, type: { with: [String, Numeric] }
-          end
-        end
+        let(:type) { [String, Numeric] }
 
         it "validates" do
           expect(action.call(foo: "hello")).to be_ok
@@ -376,11 +310,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "with custom message" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: [String, Numeric], message: "must be string or number" }
-            end
-          end
+          let(:message) { "must be string or number" }
 
           it "uses custom message" do
             result = action.call(foo: Object.new)
@@ -390,11 +320,7 @@ RSpec.describe Axn::Validators::TypeValidator do
         end
 
         context "and allow_blank" do
-          let(:action) do
-            build_axn do
-              expects :foo, type: { with: [String, Numeric] }, allow_blank: true
-            end
-          end
+          let(:allow_blank) { true }
 
           it "validates" do
             expect(action.call(foo: "hello")).to be_ok

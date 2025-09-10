@@ -1,13 +1,16 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn::Validators::ValidateValidator do
-  describe "custom validations" do
-    let(:action) do
-      build_axn do
-        expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
-      end
+  let(:allow_blank) { false }
+  let(:allow_nil) { false }
+  let(:validator) { ->(value) { "must be pretty big" unless value > 10 } }
+  let(:action) do
+    build_axn.tap do |klass|
+      klass.expects :foo, validate: validator, allow_blank:, allow_nil:
     end
+  end
 
+  describe "custom validations" do
     context "when valid" do
       subject { action.call(foo: 20) }
 
@@ -25,11 +28,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
 
     context "when validator raises" do
-      let(:action) do
-        build_axn do
-          expects :foo, validate: ->(_value) { raise "oops" }
-        end
-      end
+      let(:validator) { ->(_value) { raise "oops" } }
 
       subject { action.call(foo: 20) }
 
@@ -41,11 +40,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
 
     context "and allow_blank" do
-      let(:action) do
-        build_axn do
-          expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }, allow_blank: true
-        end
-      end
+      let(:allow_blank) { true }
 
       it "validates" do
         expect(action.call(foo: 20)).to be_ok
@@ -56,11 +51,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
 
     context "and allow_nil" do
-      let(:action) do
-        build_axn do
-          expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }, allow_nil: true
-        end
-      end
+      let(:allow_nil) { true }
 
       it "validates" do
         expect(action.call(foo: 20)).to be_ok
@@ -72,9 +63,10 @@ RSpec.describe Axn::Validators::ValidateValidator do
   end
 
   describe "custom validations hash format" do
+    let(:message) { nil }
     let(:action) do
-      build_axn do
-        expects :foo, validate: { with: ->(value) { "must be pretty big" unless value > 10 } }
+      build_axn.tap do |klass|
+        klass.expects :foo, validate: { with: validator, message: }, allow_blank:, allow_nil:
       end
     end
 
@@ -95,11 +87,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
 
     context "with custom message" do
-      let(:action) do
-        build_axn do
-          expects :foo, validate: { with: ->(value) { "custom error" unless value > 10 } }
-        end
-      end
+      let(:validator) { ->(value) { "custom error" unless value > 10 } }
 
       it "uses custom message" do
         result = action.call(foo: 5)
@@ -109,11 +97,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
 
     context "and allow_blank" do
-      let(:action) do
-        build_axn do
-          expects :foo, validate: { with: ->(value) { "must be pretty big" unless value > 10 } }, allow_blank: true
-        end
-      end
+      let(:allow_blank) { true }
 
       it "validates" do
         expect(action.call(foo: 20)).to be_ok
@@ -125,11 +109,7 @@ RSpec.describe Axn::Validators::ValidateValidator do
   end
 
   describe "Axn::Internal::Logging.piping_error integration" do
-    let(:action) do
-      build_axn do
-        expects :foo, validate: { with: ->(_v) { raise ArgumentError, "fail message" } }
-      end
-    end
+    let(:validator) { ->(_v) { raise ArgumentError, "fail message" } }
 
     before do
       allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original

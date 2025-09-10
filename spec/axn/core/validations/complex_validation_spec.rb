@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn do
-  describe "complex validation" do
-    let(:action) do
-      build_axn do
-        expects :foo, type: String
-        exposes :bar, type: String
-      end
+  let(:action) do
+    build_axn do
+      expects :foo, type: String
+      exposes :bar, type: String
     end
+  end
 
+  describe "complex validation" do
     context "success" do
       subject { action.call(foo: "a", bar: "b", baz: "c") }
 

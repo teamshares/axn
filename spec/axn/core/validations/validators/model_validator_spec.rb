@@ -1,6 +1,16 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn::Validators::ModelValidator do
+  let(:allow_blank) { false }
+  let(:allow_nil) { false }
+  let(:test_model) { double("User", is_a?: true, name: "User") }
+
+  before do
+    stub_const("User", test_model)
+    allow(test_model).to receive(:find_by).and_return(nil)
+    allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
+  end
+
   describe "model validation" do
     context "top level" do
       context "when field does not end in _id" do
@@ -25,15 +35,6 @@ RSpec.describe Axn::Validators::ModelValidator do
             expose :the_user, user
           end
         end
-      end
-
-      let(:test_model) { double("User", is_a?: true, name: "User") }
-
-      before do
-        stub_const("User", test_model)
-
-        allow(test_model).to receive(:find_by).and_return(nil)
-        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
       end
 
       it "exposes readers" do
@@ -76,15 +77,6 @@ RSpec.describe Axn::Validators::ModelValidator do
         end
       end
 
-      let(:test_model) { double("User", is_a?: true, name: "User") }
-
-      before do
-        stub_const("User", test_model)
-
-        allow(test_model).to receive(:find_by).and_return(nil)
-        allow(test_model).to receive(:find_by).with(id: 1).and_return(double("User", present?: true))
-      end
-
       it "exposes readers" do
         result = action.call!(foo: { user_id: 1 })
         expect(result).to be_ok
@@ -125,10 +117,7 @@ RSpec.describe Axn::Validators::ModelValidator do
   end
 
   describe "model hash format" do
-    let(:test_model) { double("User", is_a?: true, name: "User") }
-
     before do
-      stub_const("User", test_model)
       allow(test_model).to receive(:find_by).with(id: 1).and_return(test_model)
       allow(test_model).to receive(:find_by).with(id: 2).and_return(nil)
       allow(test_model).to receive(:find_by).with(id: nil).and_return(nil)
@@ -209,7 +198,6 @@ RSpec.describe Axn::Validators::ModelValidator do
   end
 
   describe "Axn::Internal::Logging.piping_error integration for model validation" do
-    let(:test_model) { double("User", is_a?: true, name: "User") }
     let(:action) do
       build_axn do
         expects :user_id, model: true
@@ -217,7 +205,6 @@ RSpec.describe Axn::Validators::ModelValidator do
     end
 
     before do
-      stub_const("User", test_model)
       allow(test_model).to receive(:find_by).and_raise(ArgumentError, "fail model validation")
       allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
     end
