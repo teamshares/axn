@@ -54,6 +54,16 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
     :::
 
+#### How `allow_blank` and `allow_nil` work with validators
+
+When you specify `allow_blank: true` or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
+
+- **ActiveModel validations** (like `inclusion`, `length`, etc.) will respect these options
+- **Custom validators** (`type`, `validate`, `model`) will also respect these options
+- **Type validator edge case**: Note passing `allow_blank` is nonsensical for type: :params and type: :boolean
+
+If neither `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
+
 ### Details specific to `.exposes`
 
 Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
