@@ -135,27 +135,28 @@ module Axn
           end
         end
 
+        # This method applies any top-level options to each of the individual validations given.
+        # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
           *fields,
           allow_nil: false,
           allow_blank: false,
           **validations
         )
-          if allow_blank
+          # Apply syntactic sugar for our custom validators
+          %i[type model validate].each do |key|
+            validations[key] = { with: validations[key] } if validations.key?(key) && !validations[key].is_a?(Hash)
+          end
+
+          # Push allow_blank and allow_nil to the individual validations
+          if allow_blank || allow_nil
             validations.transform_values! do |v|
-              v = { value: v } unless v.is_a?(Hash)
-              { allow_blank: true }.merge(v)
-            end
-          elsif allow_nil
-            validations.transform_values! do |v|
-              v = { value: v } unless v.is_a?(Hash)
-              { allow_nil: true }.merge(v)
+              { allow_blank:, allow_nil: }.merge(v)
             end
           else
-            unless validations.key?(:presence) || Array(validations[:type]).include?(:boolean) || Array(validations[:type]).include?(:params)
-              validations[:presence] =
-                true
-            end
+            # Apply default presence validation (unless the type is boolean or params)
+            type_values = Array(validations.dig(:type, :with))
+            validations[:presence] = true unless validations.key?(:presence) || type_values.include?(:boolean) || type_values.include?(:params)
           end
 
           fields.map { |field| [field, validations] }

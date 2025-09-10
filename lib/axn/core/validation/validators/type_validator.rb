@@ -5,19 +5,23 @@ require "active_model"
 module Axn
   module Validators
     class TypeValidator < ActiveModel::EachValidator
+      def check_validity!
+        raise ArgumentError, "must supply :with" if options[:with].nil?
+      end
+
       def validate_each(record, attribute, value)
-        # NOTE: the last one (:value) might be my fault from the make-it-a-hash fallback in #parse_field_configs
-        types = options[:in].presence || Array(options[:with]).presence || Array(options[:value]).presence
+        return if options[:allow_nil] && value.nil?
+        return if options[:allow_blank] && value.blank?
 
-        return if value.blank? && !types.include?(:boolean) && !types.include?(:params) # Handled with a separate default presence validator
-
-        msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(", ")}"
         record.errors.add attribute, (options[:message] || msg) unless types.any? do |type|
           valid_type?(type, value)
         end
       end
 
       private
+
+      def types = Array(options[:with])
+      def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(", ")}"
 
       def valid_type?(type, value)
         # NOTE: allow mocks to pass type validation by default (much easier testing ergonomics)
