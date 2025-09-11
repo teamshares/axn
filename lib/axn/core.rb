@@ -92,8 +92,14 @@ module Axn
     # User-defined action logic - override this method in your action classes
     def call; end
 
-    def fail!(message = nil)
+    def fail!(message = nil, **exposures)
+      expose(**exposures) if exposures.any?
       raise Axn::Failure, message
+    end
+
+    def done!(message = nil, **exposures)
+      expose(**exposures) if exposures.any?
+      raise Axn::Internal::EarlyCompletion, message
     end
 
     private

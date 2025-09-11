@@ -42,7 +42,9 @@ end
 
 Once the interface is defined, you're primarily focused on defining the `call` method.
 
-To abort execution with a specific error message, call `fail!`.
+To abort execution with a specific error message, call `fail!`. You can also provide exposures as keyword arguments.
+
+To complete execution early with a success result, call `done!` with an optional success message and exposures as keyword arguments.
 
 If you declare that your action `exposes` anything, you need to actually `expose` it.
 
@@ -63,6 +65,84 @@ end
 ```
 
 See [the reference doc](/reference/instance) for a few more handy helper methods (e.g. `#log`).
+
+### Convenient failure with context
+
+Both `fail!` and `done!` can accept keyword arguments to expose data before halting execution:
+
+```ruby
+class UserValidator
+  include Axn
+
+  expects :email
+  exposes :error_code, :field
+
+  def call
+    if email.blank?
+      fail!("Email is required", error_code: 422, field: "email")
+    end
+
+    # ... validation logic
+  end
+end
+```
+
+## Early completion with `done!`
+
+The `done!` method allows you to complete an action early with a success result, bypassing the rest of the execution:
+
+```ruby
+class UserLookup
+  include Axn
+
+  expects :user_id
+  exposes :user, :cached
+
+  def call
+    # Check cache first
+    cached_user = Rails.cache.read("user:#{user_id}")
+    if cached_user
+      done!("User found in cache", user: cached_user, cached: true) # Early completion with exposures
+    end
+
+    # This won't execute if done! was called above
+    user = User.find(user_id)
+    expose user: user, cached: false
+  end
+end
+```
+
+### Important behavior notes
+
+**Hook execution:**
+- `done!` **skips** any `after` hooks (or `call` method if called from a `before` hook)
+- `around` hooks **will complete** normally, allowing transactions and tracing to finish properly
+- If you want code that executes on both normal AND early success, use an `on_success` callback instead of an `after` hook
+
+**Transaction handling:**
+- `done!` is implemented internally via an exception, so it **will roll back** manually applied `ActiveRecord::Base.transaction` blocks
+- Use the [`use :transaction` strategy](/strategies/transaction) instead - transactions applied via this strategy will **NOT** be rolled back by `done!`
+- This ensures database consistency while allowing early completion
+
+**Validation:**
+- Outbound validation (required `exposes`) still runs even with early completion
+- If required fields are not provided, the action will fail despite the early completion
+
+```ruby
+class BadExample
+  include Axn
+
+  expects :user_id
+  exposes :user  # Required field
+
+  def call
+    done!("Early completion") # This will FAIL - user not exposed
+  end
+end
+
+BadExample.call(user_id: 123).ok? # => false
+BadExample.call(user_id: 123).exception # => Axn::OutboundValidationError
+```
 
 ## Customizing messages
 
@@ -175,7 +255,7 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 `before`, `after`, and `around` hooks are supported. They can receive a block directly, or the symbol name of a local method.
 
-Note execution is halted whenever `fail!` is called or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully).
+Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution, but allows `around` hooks to complete normally.
 
 For instance, given this configuration:
 

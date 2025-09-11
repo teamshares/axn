@@ -2,8 +2,6 @@
 
 module Axn
   class Context
-    attr_accessor :provided_data, :exposed_data
-
     def initialize(**provided_data)
       @provided_data = provided_data
       @exposed_data = {}
@@ -17,14 +15,21 @@ module Axn
     # Framework state methods
     def ok? = !@failure
     def failed? = @failure || false
+    def finalized? = @finalized || false
 
     # Framework field accessors
-    attr_accessor :elapsed_time
+    attr_accessor :provided_data, :exposed_data, :elapsed_time
     attr_reader :exception
     private :elapsed_time=
 
+    #
+    # Here down intended for internal use only
+    #
+
     # INTERNAL: base for further filtering (for logging) or providing user with usage hints
     def __combined_data = @provided_data.merge(@exposed_data)
+
+    def __early_completion? = @early_completion || false
 
     def __record_exception(e)
       @exception = e
@@ -32,13 +37,15 @@ module Axn
       @finalized = true
     end
 
-    def finalized?
-      @finalized ||= false
+    def __record_early_completion(message)
+      @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
+      @early_completion = true
     end
 
-    def _finalize!
+    def __early_completion_message = @early_completion_message.presence
+
+    def __finalize!
       @finalized = true
-      self
     end
   end
 end
