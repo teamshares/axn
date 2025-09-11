@@ -6,9 +6,9 @@ require "fixtures/enqueueable"
 
 RSpec.describe Axn::Enqueueable::ViaSidekiq, type: :worker do
   context "Interactor" do
-    subject { TestEnqueueableInteractor.enqueue(this: "this", that: "that") }
+    describe "#perform_later" do
+      subject { TestEnqueueableInteractor.perform_later(this: "this", that: "that") }
 
-    describe "#enqueue" do
       it "queues job to the default queue" do
         expect(TestEnqueueableInteractor.queue).to eq("default")
       end
@@ -24,10 +24,10 @@ RSpec.describe Axn::Enqueueable::ViaSidekiq, type: :worker do
       end
     end
 
-    describe "#enqueue" do
+    describe "#perform_later execution" do
       subject do
         Sidekiq::Testing.inline! do
-          TestEnqueueableInteractor.enqueue(this: "this", that: "that")
+          TestEnqueueableInteractor.perform_later(this: "this", that: "that")
         end
       end
 
@@ -38,29 +38,24 @@ RSpec.describe Axn::Enqueueable::ViaSidekiq, type: :worker do
       end
     end
 
-    describe "#enqueue!" do
+    describe "#perform_now" do
       subject do
-        Sidekiq::Testing.inline! do
-          TestEnqueueableInteractor.enqueue!(name: "Joe", address: "123 Nope")
-        end
+        TestEnqueueableInteractor.perform_now(name: "Joe", address: "123 Nope")
       end
 
-      it "performs later" do
-        expect_any_instance_of(TestEnqueueableInteractor).to receive(:perform).with(
-          { "name" => "Joe", "address" => "123 Nope" }, true
-        ).and_call_original
-        expect(TestEnqueueableInteractor).to receive(:call!).with({ name: "Joe", address: "123 Nope" })
+      it "calls the Interactor#call directly" do
+        expect(TestEnqueueableInteractor).to receive(:call).with({ name: "Joe", address: "123 Nope" })
         subject
       end
 
-      it "sets the context with the passed-in hash args" do
+      it "executes immediately" do
         expect { subject }.to output(/Name: Joe\nAddress: 123 Nope\n/).to_stdout
       end
     end
   end
 
   describe "params" do
-    subject { AnotherEnqueueableInteractor.enqueue(foo:) }
+    subject { AnotherEnqueueableInteractor.perform_later(foo:) }
 
     context "with string" do
       let(:foo) { "bar" }

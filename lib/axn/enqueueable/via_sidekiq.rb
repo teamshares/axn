@@ -18,12 +18,12 @@ module Axn
             end
           end
 
-          def self.enqueue(context = {})
+          def self.perform_later(context = {})
             perform_async(_process_context_to_sidekiq_args(context))
           end
 
-          def self.enqueue!(context = {})
-            perform_async(_process_context_to_sidekiq_args(context), true)
+          def self.perform_now(context = {})
+            call(**context)
           end
 
           def self.queue_options(opts)
