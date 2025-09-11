@@ -68,10 +68,15 @@ module Axn
       private
 
       def _with_hooks
-        _run_around_hooks do
-          _run_before_hooks
-          yield
-          _run_after_hooks
+        # Outer is needed in the unlikely case done! is called in around hooks
+        __respecting_early_completion do
+          _run_around_hooks do
+            __respecting_early_completion do
+              _run_before_hooks
+              yield
+              _run_after_hooks
+            end
+          end
         end
       end
 
@@ -117,6 +122,12 @@ module Axn
       # Returns nothing.
       def _run_hook(hook, *)
         hook.is_a?(Symbol) ? send(hook, *) : instance_exec(*, &hook)
+      end
+
+      def __respecting_early_completion
+        yield
+      rescue Axn::Internal::EarlyCompletion => e
+        @__context.__record_early_completion(e.message)
       end
     end
   end

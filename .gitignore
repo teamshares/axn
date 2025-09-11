@@ -19,6 +19,7 @@ yarn-error.log
 
 # As a library we don't need to publish Gemfile.lock
 Gemfile.lock
+/spec_rails/dummy_app/log/*.log
 
 # Ignore all .gem files
 *.gem

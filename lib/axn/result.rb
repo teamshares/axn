@@ -83,8 +83,9 @@ module Axn
 
     def _context_data_source = @context.exposed_data
 
-    # TODO: hook for adding early-return success at some point
-    def _user_provided_success_message = nil
+    def _user_provided_success_message
+      @context.__early_completion_message.presence
+    end
 
     def _user_provided_error_message
       return unless exception.is_a?(Axn::Failure)

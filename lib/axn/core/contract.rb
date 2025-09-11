@@ -204,7 +204,7 @@ module Axn
           _validate_contract!(:outbound)
 
           # TODO: improve location of this triggering
-          @__context._finalize! # Mark result as finalized
+          @__context.__finalize! # Mark result as finalized
           _trigger_on_success if respond_to?(:_trigger_on_success)
         end
 

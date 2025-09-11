@@ -1,7 +1,12 @@
 # frozen_string_literal: true
 
 module Axn
-  # Raised internally when fail! is called
+  module Internal
+    # Internal only -- rescued before Axn::Result is returned
+    class EarlyCompletion < StandardError; end
+  end
+
+  # Raised when fail! is called
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 

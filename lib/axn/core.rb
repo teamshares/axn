@@ -96,6 +96,10 @@ module Axn
       raise Axn::Failure, message
     end
 
+    def done!(message = nil)
+      raise Axn::Internal::EarlyCompletion, message
+    end
+
     private
 
     def _emit_metrics

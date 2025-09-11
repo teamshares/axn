@@ -14,6 +14,12 @@ Primarily used for its side effects, but it does return a Hash with the key/valu
 
 Called with a string, it immediately halts execution and sets `result.error` to the provided string.
 
+## `#done!`
+
+Called with an optional string, it immediately halts execution and sets `result.success` to the provided string (or default success message if none provided). Skips `after` hooks and remaining `call` method execution, but allows `around` hooks to complete normally.
+
+**Important:** This method is implemented internally via an exception, so it will roll back manually applied `ActiveRecord::Base.transaction` blocks. Use the [`use :transaction` strategy](/strategies/transaction) instead for transaction-safe early completion.
+
 ## `#log`
 
 Helper method to log (via the [configurable](/reference/configuration#logger) `Axn.config.logger`) the string you provide (prefixed with the Action's class name).
