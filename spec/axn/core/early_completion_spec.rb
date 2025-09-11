@@ -221,6 +221,86 @@ RSpec.describe Axn do
       end
     end
 
+    context "when done! is called with exposures" do
+      let(:action) do
+        build_axn do
+          exposes :user_id, :status
+
+          def call
+            done!("User processed", user_id: 123, status: "Success")
+          end
+        end
+      end
+
+      it "exposes the provided data and returns success" do
+        result = action.call
+        expect(result).to be_ok
+        expect(result.user_id).to eq(123)
+        expect(result.status).to eq("Success")
+        expect(result.success).to eq("User processed")
+      end
+    end
+
+    context "when done! is called with only exposures (no message)" do
+      let(:action) do
+        build_axn do
+          exposes :status, :count
+
+          def call
+            done!(status: "completed", count: 42)
+          end
+        end
+      end
+
+      it "exposes the provided data and uses default success message" do
+        result = action.call
+        expect(result).to be_ok
+        expect(result.status).to eq("completed")
+        expect(result.count).to eq(42)
+        expect(result.success).to eq("Action completed successfully")
+      end
+    end
+
+    context "when fail! is called with exposures" do
+      let(:action) do
+        build_axn do
+          exposes :error_code, :details
+
+          def call
+            fail!("Validation failed", error_code: 422, details: "Invalid input")
+          end
+        end
+      end
+
+      it "exposes the provided data and returns failure" do
+        result = action.call
+        expect(result).not_to be_ok
+        expect(result.error_code).to eq(422)
+        expect(result.details).to eq("Invalid input")
+        expect(result.error).to eq("Validation failed")
+      end
+    end
+
+    context "when fail! is called with only exposures (no message)" do
+      let(:action) do
+        build_axn do
+          exposes :status, :reason
+
+          def call
+            fail!(status: "error", reason: "Database connection failed")
+          end
+        end
+      end
+
+      it "exposes the provided data and uses default error message" do
+        result = action.call
+        expect(result).not_to be_ok
+        expect(result.status).to eq("error")
+        expect(result.reason).to eq("Database connection failed")
+        expect(result.error).to eq("Something went wrong")
+      end
+    end
+
     context "when done! is called after some work in call method" do
       let(:work_done) { [] }
       let(:action) do

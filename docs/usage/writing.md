@@ -42,9 +42,9 @@ end
 
 Once the interface is defined, you're primarily focused on defining the `call` method.
 
-To abort execution with a specific error message, call `fail!`.
+To abort execution with a specific error message, call `fail!`. You can also provide exposures as keyword arguments.
 
-To complete execution early with a success result, call `done!` with an optional success message.
+To complete execution early with a success result, call `done!` with an optional success message and exposures as keyword arguments.
 
 If you declare that your action `exposes` anything, you need to actually `expose` it.
 
@@ -66,6 +66,27 @@ end
 
 See [the reference doc](/reference/instance) for a few more handy helper methods (e.g. `#log`).
 
+### Convenient failure with context
+
+Both `fail!` and `done!` can accept keyword arguments to expose data before halting execution:
+
+```ruby
+class UserValidator
+  include Axn
+
+  expects :email
+  exposes :error_code, :field
+
+  def call
+    if email.blank?
+      fail!("Email is required", error_code: 422, field: "email")
+    end
+
+    # ... validation logic
+  end
+end
+```
+
 ## Early completion with `done!`
 
 The `done!` method allows you to complete an action early with a success result, bypassing the rest of the execution:
@@ -81,8 +102,7 @@ class UserLookup
     # Check cache first
     cached_user = Rails.cache.read("user:#{user_id}")
     if cached_user
-      expose user: cached_user, cached: true
-      done!("User found in cache") # Early completion
+      done!("User found in cache", user: cached_user, cached: true) # Early completion with exposures
     end
 
     # This won't execute if done! was called above
