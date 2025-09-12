@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
-
 RSpec.describe "Axn Generator Templates" do
   describe "template rendering" do
     let(:action_template) { File.read(File.expand_path("../../../../lib/axn/rails/generators/templates/action.rb.erb", __dir__)) }

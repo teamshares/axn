@@ -1,9 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "../../../spec_helper"
-require "active_job"
-require "active_job/test_helper"
-
 RSpec.describe "Axn::Async with ActiveJob adapter" do
   include ActiveJob::TestHelper
 

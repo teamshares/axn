@@ -3,12 +3,6 @@
 require "spec_helper"
 
 RSpec.describe "Axn::Async inheritance" do
-  before do
-    # Use real Sidekiq and ActiveJob - no mocking needed
-    require "sidekiq"
-    require "active_job"
-  end
-
   context "when parent class has async :sidekiq" do
     let(:parent_class) do
       Class.new do

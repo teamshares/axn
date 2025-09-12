@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "spec_helper"
-
 RSpec.describe "Axn::Rails::Engine" do
   before(:all) do
     # Ensure Rails is fully initialized

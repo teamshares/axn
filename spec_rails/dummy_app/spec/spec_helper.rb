@@ -9,6 +9,9 @@ require File.expand_path("../config/environment", __dir__)
 # Load axn testing helpers
 require "axn/testing/spec_helpers"
 
+# Load sidekiq testing helpers
+require "sidekiq/testing"
+
 $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 RSpec.configure do |config|

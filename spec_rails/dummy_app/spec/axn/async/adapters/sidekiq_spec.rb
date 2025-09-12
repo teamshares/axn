@@ -1,9 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "../../../spec_helper"
-require "sidekiq/testing"
-require "json"
-
 RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
   before(:all) do
     # Ensure the action classes are loaded
