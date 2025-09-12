@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# These classes are only used to test Enqueueable
+# These classes are only used to test Async
 
-class TestEnqueueableInteractor
+class TestAsyncAction
   include Axn
 
   async :sidekiq do
@@ -19,7 +19,7 @@ class TestEnqueueableInteractor
   end
 end
 
-class AnotherEnqueueableInteractor
+class AnotherAsyncAction
   include Axn
 
   async :sidekiq do
@@ -31,6 +31,6 @@ class AnotherEnqueueableInteractor
   expects :foo
 
   def call
-    puts "Another Interactor: #{foo}"
+    puts "Another Action: #{foo}"
   end
 end

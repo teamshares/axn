@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Enqueueable do
+RSpec.describe Axn::Async do
   let(:action) { build_axn }
 
   context "with default configuration" do
     it "includes Disabled module by default" do
       # Trigger default configuration by calling call_async
       expect { action.call_async(foo: "bar") }.to raise_error(NotImplementedError)
-      expect(action.ancestors).to include(Axn::Enqueueable::Disabled)
+      expect(action.ancestors).to include(Axn::Async::Disabled)
     end
 
     it "provides call_async method" do
@@ -49,7 +49,7 @@ RSpec.describe Axn::Enqueueable do
     end
 
     it "includes ViaSidekiq" do
-      expect(action.ancestors).to include(Axn::Enqueueable::ViaSidekiq)
+      expect(action.ancestors).to include(Axn::Async::ViaSidekiq)
     end
 
     it "provides call_async method" do
@@ -78,7 +78,7 @@ RSpec.describe Axn::Enqueueable do
     end
 
     it "includes ViaActiveJob" do
-      expect(action.ancestors).to include(Axn::Enqueueable::ViaActiveJob)
+      expect(action.ancestors).to include(Axn::Async::ViaActiveJob)
     end
 
     it "provides call_async method" do

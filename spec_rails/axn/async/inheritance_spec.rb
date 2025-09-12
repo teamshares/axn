@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe "Axn::Enqueueable inheritance" do
+RSpec.describe "Axn::Async inheritance" do
   before do
     # Use real Sidekiq and ActiveJob - no mocking needed
     require "sidekiq"

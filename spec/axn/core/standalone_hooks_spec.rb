@@ -359,9 +359,9 @@ RSpec.describe Axn::Core::Hooks do
       context "with multiple ancestors" do
         let(:ancestor_top) do
           build_hooked do
-            around do |interactor|
+            around do |action|
               steps << :around_before_ancestor_top
-              interactor.call
+              action.call
               steps << :around_after_ancestor_top
             end
 
@@ -377,9 +377,9 @@ RSpec.describe Axn::Core::Hooks do
 
         let(:ancestor) do
           Class.new(ancestor_top) do
-            around do |interactor|
+            around do |action|
               steps << :around_before_ancestor
-              interactor.call
+              action.call
               steps << :around_after_ancestor
             end
 
@@ -395,9 +395,9 @@ RSpec.describe Axn::Core::Hooks do
 
         let(:hooked) do
           Class.new(ancestor) do
-            around do |interactor|
+            around do |action|
               steps << :around_before
-              interactor.call
+              action.call
               steps << :around_after
             end
 

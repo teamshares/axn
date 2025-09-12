@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require "axn/enqueueable/via_sidekiq"
-require "axn/enqueueable/via_activejob"
-require "axn/enqueueable/disabled"
+require "axn/async/via_sidekiq"
+require "axn/async/via_activejob"
+require "axn/async/disabled"
 
 module Axn
-  module Enqueueable
+  module Async
     extend ActiveSupport::Concern
 
     included do

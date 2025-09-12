@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Enqueueable async interface" do
+RSpec.describe "Axn::Async async interface" do
   let(:action_class) do
     Class.new do
       include Axn
@@ -21,7 +21,7 @@ RSpec.describe "Axn::Enqueueable async interface" do
     it "includes Disabled module by default" do
       # Trigger default configuration by calling call_async
       expect { action_class.call_async(name: "World") }.to raise_error(NotImplementedError)
-      expect(action_class.ancestors).to include(Axn::Enqueueable::Disabled)
+      expect(action_class.ancestors).to include(Axn::Async::Disabled)
     end
 
     it "raises NotImplementedError when calling call_async" do
@@ -51,7 +51,7 @@ RSpec.describe "Axn::Enqueueable async interface" do
     end
 
     it "includes Disabled module" do
-      expect(action_class.ancestors).to include(Axn::Enqueueable::Disabled)
+      expect(action_class.ancestors).to include(Axn::Async::Disabled)
     end
 
     it "raises NotImplementedError when calling call_async" do
@@ -94,7 +94,7 @@ RSpec.describe "Axn::Enqueueable async interface" do
       end
 
       it "includes ViaSidekiq module without configuration" do
-        expect(action_class.ancestors).to include(Axn::Enqueueable::ViaSidekiq)
+        expect(action_class.ancestors).to include(Axn::Async::ViaSidekiq)
       end
 
       it "responds to call_async" do

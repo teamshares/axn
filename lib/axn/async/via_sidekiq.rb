@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Enqueueable
+  module Async
     module ViaSidekiq
       extend ActiveSupport::Concern
 

@@ -2,7 +2,7 @@
 
 require_relative "../lib/axn"
 
-# Example usage of the new Axn enqueueable interface
+# Example usage of the new Axn async interface
 
 # Example 1: Disabled async (default)
 class DisabledAction
