@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-
 RSpec.describe "Axn::Async inheritance" do
   context "when parent class has async :sidekiq" do
     let(:parent_class) do

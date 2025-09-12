@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-require "axn/async/adapters"
-require "axn/async/adapters/disabled"
 require_relative "../../../support/shared_examples/async_adapter_interface"
 
 RSpec.describe "Axn::Async with Disabled adapter" do

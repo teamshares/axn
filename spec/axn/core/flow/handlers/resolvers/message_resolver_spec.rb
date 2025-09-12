@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-
 RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
   let(:registry) { Axn::Core::Flow::Handlers::Registry.empty }
   let(:action) { double("action") }

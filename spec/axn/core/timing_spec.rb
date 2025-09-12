@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-
 RSpec.describe Axn::Core::Timing do
   describe ".now" do
     it "returns a monotonic time value" do

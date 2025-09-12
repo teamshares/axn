@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
 require_relative "../support/shared_examples/registry_behavior"
 
 RSpec.describe Axn::Strategies do

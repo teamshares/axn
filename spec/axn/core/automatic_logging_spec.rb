@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-
 RSpec.describe Axn::Core::AutomaticLogging do
   describe "automatic logging" do
     let(:log_messages) { [] }

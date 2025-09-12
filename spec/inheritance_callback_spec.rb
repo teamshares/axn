@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
-
 # Base class that includes Axn::Core
 class BaseAction
   include Axn::Core
