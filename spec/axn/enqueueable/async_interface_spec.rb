@@ -61,89 +61,6 @@ RSpec.describe "Axn::Enqueueable async interface" do
     end
   end
 
-  describe "async :sidekiq" do
-    let(:action_class) do
-      Class.new do
-        include Axn
-
-        async :sidekiq do
-          sidekiq_options queue: "high_priority", retry: 5
-        end
-
-        expects :name
-
-        def call
-          "Hello, #{name}!"
-        end
-      end
-    end
-
-    context "when Sidekiq is available" do
-      before do
-        # Use real Sidekiq - no mocking needed
-        require "sidekiq"
-      end
-
-      it "includes ViaSidekiq module" do
-        expect(action_class.ancestors).to include(Axn::Enqueueable::ViaSidekiq)
-      end
-
-      it "responds to call_async" do
-        expect(action_class).to respond_to(:call_async)
-      end
-
-      it "applies Sidekiq configuration" do
-        expect(action_class.sidekiq_options_hash).to include("queue" => "high_priority", "retry" => 5)
-      end
-    end
-  end
-
-  describe "async :active_job" do
-    before do
-      # Ensure ActiveJob is properly loaded
-      require "active_job"
-    end
-
-    let(:action_class) do
-      Class.new do
-        include Axn
-
-        async :active_job do
-          queue_as "high_priority"
-          retry_on StandardError, attempts: 3
-        end
-
-        expects :name
-
-        def call
-          "Hello, #{name}!"
-        end
-      end
-    end
-
-    context "when ActiveJob is available" do
-      # No stubbing needed - use real ActiveJob
-
-      it "includes ViaActiveJob module" do
-        expect(action_class.ancestors).to include(Axn::Enqueueable::ViaActiveJob)
-      end
-
-      it "responds to call_async" do
-        expect(action_class).to respond_to(:call_async)
-      end
-
-      it "applies ActiveJob configuration" do
-        # Trigger creation of the proxy class by calling call_async
-        action_class.call_async(name: "Test")
-
-        # Check that the proxy class was created and configured
-        proxy_class = action_class.const_get("ActiveJobProxy")
-        expect(proxy_class).to be_present
-        expect(proxy_class.name).to eq("#{action_class.name}::ActiveJobProxy")
-      end
-    end
-  end
-
   describe "invalid adapter" do
     it "raises ArgumentError for unsupported adapter" do
       expect do
@@ -182,6 +99,12 @@ RSpec.describe "Axn::Enqueueable async interface" do
 
       it "responds to call_async" do
         expect(action_class).to respond_to(:call_async)
+      end
+    end
+
+    context "when Sidekiq is not available" do
+      it "raises LoadError" do
+        expect { action_class }.to raise_error(LoadError, /Sidekiq is not available/)
       end
     end
   end

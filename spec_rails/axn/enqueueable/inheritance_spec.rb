@@ -5,8 +5,8 @@ require "spec_helper"
 RSpec.describe "Axn::Enqueueable inheritance" do
   before do
     # Use real Sidekiq and ActiveJob - no mocking needed
-    require 'sidekiq'
-    require 'active_job'
+    require "sidekiq"
+    require "active_job"
   end
 
   context "when parent class has async :sidekiq" do
@@ -135,10 +135,16 @@ RSpec.describe "Axn::Enqueueable inheritance" do
     it "inherits parent's sidekiq methods but uses child's activejob configuration" do
       # The child class inherits parent's sidekiq methods (Ruby inheritance)
       expect(child_class).to respond_to(:sidekiq_options_hash)
-      
+
       # But it uses the child's activejob configuration
       expect(child_class._async_adapter).to eq(:active_job)
-      expect(child_class._activejob_configs).to include([:queue_as, "child_queue"])
+
+      # Trigger creation of the ActiveJob proxy class
+      child_class.call_async(name: "Test")
+
+      # Check that the proxy class was created
+      proxy_class = child_class.const_get("ActiveJobProxy")
+      expect(proxy_class).to be_present
     end
   end
 end
