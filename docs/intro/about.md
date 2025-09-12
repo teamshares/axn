@@ -17,7 +17,7 @@ A simple, declarative core API. Concise enough to pick up quickly, but sufficien
   - Consistent return interface (including exception swallowing)
     - Clear distinction between user-facing and internal errors
   - Minimal boilerplate
-  - Easy backgrounding (no need for a separate Worker class just to wrap a service call)
+  - Easy async execution (no need for a separate Worker class just to wrap a service call)
 
 **Additional benefits devs get for free:**
 

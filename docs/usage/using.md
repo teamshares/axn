@@ -45,8 +45,24 @@ This is a much less common pattern, as you're giving up the benefits of error sw
 
 ### `#call_async`
 
-Before adopting this library, our code was littered with one-line workers whose only job was to fire off a service on a background job.  We were able to remove that entire glue layer by directly supporting async execution via background jobs from the Axn itself.
+Before adopting this library, our code was littered with one-line workers whose only job was to fire off a service on a background job. We were able to remove that entire glue layer by directly supporting async execution via background jobs from the Axn itself.
 
-::: danger ALPHA
-Async integration is NOT YET TESTED/NOT YET USED IN OUR APP, and naming will VERY LIKELY change to make it clearer which actions will be retried!
-:::
+```ruby
+class ProcessDataAction
+  include Axn
+
+  expects :data
+
+  def call
+    # Process data logic here
+  end
+end
+
+# Execute synchronously
+result = ProcessDataAction.call(data: large_dataset)
+
+# Execute asynchronously
+ProcessDataAction.call_async(data: large_dataset)
+```
+
+For detailed information about configuring async adapters (Sidekiq, ActiveJob, etc.), see the [async configuration documentation](/reference/class#async) and [global async configuration](/reference/configuration#set-default-async).

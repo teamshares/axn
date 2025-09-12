@@ -115,6 +115,97 @@ Sets the log level used when you call `log "Some message"` in your Action.  Note
 
 Automatically detects the environment from `RACK_ENV` or `RAILS_ENV`, defaulting to `"development"`. This is used internally for conditional behavior (e.g., more verbose logging in non-production environments).
 
+## `set_default_async`
+
+Configures the default async adapter and settings for all actions that don't explicitly specify their own async configuration.
+
+```ruby
+Axn.configure do |c|
+  # Set default async adapter with configuration
+  c.set_default_async(:sidekiq, queue: "default", retry: 3) do
+    sidekiq_options priority: 5
+  end
+
+  # Set default async adapter with just configuration
+  c.set_default_async(:active_job) do
+    queue_as "default"
+    self.priority = 5
+  end
+
+  # Disable async by default
+  c.set_default_async(false)
+end
+```
+
+### Available Async Adapters
+
+#### Sidekiq
+
+The Sidekiq adapter provides integration with the Sidekiq background job processing library.
+
+```ruby
+# In your action class
+async :sidekiq do
+  sidekiq_options queue: "high_priority", retry: 5, priority: 10
+end
+
+# Or with keyword arguments (shorthand)
+async :sidekiq, queue: "high_priority", retry: 5
+```
+
+**Configuration options:**
+- `queue`: The Sidekiq queue name (default: "default")
+- `retry`: Number of retry attempts (default: 25)
+- `priority`: Job priority (default: 0)
+- Any other Sidekiq options supported by `sidekiq_options`
+
+#### ActiveJob
+
+The ActiveJob adapter provides integration with Rails' ActiveJob framework.
+
+```ruby
+# In your action class
+async :active_job do
+  queue_as "high_priority"
+  self.priority = 10
+  self.wait = 5.minutes
+end
+```
+
+**Configuration options:**
+- `queue_as`: The ActiveJob queue name
+- `priority`: Job priority
+- `wait`: Delay before execution
+- Any other ActiveJob options
+
+#### Disabled
+
+Disables async execution entirely. The action will raise a `NotImplementedError` when `call_async` is called.
+
+```ruby
+# In your action class
+async false
+```
+
+### Default Configuration
+
+By default, async execution is disabled (`false`). You can set a default configuration that will be applied to all actions that don't explicitly configure their own async behavior:
+
+```ruby
+Axn.configure do |c|
+  # Set a default async configuration
+  c.set_default_async(:sidekiq, queue: "default") do
+    sidekiq_options retry: 3
+  end
+end
+
+# Now all actions will use Sidekiq by default
+class MyAction
+  include Axn
+  # No async configuration needed - uses default
+end
+```
+
 ## Rails-specific Configuration
 
 When using Axn in a Rails application, additional configuration options are available under `Axn.config.rails`:
@@ -203,6 +294,11 @@ Axn.configure do |c|
   c.emit_metrics = proc do |resource, result|
     Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
+  end
+
+  # Async configuration
+  c.set_default_async(:sidekiq, queue: "default") do
+    sidekiq_options retry: 3, priority: 5
   end
 
   # Global includes
