@@ -67,8 +67,7 @@ RSpec.describe "Axn::Enqueueable async interface" do
         include Axn
 
         async :sidekiq do
-          queue "high_priority"
-          retry_count 5
+          sidekiq_options queue: "high_priority", retry: 5
         end
 
         expects :name

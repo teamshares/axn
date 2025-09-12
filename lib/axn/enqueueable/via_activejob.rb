@@ -13,6 +13,9 @@ module Axn
         raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(ActiveJob)
 
         class_attribute :_activejob_configs, default: []
+
+        # Apply the async configuration block if it exists
+        class_eval(&_async_config) if _async_config
       end
 
       class_methods do

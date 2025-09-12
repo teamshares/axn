@@ -78,8 +78,7 @@ RSpec.describe "Axn::Enqueueable inheritance" do
         include Axn
 
         async :sidekiq do
-          queue "parent_queue"
-          retry_count 3
+          sidekiq_options queue: "parent_queue", retry: 3
         end
 
         expects :name
@@ -101,7 +100,7 @@ RSpec.describe "Axn::Enqueueable inheritance" do
     end
 
     it "inherits parent's sidekiq configuration" do
-      expect(child_class.queue).to eq("parent_queue")
+      expect(child_class.sidekiq_options_hash["queue"]).to eq("parent_queue")
       expect(child_class.sidekiq_options_hash["retry"]).to eq(3)
     end
 
@@ -179,7 +178,7 @@ RSpec.describe "Axn::Enqueueable inheritance" do
         include Axn
 
         async :sidekiq do
-          queue "parent_queue"
+          sidekiq_options queue: "parent_queue"
         end
       end
     end
@@ -198,7 +197,6 @@ RSpec.describe "Axn::Enqueueable inheritance" do
 
     it "inherits parent's sidekiq methods but uses child's activejob configuration" do
       # The child class inherits parent's sidekiq methods (Ruby inheritance)
-      expect(child_class).to respond_to(:queue)
       expect(child_class).to respond_to(:sidekiq_options_hash)
 
       # But it uses the child's activejob configuration

@@ -10,6 +10,8 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, default: nil
+      # TODO: some initial application
+      # async
     end
 
     class_methods do
@@ -21,15 +23,9 @@ module Axn
         when false
           include Disabled
         when :sidekiq
-          raise LoadError, "Sidekiq is not available. Please add 'sidekiq' to your Gemfile." unless defined?(Sidekiq)
-
           include ViaSidekiq
-          class_eval(&block) if block_given?
         when :active_job
-          raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(ActiveJob)
-
           include ViaActiveJob
-          class_eval(&block) if block_given?
         when nil
           # Use default configuration
           async Axn.config.default_async

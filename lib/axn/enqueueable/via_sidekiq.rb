@@ -10,6 +10,9 @@ module Axn
 
         include Sidekiq::Job
         class_attribute :sidekiq_options_hash, default: {}
+
+        # Apply the async configuration block if it exists
+        class_eval(&_async_config) if _async_config
       end
 
       def self.included(base)
@@ -28,30 +31,9 @@ module Axn
           super(**context)
         end
 
-        # Sidekiq configuration methods
-        def queue_options(opts)
-          opts = opts.transform_keys(&:to_s)
-          self.sidekiq_options_hash = (sidekiq_options_hash || {}).merge(opts)
-        end
-
-        def queue(name = nil)
-          if name
-            sidekiq_options queue: name
-          else
-            sidekiq_options_hash["queue"] || "default"
-          end
-        end
-
-        def retry_count(count)
-          sidekiq_options retry: count
-        end
-
-        def retry_queue(name)
-          sidekiq_options retry_queue: name
-        end
-
         def sidekiq_options(opts)
-          self.sidekiq_options_hash = sidekiq_options_hash.merge(opts.transform_keys(&:to_s))
+          opts = opts.transform_keys(&:to_s)
+          self.sidekiq_options_hash = sidekiq_options_hash.merge(opts)
         end
 
         private

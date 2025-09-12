@@ -4,7 +4,7 @@
 
 class TestEnqueueableInteractor
   include Axn
-  
+
   async :sidekiq do
     queue "default"
     retry_count 10
@@ -21,7 +21,7 @@ end
 
 class AnotherEnqueueableInteractor
   include Axn
-  
+
   async :sidekiq do
     queue "default"
     retry_count 10
