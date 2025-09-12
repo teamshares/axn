@@ -4,7 +4,7 @@ require "active_support/concern"
 
 module Axn
   module Async
-    module Adapters
+    class Adapters
       module ActiveJob
         extend ActiveSupport::Concern
 

@@ -15,7 +15,8 @@ module Axn
             adapter_files = Dir[File.join(__dir__, "adapters", "*.rb")]
             adapter_files.each { |file| require file }
 
-            constants = Axn::Async::Adapters.constants.map { |const| Axn::Async::Adapters.const_get(const) }
+            # Get all modules defined within this class
+            constants = self.constants.map { |const| const_get(const) }
             mods = constants.select { |const| const.is_a?(Module) }
 
             mods.to_h do |mod|

@@ -2,7 +2,7 @@
 
 module Axn
   module Async
-    module Adapters
+    class Adapters
       module Disabled
         def self.included(base)
           base.class_eval do

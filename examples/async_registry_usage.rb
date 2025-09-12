@@ -38,7 +38,7 @@ module CustomAsyncAdapter
 end
 
 # Register the custom adapter
-Axn::Async::Registry.register(:custom, CustomAsyncAdapter)
+Axn::Async::Adapters.register(:custom, CustomAsyncAdapter)
 
 # Example 3: Using the custom adapter
 class CustomAction
@@ -55,7 +55,7 @@ end
 
 # Example 4: Listing available adapters
 puts "=== Available Async Adapters ==="
-Axn::Async::Registry.all.each do |name, adapter|
+Axn::Async::Adapters.all.each do |name, adapter|
   puts "#{name}: #{adapter.name}"
 end
 
@@ -72,6 +72,6 @@ CustomAction.call_async(name: "World")
 sleep(0.2)
 
 puts "\n=== Registry Information ==="
-puts "Total adapters: #{Axn::Async::Registry.all.size}"
-puts "Built-in adapters: #{Axn::Async::Registry.built_in.keys}"
-puts "All adapters: #{Axn::Async::Registry.all.keys}"
+puts "Total adapters: #{Axn::Async::Adapters.all.size}"
+puts "Built-in adapters: #{Axn::Async::Adapters.built_in.keys}"
+puts "All adapters: #{Axn::Async::Adapters.all.keys}"

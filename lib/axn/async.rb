@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/async/registry"
+require "axn/async/adapters"
 
 module Axn
   module Async
@@ -19,13 +19,13 @@ module Axn
 
         case adapter
         when false
-          include Registry.find(:disabled)
+          include Adapters.find(:disabled)
         when nil
           # Use default configuration
           async Axn.config.default_async
         else
           # Look up adapter in registry
-          adapter_module = Registry.find(adapter)
+          adapter_module = Adapters.find(adapter)
           include adapter_module
         end
       end
@@ -35,7 +35,7 @@ module Axn
         async Axn.config.default_async if _async_adapter.nil?
 
         # This will be overridden by the included adapter module
-        raise NotImplementedError, "No async adapter configured. Use `async :sidekiq` or `async :active_job` to enable background processing."
+        raise NotImplementedError, "No async adapter configured. Use e.g. `async :sidekiq` or `async :active_job` to enable background processing."
       end
     end
   end

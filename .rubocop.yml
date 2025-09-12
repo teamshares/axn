@@ -37,6 +37,9 @@ Style/ClassAndModuleChildren:
 Style/HashSyntax:
   EnforcedShorthandSyntax: always
 
+Naming/MemoizedInstanceVariableName:
+  Enabled: false
+
 Style/DoubleNegation:
   Enabled: false
 

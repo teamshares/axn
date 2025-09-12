@@ -22,17 +22,9 @@ module Axn
 
       private
 
-      def item_type
-        "Strategy"
-      end
-
-      def not_found_error_class
-        StrategyNotFound
-      end
-
-      def duplicate_error_class
-        DuplicateStrategyError
-      end
+      def item_type = "Strategy"
+      def not_found_error_class = StrategyNotFound
+      def duplicate_error_class = DuplicateStrategyError
     end
   end
 end

@@ -10,8 +10,7 @@ module Axn
 
       class << self
         def built_in
-          # Subclasses must implement this method
-          @built_in ||= raise NotImplementedError, "Subclasses must implement built_in method"
+          @built_in ||= {}
         end
 
         def register(name, item)

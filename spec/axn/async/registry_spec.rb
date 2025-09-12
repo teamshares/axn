@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Async::Registry do
+RSpec.describe Axn::Async::Adapters do
   describe ".built_in" do
     it "loads all adapter files from the adapters directory" do
       expect(described_class.built_in.keys).to include(:sidekiq, :active_job, :disabled)
