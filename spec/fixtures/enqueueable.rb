@@ -4,7 +4,12 @@
 
 class TestEnqueueableInteractor
   include Axn
-  queue_options retry: 10, retry_queue: "low"
+  
+  async :sidekiq do
+    queue "default"
+    retry_count 10
+    retry_queue "low"
+  end
 
   expects :name, :address
 
@@ -16,7 +21,12 @@ end
 
 class AnotherEnqueueableInteractor
   include Axn
-  queue_options retry: 10, retry_queue: "low"
+  
+  async :sidekiq do
+    queue "default"
+    retry_count 10
+    retry_queue "low"
+  end
 
   expects :foo
 

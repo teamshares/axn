@@ -10,20 +10,17 @@ module Axn
       extend ActiveSupport::Concern
 
       included do
-        # Store ActiveJob configurations - use class instance variable for proper inheritance
-        @_activejob_configs = []
+        raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(ActiveJob)
+
+        class_attribute :_activejob_configs, default: []
       end
 
       class_methods do
-        def perform_now(context = {})
-          call(**context)
-        end
-
-        def perform_later(context = {})
+        def call_async(context = {})
           # Create a job class that inherits from ActiveJob::Base
           job_class = Class.new(ActiveJob::Base) do
-            define_method(:perform) do |context = {}|
-              self.class.call!(**context)
+            define_method(:perform) do |job_context = {}|
+              self.class.call!(**job_context)
             end
           end
 
@@ -53,34 +50,30 @@ module Axn
           job_class.perform_later(context)
         end
 
+        def call(context = {})
+          # This should delegate to the parent class's call method
+          super(**context)
+        end
+
         # Intercept ActiveJob configuration methods
         def set(options = {})
-          @_activejob_configs ||= []
-          @_activejob_configs << [:set, options]
+          self._activejob_configs += [[:set, options]]
         end
 
         def queue_as(queue_name)
-          @_activejob_configs ||= []
-          @_activejob_configs << [:queue_as, queue_name]
+          self._activejob_configs += [[:queue_as, queue_name]]
         end
 
         def retry_on(exception, wait: nil, attempts: nil, queue: nil, priority: nil, jitter: nil)
-          @_activejob_configs ||= []
-          @_activejob_configs << [:retry_on, { exception:, wait:, attempts:, queue:, priority:, jitter: }]
+          self._activejob_configs += [[:retry_on, { exception:, wait:, attempts:, queue:, priority:, jitter: }]]
         end
 
         def discard_on(exception)
-          @_activejob_configs ||= []
-          @_activejob_configs << [:discard_on, exception]
+          self._activejob_configs += [[:discard_on, exception]]
         end
 
         def priority=(priority)
-          @_activejob_configs ||= []
-          @_activejob_configs << [:priority=, priority]
-        end
-
-        def _activejob_configs
-          @_activejob_configs ||= []
+          self._activejob_configs += [[:priority=, priority]]
         end
       end
     end

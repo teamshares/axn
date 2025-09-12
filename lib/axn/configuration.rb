@@ -7,11 +7,13 @@ module Axn
 
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails, :default_async
 
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
+
+    def default_async = @default_async ||= false
 
     def rails = @rails ||= RailsConfiguration.new
 
