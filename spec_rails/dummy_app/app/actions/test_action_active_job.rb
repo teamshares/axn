@@ -10,7 +10,9 @@ module Actions
     expects :name, :age
 
     def call
-      "Hello, #{name}! You are #{age} years old."
+      result = "Hello, #{name}! You are #{age} years old."
+      puts "Action executed: #{result}"
+      result
     end
   end
 end
