@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "axn"
-
 module Actions
   class TestActionActiveJobWithOptions
     include Axn
