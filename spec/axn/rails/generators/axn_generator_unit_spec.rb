@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "spec_helper"
 require "rails/generators"
 require "axn/rails/generators/axn_generator"
 

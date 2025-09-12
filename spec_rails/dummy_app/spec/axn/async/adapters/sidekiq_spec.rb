@@ -1,17 +1,6 @@
 # frozen_string_literal: true
 
 RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
-  before(:all) do
-    # Ensure the action classes are loaded
-    Actions::TestActionSidekiq
-    Actions::TestActionSidekiqWithOptions
-    Actions::FailingActionSidekiq
-
-    # Manually require the GlobalID action class
-    require_relative "../../../../app/actions/test_action_sidekiq_global_id"
-    Actions::TestActionSidekiqGlobalId
-  end
-
   before do
     Sidekiq::Testing.inline!
     Sidekiq.strict_args!(false) # Allow symbols and other non-JSON types for testing
