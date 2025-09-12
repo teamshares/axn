@@ -24,7 +24,7 @@ RSpec.shared_examples "an async adapter interface" do |adapter_name, adapter_mod
           build_axn do
             async adapter_name
           end
-        end.to raise_error(LoadError, /#{adapter_name.to_s.capitalize} is not available/)
+        end.to raise_error(LoadError, /#{adapter_name.to_s.classify} is not available/)
       end
     end
   end
