@@ -29,12 +29,12 @@ module Axn
         end
       end
 
-      def call_async(_context = {})
+      def call_async(context = {})
         # Set up default async configuration if none is set
         if _async_adapter.nil?
           async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
           # Call ourselves again now that the adapter is included
-          return call_async(_context)
+          return call_async(context)
         end
 
         # This will be overridden by the included adapter module
