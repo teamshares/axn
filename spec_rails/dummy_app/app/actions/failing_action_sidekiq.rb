@@ -11,6 +11,7 @@ module Actions
     expects :name
 
     def call
+      info "About to fail with name: #{name}"
       raise StandardError, "Intentional failure"
     end
   end

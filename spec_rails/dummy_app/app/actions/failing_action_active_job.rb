@@ -10,7 +10,7 @@ module Actions
     expects :name
 
     def call
-      puts "About to fail with name: #{name}"
+      info "About to fail with name: #{name}"
       raise StandardError, "Intentional failure"
     end
   end

@@ -4,6 +4,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
   before do
     Sidekiq::Testing.inline!
     Sidekiq.strict_args!(false) # Allow symbols and other non-JSON types for testing
+    allow(Axn.config.logger).to receive(:info).and_call_original
   end
 
   after do
@@ -80,8 +81,53 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     end
   end
 
+  describe "Sidekiq job execution" do
+    it "executes the action successfully" do
+      expect do
+        Actions::TestActionSidekiq.call_async(name: "World", age: 25)
+      end.not_to raise_error
+    end
+
+    it "handles complex context during execution" do
+      expect do
+        Actions::TestActionSidekiq.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
+      end.not_to raise_error
+    end
+
+    it "verifies that jobs can be executed multiple times" do
+      expect do
+        Actions::TestActionSidekiq.call_async(name: "World", age: 25)
+        Actions::TestActionSidekiq.call_async(name: "Rails", age: 30)
+      end.not_to raise_error
+    end
+
+    it "executes action successfully" do
+      expect do
+        Actions::TestActionSidekiq.call_async(name: "World", age: 25)
+      end.not_to raise_error
+    end
+
+    it "logs action execution details" do
+      Actions::TestActionSidekiq.call_async(name: "World", age: 25)
+
+      # Verify that info was called with the expected message
+      expect(Axn.config.logger).to have_received(:info).with(/Action executed: Hello, World! You are 25 years old\./)
+    end
+
+    it "logs before failing" do
+      expect { Actions::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
+
+      # Verify that info was called before the error
+      expect(Axn.config.logger).to have_received(:info).with(/About to fail with name: Test/)
+    end
+  end
+
   describe "Sidekiq error handling" do
     it "handles job failures" do
+      expect { Actions::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
+    end
+
+    it "executes failing action and raises error" do
       expect { Actions::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
     end
 

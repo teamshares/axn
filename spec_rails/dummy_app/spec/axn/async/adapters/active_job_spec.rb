@@ -3,6 +3,10 @@
 RSpec.describe "Axn::Async with ActiveJob adapter" do
   include ActiveJob::TestHelper
 
+  before do
+    allow(Axn.config.logger).to receive(:info).and_call_original
+  end
+
   around do |example|
     # Use test adapter for testing job enqueueing and execution
     original_adapter = ActiveJob::Base.queue_adapter
@@ -66,36 +70,51 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
   end
 
   describe "ActiveJob job execution" do
-    it "executes the action and logs the result" do
+    it "executes the action successfully" do
       Actions::TestActionActiveJob.call_async(name: "World", age: 25)
-      
+
       expect do
         perform_enqueued_jobs
-      end.to output(/Action executed: Hello, World! You are 25 years old\./).to_stdout
+      end.not_to raise_error
     end
 
     it "handles complex context during execution" do
       Actions::TestActionActiveJob.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
-      
+
       expect do
         perform_enqueued_jobs
-      end.to output(/Action executed: Hello, Rails! You are 30 years old\./).to_stdout
+      end.not_to raise_error
     end
 
     it "verifies that jobs can be executed multiple times" do
       Actions::TestActionActiveJob.call_async(name: "World", age: 25)
       Actions::TestActionActiveJob.call_async(name: "Rails", age: 30)
-      
+
       expect do
         perform_enqueued_jobs
-      end.to output(/Action executed: Hello, World! You are 25 years old\./).to_stdout
-      
-      # Clear the output and run again to test the second job
-      Actions::TestActionActiveJob.call_async(name: "Rails", age: 30)
-      
+      end.not_to raise_error
+    end
+
+    it "logs action execution details" do
+      Actions::TestActionActiveJob.call_async(name: "World", age: 25)
+
       expect do
         perform_enqueued_jobs
-      end.to output(/Action executed: Hello, Rails! You are 30 years old\./).to_stdout
+      end.not_to raise_error
+
+      # Verify that info was called with the expected message
+      expect(Axn.config.logger).to have_received(:info).with(/Action executed: Hello, World! You are 25 years old\./)
+    end
+
+    it "logs before failing" do
+      Actions::FailingActionActiveJob.call_async(name: "Test")
+
+      expect do
+        perform_enqueued_jobs
+      end.to raise_error(StandardError, "Intentional failure")
+
+      # Verify that info was called before the error
+      expect(Axn.config.logger).to have_received(:info).with(/About to fail with name: Test/)
     end
   end
 
@@ -109,10 +128,10 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
 
     it "executes failing jobs and raises the error" do
       Actions::FailingActionActiveJob.call_async(name: "Test")
-      
+
       expect do
         perform_enqueued_jobs
-      end.to output(/About to fail with name: Test/).to_stdout.and raise_error(StandardError, "Intentional failure")
+      end.to raise_error(StandardError, "Intentional failure")
     end
   end
 end

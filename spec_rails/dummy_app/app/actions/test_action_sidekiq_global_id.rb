@@ -10,7 +10,7 @@ module Actions
     expects :name, :user
 
     def call
-      "Hello, #{name}! User: #{user.class}"
+      info "Hello, #{name}! User: #{user.class}"
     end
   end
 end

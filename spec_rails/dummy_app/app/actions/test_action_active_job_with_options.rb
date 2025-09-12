@@ -14,7 +14,7 @@ module Actions
     expects :name, :age
 
     def call
-      "Hello, #{name}! You are #{age} years old."
+      info "Hello, #{name}! You are #{age} years old."
     end
   end
 end
