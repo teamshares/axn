@@ -14,34 +14,23 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     Sidekiq.strict_args!(true) # Restore strict args
   end
 
-  let(:action_class) do
-    build_axn do
-      async :sidekiq
-      expects :name, :age
-
-      def call
-        "Hello, #{name}! You are #{age} years old."
-      end
-    end
-  end
-
   describe ".call_async" do
     it "executes the action with the provided context" do
-      result = action_class.call_async(name: "World", age: 25)
+      result = Actions::TestActionSidekiq.call_async(name: "World", age: 25)
       expect(result).to be_a(Axn::Result)
       expect(result.ok?).to be true
     end
 
     it "handles empty context" do
-      expect { action_class.call_async({}) }.to raise_error(Axn::InboundValidationError)
+      expect { Actions::TestActionSidekiq.call_async({}) }.to raise_error(Axn::InboundValidationError)
     end
 
     it "handles nil context" do
-      expect { action_class.call_async(nil) }.to raise_error(Axn::InboundValidationError)
+      expect { Actions::TestActionSidekiq.call_async(nil) }.to raise_error(Axn::InboundValidationError)
     end
 
     it "handles complex context" do
-      result = action_class.call_async(name: "World", age: 25, active: true, tags: ["test"])
+      result = Actions::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])
       expect(result).to be_a(Axn::Result)
       expect(result.ok?).to be true
     end
@@ -79,18 +68,41 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     end
   end
 
+  describe "Sidekiq options configuration" do
+    it "applies sidekiq_options from async config" do
+      # Verify the sidekiq_options were applied
+      expect(Actions::TestActionSidekiqWithOptions.sidekiq_options).to include(
+        "queue" => "high_priority",
+        "retry" => 3,
+      )
+
+      # Test that the job executes with the options
+      result = Actions::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)
+      expect(result).to be_a(Axn::Result)
+      expect(result.ok?).to be true
+    end
+
+    it "works without sidekiq_options" do
+      # Verify that default sidekiq_options are present
+      expect(Actions::TestActionSidekiq.sidekiq_options).to be_a(Hash)
+    end
+  end
+
   describe "Sidekiq error handling" do
     it "handles job failures" do
-      failing_action_class = build_axn do
-        async :sidekiq
-        expects :name
+      expect { Actions::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
+    end
 
-        def call
-          raise StandardError, "Intentional failure"
-        end
+    it "catches unserializable objects immediately during call_async" do
+      unserializable_object = Object.new
+      # Make it unserializable by adding a method that can't be serialized
+      def unserializable_object.inspect
+        "UnserializableObject"
       end
 
-      expect { failing_action_class.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
+      expect do
+        Actions::TestActionSidekiq.call_async(name: "Test", age: 25, unserializable: unserializable_object)
+      end.to raise_error(ArgumentError, /Job arguments to .* must be native JSON types, but .* is a Object/)
     end
 
     it "catches complex unserializable objects immediately" do
@@ -106,7 +118,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       end.new
 
       expect do
-        action_class.call_async(name: "Test", age: 25, complex: complex_object)
+        Actions::TestActionSidekiq.call_async(name: "Test", age: 25, complex: complex_object)
       end.to raise_error(ArgumentError, /Job arguments to .* must be native JSON types, but .* is a .*/)
     end
   end

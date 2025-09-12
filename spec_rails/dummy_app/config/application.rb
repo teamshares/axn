@@ -7,6 +7,10 @@ require "rails/all"
 # Load axn gem to ensure Rails Engine is available
 require "axn"
 
+# Explicitly require ActiveJob for testing
+require "active_job"
+require "active_job/base"
+
 # Require the gems listed in Gemfile, including any gems
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
@@ -28,6 +32,7 @@ module DummyApp
     # Middleware like session, flash, cookies can be added back manually.
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
+
 
     # Disable unnecessary middleware for testing
     config.middleware.delete ActionDispatch::Session::CookieStore

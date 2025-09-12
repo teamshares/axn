@@ -9,7 +9,7 @@ module Axn
         extend ActiveSupport::Concern
 
         included do
-          raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob)
+          raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob::Base)
         end
 
         class_methods do
@@ -24,6 +24,9 @@ module Axn
           end
 
           def create_active_job_proxy_class
+            # Store reference to the original action class
+            action_class = self
+
             # Create the ActiveJob proxy class
             Class.new(::ActiveJob::Base).tap do |proxy|
               # Give the job class a meaningful name for logging and debugging
@@ -36,7 +39,8 @@ module Axn
 
               # Define the perform method
               proxy.define_method(:perform) do |job_context = {}|
-                self.class.call!(**job_context)
+                # Call the original action class with the job context
+                action_class.call!(**job_context)
               end
             end
           end
