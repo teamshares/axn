@@ -84,6 +84,31 @@ RSpec.describe Axn::Configuration do
       end.not_to raise_error
       expect(config._default_async_config).to eq({ queue: "test" })
     end
+
+    it "overwrites previous values when called multiple times" do
+      # First call
+      block1 = proc { puts "first block" }
+      config.set_default_async(:sidekiq, queue: "first", retry: 1, &block1)
+
+      expect(config._default_async_adapter).to eq(:sidekiq)
+      expect(config._default_async_config).to eq({ queue: "first", retry: 1 })
+      expect(config._default_async_config_block).to eq(block1)
+
+      # Second call - should overwrite everything
+      block2 = proc { puts "second block" }
+      config.set_default_async(:active_job, queue: "second", retry: 2, &block2)
+
+      expect(config._default_async_adapter).to eq(:active_job)
+      expect(config._default_async_config).to eq({ queue: "second", retry: 2 })
+      expect(config._default_async_config_block).to eq(block2)
+
+      # Third call - should overwrite again
+      config.set_default_async(false, queue: "third", retry: 3)
+
+      expect(config._default_async_adapter).to be false
+      expect(config._default_async_config).to eq({ queue: "third", retry: 3 })
+      expect(config._default_async_config_block).to be_nil
+    end
   end
 
   describe "#rails" do

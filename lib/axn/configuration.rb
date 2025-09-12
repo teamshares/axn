@@ -20,9 +20,9 @@ module Axn
     def set_default_async(adapter = false, **config, &block)
       raise ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion" if adapter.nil?
 
-      @default_async_adapter = adapter if adapter
-      @default_async_config = config if config.any?
-      @default_async_config_block = block if block_given?
+      @default_async_adapter = adapter unless adapter.nil?
+      @default_async_config = config.any? ? config : {}
+      @default_async_config_block = block_given? ? block : nil
     end
 
     def rails = @rails ||= RailsConfiguration.new
