@@ -11,7 +11,11 @@ module Axn
 
           include ::Sidekiq::Job
 
-          class_eval(&_async_config) if _async_config
+          # Apply configuration block if present
+          class_eval(&_async_config_block) if _async_config_block
+
+          # Apply kwargs configuration if present
+          sidekiq_options(**_async_config) if _async_config&.any?
         end
 
         class_methods do

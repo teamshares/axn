@@ -7,13 +7,14 @@ module Axn
     extend ActiveSupport::Concern
 
     included do
-      class_attribute :_async_adapter, :_async_config, default: nil
+      class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
     end
 
     class_methods do
-      def async(adapter = nil, &block)
+      def async(adapter = nil, **config, &block)
         self._async_adapter = adapter
-        self._async_config = block
+        self._async_config = config
+        self._async_config_block = block
 
         case adapter
         when false

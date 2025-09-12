@@ -28,15 +28,26 @@ class ExplicitlyDisabledAction
   end
 end
 
-# Example 3: Sidekiq async with configuration (only if Sidekiq is available)
+# Example 3: Sidekiq async with configuration using kwargs (terser syntax)
 if defined?(Sidekiq)
   class SidekiqAction
     include Axn
 
+    async :sidekiq, queue: "high_priority", retry: 5, retry_queue: "low"
+
+    expects :name
+
+    def call
+      "Hello, #{name}!"
+    end
+  end
+
+  # Example 4: Sidekiq async with configuration using block (traditional syntax)
+  class SidekiqActionWithBlock
+    include Axn
+
     async :sidekiq do
-      queue "high_priority"
-      retry_count 5
-      retry_queue "low"
+      sidekiq_options queue: "high_priority", retry: 5, retry_queue: "low"
     end
 
     expects :name
@@ -97,7 +108,8 @@ end
 
 # Sidekiq actions (when Sidekiq is available)
 if defined?(Sidekiq)
-  puts "Sidekiq action: #{SidekiqAction.call(name: "World")}"
+  puts "Sidekiq action (kwargs): #{SidekiqAction.call(name: "World")}"
+  puts "Sidekiq action (block): #{SidekiqActionWithBlock.call(name: "World")}"
   puts "SimpleSidekiq action: #{SimpleSidekiqAction.call(name: "World")}"
   # SidekiqAction.call_async(name: 'World') # Would enqueue the job
 else

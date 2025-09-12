@@ -8,6 +8,11 @@ module Axn
 
         included do
           raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob::Base)
+
+          # Validate that kwargs are not provided for ActiveJob
+          if _async_config&.any?
+            raise ArgumentError, "ActiveJob adapter requires a configuration block. Use `async :active_job do ... end` instead of passing keyword arguments."
+          end
         end
 
         class_methods do
@@ -33,7 +38,7 @@ module Axn
               proxy.define_singleton_method(:name) { job_name }
 
               # Apply the async configuration block if it exists
-              proxy.class_eval(&_async_config) if _async_config
+              proxy.class_eval(&_async_config_block) if _async_config_block
 
               # Define the perform method
               proxy.define_method(:perform) do |job_context = {}|
