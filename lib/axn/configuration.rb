@@ -7,13 +7,23 @@ module Axn
 
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails, :default_async
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
 
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
 
-    def default_async = @default_async ||= false
+    def _default_async_adapter = @default_async_adapter ||= false
+    def _default_async_config = @default_async_config ||= {}
+    def _default_async_config_block = @default_async_config_block
+
+    def set_default_async(adapter = false, **config, &block)
+      raise ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion" if adapter.nil?
+
+      @default_async_adapter = adapter if adapter
+      @default_async_config = config if config.any?
+      @default_async_config_block = block if block_given?
+    end
 
     def rails = @rails ||= RailsConfiguration.new
 

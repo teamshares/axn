@@ -15,7 +15,7 @@ RSpec.describe "Axn::Async async interface" do
 
   describe "default behavior" do
     it "defaults to disabled async" do
-      expect(Axn.config.default_async).to be false
+      expect(Axn.config._default_async_adapter).to be false
     end
 
     it "includes Disabled module by default" do

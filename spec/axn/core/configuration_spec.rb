@@ -30,6 +30,62 @@ RSpec.describe Axn::Configuration do
     it { expect(config.env.test?).to eq(true) }
   end
 
+  describe "async configuration" do
+    it "defaults to disabled" do
+      expect(config._default_async_adapter).to be false
+      expect(config._default_async_config).to eq({})
+      expect(config._default_async_config_block).to be_nil
+    end
+
+    it "can set adapter, config, and block together" do
+      block = proc { puts "test" }
+      config.set_default_async(:sidekiq, queue: "high", retry: 5, &block)
+
+      expect(config._default_async_adapter).to eq(:sidekiq)
+      expect(config._default_async_config).to eq({ queue: "high", retry: 5 })
+      expect(config._default_async_config_block).to eq(block)
+    end
+
+    it "can set just the adapter" do
+      config.set_default_async(:active_job)
+
+      expect(config._default_async_adapter).to eq(:active_job)
+      expect(config._default_async_config).to eq({})
+      expect(config._default_async_config_block).to be_nil
+    end
+
+    it "can set just the config" do
+      config.set_default_async(false, queue: "low", retry: 3)
+
+      expect(config._default_async_adapter).to be false
+      expect(config._default_async_config).to eq({ queue: "low", retry: 3 })
+      expect(config._default_async_config_block).to be_nil
+    end
+
+    it "can set just the block" do
+      block = proc { puts "test block" }
+      config.set_default_async(&block)
+
+      expect(config._default_async_adapter).to be false
+      expect(config._default_async_config).to eq({})
+      expect(config._default_async_config_block).to eq(block)
+    end
+
+    it "raises ArgumentError when trying to set adapter to nil" do
+      expect do
+        config.set_default_async(nil)
+      end.to raise_error(ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion")
+    end
+
+    it "allows setting config and block when adapter is false but already set" do
+      config.set_default_async(:sidekiq)
+      expect do
+        config.set_default_async(false, queue: "test")
+      end.not_to raise_error
+      expect(config._default_async_config).to eq({ queue: "test" })
+    end
+  end
+
   describe "#rails" do
     it "returns a RailsConfiguration instance" do
       expect(config.rails).to be_a(Axn::RailsConfiguration)

@@ -21,7 +21,7 @@ module Axn
           include Adapters.find(:disabled)
         when nil
           # Use default configuration
-          async Axn.config.default_async
+          async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
         else
           # Look up adapter in registry
           adapter_module = Adapters.find(adapter)
@@ -31,7 +31,7 @@ module Axn
 
       def call_async(_context = {})
         # Set up default async configuration if none is set
-        async Axn.config.default_async if _async_adapter.nil?
+        async if _async_adapter.nil?
 
         # This will be overridden by the included adapter module
         raise NotImplementedError, "No async adapter configured. Use e.g. `async :sidekiq` or `async :active_job` to enable background processing."
