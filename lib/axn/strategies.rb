@@ -1,48 +1,38 @@
 # frozen_string_literal: true
 
-module Axn
-  class StrategyNotFound < StandardError; end
-  class DuplicateStrategyError < StandardError; end
+require "axn/internal/registry"
 
-  class Strategies
-    # rubocop:disable Style/ClassVars
+module Axn
+  class StrategyNotFound < Axn::Internal::Registry::NotFound; end
+  class DuplicateStrategyError < Axn::Internal::Registry::DuplicateError; end
+
+  class Strategies < Axn::Internal::Registry
     class << self
       def built_in
-        return @@built_in if defined?(@@built_in)
+        @built_in ||= begin
+          strategy_files = Dir[File.join(__dir__, "strategies", "*.rb")]
+          strategy_files.each { |file| require file }
 
-        strategy_files = Dir[File.join(__dir__, "strategies", "*.rb")]
-        strategy_files.each { |file| require file }
+          constants = Axn::Strategies.constants.map { |const| Axn::Strategies.const_get(const) }
+          mods = constants.select { |const| const.is_a?(Module) }
 
-        constants = Axn::Strategies.constants.map { |const| Axn::Strategies.const_get(const) }
-        mods = constants.select { |const| const.is_a?(Module) }
-
-        @@built_in = mods.to_h { |mod| [mod.name.split("::").last.downcase.to_sym, mod] }
+          mods.to_h { |mod| [mod.name.split("::").last.downcase.to_sym, mod] }
+        end
       end
 
-      def register(name, strategy)
-        all # ensure built_in is initialized
-        key = name.to_sym
-        raise DuplicateStrategyError, "Strategy #{name} already registered" if @@strategies.key?(key)
+      private
 
-        @@strategies[key] = strategy
-        @@strategies
+      def item_type
+        "Strategy"
       end
 
-      def all
-        @@strategies ||= built_in.dup
+      def not_found_error_class
+        StrategyNotFound
       end
 
-      def clear!
-        @@strategies = built_in.dup
-      end
-
-      def find(name)
-        raise StrategyNotFound, "Strategy name cannot be nil" if name.nil?
-        raise StrategyNotFound, "Strategy name cannot be empty" if name.to_s.strip.empty?
-
-        all[name.to_sym] or raise StrategyNotFound, "Strategy '#{name}' not found"
+      def duplicate_error_class
+        DuplicateStrategyError
       end
     end
-    # rubocop:enable Style/ClassVars
   end
 end

@@ -6,6 +6,8 @@ module Axn
       module Handlers
         # Small, immutable, copy-on-write registry keyed by event_type.
         # Stores arrays of entries (handlers/interceptors) in insertion order.
+        #
+        # NOTE: serves different need than user-mutable e.g. Axn::Async::Registry
         class Registry
           def self.empty = new({})
 

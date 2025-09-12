@@ -30,7 +30,7 @@ RSpec.describe Axn::Core::UseStrategy do
     it "raises an error for unknown strategy names" do
       expect do
         test_action.use(:unknown_strategy)
-      end.to raise_error("Strategy unknown_strategy not found")
+      end.to raise_error(Axn::StrategyNotFound, "Strategy 'unknown_strategy' not found")
     end
 
     it "finds strategies by symbol name" do
