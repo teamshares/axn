@@ -26,7 +26,7 @@ For us, we've found the maintenance benefits of knowing roughly how the class wi
 ## Naming conventions
 
 ### The responsible user
-When tracking _who_ is responsible for the action being taken, one option is to inject it globally via `Current.user` (see: [Current Attributes](https://api.rubyonrails.org/classes/ActiveSupport/CurrentAttributes.html)), but that only works if you're _sure_ you're never going to want to enqueue the job on a background processor.
+When tracking _who_ is responsible for the action being taken, one option is to inject it globally via `Current.user` (see: [Current Attributes](https://api.rubyonrails.org/classes/ActiveSupport/CurrentAttributes.html)), but that only works if you're _sure_ you're never going to want to execute the action asynchronously on a background processor.
 
 More generally, we've adopted the convention of passing in the responsible user as `actor`:
 

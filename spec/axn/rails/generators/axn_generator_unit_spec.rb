@@ -1,15 +1,14 @@
 # frozen_string_literal: true
 
-require "spec_helper"
 require "rails/generators"
-require_relative "../../lib/axn/rails/generators/axn_generator"
+require "axn/rails/generators/axn_generator"
 
 RSpec.describe Axn::Rails::Generators::AxnGenerator do
   describe "class methods" do
     describe ".source_root" do
       it "returns the correct source root" do
         expect(described_class.source_root).to eq(
-          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../lib/axn/rails/generators")),
+          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../../../lib/axn/rails/generators")),
         )
       end
     end

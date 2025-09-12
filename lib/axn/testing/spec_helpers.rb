@@ -12,6 +12,8 @@ module Axn
   end
 end
 
-RSpec.configure do |config|
-  config.include Axn::Testing::SpecHelpers
+if defined?(RSpec)
+  RSpec.configure do |config|
+    config.include Axn::Testing::SpecHelpers
+  end
 end

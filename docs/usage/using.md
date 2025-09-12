@@ -43,15 +43,26 @@ An action executed via `#call!` (note the `!`) does _not_ swallow exceptions -- 
 This is a much less common pattern, as you're giving up the benefits of error swallowing and the consistent return interface guarantee, but it can be useful in limited contexts (usually for smaller, one-off scripts where it's easier to just let a failure bubble up rather than worry about adding conditionals for error handling).
 
 
-### `#enqueue`
+### `#call_async`
 
-Before adopting this library, our code was littered with one-line workers whose only job was to fire off a service on a background job.  We were able to remove that entire glue layer by directly supporting enqueueing sidekiq jobs from the Axn itself.
+Before adopting this library, our code was littered with one-line workers whose only job was to fire off a service on a background job. We were able to remove that entire glue layer by directly supporting async execution via background jobs from the Axn itself.
 
-::: danger ALPHA
-Sidekiq integration is NOT YET TESTED/NOT YET USED IN OUR APP, and naming will VERY LIKELY change to make it clearer which actions will be retried!
-:::
+```ruby
+class ProcessDataAction
+  include Axn
 
-* enqueue vs enqueue!
-    * enqueue will not retry even if fails
-    * enqueue! will go through normal sidekiq retries on any failure (including user-facing `fail!`)
-    * Note implicit GlobalID support (if not serializable, will get ArgumentError at callsite)
+  expects :data
+
+  def call
+    # Process data logic here
+  end
+end
+
+# Execute synchronously
+result = ProcessDataAction.call(data: large_dataset)
+
+# Execute asynchronously
+ProcessDataAction.call_async(data: large_dataset)
+```
+
+For detailed information about configuring async adapters (Sidekiq, ActiveJob, etc.), see the [async configuration documentation](/reference/class#async) and [global async configuration](/reference/configuration#set-default-async).

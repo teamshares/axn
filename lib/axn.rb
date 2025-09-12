@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support"
+require "active_support/concern"
 
 # Standalone
 require "axn/version"
@@ -13,7 +14,7 @@ require "axn/core"
 
 # Extensions
 require "axn/attachable"
-require "axn/enqueueable"
+require "axn/async"
 
 # Rails integration (if in Rails context)
 require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
@@ -25,7 +26,7 @@ module Axn
 
       # --- Extensions ---
       include Attachable
-      include Enqueueable
+      include Async
 
       # Allow additional automatic includes to be configured
       Array(Axn.config.additional_includes).each { |mod| include mod }

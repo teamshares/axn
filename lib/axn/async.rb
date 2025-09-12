@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+require "axn/async/adapters"
+
+module Axn
+  module Async
+    extend ActiveSupport::Concern
+
+    included do
+      class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+    end
+
+    class_methods do
+      def async(adapter = nil, **config, &block)
+        self._async_adapter = adapter
+        self._async_config = config
+        self._async_config_block = block
+
+        case adapter
+        when false
+          include Adapters.find(:disabled)
+        when nil
+          # Use default configuration
+          async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+        else
+          # Look up adapter in registry
+          adapter_module = Adapters.find(adapter)
+          include adapter_module
+        end
+      end
+
+      def call_async(context = {})
+        # Set up default async configuration if none is set
+        if _async_adapter.nil?
+          async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+          # Call ourselves again now that the adapter is included
+          return call_async(context)
+        end
+
+        # This will be overridden by the included adapter module
+        raise NotImplementedError, "No async adapter configured. Use e.g. `async :sidekiq` or `async :active_job` to enable background processing."
+      end
+    end
+  end
+end

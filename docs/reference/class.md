@@ -343,6 +343,79 @@ The system evaluates handlers in the order they were defined until it finds one 
 **Key point**: Static messages (without conditions) are evaluated **first** in the order they were defined. This means you should define your static fallback messages at the top of your class, before any conditional messages, to ensure proper fallback behavior.
 :::
 
+## `.async`
+
+Configures the async execution behavior for the action. This determines how the action will be executed when `call_async` is called.
+
+```ruby
+class MyAction
+  include Axn
+
+  # Configure Sidekiq
+  async :sidekiq do
+    sidekiq_options queue: "high_priority", retry: 5, priority: 10
+  end
+
+  # Or use keyword arguments (shorthand)
+  async :sidekiq, queue: "high_priority", retry: 5
+
+  # Configure ActiveJob
+  async :active_job do
+    queue_as "data_processing"
+    self.priority = 10
+    self.wait = 5.minutes
+  end
+
+  # Disable async execution
+  async false
+
+  expects :input
+
+  def call
+    # Action logic here
+  end
+end
+```
+
+### Available Adapters
+
+**`:sidekiq`** - Integrates with Sidekiq background job processing
+- Supports all Sidekiq configuration options via `sidekiq_options`
+- Supports keyword argument shorthand for common options (`queue`, `retry`, `priority`)
+
+**`:active_job`** - Integrates with Rails' ActiveJob framework
+- Supports all ActiveJob configuration options
+- Works with any ActiveJob backend (Sidekiq, Delayed Job, etc.)
+
+**`false`** - Disables async execution
+- `call_async` will raise a `NotImplementedError`
+
+### Inheritance
+
+Async configuration is inherited from parent classes. Child classes can override the parent's configuration:
+
+```ruby
+class ParentAction
+  include Axn
+
+  async :sidekiq do
+    sidekiq_options queue: "parent_queue"
+  end
+end
+
+class ChildAction < ParentAction
+  # Inherits parent's Sidekiq configuration
+  # Can override with its own configuration
+  async :active_job do
+    queue_as "child_queue"
+  end
+end
+```
+
+### Default Configuration
+
+If no async configuration is specified, the action will use the default configuration set via `Axn.config.set_default_async`. If no default is set, async execution is disabled.
+
 ## Callbacks
 
 In addition to the [global exception handler](/reference/configuration#on-exception), a number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails.
