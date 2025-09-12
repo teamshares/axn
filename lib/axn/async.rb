@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/async/adapters/sidekiq"
-require "axn/async/adapters/active_job"
-require "axn/async/adapters/disabled"
+require "axn/async/registry"
 
 module Axn
   module Async
@@ -21,16 +19,14 @@ module Axn
 
         case adapter
         when false
-          include Adapters::Disabled
-        when :sidekiq
-          include Adapters::Sidekiq
-        when :active_job
-          include Adapters::ActiveJob
+          include Registry.find(:disabled)
         when nil
           # Use default configuration
           async Axn.config.default_async
         else
-          raise ArgumentError, "Unsupported async adapter: #{adapter}. Supported adapters are: :sidekiq, :active_job, false"
+          # Look up adapter in registry
+          adapter_module = Registry.find(adapter)
+          include adapter_module
         end
       end
 

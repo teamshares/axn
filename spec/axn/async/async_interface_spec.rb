@@ -62,13 +62,13 @@ RSpec.describe "Axn::Async async interface" do
   end
 
   describe "invalid adapter" do
-    it "raises ArgumentError for unsupported adapter" do
+    it "raises AdapterNotFound for unsupported adapter" do
       expect do
         Class.new do
           include Axn
           async :unsupported
         end
-      end.to raise_error(ArgumentError, /Unsupported async adapter: unsupported/)
+      end.to raise_error(Axn::Async::AdapterNotFound, "Adapter 'unsupported' not found")
     end
   end
 
