@@ -22,22 +22,20 @@ module Axn
 
         def create_active_job_proxy_class
           # Create the ActiveJob proxy class
-          job_class = Class.new(ActiveJob::Base)
+          Class.new(ActiveJob::Base).tap do |proxy|
+            # Give the job class a meaningful name for logging and debugging
+            job_name = "#{name}::ActiveJobProxy"
+            const_set("ActiveJobProxy", proxy)
+            proxy.define_singleton_method(:name) { job_name }
 
-          # Give the job class a meaningful name for logging and debugging
-          job_name = "#{name}::ActiveJobProxy"
-          const_set("ActiveJobProxy", job_class)
-          job_class.define_singleton_method(:name) { job_name }
+            # Apply the async configuration block if it exists
+            proxy.class_eval(&_async_config) if _async_config
 
-          # Define the perform method
-          job_class.define_method(:perform) do |job_context = {}|
-            self.class.call!(**job_context)
+            # Define the perform method
+            proxy.define_method(:perform) do |job_context = {}|
+              self.class.call!(**job_context)
+            end
           end
-
-          # Apply the async configuration block if it exists
-          job_class.class_eval(&_async_config) if _async_config
-
-          job_class
         end
       end
     end
