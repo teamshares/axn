@@ -19,5 +19,8 @@ module Axn
         def duplicate_error_class = DuplicateAdapterError
       end
     end
+
+    # Trigger registry loading to ensure adapters are available
+    Adapters.all
   end
 end

@@ -3,7 +3,25 @@
 require_relative "../../../support/shared_examples/async_adapter_interface"
 
 RSpec.describe "Axn::Async with Sidekiq adapter" do
-  let(:sidekiq_job) { Module.new }
+  let(:sidekiq_job) do
+    Module.new do
+      def self.included(base)
+        base.class_eval do
+          def self.perform_async(*args)
+            # Mock implementation
+          end
+
+          def self.sidekiq_options(**options)
+            @sidekiq_options = options
+          end
+
+          def self.sidekiq_options_hash
+            @sidekiq_options || {}
+          end
+        end
+      end
+    end
+  end
 
   let(:action_class) do
     stub_const("Sidekiq", Module.new)
@@ -12,10 +30,6 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     build_axn do
       async :sidekiq
       expects :name, :age
-
-      def self.perform_async(*args)
-        # Mock implementation
-      end
     end
   end
 
@@ -51,6 +65,27 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     it "calls perform_async with processed context" do
       expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
       action_class.call_async(name: "World", age: 25)
+    end
+  end
+
+  describe "kwargs configuration" do
+    let(:action_class_with_kwargs) do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job)
+
+      build_axn do
+        async :sidekiq, queue: "high_priority", retry: 5
+        expects :name, :age
+      end
+    end
+
+    it "applies sidekiq_options from kwargs" do
+      expect(action_class_with_kwargs.sidekiq_options_hash).to include(queue: "high_priority", retry: 5)
+    end
+
+    it "works with call_async" do
+      expect(action_class_with_kwargs).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
+      action_class_with_kwargs.call_async(name: "World", age: 25)
     end
   end
 end

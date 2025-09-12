@@ -3,9 +3,8 @@
 require_relative "../../../support/shared_examples/async_adapter_interface"
 
 RSpec.describe "Axn::Async with ActiveJob adapter" do
-  let(:active_job_base) { Class.new }
-
   let(:action_class) do
+    active_job_base = Class.new
     stub_const("ActiveJob", Module.new)
     stub_const("ActiveJob::Base", active_job_base)
 
