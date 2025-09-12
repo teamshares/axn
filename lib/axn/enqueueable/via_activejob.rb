@@ -2,82 +2,85 @@
 
 module Axn
   module Enqueueable
+    # I am *NOT* happy with this kludge of an implementation, but ActiveJob *only* supports
+    # inheritance so we need to dynamically create a job class that inherits from ActiveJob::Base.
+    # This implementation does NOT support callbacks or more complex configurations, but it does get
+    # basic functionality working.
     module ViaActiveJob
-      def self.included(base)
-        base.class_eval do
-          def self.perform_later(context = {})
-            validated_args = _process_context_to_activejob_args(context)
-            # Create a job class that inherits from ActiveJob::Base
-            original_class = self
-            job_class = Class.new(ActiveJob::Base) do
-              define_method(:perform) do |context = {}|
-                original_class.call!(**context)
-              end
+      extend ActiveSupport::Concern
 
-              def self._validate_serializable_arguments(args)
-                ActiveJob::Arguments.serialize(args)
-              rescue ActiveJob::SerializationError => e
-                raise ArgumentError,
-                      "Cannot pass non-serializable objects to ActiveJob. " \
-                      "Make sure all expected arguments are serializable (or respond to to_global_id). " \
-                      "Original error: #{e.message}"
-              end
-            end
-            # Validate the arguments on the job class too
-            job_class._validate_serializable_arguments(validated_args)
-            job_class.perform_later(validated_args)
-          end
+      included do
+        # Store ActiveJob configurations - use class instance variable for proper inheritance
+        @_activejob_configs = []
+      end
 
-          def self.perform_now(context = {})
-            call(**context)
-          end
+      class_methods do
+        def perform_now(context = {})
+          call(**context)
+        end
 
-          def self.queue_options(opts)
-            # Map Sidekiq-style options to ActiveJob equivalents
-            return unless opts[:queue]
-
-            queue_as(opts[:queue])
-
-            # Other options like retry, retry_queue are handled by ActiveJob's retry system
-          end
-
-          private
-
-          def self._process_context_to_activejob_args(context)
-            args = _params_to_global_id(context)
-            _validate_serializable_arguments(args)
-            args
-          end
-
-          def self._validate_serializable_arguments(args)
-            ActiveJob::Arguments.serialize(args)
-          rescue ActiveJob::SerializationError => e
-            raise ArgumentError,
-                  "Cannot pass non-serializable objects to ActiveJob. " \
-                  "Make sure all expected arguments are serializable (or respond to to_global_id). " \
-                  "Original error: #{e.message}"
-          end
-
-          # Reuse the GlobalID conversion logic from ViaSidekiq
-          def self._params_to_global_id(context)
-            context.stringify_keys.each_with_object({}) do |(key, value), hash|
-              if value.respond_to?(:to_global_id)
-                hash["#{key}_as_global_id"] = value.to_global_id.to_s
-              else
-                hash[key] = value
-              end
+        def perform_later(context = {})
+          # Create a job class that inherits from ActiveJob::Base
+          job_class = Class.new(ActiveJob::Base) do
+            define_method(:perform) do |context = {}|
+              self.class.call!(**context)
             end
           end
 
-          def self._params_from_global_id(params)
-            params.each_with_object({}) do |(key, value), hash|
-              if key.end_with?("_as_global_id")
-                hash[key.delete_suffix("_as_global_id")] = GlobalID::Locator.locate(value)
-              else
-                hash[key] = value
-              end
-            end.symbolize_keys
+          # Give the job class a meaningful name for logging and debugging
+          job_name = "#{name}::ActiveJobProxy"
+          # Register the class with a proper name in the original class's namespace
+          const_set("ActiveJobProxy", job_class)
+          # Set the name directly on the class for better logging
+          job_class.define_singleton_method(:name) { job_name }
+
+          # Apply stored configurations to the job class
+          _activejob_configs.each do |method, args|
+            case method
+            when :set
+              job_class.set(args)
+            when :queue_as
+              job_class.queue_as(args)
+            when :retry_on
+              job_class.retry_on(args[:exception], **args.reject { |k, v| k == :exception || v.nil? })
+            when :discard_on
+              job_class.discard_on(args)
+            when :priority=
+              job_class.priority = args
+            end
           end
+
+          job_class.perform_later(context)
+        end
+
+        # Intercept ActiveJob configuration methods
+        def set(options = {})
+          @_activejob_configs ||= []
+          @_activejob_configs << [:set, options]
+        end
+
+        def queue_as(queue_name)
+          @_activejob_configs ||= []
+          @_activejob_configs << [:queue_as, queue_name]
+        end
+
+        def retry_on(exception, wait: nil, attempts: nil, queue: nil, priority: nil, jitter: nil)
+          @_activejob_configs ||= []
+          @_activejob_configs << [:retry_on, { exception:, wait:, attempts:, queue:, priority:, jitter: }]
+        end
+
+        def discard_on(exception)
+          @_activejob_configs ||= []
+          @_activejob_configs << [:discard_on, exception]
+        end
+
+        def priority=(priority)
+          @_activejob_configs ||= []
+          @_activejob_configs << [:priority=, priority]
+        end
+
+        def _activejob_configs
+          @_activejob_configs ||= []
         end
       end
     end
