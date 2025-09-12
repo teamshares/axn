@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn"
+require "axn/async/adapters/sidekiq"
 
 module Actions
   class TestActionSidekiqWithOptions

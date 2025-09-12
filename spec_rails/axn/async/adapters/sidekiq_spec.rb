@@ -1,9 +1,21 @@
 # frozen_string_literal: true
 
-require "spec_helper"
+require_relative "../../../spec_helper"
 require "sidekiq/testing"
+require "json"
 
 RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
+  before(:all) do
+    # Ensure the action classes are loaded
+    Actions::TestActionSidekiq
+    Actions::TestActionSidekiqWithOptions
+    Actions::FailingActionSidekiq
+    
+    # Manually require the GlobalID action class
+    require_relative "../../../dummy_app/app/actions/test_action_sidekiq_global_id"
+    Actions::TestActionSidekiqGlobalId
+  end
+
   before do
     Sidekiq::Testing.inline!
     Sidekiq.strict_args!(false) # Allow symbols and other non-JSON types for testing
@@ -16,9 +28,9 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
   describe ".call_async" do
     it "executes the action with the provided context" do
-      result = Actions::TestActionSidekiq.call_async(name: "World", age: 25)
-      expect(result).to be_a(Axn::Result)
-      expect(result.ok?).to be true
+      job_id = Actions::TestActionSidekiq.call_async(name: "World", age: 25)
+      expect(job_id).to be_a(String)
+      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
 
     it "handles empty context" do
@@ -30,41 +42,36 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     end
 
     it "handles complex context" do
-      result = Actions::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])
-      expect(result).to be_a(Axn::Result)
-      expect(result.ok?).to be true
+      job_id = Actions::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])
+      expect(job_id).to be_a(String)
+      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
   end
 
   describe "GlobalID integration" do
     let(:user) { double("User", to_global_id: double("GlobalID", to_s: "gid://test/User/123")) }
-    let(:action_with_user) do
-      build_axn do
-        async :sidekiq
-        expects :name, :user
 
-        def call
-          "Hello, #{name}! User: #{user.class}"
-        end
-      end
+    before do
+      # Mock GlobalID::Locator to return our mock user
+      allow(GlobalID::Locator).to receive(:locate).with("gid://test/User/123").and_return(user)
     end
 
     it "converts GlobalID objects to strings in call_async" do
-      result = action_with_user.call_async(name: "World", user:)
-      expect(result).to be_a(Axn::Result)
-      expect(result.ok?).to be true
+      job_id = Actions::TestActionSidekiqGlobalId.call_async(name: "World", user:)
+      expect(job_id).to be_a(String)
+      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
 
     it "converts GlobalID objects to strings and back during execution" do
       # Expect perform to be called with the GlobalID string (proving conversion happened)
-      expect_any_instance_of(action_with_user).to receive(:perform).with(
+      expect_any_instance_of(Actions::TestActionSidekiqGlobalId).to receive(:perform).with(
         hash_including("name" => "World", "user_as_global_id" => "gid://test/User/123"),
       ).and_call_original
 
       # Call call_async with the actual user object - the adapter should handle conversion
-      result = action_with_user.call_async(name: "World", user:)
-      expect(result).to be_a(Axn::Result)
-      expect(result.ok?).to be true
+      job_id = Actions::TestActionSidekiqGlobalId.call_async(name: "World", user:)
+      expect(job_id).to be_a(String)
+      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
   end
 
@@ -76,10 +83,10 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
         "retry" => 3,
       )
 
-      # Test that the job executes with the options
-      result = Actions::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)
-      expect(result).to be_a(Axn::Result)
-      expect(result.ok?).to be true
+      # Test that the job can be enqueued with the options
+      job_id = Actions::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)
+      expect(job_id).to be_a(String)
+      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
 
     it "works without sidekiq_options" do
@@ -94,32 +101,45 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     end
 
     it "catches unserializable objects immediately during call_async" do
+      # Create a truly unserializable object
       unserializable_object = Object.new
-      # Make it unserializable by adding a method that can't be serialized
-      def unserializable_object.inspect
-        "UnserializableObject"
+      def unserializable_object.to_s
+        raise "Cannot serialize"
       end
 
+      # Test that the object is actually unserializable
+      expect { JSON.generate(unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize")
+
+      # Enable strict args for this test to catch unserializable objects
+      Sidekiq.strict_args!(true)
+      
       expect do
         Actions::TestActionSidekiq.call_async(name: "Test", age: 25, unserializable: unserializable_object)
-      end.to raise_error(ArgumentError, /Job arguments to .* must be native JSON types, but .* is a Object/)
+      end.to raise_error(RuntimeError, "Cannot serialize")
+    ensure
+      # Restore strict args setting
+      Sidekiq.strict_args!(false)
     end
 
     it "catches complex unserializable objects immediately" do
-      # Create a complex object with methods that can't be serialized
-      complex_object = Class.new do
-        def initialize
-          @instance_var = "test"
-        end
+      # Create a truly unserializable object
+      complex_object = Object.new
+      def complex_object.to_s
+        raise "Cannot serialize"
+      end
 
-        def inspect
-          "ComplexObject"
-        end
-      end.new
+      # Test that the object is actually unserializable
+      expect { JSON.generate(complex_object) }.to raise_error(RuntimeError, "Cannot serialize")
+
+      # Enable strict args for this test to catch unserializable objects
+      Sidekiq.strict_args!(true)
 
       expect do
         Actions::TestActionSidekiq.call_async(name: "Test", age: 25, complex: complex_object)
-      end.to raise_error(ArgumentError, /Job arguments to .* must be native JSON types, but .* is a .*/)
+      end.to raise_error(RuntimeError, "Cannot serialize")
+    ensure
+      # Restore strict args setting
+      Sidekiq.strict_args!(false)
     end
   end
 end

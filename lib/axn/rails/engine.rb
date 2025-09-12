@@ -5,6 +5,7 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
   module Axn
     module Rails
       class Engine < ::Rails::Engine
+        
         # This engine is automatically loaded when AXN is used in a Rails context
         # It ensures proper initialization and integration with Rails
 
@@ -14,7 +15,7 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
         # However, when used alongside Rails, we ensure that the app/actions
         # directory is automatically added to the autoloader so that Rails can
         # automatically load the actions.
-        initializer "axn.add_app_actions_to_autoload", after: :load_config_initializers do |app|
+        initializer "axn.add_app_actions_to_autoload", before: :load_config_initializers do |app|
           actions_path = app.root.join("app/actions")
 
           # Only add if the directory exists

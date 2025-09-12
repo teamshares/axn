@@ -7,14 +7,6 @@ require "active_job/test_helper"
 RSpec.describe "Axn::Async with ActiveJob adapter" do
   include ActiveJob::TestHelper
 
-  before(:all) do
-    # Debug autoloading
-    puts "Rails loaded: #{defined?(Rails)}"
-    puts "Actions namespace exists: #{Object.const_defined?('Actions')}"
-    puts "Rails autoloader dirs: #{Rails.autoloaders.main.dirs.map(&:to_s)}"
-    puts "Axn config namespace: #{Axn.config.rails.app_actions_autoload_namespace}"
-  end
-
   describe ".call_async" do
     it "executes the action with the provided context" do
       job = Actions::TestActionActiveJob.call_async(name: "World", age: 25)
@@ -34,7 +26,7 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       job = Actions::TestActionActiveJob.call_async(nil)
 
       expect(job).to be_a(ActiveJob::Base)
-      expect(job.arguments).to eq([nil])
+      expect(job.arguments).to eq([{}])
     end
 
     it "handles complex context" do

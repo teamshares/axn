@@ -8,8 +8,6 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, default: nil
-      # TODO: some initial application
-      # async
     end
 
     class_methods do
