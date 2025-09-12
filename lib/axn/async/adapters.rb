@@ -10,22 +10,7 @@ module Axn
 
     class Adapters < Axn::Internal::Registry
       class << self
-        def built_in
-          @built_in ||= begin
-            adapter_files = Dir[File.join(__dir__, "adapters", "*.rb")]
-            adapter_files.each { |file| require file }
-
-            # Get all modules defined within this class
-            constants = self.constants.map { |const| const_get(const) }
-            mods = constants.select { |const| const.is_a?(Module) }
-
-            mods.to_h do |mod|
-              name = mod.name.split("::").last
-              key = name.underscore.to_sym
-              [key, mod]
-            end
-          end
-        end
+        def registry_directory = __dir__
 
         private
 

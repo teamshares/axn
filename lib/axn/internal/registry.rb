@@ -10,7 +10,25 @@ module Axn
 
       class << self
         def built_in
-          @built_in ||= {}
+          @built_in ||= begin
+            # Get the directory name from the class name (e.g., "Strategies" -> "strategies")
+            dir_name = name.split("::").last.underscore
+
+            # Load all files from the directory
+            files = Dir[File.join(registry_directory, dir_name, "*.rb")]
+            files.each { |file| require file }
+
+            # Get all modules defined within this class
+            constants = self.constants.map { |const| const_get(const) }
+            mods = constants.select { |const| const.is_a?(Module) }
+
+            # Convert module names to keys
+            mods.to_h do |mod|
+              name = mod.name.split("::").last
+              key = name.underscore.to_sym
+              [key, mod]
+            end
+          end
         end
 
         def register(name, item)
@@ -52,6 +70,11 @@ module Axn
         def duplicate_error_class
           # Subclasses can override this to return their specific error class
           DuplicateError
+        end
+
+        def registry_directory
+          # Subclasses must override this to return their directory
+          raise NotImplementedError, "Subclasses must implement registry_directory method"
         end
       end
     end

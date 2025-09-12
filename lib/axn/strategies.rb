@@ -8,17 +8,7 @@ module Axn
 
   class Strategies < Axn::Internal::Registry
     class << self
-      def built_in
-        @built_in ||= begin
-          strategy_files = Dir[File.join(__dir__, "strategies", "*.rb")]
-          strategy_files.each { |file| require file }
-
-          constants = Axn::Strategies.constants.map { |const| Axn::Strategies.const_get(const) }
-          mods = constants.select { |const| const.is_a?(Module) }
-
-          mods.to_h { |mod| [mod.name.split("::").last.downcase.to_sym, mod] }
-        end
-      end
+      def registry_directory = __dir__
 
       private
 
