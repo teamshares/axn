@@ -30,7 +30,7 @@ module Axn
         end
       end
 
-      def call_async(context = {})
+      def call_async(_context = {})
         # Set up default async configuration if none is set
         async Axn.config.default_async if _async_adapter.nil?
 

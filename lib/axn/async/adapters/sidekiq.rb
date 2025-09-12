@@ -31,6 +31,8 @@ module Axn
           end
 
           def _params_to_global_id(context)
+            return {} if context.nil?
+
             context.stringify_keys.each_with_object({}) do |(key, value), hash|
               if value.respond_to?(:to_global_id)
                 hash["#{key}_as_global_id"] = value.to_global_id.to_s
@@ -41,6 +43,8 @@ module Axn
           end
 
           def _params_from_global_id(params)
+            return {} if params.nil?
+
             params.each_with_object({}) do |(key, value), hash|
               if key.end_with?("_as_global_id")
                 hash[key.delete_suffix("_as_global_id")] = GlobalID::Locator.locate(value)
