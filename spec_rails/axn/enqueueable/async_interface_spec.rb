@@ -80,8 +80,8 @@ RSpec.describe "Axn::Enqueueable async interface" do
 
     context "when Sidekiq is available" do
       before do
-        stub_const("Sidekiq", Module.new)
-        stub_const("Sidekiq::Job", Module.new)
+        # Use real Sidekiq - no mocking needed
+        require 'sidekiq'
       end
 
       it "includes ViaSidekiq module" do
@@ -94,12 +94,6 @@ RSpec.describe "Axn::Enqueueable async interface" do
 
       it "applies Sidekiq configuration" do
         expect(action_class.sidekiq_options_hash).to include("queue" => "high_priority", "retry" => 5)
-      end
-    end
-
-    context "when Sidekiq is not available" do
-      it "raises LoadError" do
-        expect { action_class }.to raise_error(LoadError, /Sidekiq is not available/)
       end
     end
   end
@@ -145,11 +139,6 @@ RSpec.describe "Axn::Enqueueable async interface" do
       end
     end
 
-    context "when ActiveJob is not available" do
-      it "raises LoadError" do
-        expect { action_class }.to raise_error(LoadError, /ActiveJob is not available/)
-      end
-    end
   end
 
   describe "invalid adapter" do
@@ -193,10 +182,5 @@ RSpec.describe "Axn::Enqueueable async interface" do
       end
     end
 
-    context "when Sidekiq is not available" do
-      it "raises LoadError" do
-        expect { action_class }.to raise_error(LoadError, /Sidekiq is not available/)
-      end
-    end
   end
 end

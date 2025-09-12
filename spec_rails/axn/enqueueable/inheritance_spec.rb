@@ -4,76 +4,13 @@ require "spec_helper"
 
 RSpec.describe "Axn::Enqueueable inheritance" do
   before do
-    # Mock Sidekiq and ActiveJob for testing
-    stub_const("Sidekiq", Module.new)
-    stub_const("Sidekiq::Job", Module.new)
-    stub_const("Sidekiq::Client", Class.new)
-    stub_const("Sidekiq::Testing", Module.new)
-    stub_const("ActiveJob", Module.new)
-    stub_const("ActiveJob::Base", Class.new)
-
-    # Mock Sidekiq::Job methods
-    Sidekiq::Job.module_eval do
-      def self.perform_async(*args)
-        # Mock implementation
-      end
-
-      def perform_async(*args)
-        # Mock implementation
-      end
-    end
-
-    # Mock Sidekiq::Client methods
-    Sidekiq::Client.define_method(:json_unsafe?) do |arg|
-      arg.is_a?(Class)
-    end
-
-    # Mock Sidekiq::Testing methods
-    Sidekiq::Testing.define_singleton_method(:inline!) do |&block|
-      block.call
-    end
-
-    # Mock ActiveJob::Base methods
-    ActiveJob::Base.extend(Module.new do
-      def perform_later(*args)
-        # Mock implementation
-      end
-
-      def set(options = {})
-        # Mock implementation
-      end
-
-      def queue_as(queue_name)
-        # Mock implementation
-      end
-
-      def retry_on(exception, **options)
-        # Mock implementation
-      end
-
-      def discard_on(exception)
-        # Mock implementation
-      end
-
-      def priority=(priority)
-        # Mock implementation
-      end
-    end)
+    # Use real Sidekiq and ActiveJob - no mocking needed
+    require 'sidekiq'
+    require 'active_job'
   end
 
   context "when parent class has async :sidekiq" do
     let(:parent_class) do
-      # Ensure Sidekiq::Job mock is available
-      Sidekiq::Job.module_eval do
-        def self.perform_async(*args)
-          # Mock implementation
-        end
-
-        def perform_async(*args)
-          # Mock implementation
-        end
-      end
-
       Class.new do
         include Axn
 
@@ -163,12 +100,12 @@ RSpec.describe "Axn::Enqueueable inheritance" do
       end
     end
 
-    it "inherits parent's disabled async" do
+    it "inherits parent's async adapter" do
       expect(child_class._async_adapter).to eq(false)
     end
 
     it "raises NotImplementedError when calling call_async" do
-      expect { child_class.call_async(name: "World") }.to raise_error(NotImplementedError)
+      expect { child_class.call_async(name: "World") }.to raise_error(NotImplementedError, /Async execution is explicitly disabled/)
     end
   end
 
@@ -198,7 +135,7 @@ RSpec.describe "Axn::Enqueueable inheritance" do
     it "inherits parent's sidekiq methods but uses child's activejob configuration" do
       # The child class inherits parent's sidekiq methods (Ruby inheritance)
       expect(child_class).to respond_to(:sidekiq_options_hash)
-
+      
       # But it uses the child's activejob configuration
       expect(child_class._async_adapter).to eq(:active_job)
       expect(child_class._activejob_configs).to include([:queue_as, "child_queue"])
