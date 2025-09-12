@@ -12,8 +12,8 @@ end
 
 # Rails specs (separate from main specs to avoid loading Rails unnecessarily)
 task :spec_rails do
-  Dir.chdir("spec_rails") do
-    sh "bundle exec rspec ."
+  Dir.chdir("spec_rails/dummy_app") do
+    sh "BUNDLE_GEMFILE=Gemfile bundle exec rspec spec/"
   end
 end
 

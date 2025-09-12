@@ -4,8 +4,8 @@ require_relative "../spec_helper"
 
 RSpec.describe "Axn Generator Templates" do
   describe "template rendering" do
-    let(:action_template) { File.read(File.expand_path("../../lib/axn/rails/generators/templates/action.rb.erb", __dir__)) }
-    let(:spec_template) { File.read(File.expand_path("../../lib/axn/rails/generators/templates/action_spec.rb.erb", __dir__)) }
+    let(:action_template) { File.read(File.expand_path("../../../../lib/axn/rails/generators/templates/action.rb.erb", __dir__)) }
+    let(:spec_template) { File.read(File.expand_path("../../../../lib/axn/rails/generators/templates/action_spec.rb.erb", __dir__)) }
 
     let(:class_name) { "Test::Action" }
     let(:expectations) { %w[param1 param2] }

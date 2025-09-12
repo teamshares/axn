@@ -21,15 +21,6 @@ module Axn
             perform_async(_params_to_global_id(context))
           end
 
-          private
-
-          def perform(*args)
-            context = self.class._params_from_global_id(args.first)
-
-            # Always use bang version so sidekiq can retry if we failed
-            self.class.call!(**context)
-          end
-
           def _params_to_global_id(context)
             return {} if context.nil?
 
@@ -53,6 +44,13 @@ module Axn
               end
             end.symbolize_keys
           end
+        end
+
+        def perform(*args)
+          context = self.class._params_from_global_id(args.first)
+
+          # Always use bang version so sidekiq can retry if we failed
+          self.class.call!(**context)
         end
       end
     end
