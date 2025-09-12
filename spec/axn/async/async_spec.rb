@@ -7,7 +7,7 @@ RSpec.describe Axn::Async do
     it "includes Disabled module by default" do
       # Trigger default configuration by calling call_async
       expect { action.call_async(foo: "bar") }.to raise_error(NotImplementedError)
-      expect(action.ancestors).to include(Axn::Async::Disabled)
+      expect(action.ancestors).to include(Axn::Async::Adapters::Disabled)
     end
 
     it "provides call_async method" do
@@ -48,8 +48,8 @@ RSpec.describe Axn::Async do
       end
     end
 
-    it "includes ViaSidekiq" do
-      expect(action.ancestors).to include(Axn::Async::ViaSidekiq)
+    it "includes Adapters::Sidekiq" do
+      expect(action.ancestors).to include(Axn::Async::Adapters::Sidekiq)
     end
 
     it "provides call_async method" do
@@ -77,8 +77,8 @@ RSpec.describe Axn::Async do
       end
     end
 
-    it "includes ViaActiveJob" do
-      expect(action.ancestors).to include(Axn::Async::ViaActiveJob)
+    it "includes Adapters::ActiveJob" do
+      expect(action.ancestors).to include(Axn::Async::Adapters::ActiveJob)
     end
 
     it "provides call_async method" do

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "axn/async/via_sidekiq"
-require "axn/async/via_activejob"
-require "axn/async/disabled"
+require "axn/async/adapters/sidekiq"
+require "axn/async/adapters/active_job"
+require "axn/async/adapters/disabled"
 
 module Axn
   module Async
@@ -21,11 +21,11 @@ module Axn
 
         case adapter
         when false
-          include Disabled
+          include Adapters::Disabled
         when :sidekiq
-          include ViaSidekiq
+          include Adapters::Sidekiq
         when :active_job
-          include ViaActiveJob
+          include Adapters::ActiveJob
         when nil
           # Use default configuration
           async Axn.config.default_async
