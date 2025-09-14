@@ -62,25 +62,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        Class.new(superclass || Object) do
-          include Axn unless self < Axn
-
-          define_singleton_method(:name) do
-            [
-              superclass&.name.presence || "AnonymousAction",
-              name,
-            ].compact.join("#")
-          end
-
-          define_method(:call) do
-            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
-              hash[field] = public_send(field)
-            end
-
-            retval = instance_exec(**unwrapped_kwargs, &executable)
-            expose(expose_return_as => retval) if expose_return_as.present?
-          end
-        end.tap do |axn|
+        _build_action_class(superclass, name, args, executable, expose_return_as).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -120,7 +102,15 @@ module Axn
           end
 
           # Async configuration
-          _apply_async_config(axn, Array(async)) unless async.nil?
+          unless async.nil?
+            async_array = Array(async)
+            # Skip async configuration if adapter is nil (but not if array is empty)
+            if !async_array.empty? && async_array[0].nil?
+              # Do nothing - skip async configuration
+            else
+              _apply_async_config(axn, async_array)
+            end
+          end
 
           # Default exposure
           axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?
@@ -161,31 +151,39 @@ module Axn
         end
       end
 
+      def _build_action_class(superclass, name, args, executable, expose_return_as)
+        Class.new(superclass || Object) do
+          include Axn unless self < Axn
+
+          define_singleton_method(:name) do
+            [
+              superclass&.name.presence || "AnonymousAction",
+              name,
+            ].compact.join("#")
+          end
+
+          define_method(:call) do
+            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
+              hash[field] = public_send(field)
+            end
+
+            retval = instance_exec(**unwrapped_kwargs, &executable)
+            expose(expose_return_as => retval) if expose_return_as.present?
+          end
+        end
+      end
+
       def _apply_async_config(axn, async)
         raise ArgumentError, "[Axn::Factory] Invalid async configuration" unless _validate_async_config(async)
 
         adapter, *config_args = async
 
-        if config_args.length == 2 && config_args[0].is_a?(Hash) && config_args[1].respond_to?(:call)
-          # Pattern C: adapter + hash + callable
-          hash_config = config_args[0]
-          callable_config = config_args[1]
-          axn.async(adapter, **hash_config, &callable_config)
-        elsif config_args.length == 1
-          if config_args[0].is_a?(Hash)
-            # Pattern B: adapter + hash
-            axn.async(adapter, **config_args[0])
-          elsif config_args[0].respond_to?(:call)
-            # Pattern B: adapter + callable
-            axn.async(adapter, &config_args[0])
-          else
-            # Pattern A: adapter only
-            axn.async(adapter)
-          end
-        else
-          # Pattern A: adapter only
-          axn.async(adapter)
-        end
+        # Determine hash config and callable config
+        config = config_args.find { |arg| arg.is_a?(Hash) }
+        block = config_args.find { |arg| arg.respond_to?(:call) }
+
+        # Call async once with the determined values
+        axn.async(adapter, **(config || {}), &block)
       end
 
       def _validate_async_config(async_array)
