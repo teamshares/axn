@@ -159,5 +159,82 @@ RSpec.describe Axn do
         expect(client.foo.resp).to eq("Hello 123")
       end
     end
+
+    describe "async method generation" do
+      shared_examples "creates _async method" do
+        it "creates _async method" do
+          expect(client).to respond_to(:foo_async)
+        end
+      end
+
+      shared_examples "raises NotImplementedError by default" do |args = {}|
+        it "raises NotImplementedError by default (async disabled)" do
+          expect { client.foo_async(**args) }.to raise_error(NotImplementedError, /Async execution is explicitly disabled/)
+        end
+      end
+
+      context "with existing action class" do
+        let(:subaction) { build_axn { log "in subaction" } }
+
+        before { client.axn :foo, subaction }
+
+        include_examples "creates _async method"
+
+        it "calls call_async on the subaction class" do
+          allow(subaction).to receive(:call_async).with(expected: true, arg: 123)
+          expect(subaction).to receive(:call_async).with(expected: true, arg: 123)
+          client.foo_async(expected: true, arg: 123)
+        end
+      end
+
+      context "with callable blocks" do
+        context "bare callable" do
+          let(:subaction) { ->(expected:, arg:) { log "got expected=#{expected}, arg=#{arg}" } }
+          before { client.axn :foo, &subaction }
+          include_examples "creates _async method"
+          include_examples "raises NotImplementedError by default", { expected: true, arg: 123 }
+        end
+
+        context "with custom exposures" do
+          let(:subaction) { ->(char:, length:) { expose :msg, char * length } }
+          before { client.axn(:foo, exposes: [:msg], &subaction) }
+          include_examples "creates _async method"
+          include_examples "raises NotImplementedError by default", { char: "a", length: 5 }
+        end
+
+        context "with custom expectations" do
+          let(:subaction) { ->(name:) { log "Hello #{name}" } }
+          before { client.axn(:foo, expects: [:name], &subaction) }
+          include_examples "creates _async method"
+          include_examples "raises NotImplementedError by default", { name: "World" }
+        end
+      end
+
+      context "async method behavior" do
+        let(:subaction) { build_axn { log "in subaction" } }
+        before { client.axn :foo, subaction }
+
+        it "passes all keyword arguments to call_async and handles empty arguments" do
+          allow(subaction).to receive(:call_async)
+
+          # Test with arguments
+          expect(subaction).to receive(:call_async).with(
+            arg1: "value1",
+            arg2: "value2",
+            nested: { key: "value" },
+          )
+          client.foo_async(arg1: "value1", arg2: "value2", nested: { key: "value" })
+
+          # Test with no arguments
+          expect(subaction).to receive(:call_async).with(no_args)
+          client.foo_async
+        end
+
+        it "raises NotImplementedError when async is disabled" do
+          allow(subaction).to receive(:call_async).and_raise(NotImplementedError, "Async execution is explicitly disabled")
+          expect { client.foo_async(arg: "test") }.to raise_error(NotImplementedError, "Async execution is explicitly disabled")
+        end
+      end
+    end
   end
 end
