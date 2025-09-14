@@ -31,6 +31,9 @@ module Axn
         # Strategies
         use: [],
 
+        # Async configuration
+        async: nil,
+
         &block
       )
         raise ArgumentError, "[Axn::Factory] Cannot receive both a callable and a block" if callable.present? && block_given?
@@ -116,6 +119,9 @@ module Axn
             end
           end
 
+          # Async configuration
+          _apply_async_config(axn, Array(async)) unless async.nil?
+
           # Default exposure
           axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?
         end
@@ -152,6 +158,58 @@ module Axn
 
           # Both descriptor objects and simple cases (string/proc) can be used directly
           axn.public_send(method_name, handler)
+        end
+      end
+
+      def _apply_async_config(axn, async)
+        raise ArgumentError, "[Axn::Factory] Invalid async configuration" unless _validate_async_config(async)
+
+        adapter, *config_args = async
+
+        if config_args.length == 2 && config_args[0].is_a?(Hash) && config_args[1].respond_to?(:call)
+          # Pattern C: adapter + hash + callable
+          hash_config = config_args[0]
+          callable_config = config_args[1]
+          axn.async(adapter, **hash_config, &callable_config)
+        elsif config_args.length == 1
+          if config_args[0].is_a?(Hash)
+            # Pattern B: adapter + hash
+            axn.async(adapter, **config_args[0])
+          elsif config_args[0].respond_to?(:call)
+            # Pattern B: adapter + callable
+            axn.async(adapter, &config_args[0])
+          else
+            # Pattern A: adapter only
+            axn.async(adapter)
+          end
+        else
+          # Pattern A: adapter only
+          axn.async(adapter)
+        end
+      end
+
+      def _validate_async_config(async_array)
+        return false unless async_array.length.between?(1, 3)
+
+        adapter = async_array[0]
+        second_arg = async_array[1]
+        third_arg = async_array[2]
+
+        # First arg must be adapter (symbol/string), false, or nil
+        return false unless adapter.is_a?(Symbol) || adapter.is_a?(String) || adapter == false || adapter.nil?
+
+        case async_array.length
+        when 1
+          # Pattern A: [:sidekiq], [false], or [nil]
+          true
+        when 2
+          # Pattern B: [:sidekiq, hash_or_callable] or [nil, hash_or_callable]
+          second_arg.is_a?(Hash) || second_arg.respond_to?(:call)
+        when 3
+          # Pattern C: [:sidekiq, hash, callable] or [nil, hash, callable]
+          second_arg.is_a?(Hash) && third_arg.respond_to?(:call)
+        else
+          false
         end
       end
     end
