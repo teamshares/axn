@@ -8,6 +8,7 @@ module Axn
       included do
         class_attribute :_axnable_methods, default: {}
         class_attribute :_axns, default: {}
+        class_attribute :_inheritance_in_progress, default: false
       end
 
       class_methods do
@@ -56,15 +57,23 @@ module Axn
         def inherited(subclass)
           super
 
-          # Prevent infinite recursion with anonymous classes
-          return unless subclass.name.present?
+          # Prevent infinite recursion during factory creation
+          return if _inheritance_in_progress
 
-          _axnable_methods.each do |name, config|
-            subclass.axnable_method(name, config[:axn_klass], **config[:action_kwargs], &config[:block])
-          end
+          # Set flag to prevent recursion
+          self._inheritance_in_progress = true
 
-          _axns.each do |name, config|
-            subclass.axn(name, config[:axn_klass], **config[:action_kwargs], &config[:block])
+          begin
+            _axnable_methods.each do |name, config|
+              subclass.axnable_method(name, config[:axn_klass], **config[:action_kwargs], &config[:block])
+            end
+
+            _axns.each do |name, config|
+              subclass.axn(name, config[:axn_klass], **config[:action_kwargs], &config[:block])
+            end
+          ensure
+            # Always reset the flag
+            self._inheritance_in_progress = false
           end
         end
       end
