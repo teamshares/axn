@@ -31,6 +31,9 @@ module Axn
         # Strategies
         use: [],
 
+        # Async configuration
+        async: nil,
+
         &block
       )
         raise ArgumentError, "[Axn::Factory] Cannot receive both a callable and a block" if callable.present? && block_given?
@@ -59,25 +62,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        Class.new(superclass || Object) do
-          include Axn unless self < Axn
-
-          define_singleton_method(:name) do
-            [
-              superclass&.name.presence || "AnonymousAction",
-              name,
-            ].compact.join("#")
-          end
-
-          define_method(:call) do
-            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
-              hash[field] = public_send(field)
-            end
-
-            retval = instance_exec(**unwrapped_kwargs, &executable)
-            expose(expose_return_as => retval) if expose_return_as.present?
-          end
-        end.tap do |axn|
+        _build_action_class(superclass, name, args, executable, expose_return_as).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -113,6 +98,17 @@ module Axn
               end
             else
               axn.use(strategy)
+            end
+          end
+
+          # Async configuration
+          unless async.nil?
+            async_array = Array(async)
+            # Skip async configuration if adapter is nil (but not if array is empty)
+            if !async_array.empty? && async_array[0].nil?
+              # Do nothing - skip async configuration
+            else
+              _apply_async_config(axn, async_array)
             end
           end
 
@@ -152,6 +148,66 @@ module Axn
 
           # Both descriptor objects and simple cases (string/proc) can be used directly
           axn.public_send(method_name, handler)
+        end
+      end
+
+      def _build_action_class(superclass, name, args, executable, expose_return_as)
+        Class.new(superclass || Object) do
+          include Axn unless self < Axn
+
+          define_singleton_method(:name) do
+            [
+              superclass&.name.presence || "AnonymousAction",
+              name,
+            ].compact.join("#")
+          end
+
+          define_method(:call) do
+            unwrapped_kwargs = Array(args[:keyreq]).each_with_object({}) do |field, hash|
+              hash[field] = public_send(field)
+            end
+
+            retval = instance_exec(**unwrapped_kwargs, &executable)
+            expose(expose_return_as => retval) if expose_return_as.present?
+          end
+        end
+      end
+
+      def _apply_async_config(axn, async)
+        raise ArgumentError, "[Axn::Factory] Invalid async configuration" unless _validate_async_config(async)
+
+        adapter, *config_args = async
+
+        # Determine hash config and callable config
+        config = config_args.find { |arg| arg.is_a?(Hash) }
+        block = config_args.find { |arg| arg.respond_to?(:call) }
+
+        # Call async once with the determined values
+        axn.async(adapter, **(config || {}), &block)
+      end
+
+      def _validate_async_config(async_array)
+        return false unless async_array.length.between?(1, 3)
+
+        adapter = async_array[0]
+        second_arg = async_array[1]
+        third_arg = async_array[2]
+
+        # First arg must be adapter (symbol/string), false, or nil
+        return false unless adapter.is_a?(Symbol) || adapter.is_a?(String) || adapter == false || adapter.nil?
+
+        case async_array.length
+        when 1
+          # Pattern A: [:sidekiq], [false], or [nil]
+          true
+        when 2
+          # Pattern B: [:sidekiq, hash_or_callable] or [nil, hash_or_callable]
+          second_arg.is_a?(Hash) || second_arg.respond_to?(:call)
+        when 3
+          # Pattern C: [:sidekiq, hash, callable] or [nil, hash, callable]
+          second_arg.is_a?(Hash) && third_arg.respond_to?(:call)
+        else
+          false
         end
       end
     end

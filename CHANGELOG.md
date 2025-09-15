@@ -24,6 +24,7 @@
 * [FEAT] Extended `#fail!` and `#done!` methods to accept keyword arguments for exposing data before halting execution
 * [INTERAL] Renamed `Axn::Enqueueable` to `Axn::Async`
 * [BREAKING] Replaced `.enqueue` (only supported sidekiq) with `.call_async` (via a configurable registry of backgrounding libraries)
+* [FEAT] attachable now creates a foo_async to call call_async
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

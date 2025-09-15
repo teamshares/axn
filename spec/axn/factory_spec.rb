@@ -322,6 +322,204 @@ RSpec.shared_examples "can build Axns from callables" do
       end
     end
   end
+
+  context "setting async configuration" do
+    let(:callable) { -> { puts "call" } }
+
+    context "with async false" do
+      let(:kwargs) { { async: false } }
+
+      it "configures async as disabled" do
+        expect(axn.call).to be_ok
+        expect(axn.ancestors).to include(Axn::Async::Adapters::Disabled)
+        expect(axn).to respond_to(:call_async)
+      end
+
+      it "raises NotImplementedError when calling call_async" do
+        expect do
+          axn.call_async(foo: "bar")
+        end.to raise_error(NotImplementedError, /Async execution is explicitly disabled/)
+      end
+    end
+
+    context "with async adapter name" do
+      let(:kwargs) { { async: :sidekiq } }
+
+      before do
+        # Mock Sidekiq adapter
+        sidekiq_adapter = Module.new do
+          def self.included(base)
+            base.class_eval do
+              def self.perform_async(*args)
+                # Mock implementation
+              end
+            end
+          end
+        end
+
+        stub_const("Axn::Async::Adapters::Sidekiq", sidekiq_adapter)
+        allow(Axn::Async::Adapters).to receive(:find).with(:sidekiq).and_return(sidekiq_adapter)
+      end
+
+      it "configures async with the specified adapter" do
+        expect(axn.call).to be_ok
+        expect(axn.ancestors).to include(Axn::Async::Adapters::Sidekiq)
+        expect(axn).to respond_to(:call_async)
+      end
+    end
+
+    context "with async adapter and configuration" do
+      let(:kwargs) { { async: [:sidekiq, { queue: "high_priority", retry: 5 }] } }
+
+      before do
+        # Mock Sidekiq adapter
+        sidekiq_adapter = Module.new do
+          def self.included(base)
+            base.class_eval do
+              def self.perform_async(*args)
+                # Mock implementation
+              end
+            end
+          end
+        end
+
+        stub_const("Axn::Async::Adapters::Sidekiq", sidekiq_adapter)
+        allow(Axn::Async::Adapters).to receive(:find).with(:sidekiq).and_return(sidekiq_adapter)
+      end
+
+      it "configures async with adapter and options" do
+        expect(axn.call).to be_ok
+        expect(axn.ancestors).to include(Axn::Async::Adapters::Sidekiq)
+        expect(axn).to respond_to(:call_async)
+        # Verify the configuration was applied
+        expect(axn._async_adapter).to eq(:sidekiq)
+        expect(axn._async_config).to eq({ queue: "high_priority", retry: 5 })
+      end
+    end
+
+    context "with async nil (default)" do
+      let(:kwargs) { {} }
+
+      it "does not configure async" do
+        expect(axn.call).to be_ok
+        expect(axn._async_adapter).to be_nil
+        expect(axn._async_config).to be_nil
+        expect(axn._async_config_block).to be_nil
+      end
+    end
+
+    context "with async callable configuration" do
+      let(:callable) { -> { puts "call" } }
+
+      before do
+        # Mock Sidekiq adapter
+        sidekiq_adapter = Module.new do
+          def self.included(base)
+            base.class_eval do
+              def self.perform_async(*args)
+                # Mock implementation
+              end
+            end
+          end
+        end
+
+        stub_const("Axn::Async::Adapters::Sidekiq", sidekiq_adapter)
+        allow(Axn::Async::Adapters).to receive(:find).with(:sidekiq).and_return(sidekiq_adapter)
+      end
+
+      context "with adapter and callable" do
+        let(:kwargs) { { async: [:sidekiq, -> { sidekiq_options queue: "high_priority" }] } }
+
+        it "configures async with callable" do
+          expect(axn.call).to be_ok
+          expect(axn.ancestors).to include(Axn::Async::Adapters::Sidekiq)
+          expect(axn).to respond_to(:call_async)
+          expect(axn._async_adapter).to eq(:sidekiq)
+          expect(axn._async_config_block).to be_a(Proc)
+        end
+      end
+
+      context "with adapter, hash, and callable" do
+        let(:kwargs) { { async: [:sidekiq, { queue: "high" }, -> { retry_on StandardError }] } }
+
+        it "configures async with hash and callable" do
+          expect(axn.call).to be_ok
+          expect(axn.ancestors).to include(Axn::Async::Adapters::Sidekiq)
+          expect(axn).to respond_to(:call_async)
+          expect(axn._async_adapter).to eq(:sidekiq)
+          expect(axn._async_config).to eq({ queue: "high" })
+          expect(axn._async_config_block).to be_a(Proc)
+        end
+      end
+    end
+
+    context "with invalid async configuration" do
+      let(:callable) { -> { puts "call" } }
+
+      it "raises ArgumentError for invalid patterns" do
+        expect do
+          Axn::Factory.build(callable, async: [:sidekiq, "invalid"])
+        end.to raise_error(ArgumentError, /Invalid async configuration/)
+
+        expect do
+          Axn::Factory.build(callable, async: [:sidekiq, { queue: "high" }, "invalid"])
+        end.to raise_error(ArgumentError, /Invalid async configuration/)
+
+        expect do
+          Axn::Factory.build(callable, async: [])
+        end.to raise_error(ArgumentError, /Invalid async configuration/)
+
+        expect do
+          Axn::Factory.build(callable, async: [:sidekiq, { queue: "high" }, -> { config }, "extra"])
+        end.to raise_error(ArgumentError, /Invalid async configuration/)
+      end
+    end
+
+    context "with Array() conversion" do
+      let(:callable) { -> { puts "call" } }
+
+      before do
+        # Mock Sidekiq adapter
+        sidekiq_adapter = Module.new do
+          def self.included(base)
+            base.class_eval do
+              def self.perform_async(*args)
+                # Mock implementation
+              end
+            end
+          end
+        end
+
+        stub_const("Axn::Async::Adapters::Sidekiq", sidekiq_adapter)
+        allow(Axn::Async::Adapters).to receive(:find).with(:sidekiq).and_return(sidekiq_adapter)
+      end
+
+      it "converts single values to arrays" do
+        # These should all work the same way
+        %i[sidekiq sidekiq].each do |async_config|
+          axn = Axn::Factory.build(callable, async: async_config)
+          expect(axn.call).to be_ok
+          expect(axn._async_adapter).to eq(:sidekiq)
+        end
+      end
+
+      it "handles nil adapter (skips async configuration)" do
+        axn = Axn::Factory.build(callable, async: nil)
+        expect(axn.call).to be_ok
+        expect(axn._async_adapter).to be_nil
+        expect(axn._async_config).to be_nil
+        expect(axn._async_config_block).to be_nil
+      end
+
+      it "handles nil adapter in array (skips async configuration)" do
+        axn = Axn::Factory.build(callable, async: [nil])
+        expect(axn.call).to be_ok
+        expect(axn._async_adapter).to be_nil
+        expect(axn._async_config).to be_nil
+        expect(axn._async_config_block).to be_nil
+      end
+    end
+  end
 end
 
 RSpec.describe Axn::Factory do
@@ -380,6 +578,29 @@ RSpec.describe Axn::Factory do
       expect do
         Axn::Factory.build(callable, expose_return_as: :value, &block)
       end.to raise_error(ArgumentError, /Cannot receive both a callable and a block/)
+    end
+
+    it "works with async configuration" do
+      callable = -> { puts "call" }
+
+      # Mock Sidekiq adapter
+      sidekiq_adapter = Module.new do
+        def self.included(base)
+          base.class_eval do
+            def self.perform_async(*args)
+              # Mock implementation
+            end
+          end
+        end
+      end
+
+      stub_const("Axn::Async::Adapters::Sidekiq", sidekiq_adapter)
+      allow(Axn::Async::Adapters).to receive(:find).with(:sidekiq).and_return(sidekiq_adapter)
+
+      axn = Axn::Factory.build(callable, async: :sidekiq)
+      expect(axn.call).to be_ok
+      expect(axn.ancestors).to include(Axn::Async::Adapters::Sidekiq)
+      expect(axn).to respond_to(:call_async)
     end
   end
 
