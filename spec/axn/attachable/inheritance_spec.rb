@@ -40,15 +40,16 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       context "with named classes" do
-        class ParentWithAxnableMethod
-          include Axn
+        before do
+          stub_const("ParentWithAxnableMethod", Class.new do
+            include Axn
 
-          axnable_method :add do |value:|
-            value + 10
-          end
-        end
+            axnable_method :add do |value:|
+              value + 10
+            end
+          end)
 
-        class ChildWithAxnableMethod < ParentWithAxnableMethod
+          stub_const("ChildWithAxnableMethod", Class.new(ParentWithAxnableMethod))
         end
 
         it "inherits axnable_method definitions" do
@@ -75,18 +76,20 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       context "with method overrides" do
-        class ParentWithOverride
-          include Axn
+        before do
+          stub_const("ParentWithOverride", Class.new do
+            include Axn
 
-          axnable_method :calculate do |value:|
-            value * 2
-          end
-        end
+            axnable_method :calculate do |value:|
+              value * 2
+            end
+          end)
 
-        class ChildWithOverride < ParentWithOverride
-          axnable_method :calculate do |value:|
-            value * 3
-          end
+          stub_const("ChildWithOverride", Class.new(ParentWithOverride) do
+            axnable_method :calculate do |value:|
+              value * 3
+            end
+          end)
         end
 
         it "allows child to override parent methods" do
@@ -184,15 +187,16 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       context "with block-based axn" do
-        class ParentWithBlockAxn
-          include Axn
+        before do
+          stub_const("ParentWithBlockAxn", Class.new do
+            include Axn
 
-          axn :square, expose_return_as: :value do |value:|
-            value**2
-          end
-        end
+            axn :square, expose_return_as: :value do |value:|
+              value**2
+            end
+          end)
 
-        class ChildWithBlockAxn < ParentWithBlockAxn
+          stub_const("ChildWithBlockAxn", Class.new(ParentWithBlockAxn))
         end
 
         it "inherits block-based axn definitions" do
@@ -210,26 +214,28 @@ RSpec.describe Axn::Attachable::Subactions do
     end
 
     describe "mixed inheritance" do
-      class ParentWithMixed
-        include Axn
+      before do
+        stub_const("ParentWithMixed", Class.new do
+          include Axn
 
-        axnable_method :method1 do |value:|
-          value + 1
-        end
+          axnable_method :method1 do |value:|
+            value + 1
+          end
 
-        axn :action1, expose_return_as: :value do |value:|
-          value * 2
-        end
-      end
+          axn :action1, expose_return_as: :value do |value:|
+            value * 2
+          end
+        end)
 
-      class ChildWithMixed < ParentWithMixed
-        axnable_method :method2 do |value:|
-          value + 2
-        end
+        stub_const("ChildWithMixed", Class.new(ParentWithMixed) do
+          axnable_method :method2 do |value:|
+            value + 2
+          end
 
-        axn :action2, expose_return_as: :value do |value:|
-          value * 3
-        end
+          axn :action2, expose_return_as: :value do |value:|
+            value * 3
+          end
+        end)
       end
 
       it "inherits both axnable_method and axn definitions" do
