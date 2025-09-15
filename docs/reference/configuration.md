@@ -91,6 +91,20 @@ A couple notes:
 
 Defaults to `Rails.logger`, if present, otherwise falls back to `Logger.new($stdout)`.  But can be set to a custom logger as necessary.
 
+### Background Job Logging
+
+When using background jobs, you may want different loggers for web requests vs. background job execution. Here's a recommended pattern:
+
+```ruby
+Axn.configure do |c|
+  # Use Sidekiq's logger when running in Sidekiq workers, otherwise use Rails logger
+  c.logger = (defined?(Sidekiq) && Sidekiq.server?) ? Sidekiq.logger : Rails.logger
+end
+```
+
+This ensures that:
+- Web requests log to `Rails.logger` (typically `log/production.log`)
+- Background jobs log to `Sidekiq.logger` (typically STDOUT or a separate log file)
 
 
 ## `additional_includes`
