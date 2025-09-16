@@ -14,8 +14,12 @@ module Axn
       @declared_fields = declared_fields
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
-        singleton_class.define_method(field) do
-          _context_data_source[field]
+        if _model_fields.key?(field)
+          _define_model_field_method(field, _model_fields[field])
+        else
+          singleton_class.define_method(field) do
+            _context_data_source[field]
+          end
         end
       end
     end
@@ -32,7 +36,24 @@ module Axn
 
     attr_reader :action, :context
 
+    def _model_fields
+      action.internal_field_configs.each_with_object({}) do |config, hash|
+        hash[config.field] = config.validations[:model] if config.validations.key?(:model)
+      end
+    end
+
     def action_name = @action.class.name.presence || "The action"
+
+    def _define_model_field_method(field, options)
+      Axn::Util::Memoization.define_memoized_reader_method(singleton_class, field) do
+        Axn::Core::FieldResolvers.resolve(
+          type: :model,
+          field:,
+          options:,
+          provided_data: _context_data_source,
+        )
+      end
+    end
 
     def _context_data_source = raise NotImplementedError
 

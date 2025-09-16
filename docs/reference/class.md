@@ -14,8 +14,9 @@ Both `expects` and `exposes` support the same core options:
 | -- | -- | -- |
 | `sensitive` | `expects :password, sensitive: true` | Filters the field's value when logging, reporting errors, or calling `inspect`
 | `default` | `expects :foo, default: 123` | If `foo` is missing or explicitly `nil`, it'll default to this value (not applied for blank values)
-| `allow_nil` | `expects :foo, allow_nil: true` | Don't fail if the value is `nil`
-| `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank
+| `optional` | `expects :foo, optional: true` | **Recommended**: Don't fail if the value is missing, nil, or blank. Equivalent to `allow_blank: true`
+| `allow_nil` | `expects :foo, allow_nil: true` | Don't fail if the value is `nil` (but will fail for blank strings)
+| `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank (nil, empty string, whitespace, etc.)
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
 | anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model)
 
@@ -36,33 +37,41 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     ```ruby
     expects :foo, validate: ->(value) { "must be pretty big" unless value > 10 }
     ```
-* `model: true` (or `model: TheModelClass`) - allows auto-hydrating a record when only given its ID
+* `model: true` (or `model: TheModelClass` or `model: { klass: TheModelClass, finder: :find }`) - allows auto-hydrating a record when only given its ID
   * Example:
     ```ruby
-    expects :user_id, model: true
+    expects :user, model: true
+    # or
+    expects :user, model: User
+    # or with custom finder
+    expects :user, model: { klass: User, finder: :find }
     ```
     This line will add expectations that:
-      * `user_id` is provided
-      * `User.find(user_id)` returns a record
+      * `user_id` is provided (automatically derived from field name)
+      * `User.find(user_id)` (or custom finder) returns a record
 
-    And, when used on `expects`, will create two reader methods for you:
-      * `user_id` (normal), _and_
-      * `user` (for the auto-found record)
+    And, when used on `expects`, will create a reader method for you:
+      * `user` (the auto-found record)
 
     ::: info NOTES
-    * The field name must end in `_id`
-    * This was designed for ActiveRecord models, but will work on any class that returns an instance from `find_by(id: <the provided ID>)`
+    * The system automatically looks for `#{field}_id` (e.g., `:user` → `:user_id`)
+    * The `klass` option defaults to the field name classified (e.g., `:user` → `User`)
+    * The `finder` option defaults to `:find` but can be any method that takes an ID directly
+    * This works with any class that has a finder method (e.g., `User.find`, `ApiService.find_by_id`, etc.)
+    * For external APIs, you can pass a `Method` object as the finder
     :::
 
-#### How `allow_blank` and `allow_nil` work with validators
+#### How `optional`, `allow_blank` and `allow_nil` work with validators
 
-When you specify `allow_blank: true` or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
+When you specify `optional: true`, `allow_blank: true`, or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
 
 - **ActiveModel validations** (like `inclusion`, `length`, etc.) will respect these options
 - **Custom validators** (`type`, `validate`, `model`) will also respect these options
 - **Type validator edge case**: Note passing `allow_blank` is nonsensical for type: :params and type: :boolean
 
-If neither `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
+**Recommended approach**: Use `optional: true` instead of `allow_blank: true` for better clarity. The `optional` parameter is equivalent to `allow_blank: true` and makes the intent clearer.
+
+If neither `optional`, `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
 
 ### Details specific to `.exposes`
 

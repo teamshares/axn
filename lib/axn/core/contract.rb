@@ -27,6 +27,7 @@ module Axn
           on: nil,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           preprocess: nil,
           sensitive: false,
@@ -36,9 +37,9 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations) if on.present?
+          return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations) if on.present?
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -51,6 +52,7 @@ module Axn
           *fields,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           sensitive: false,
           **validations
@@ -59,7 +61,7 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
             duplicated = external_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -94,26 +96,18 @@ module Axn
           *fields,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           preprocess: nil,
           sensitive: false,
           **validations
         )
+          # Handle optional: true by setting allow_blank: true
+          allow_blank ||= optional
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_field_reader(field)
-            _define_model_reader(field, parsed_validations[:model]) if parsed_validations.key?(:model)
             FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)
-          end
-        end
-
-        def define_memoized_reader_method(field, &block)
-          define_method(field) do
-            ivar = :"@_memoized_reader_#{field}"
-            cached_val = instance_variable_get(ivar)
-            return cached_val if cached_val.present?
-
-            value = instance_exec(&block)
-            instance_variable_set(ivar, value)
           end
         end
 
@@ -121,18 +115,6 @@ module Axn
           # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
           # (e.g. to allow success message callable to reference exposed fields)
           define_method(field) { internal_context.public_send(field) }
-        end
-
-        def _define_model_reader(field, klass, &id_extractor)
-          name = field.to_s.delete_suffix("_id")
-          raise ArgumentError, "Model validation expects to be given a field ending in _id (given: #{field})" unless field.to_s.end_with?("_id")
-          raise ArgumentError, "Failed to define model reader - #{name} is already defined" if method_defined?(name)
-
-          id_extractor ||= -> { public_send(field) }
-
-          define_memoized_reader_method(name) do
-            Validators::ModelValidator.instance_for(field:, klass:, id: instance_exec(&id_extractor))
-          end
         end
 
         # This method applies any top-level options to each of the individual validations given.
@@ -143,10 +125,10 @@ module Axn
           allow_blank: false,
           **validations
         )
-          # Apply syntactic sugar for our custom validators
-          %i[type model validate].each do |key|
-            validations[key] = { with: validations[key] } if validations.key?(key) && !validations[key].is_a?(Hash)
-          end
+          # Apply syntactic sugar for our custom validators (convert shorthand to full hash of options)
+          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
+          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
+          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil
@@ -155,7 +137,7 @@ module Axn
             end
           else
             # Apply default presence validation (unless the type is boolean or params)
-            type_values = Array(validations.dig(:type, :with))
+            type_values = Array(validations.dig(:type, :klass))
             validations[:presence] = true unless validations.key?(:presence) || type_values.include?(:boolean) || type_values.include?(:params)
           end
 

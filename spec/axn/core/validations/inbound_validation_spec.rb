@@ -64,6 +64,110 @@ RSpec.describe Axn do
       it { is_expected.to be_ok }
     end
 
+    context "optional: true works like allow_blank: true" do
+      let(:action) do
+        build_axn do
+          expects :foo, type: Numeric, numericality: { greater_than: 10 }, optional: true
+          exposes :bar, optional: true
+        end
+      end
+
+      subject { action.call(baz: 13) }
+
+      it { is_expected.to be_ok }
+    end
+
+    context "optional: true with different blank values" do
+      let(:action) do
+        build_axn do
+          expects :name, type: String, optional: true
+          exposes :name, optional: true
+        end
+      end
+
+      context "when field is missing" do
+        subject { action.call }
+
+        it "passes validation" do
+          is_expected.to be_ok
+          expect(subject.name).to be_nil
+        end
+      end
+
+      context "when field is nil" do
+        subject { action.call(name: nil) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+          expect(subject.name).to be_nil
+        end
+      end
+
+      context "when field is empty string" do
+        subject { action.call(name: "") }
+
+        it "passes validation" do
+          is_expected.to be_ok
+          expect(subject.name).to eq ""
+        end
+      end
+
+      context "when field is whitespace" do
+        subject { action.call(name: "   ") }
+
+        it "passes validation" do
+          is_expected.to be_ok
+          expect(subject.name).to eq "   "
+        end
+      end
+
+      context "when field has valid value" do
+        subject { action.call(name: "John") }
+
+        it "passes validation" do
+          is_expected.to be_ok
+          expect(subject.name).to eq "John"
+        end
+      end
+
+      context "when field has invalid type" do
+        subject { action.call(name: 123) }
+
+        it "fails validation" do
+          is_expected.not_to be_ok
+          expect(subject.exception.message).to include("is not a String")
+        end
+      end
+    end
+
+    context "optional: true with allow_blank: true (both specified)" do
+      let(:action) do
+        build_axn do
+          expects :foo, type: String, optional: true, allow_blank: true
+        end
+      end
+
+      subject { action.call }
+
+      it "works (allow_blank takes precedence)" do
+        is_expected.to be_ok
+      end
+    end
+
+    context "optional: true with allow_blank: false" do
+      let(:action) do
+        build_axn do
+          expects :foo, type: String, optional: true, allow_blank: false
+        end
+      end
+
+      subject { action.call }
+
+      it "works (allow_blank takes precedence)" do
+        is_expected.to be_ok
+      end
+    end
+
     context "inbound defaults" do
       let(:action) do
         build_axn do
@@ -200,7 +304,7 @@ RSpec.describe Axn do
     context "multiple fields validations per call" do
       let(:action) do
         build_axn do
-          expects :foo, :bar, type: { with: Numeric, message: "should numberz" }
+          expects :foo, :bar, type: { klass: Numeric, message: "should numberz" }
         end
       end
 

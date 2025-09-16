@@ -5,6 +5,12 @@ require "active_model"
 module Axn
   module Validators
     class ValidateValidator < ActiveModel::EachValidator
+      def self.apply_syntactic_sugar(value, _fields)
+        return value if value.is_a?(Hash)
+
+        { with: value }
+      end
+
       def check_validity!
         raise ArgumentError, "must supply :with" if options[:with].nil?
       end

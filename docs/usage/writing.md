@@ -22,7 +22,7 @@ The first step is to determine what arguments you expect to be passed into `call
 
 If you want to expose any results to the caller, declare that via the `exposes` keyword.
 
-Both of these optionally accept `type:`, `allow_nil:`, `allow_blank:`, and any other ActiveModel validation (see: [reference](/reference/class)).
+Both of these optionally accept `type:`, `optional:`, `allow_nil:`, `allow_blank:`, and any other ActiveModel validation (see: [reference](/reference/class)).
 
 
 ```ruby
@@ -30,6 +30,7 @@ class Foo
   include Axn
 
   expects :name, type: String # [!code focus:2]
+  expects :email, type: String, optional: true # [!code focus:2]
   exposes :meaning_of_life
 
   def call
