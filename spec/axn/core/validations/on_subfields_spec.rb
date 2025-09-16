@@ -48,6 +48,107 @@ RSpec.describe Axn do
       expect(action.call(foo: 1)).not_to be_ok
     end
 
+    context "with optional: true on subfields" do
+      let(:action) do
+        build_axn do
+          expects :foo, optional: true
+          expects :bar, :baz, on: :foo, optional: true, type: String
+          exposes :output, optional: true
+
+          def call
+            expose output: "success"
+          end
+        end
+      end
+
+      context "when subfield is missing" do
+        subject { action.call(foo: {}) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield is nil" do
+        subject { action.call(foo: { bar: nil, baz: nil }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield is blank" do
+        subject { action.call(foo: { bar: "", baz: "   " }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield has valid value" do
+        subject { action.call(foo: { bar: "hello", baz: "world" }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+    end
+
+    context "with optional: true and type validation on subfields" do
+      let(:action) do
+        build_axn do
+          expects :foo, optional: true
+          expects :name, on: :foo, type: String, optional: true
+          exposes :output, optional: true
+
+          def call
+            expose output: "success"
+          end
+        end
+      end
+
+      context "when subfield is missing" do
+        subject { action.call(foo: {}) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield is nil" do
+        subject { action.call(foo: { name: nil }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield is empty string" do
+        subject { action.call(foo: { name: "" }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield has valid string value" do
+        subject { action.call(foo: { name: "John" }) }
+
+        it "passes validation" do
+          is_expected.to be_ok
+        end
+      end
+
+      context "when subfield has invalid type" do
+        subject { action.call(foo: { name: 123 }) }
+
+        it "fails validation" do
+          is_expected.not_to be_ok
+          expect(subject.exception.message).to include("is not a String")
+        end
+      end
+    end
+
     context "readers" do
       subject(:result) { action.call(foo: { bar: { qux: 3 }, baz: 2 }) }
 

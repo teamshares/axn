@@ -9,7 +9,7 @@ module Axn
     # For ease of mocking return results in tests
     class << self
       def ok(msg = nil, **exposures)
-        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+        exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
         Axn::Factory.build(exposes:, success: msg) do
           exposures.each do |key, value|
@@ -19,7 +19,7 @@ module Axn
       end
 
       def error(msg = nil, **exposures, &block)
-        exposes = exposures.keys.to_h { |key| [key, { allow_blank: true }] }
+        exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
         Axn::Factory.build(exposes:, error: msg) do
           exposures.each do |key, value|

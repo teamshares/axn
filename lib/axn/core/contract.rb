@@ -27,6 +27,7 @@ module Axn
           on: nil,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           preprocess: nil,
           sensitive: false,
@@ -36,9 +37,9 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations) if on.present?
+          return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations) if on.present?
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess:, sensitive:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -51,6 +52,7 @@ module Axn
           *fields,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           sensitive: false,
           **validations
@@ -59,7 +61,7 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
             duplicated = external_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
 
@@ -94,11 +96,15 @@ module Axn
           *fields,
           allow_blank: false,
           allow_nil: false,
+          optional: false,
           default: nil,
           preprocess: nil,
           sensitive: false,
           **validations
         )
+          # Handle optional: true by setting allow_blank: true
+          allow_blank ||= optional
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_field_reader(field)
             FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)

@@ -520,6 +520,37 @@ RSpec.shared_examples "can build Axns from callables" do
       end
     end
   end
+
+  context "with optional: true parameters" do
+    let(:kwargs) do
+      {
+        expects: { name: { type: String }, email: { type: String, optional: true } },
+        exposes: { greeting: { type: String } },
+      }
+    end
+
+    let(:callable) do
+      ->(name:, email:) { expose greeting: "Hello #{name}" }
+    end
+
+    it "allows missing optional fields" do
+      result = axn.call(name: "John")
+      expect(result).to be_ok
+      expect(result.greeting).to eq("Hello John")
+    end
+
+    it "allows present optional fields" do
+      result = axn.call(name: "Jane", email: "jane@example.com")
+      expect(result).to be_ok
+      expect(result.greeting).to eq("Hello Jane")
+    end
+
+    it "fails when required fields are missing" do
+      result = axn.call(email: "test@example.com")
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Something went wrong")
+    end
+  end
 end
 
 RSpec.describe Axn::Factory do

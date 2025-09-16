@@ -31,7 +31,7 @@ Most actions require inputs, and many return values to the caller; no need for a
 
   * `expects :foo` to declare inputs the class expects to receive.
 
-    You pass the `expect`ed keyword arguments to `call`, then reference their values as local `attr_reader`s.
+    You pass the `expect`ed keyword arguments to `call`, then reference their values as local `attr_reader`s. Use `optional: true` for fields that may be missing or blank.
 
   * `exposes :bar` to declare any outputs the class will expose.
 
