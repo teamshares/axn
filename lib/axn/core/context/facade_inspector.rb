@@ -56,9 +56,36 @@ module Axn
                           value.inspect
                         end
 
+      # Handle subfield filtering for hash values
+      if value.is_a?(Hash) && sensitive_subfields?(field)
+        filtered_value = filter_subfields(field, value)
+        return filtered_value.inspect
+      end
+
       inspection_filter.filter_param(field, inspected_value)
     end
 
     def inspection_filter = action.send(:inspection_filter)
+
+    def sensitive_subfields?(field)
+      action.subfield_configs.any? { |config| config.on == field && config.sensitive }
+    end
+
+    def filter_subfields(field, value)
+      # Build a nested structure with subfield paths for filtering
+      nested_data = { field => value }
+
+      # Create a filter with the subfield paths
+      sensitive_subfield_paths = action.subfield_configs
+                                       .select { |config| config.on == field && config.sensitive }
+                                       .map { |config| "#{field}.#{config.field}" }
+
+      return value if sensitive_subfield_paths.empty?
+
+      subfield_filter = ActiveSupport::ParameterFilter.new(sensitive_subfield_paths)
+      filtered_data = subfield_filter.filter(nested_data)
+
+      filtered_data[field]
+    end
   end
 end

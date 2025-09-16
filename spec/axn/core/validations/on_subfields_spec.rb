@@ -243,10 +243,6 @@ RSpec.describe Axn do
         end
 
         it "filters sensitive subfield in internal context inspect" do
-          # NOTE: Currently, sensitive subfields are NOT filtered in inspection output
-          # because the inspection filter works at the field level, not the subfield level.
-          # This is a known limitation of the current implementation.
-
           # Create a simple action to access internal context
           simple_action = build_axn do
             expects :user_data
@@ -263,9 +259,9 @@ RSpec.describe Axn do
           expect(result.internal_ctx.inspect).to include("password")
           expect(result.internal_ctx.inspect).to include("user@example.com")
 
-          # Currently, sensitive subfields are not filtered in inspection
-          # TODO: This should be improved in a future version
-          expect(result.internal_ctx.inspect).to include("secret123")
+          # Sensitive subfields should now be filtered in inspection
+          expect(result.internal_ctx.inspect).to include("[FILTERED]")
+          expect(result.internal_ctx.inspect).not_to include("secret123")
         end
 
         it "filters sensitive subfield in context_for_logging" do

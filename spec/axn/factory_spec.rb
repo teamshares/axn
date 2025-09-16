@@ -530,7 +530,7 @@ RSpec.shared_examples "can build Axns from callables" do
     end
 
     let(:callable) do
-      ->(name:, email:) { expose greeting: "Hello #{name}" }
+      ->(name:, email:) { expose greeting: "Hello #{name}" } # rubocop:disable Lint/UnusedBlockArgument
     end
 
     it "allows missing optional fields" do
