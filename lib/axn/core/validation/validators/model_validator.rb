@@ -9,6 +9,7 @@ module Axn
       def self.apply_syntactic_sugar(value, fields)
         (value.is_a?(Hash) ? value.dup : { klass: value }).tap do |options|
           # Set default klass based on field name if not provided
+          options[:klass] = nil if options[:klass] == true
           options[:klass] ||= fields.first.to_s.classify
 
           # Constantize string klass names
