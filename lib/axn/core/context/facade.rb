@@ -45,24 +45,13 @@ module Axn
     def action_name = @action.class.name.presence || "The action"
 
     def _define_model_field_method(field, options)
-      define_memoized_reader_method(field) do
+      Axn::Util::Memoization.define_memoized_reader_method(singleton_class, field) do
         Axn::Core::FieldResolvers.resolve(
           type: :model,
           field:,
           options:,
           provided_data: _context_data_source,
         )
-      end
-    end
-
-    def define_memoized_reader_method(field, &block)
-      singleton_class.define_method(field) do
-        ivar = :"@_memoized_reader_#{field}"
-        cached_val = instance_variable_get(ivar)
-        return cached_val if cached_val.present?
-
-        value = instance_exec(&block)
-        instance_variable_set(ivar, value)
       end
     end
 

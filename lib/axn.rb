@@ -12,6 +12,9 @@ require "axn/exceptions"
 # The core implementation
 require "axn/core"
 
+# Utilities
+require "axn/util/memoization"
+
 # Extensions
 require "axn/attachable"
 require "axn/async"
