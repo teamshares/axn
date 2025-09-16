@@ -197,7 +197,7 @@ RSpec.describe Axn::Validators::TypeValidator do
       let(:message) { nil }
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :foo, type: { with: type, message: }, allow_blank:
+          klass.expects :foo, type: { klass: type, message: }, allow_blank:
         end
       end
 
@@ -415,7 +415,7 @@ RSpec.describe Axn::Validators::TypeValidator do
     describe "Hash type with allow_blank" do
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :data, type: { with: Hash }, allow_blank: true
+          klass.expects :data, type: { klass: Hash }, allow_blank: true
         end
       end
 
@@ -450,7 +450,7 @@ RSpec.describe Axn::Validators::TypeValidator do
     describe "String type with allow_blank" do
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :name, type: { with: String }, allow_blank: true
+          klass.expects :name, type: { klass: String }, allow_blank: true
         end
       end
 
@@ -480,7 +480,7 @@ RSpec.describe Axn::Validators::TypeValidator do
     describe "Boolean type with allow_blank" do
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :flag, type: { with: :boolean }, allow_blank: true
+          klass.expects :flag, type: { klass: :boolean }, allow_blank: true
         end
       end
 
@@ -510,7 +510,7 @@ RSpec.describe Axn::Validators::TypeValidator do
     describe "Array type with allow_blank" do
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :items, type: { with: Array }, allow_blank: true
+          klass.expects :items, type: { klass: Array }, allow_blank: true
         end
       end
 
@@ -540,7 +540,7 @@ RSpec.describe Axn::Validators::TypeValidator do
     describe "Multiple types with allow_blank" do
       let(:action) do
         build_axn.tap do |klass|
-          klass.expects :value, type: { with: [String, Hash] }, allow_blank: true
+          klass.expects :value, type: { klass: [String, Hash] }, allow_blank: true
         end
       end
 

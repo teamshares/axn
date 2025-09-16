@@ -304,7 +304,7 @@ RSpec.describe Axn do
     context "multiple fields validations per call" do
       let(:action) do
         build_axn do
-          expects :foo, :bar, type: { with: Numeric, message: "should numberz" }
+          expects :foo, :bar, type: { klass: Numeric, message: "should numberz" }
         end
       end
 

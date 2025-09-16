@@ -15,7 +15,7 @@ module Axn
         resolver_class = RESOLVERS[type]
         raise ArgumentError, "Unknown field resolver type: #{type}" unless resolver_class
 
-        resolver_class.resolve(field:, options:, provided_data:)
+        resolver_class.new(field:, options:, provided_data:).call
       end
     end
   end

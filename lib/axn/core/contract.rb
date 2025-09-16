@@ -136,10 +136,10 @@ module Axn
           allow_blank: false,
           **validations
         )
-          # Apply syntactic sugar for our custom validators
-          %i[type model validate].each do |key|
-            validations[key] = { with: validations[key] } if validations.key?(key) && !validations[key].is_a?(Hash)
-          end
+          # Apply syntactic sugar for our custom validators (convert shorthand to full hash of options)
+          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
+          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
+          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil
@@ -148,7 +148,7 @@ module Axn
             end
           else
             # Apply default presence validation (unless the type is boolean or params)
-            type_values = Array(validations.dig(:type, :with))
+            type_values = Array(validations.dig(:type, :klass))
             validations[:presence] = true unless validations.key?(:presence) || type_values.include?(:boolean) || type_values.include?(:params)
           end
 

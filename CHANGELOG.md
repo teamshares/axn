@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] Extended model validation to support custom finder methods with `expects :user, model: { klass: User, finder: :find }` syntax
 * [BREAKING] Removed `#try` method
 * [BREAKING] Removed `Axn()` method sugar (use `Axn::Factory.build` directly)
 * [BREAKING] Renamed `Action::Configuration` + `Action.config` -> `Axn::Configuration` + `Axn.config`

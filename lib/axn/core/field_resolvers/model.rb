@@ -4,28 +4,58 @@ module Axn
   module Core
     module FieldResolvers
       class Model
-        class << self
-          def resolve(field:, options:, provided_data:)
-            klass = options.is_a?(Hash) ? options[:with] : options
+        def initialize(field:, options:, provided_data:)
+          @field = field
+          @options = options
+          @provided_data = provided_data
+        end
 
-            # Check if we have the object directly
-            provided_value = provided_data[field]
-            return provided_value if provided_value.present?
+        def call
+          provided_value.presence || derive_value
+        end
 
-            find_by_id(klass:, field:, provided_data:)
+        private
+
+        attr_reader :field, :options, :provided_data
+
+        def provided_value
+          @provided_value ||= provided_data[field]
+        end
+
+        def derive_value
+          return nil if id_value.blank?
+
+          # Handle different finder types
+          if finder.is_a?(Method)
+            # Method object - call it directly
+            finder.call(id_value)
+          elsif klass.respond_to?(finder)
+            # Symbol/string method name on the klass
+            klass.public_send(finder, id_value)
+          else
+            raise "Unknown finder: #{finder}"
           end
+        rescue StandardError => e
+          # Log the exception but don't re-raise
+          finder_name = finder.is_a?(Method) ? finder.name : finder
+          Axn::Internal::Logging.piping_error("finding #{field} with #{finder_name}", exception: e)
+          nil
+        end
 
-          private
+        def klass
+          @klass ||= options[:klass]
+        end
 
-          def find_by_id(klass:, field:, provided_data:)
-            return nil unless klass.respond_to?(:find_by)
+        def finder
+          @finder ||= options[:finder]
+        end
 
-            id_field = :"#{field}_id"
-            id_value = provided_data[id_field]
-            return nil if id_value.blank?
+        def id_field
+          @id_field ||= :"#{field}_id"
+        end
 
-            klass.find_by(id: id_value)
-          end
+        def id_value
+          @id_value ||= provided_data[id_field]
         end
       end
     end

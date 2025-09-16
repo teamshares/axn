@@ -38,21 +38,18 @@ module Axn
 
     def _model_fields
       action.internal_field_configs.each_with_object({}) do |config, hash|
-        if config.validations.key?(:model)
-          klass = config.validations[:model].is_a?(Hash) ? config.validations[:model][:with] : config.validations[:model]
-          hash[config.field] = klass
-        end
+        hash[config.field] = config.validations[:model] if config.validations.key?(:model)
       end
     end
 
     def action_name = @action.class.name.presence || "The action"
 
-    def _define_model_field_method(field, klass)
+    def _define_model_field_method(field, options)
       define_memoized_reader_method(field) do
         Axn::Core::FieldResolvers.resolve(
           type: :model,
           field:,
-          options: klass,
+          options:,
           provided_data: _context_data_source,
         )
       end

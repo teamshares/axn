@@ -5,8 +5,14 @@ require "active_model"
 module Axn
   module Validators
     class TypeValidator < ActiveModel::EachValidator
+      def self.apply_syntactic_sugar(value, _fields)
+        return value if value.is_a?(Hash)
+
+        { klass: value }
+      end
+
       def check_validity!
-        raise ArgumentError, "must supply :with" if options[:with].nil?
+        raise ArgumentError, "must supply :klass" if options[:klass].nil?
       end
 
       # NOTE: we override the default validate method to allow for custom allow_blank logic
@@ -32,7 +38,7 @@ module Axn
 
       private
 
-      def types = Array(options[:with])
+      def types = Array(options[:klass])
       def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(", ")}"
 
       def valid_type?(type:, value:, allow_blank:)
