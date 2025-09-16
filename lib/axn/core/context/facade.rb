@@ -14,8 +14,12 @@ module Axn
       @declared_fields = declared_fields
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
-        singleton_class.define_method(field) do
-          _context_data_source[field]
+        if _model_fields.key?(field)
+          _define_model_field_method(field, _model_fields[field])
+        else
+          singleton_class.define_method(field) do
+            _context_data_source[field]
+          end
         end
       end
     end
@@ -32,7 +36,38 @@ module Axn
 
     attr_reader :action, :context
 
+    def _model_fields
+      action.internal_field_configs.each_with_object({}) do |config, hash|
+        if config.validations.key?(:model)
+          klass = config.validations[:model].is_a?(Hash) ? config.validations[:model][:with] : config.validations[:model]
+          hash[config.field] = klass
+        end
+      end
+    end
+
     def action_name = @action.class.name.presence || "The action"
+
+    def _define_model_field_method(field, klass)
+      define_memoized_reader_method(field) do
+        Axn::Core::FieldResolvers.resolve(
+          type: :model,
+          field:,
+          options: klass,
+          provided_data: _context_data_source,
+        )
+      end
+    end
+
+    def define_memoized_reader_method(field, &block)
+      singleton_class.define_method(field) do
+        ivar = :"@_memoized_reader_#{field}"
+        cached_val = instance_variable_get(ivar)
+        return cached_val if cached_val.present?
+
+        value = instance_exec(&block)
+        instance_variable_set(ivar, value)
+      end
+    end
 
     def _context_data_source = raise NotImplementedError
 
