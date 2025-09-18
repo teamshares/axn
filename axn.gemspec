@@ -13,8 +13,8 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/teamshares/axn"
   spec.license = "MIT"
 
-  # NOTE: uses endless methods from 3, literal value omission from 3.1, Data.define from 3.2
-  spec.required_ruby_version = ">= 3.2.0"
+  # NOTE: uses endless methods from 3, literal value omission from 3.1, Data.define from 3.2, Vernier profiling from 3.2.1
+  spec.required_ruby_version = ">= 3.2.1"
 
   # spec.metadata["allowed_push_host"] = "TODO: Set to your gem server 'https://example.com'"
   # spec.metadata["rubygems_mfa_required"] = "true"

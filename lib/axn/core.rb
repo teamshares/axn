@@ -12,6 +12,7 @@ require "axn/core/automatic_logging"
 require "axn/core/use_strategy"
 require "axn/core/timing"
 require "axn/core/tracing"
+require "axn/core/profiling"
 require "axn/core/nesting_tracking"
 
 # CONSIDER: make class names match file paths?
@@ -35,6 +36,7 @@ module Axn
         include Core::AutomaticLogging
         include Core::Tracing
         include Core::Timing
+        include Core::Profiling
 
         include Core::Flow
 
@@ -72,13 +74,15 @@ module Axn
     # Main entry point for action execution
     def _run
       _tracking_nesting(self) do
-        _with_tracing do
-          _with_logging do
-            _with_timing do
-              _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-                _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-                  _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                    call
+        _with_profiling do
+          _with_tracing do
+            _with_logging do
+              _with_timing do
+                _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+                  _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+                    _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                      call
+                    end
                   end
                 end
               end

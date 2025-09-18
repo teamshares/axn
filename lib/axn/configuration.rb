@@ -7,11 +7,15 @@ module Axn
 
   class Configuration
     attr_accessor :wrap_with_trace, :emit_metrics
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails, :profiling_enabled, :profiling_sample_rate, :profiling_output_dir
 
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
+
+    def profiling_enabled = @profiling_enabled ||= false
+    def profiling_sample_rate = @profiling_sample_rate ||= 0.1
+    def profiling_output_dir = @profiling_output_dir ||= _default_profiling_output_dir
 
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}
@@ -59,6 +63,16 @@ module Axn
     def env
       @env ||= ENV["RACK_ENV"].presence || ENV["RAILS_ENV"].presence || "development"
       ActiveSupport::StringInquirer.new(@env)
+    end
+
+    private
+
+    def _default_profiling_output_dir
+      if defined?(Rails) && Rails.respond_to?(:root)
+        Rails.root.join("tmp", "profiles")
+      else
+        Pathname.new("tmp/profiles")
+      end
     end
   end
 

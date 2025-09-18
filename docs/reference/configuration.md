@@ -281,6 +281,68 @@ end
 
 The `auto_log` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
 
+## Profiling
+
+Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling uses a **two-tier opt-in system** for safety and performance:
+
+1. **Global Switch**: `profiling_enabled` must be `true` (master kill switch)
+2. **Per-Action Declaration**: Each action must explicitly call `profile` to be eligible
+
+This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze.
+
+### Configuration
+
+```ruby
+Axn.configure do |c|
+  # Enable profiling globally (default: false)
+  # This is a master switch - must be true for ANY profiling to occur
+  c.profiling_enabled = true
+
+  # Optional: Set sample rate (0.0 to 1.0, default: 0.1)
+  c.profiling_sample_rate = 0.1
+
+  # Optional: Set output directory (default: tmp/profiles)
+  c.profiling_output_dir = "tmp/profiles"
+end
+```
+
+### Usage
+
+**Step 1**: Enable global profiling in configuration (above)
+
+**Step 2**: Enable profiling on specific actions using the `profile` method:
+
+```ruby
+class MyAction
+  include Axn
+
+  # Profile conditionally (only one profile call per action)
+  profile if: -> { debug_mode }
+
+  expects :name, :debug_mode
+
+  def call
+    "Hello, #{name}!"
+  end
+end
+```
+
+**Important**:
+- Both the global switch (`profiling_enabled = true`) AND per-action declaration (`profile`) are required for profiling to occur
+- You can only call `profile` **once per action** - subsequent calls will override the previous one
+- This two-tier system prevents accidental profiling of all actions and ensures you only profile what you intend to analyze
+
+### Viewing Profiles
+
+Profiles are saved as JSON files that can be viewed in the [Firefox Profiler](https://profiler.firefox.com/):
+
+1. Run your action with profiling enabled
+2. Find the generated profile file in your `profiling_output_dir`
+3. Upload the JSON file to [profiler.firefox.com](https://profiler.firefox.com/)
+4. Analyze the performance data
+
+For more detailed information, see the [Profiling guide](/advanced/profiling).
+
 ## Complete Configuration Example
 
 Here's a complete example showing all available configuration options:
@@ -309,6 +371,11 @@ Axn.configure do |c|
     Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
   end
+
+  # Profiling
+  c.profiling = true
+  c.profiling_sample_rate = 0.1
+  c.profiling_output_dir = "tmp/profiles"
 
   # Async configuration
   c.set_default_async(:sidekiq, queue: "default") do
