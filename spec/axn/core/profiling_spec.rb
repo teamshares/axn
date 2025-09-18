@@ -183,8 +183,8 @@ RSpec.describe Axn::Core::Profiling do
 
     context "when profiling should run" do
       before do
-        Axn.config.profiling_enabled = true  # Enable global profiling
-        action_class.profile  # Enable profiling on the action class
+        Axn.config.profiling_enabled = true # Enable global profiling
+        action_class.profile # Enable profiling on the action class
         allow(action).to receive(:_should_profile?).and_return(true)
         stub_const("Vernier", Module.new)
         allow(Vernier).to receive(:profile).and_yield
