@@ -55,10 +55,11 @@ export default defineConfig({
         ]
       },
       {
-        text: 'Additional Notes',
+        text: 'Advanced',
         items: [
-          { text: 'ROUGH NOTES', link: '/advanced/rough' },
+          { text: 'Profiling', link: '/advanced/profiling' },
           { text: 'Conventions', link: '/advanced/conventions' },
+          { text: 'ROUGH NOTES', link: '/advanced/rough' },
         ]
       },
     ],

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration
 * [FEAT] Extended model validation to support custom finder methods with `expects :user, model: { klass: User, finder: :find }` syntax
 * [BREAKING] Removed `#try` method
 * [BREAKING] Removed `Axn()` method sugar (use `Axn::Factory.build` directly)
