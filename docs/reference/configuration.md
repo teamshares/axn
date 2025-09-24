@@ -283,34 +283,11 @@ The `auto_log` method supports inheritance, so subclasses will inherit the setti
 
 ## Profiling
 
-Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling uses a **two-tier opt-in system** for safety and performance:
-
-1. **Global Switch**: `profiling_enabled` must be `true` (master kill switch)
-2. **Per-Action Declaration**: Each action must explicitly call `profile` to be eligible
-
-This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze.
-
-### Configuration
-
-```ruby
-Axn.configure do |c|
-  # Enable profiling globally (default: false)
-  # This is a master switch - must be true for ANY profiling to occur
-  c.profiling_enabled = true
-
-  # Optional: Set sample rate (0.0 to 1.0, default: 0.1)
-  c.profiling_sample_rate = 0.1
-
-  # Optional: Set output directory (default: tmp/profiles)
-  c.profiling_output_dir = "tmp/profiles"
-end
-```
+Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling is enabled per-action by calling the `profile` method.
 
 ### Usage
 
-**Step 1**: Enable global profiling in configuration (above)
-
-**Step 2**: Enable profiling on specific actions using the `profile` method:
+Enable profiling on specific actions using the `profile` method:
 
 ```ruby
 class MyAction
@@ -327,10 +304,30 @@ class MyAction
 end
 ```
 
+### Configuration Options
+
+The `profile` method accepts several options:
+
+```ruby
+class MyAction
+  include Axn
+
+  # Profile with custom options
+  profile(
+    if: -> { debug_mode },
+    sample_rate: 0.1,  # Sampling rate (0.0 to 1.0, default: 0.1)
+    output_dir: "tmp/profiles"  # Output directory (default: Rails.root/tmp/profiles or tmp/profiles)
+  )
+
+  def call
+    # Action logic
+  end
+end
+```
+
 **Important**:
-- Both the global switch (`profiling_enabled = true`) AND per-action declaration (`profile`) are required for profiling to occur
 - You can only call `profile` **once per action** - subsequent calls will override the previous one
-- This two-tier system prevents accidental profiling of all actions and ensures you only profile what you intend to analyze
+- This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze
 
 ### Viewing Profiles
 
@@ -372,10 +369,6 @@ Axn.configure do |c|
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
   end
 
-  # Profiling
-  c.profiling = true
-  c.profiling_sample_rate = 0.1
-  c.profiling_output_dir = "tmp/profiles"
 
   # Async configuration
   c.set_default_async(:sidekiq, queue: "default") do

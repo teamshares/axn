@@ -13,9 +13,10 @@ RSpec.describe Axn::Core::Profiling do
 
   before do
     # Reset configuration
-    Axn.config.profiling_enabled = false
     action_class._profiling_enabled = false
     action_class._profiling_condition = nil
+    action_class._profiling_sample_rate = 0.1
+    action_class._profiling_output_dir = nil
   end
 
   describe ".profile" do
@@ -40,25 +41,28 @@ RSpec.describe Axn::Core::Profiling do
       expect(action_class._profiling_enabled).to be true
       expect(action_class._profiling_condition).to eq(:should_profile?)
     end
+
+    it "enables profiling with custom sample rate and output dir" do
+      action_class.profile(sample_rate: 0.5, output_dir: "custom/profiles")
+
+      expect(action_class._profiling_enabled).to be true
+      expect(action_class._profiling_sample_rate).to eq(0.5)
+      expect(action_class._profiling_output_dir).to eq("custom/profiles")
+    end
+
+    it "uses default sample rate and output dir when not provided" do
+      action_class.profile
+
+      expect(action_class._profiling_enabled).to be true
+      expect(action_class._profiling_sample_rate).to eq(0.1)
+      expect(action_class._profiling_output_dir).to be_a(Pathname)
+    end
   end
 
   describe "#_should_profile?" do
     let(:action) { action_class.new(name: "World") }
 
-    context "when profiling is disabled globally" do
-      before { Axn.config.profiling_enabled = false }
-
-      it "returns true (global check moved to _with_profiling)" do
-        action_class._profiling_enabled = true
-        # _should_profile? no longer checks global setting, so it returns true
-        # The global check is now in _with_profiling
-        expect(action.send(:_should_profile?)).to be true
-      end
-    end
-
     context "when profiling is disabled for the action" do
-      before { Axn.config.profiling_enabled = true }
-
       it "returns false" do
         action_class._profiling_enabled = false
         expect(action.send(:_should_profile?)).to be false
@@ -67,7 +71,6 @@ RSpec.describe Axn::Core::Profiling do
 
     context "when profiling is enabled without condition" do
       before do
-        Axn.config.profiling_enabled = true
         action_class._profiling_enabled = true
       end
 
@@ -88,7 +91,6 @@ RSpec.describe Axn::Core::Profiling do
       end
 
       before do
-        Axn.config.profiling_enabled = true
         action_class._profiling_enabled = true
       end
 
@@ -109,7 +111,6 @@ RSpec.describe Axn::Core::Profiling do
 
     context "when profiling is enabled with symbol condition" do
       before do
-        Axn.config.profiling_enabled = true
         action_class._profiling_enabled = true
       end
 
@@ -123,7 +124,6 @@ RSpec.describe Axn::Core::Profiling do
 
     context "when profiling is enabled with callable condition" do
       before do
-        Axn.config.profiling_enabled = true
         action_class._profiling_enabled = true
       end
 
@@ -166,24 +166,8 @@ RSpec.describe Axn::Core::Profiling do
       end
     end
 
-    context "when global profiling is disabled" do
-      before do
-        Axn.config.profiling_enabled = false
-        action_class._profiling_enabled = true
-      end
-
-      it "yields without profiling" do
-        expect(action).not_to receive(:_ensure_vernier_available!)
-        expect(action).not_to receive(:_should_profile?)
-
-        result = action.send(:_with_profiling) { "test" }
-        expect(result).to eq("test")
-      end
-    end
-
     context "when profiling should run" do
       before do
-        Axn.config.profiling_enabled = true # Enable global profiling
         action_class.profile # Enable profiling on the action class
         allow(action).to receive(:_should_profile?).and_return(true)
         stub_const("Vernier", Module.new)
@@ -224,7 +208,6 @@ RSpec.describe Axn::Core::Profiling do
     let(:action) { action_class.new(name: "World") }
 
     before do
-      Axn.config.profiling_enabled = true
       action_class.profile
       stub_const("Vernier", Module.new)
       allow(Vernier).to receive(:profile).and_yield
@@ -253,23 +236,17 @@ RSpec.describe Axn::Core::Profiling do
     end
   end
 
-  describe "configuration" do
-    it "has default profiling configuration" do
-      expect(Axn.config.profiling_enabled).to be false
-      expect(Axn.config.profiling_sample_rate).to eq(0.1)
-      expect(Axn.config.profiling_output_dir).to be_a(Pathname)
+  describe "default values" do
+    it "has default profiling values" do
+      expect(action_class._profiling_sample_rate).to eq(0.1)
+      expect(action_class._profiling_output_dir).to be_nil
     end
 
-    it "allows setting profiling configuration" do
-      Axn.configure do |c|
-        c.profiling_enabled = true
-        c.profiling_sample_rate = 0.5
-        c.profiling_output_dir = Pathname.new("custom/profiles")
-      end
+    it "allows setting custom profiling values" do
+      action_class.profile(sample_rate: 0.5, output_dir: "custom/profiles")
 
-      expect(Axn.config.profiling_enabled).to be true
-      expect(Axn.config.profiling_sample_rate).to eq(0.5)
-      expect(Axn.config.profiling_output_dir).to eq(Pathname.new("custom/profiles"))
+      expect(action_class._profiling_sample_rate).to eq(0.5)
+      expect(action_class._profiling_output_dir).to eq("custom/profiles")
     end
   end
 end

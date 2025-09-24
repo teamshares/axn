@@ -36,3 +36,72 @@ result = Foo.call # [!code focus]
 ```
 
 `result` will have both `bar` and `baz` reader methods (which will return 1 and 2, respectively).
+
+## Pattern Matching Support
+
+`Axn::Result` supports Ruby 3's pattern matching feature, allowing you to destructure results in a more expressive way:
+
+```ruby
+case SomeAction.call
+in ok: true, success: String => message, user:, order:
+  process_success(user, order, message)
+in ok: false, error: String => message
+  handle_error(message)
+end
+```
+
+### Available Pattern Matching Keys
+
+When pattern matching, the following keys are available:
+
+- `ok` - Boolean success state (`true` for success, `false` for failure)
+- `success` - Success message string (only present when `ok` is `true`)
+- `error` - Error message string (only present when `ok` is `false`)
+- `message` - Always present message string (success or error)
+- `outcome` - Symbol indicating the execution outcome (`:success`, `:failure`, or `:exception`)
+- `finalized` - Boolean indicating if execution completed
+- Any exposed values from the action
+
+### Pattern Matching Examples
+
+**Basic Success/Failure Matching:**
+```ruby
+case result
+in ok: true, user: User => user
+  puts "User created: #{user.name}"
+in ok: false, error: String => message
+  puts "Error: #{message}"
+end
+```
+
+**Outcome-Based Matching:**
+```ruby
+case result
+in ok: true, outcome: :success, data: { id: Integer => id }
+  puts "Success with ID: #{id}"
+in ok: false, outcome: :failure, error: String => message
+  puts "Business logic failure: #{message}"
+in ok: false, outcome: :exception, error: String => message
+  puts "System error: #{message}"
+end
+```
+
+**Complex Nested Data Matching:**
+```ruby
+case result
+in ok: true, order: { id: Integer => order_id, items: [{ name: String => item_name }] }
+  puts "Order #{order_id} created with #{item_name}"
+in ok: false, error: String => message, field: String => field
+  puts "Validation failed on #{field}: #{message}"
+end
+```
+
+**Type Guards and Variable Binding:**
+```ruby
+case result
+in ok: true, success: String => message, user: { email: String => email }
+  send_notification(email, message)
+in ok: false, error: String => message, code: String => code
+  log_error(code: code, message: message)
+end
+```

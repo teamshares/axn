@@ -35,7 +35,7 @@ end
 
 ### Using Strategies with Configuration
 
-Some strategies support configuration options. These strategies have a `setup` method that accepts configuration and returns a configured module.  As an _imaginary_ example:
+Some strategies support configuration options. These strategies have a `configure` method that accepts configuration and returns a configured module.  As an _imaginary_ example:
 
 ```ruby
 class ProcessPayment
@@ -98,13 +98,13 @@ end
 
 ### Configurable Strategies
 
-For strategies that need configuration, implement a `setup` method that returns a configured module:
+For strategies that need configuration, implement a `configure` method that returns a configured module:
 
 ```ruby
 module RetryStrategy
   extend ActiveSupport::Concern
 
-  def self.setup(max_attempts: 3, backoff: :linear, &block)
+  def self.configure(max_attempts: 3, backoff: :linear, &block)
     Module.new do
       extend ActiveSupport::Concern
 
@@ -149,8 +149,8 @@ Axn::Strategies.register(:retry, RetryStrategy)
 
 1. **Register early**: Register custom strategies during application initialization
 2. **Use descriptive names**: Choose strategy names that clearly indicate their purpose
-3. **Handle configuration validation**: Validate configuration options in your `setup` method
-4. **Return proper modules**: Always return a module from the `setup` method
+3. **Handle configuration validation**: Validate configuration options in your `configure` method
+4. **Return proper modules**: Always return a module from the `configure` method
 5. **Document your strategies**: Include clear documentation for how to use your custom strategies
 
 ### Example: Complete Custom Strategy
@@ -161,7 +161,7 @@ Here's a complete example of a custom strategy that adds performance monitoring 
 module PerformanceMonitoringStrategy
   extend ActiveSupport::Concern
 
-  def self.setup(threshold_ms: 1000, notify_slow: false, &block)
+  def self.configure(threshold_ms: 1000, notify_slow: false, &block)
     Module.new do
       extend ActiveSupport::Concern
 

@@ -79,6 +79,24 @@ module Axn
     # TODO: exposed for errors :from support, but should be private if possible
     def __action__ = @action
 
+    # Enable pattern matching support for Ruby 3+
+    def deconstruct_keys(keys)
+      attrs = {
+        ok: ok?,
+        success:,
+        error:,
+        message:,
+        outcome: outcome.to_sym,
+        finalized: finalized?,
+      }
+
+      # Add all exposed data
+      attrs.merge!(@context.exposed_data)
+
+      # Return filtered attributes if keys specified
+      keys ? attrs.slice(*keys) : attrs
+    end
+
     private
 
     def _context_data_source = @context.exposed_data
