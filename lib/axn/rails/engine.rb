@@ -18,7 +18,7 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
           actions_path = app.root.join("app/actions")
 
           # Only add if the directory exists
-          return unless File.directory?(actions_path)
+          next unless File.directory?(actions_path)
 
           # Use modern Rails autoloader API (Rails 7.2+)
           # Namespace is configurable via Axn.config.rails.app_actions_autoload_namespace
