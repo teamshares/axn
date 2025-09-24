@@ -32,27 +32,11 @@ bundle install
 
 ### 2. Enable Profiling
 
-Configure Axn to enable profiling globally:
-
-```ruby
-# config/initializers/axn.rb
-Axn.configure do |c|
-  c.profiling_enabled = true  # Master switch - must be true for ANY profiling
-  c.profiling_sample_rate = 0.1  # Profile 10% of executions
-  c.profiling_output_dir = "tmp/profiles"
-end
-```
-
-**Important**: This only enables the global profiling switch. You must also declare `profile` on each action you want to profile (see Basic Usage below).
+No global configuration is needed! Simply call `profile` on the actions you want to profile.
 
 ## Basic Usage
 
-Profiling uses a **two-tier opt-in system**:
-
-1. **Global Switch**: `Axn.config.profiling_enabled = true` (master kill switch)
-2. **Per-Action Declaration**: Each action must call `profile` to be eligible
-
-**Important**: You can only call `profile` **once per action** - subsequent calls will override the previous one. This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze.
+Profiling is enabled per-action by calling the `profile` method. You can only call `profile` **once per action** - subsequent calls will override the previous one. This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze.
 
 ### Simple Profiling
 
@@ -125,17 +109,29 @@ end
 
 ### Sampling Rate Control
 
-Adjust the sampling rate based on your needs:
+Adjust the sampling rate per action:
 
 ```ruby
-Axn.configure do |c|
-  c.profiling_enabled = true
+class DevelopmentAction
+  include Axn
 
   # High sampling rate for development (more detailed data)
-  c.profiling_sample_rate = 0.5 if Rails.env.development?
+  profile(sample_rate: 0.5) if Rails.env.development?
+
+  def call
+    # Action logic
+  end
+end
+
+class ProductionAction
+  include Axn
 
   # Low sampling rate for production (minimal overhead)
-  c.profiling_sample_rate = 0.01 if Rails.env.production?
+  profile(sample_rate: 0.01) if Rails.env.production?
+
+  def call
+    # Action logic
+  end
 end
 ```
 
@@ -144,9 +140,15 @@ end
 Organize profiles by environment or feature:
 
 ```ruby
-Axn.configure do |c|
-  c.profiling_enabled = true
-  c.profiling_output_dir = Rails.root.join("tmp", "profiles", Rails.env)
+class MyAction
+  include Axn
+
+  # Custom output directory
+  profile(output_dir: Rails.root.join("tmp", "profiles", Rails.env))
+
+  def call
+    # Action logic
+  end
 end
 ```
 
@@ -228,16 +230,20 @@ profile  # This can impact performance
 Choose sampling rates based on your environment:
 
 ```ruby
-Axn.configure do |c|
-  c.profiling_enabled = true
+class MyAction
+  include Axn
 
-  case Rails.env
-  when 'development'
-    c.profiling_sample_rate = 0.5  # High detail for debugging
-  when 'staging'
-    c.profiling_sample_rate = 0.1  # Moderate sampling
-  when 'production'
-    c.profiling_sample_rate = 0.01 # Minimal overhead
+  # High detail for debugging
+  profile(sample_rate: 0.5) if Rails.env.development?
+
+  # Moderate sampling for staging
+  profile(sample_rate: 0.1) if Rails.env.staging?
+
+  # Minimal overhead for production
+  profile(sample_rate: 0.01) if Rails.env.production?
+
+  def call
+    # Action logic
   end
 end
 ```
@@ -299,10 +305,9 @@ Make sure to:
 
 If profile files aren't being generated:
 
-1. Check that `Axn.config.profiling_enabled = true`
-2. Verify your action has `profile` enabled
-3. Ensure profiling conditions are met
-4. Check the output directory exists and is writable
+1. Verify your action has `profile` enabled
+2. Ensure profiling conditions are met
+3. Check the output directory exists and is writable
 
 ### Performance Impact
 
@@ -322,15 +327,22 @@ Combine profiling with Datadog tracing:
 
 ```ruby
 Axn.configure do |c|
-  # Profiling
-  c.profiling_enabled = true
-  c.profiling_sample_rate = 0.1
-
   # Datadog tracing
   c.wrap_with_trace = proc do |resource, &action|
     Datadog::Tracing.trace("Action", resource:) do
       action.call
     end
+  end
+end
+
+class MyAction
+  include Axn
+
+  # Profiling with custom options
+  profile(sample_rate: 0.1)
+
+  def call
+    # Action logic
   end
 end
 ```

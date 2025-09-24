@@ -10,6 +10,8 @@ module Axn
         base.class_eval do
           class_attribute :_profiling_enabled, default: false
           class_attribute :_profiling_condition, default: nil
+          class_attribute :_profiling_sample_rate, default: 0.1
+          class_attribute :_profiling_output_dir, default: nil
 
           extend ClassMethods
         end
@@ -19,19 +21,30 @@ module Axn
         # Enable profiling for this action class
         #
         # @param if [Proc, Symbol, #call, nil] Optional condition to determine when to profile
+        # @param sample_rate [Float] Sampling rate (0.0 to 1.0, default: 0.1)
+        # @param output_dir [String, Pathname] Output directory for profile files (default: Rails.root/tmp/profiles or tmp/profiles)
         # @return [void]
-        def profile(if: nil)
+        def profile(if: nil, sample_rate: 0.1, output_dir: nil)
           self._profiling_enabled = true
           self._profiling_condition = binding.local_variable_get(:if)
+          self._profiling_sample_rate = sample_rate
+          self._profiling_output_dir = output_dir || _default_profiling_output_dir
+        end
+
+        private
+
+        def _default_profiling_output_dir
+          if defined?(Rails) && Rails.respond_to?(:root)
+            Rails.root.join("tmp", "profiles")
+          else
+            Pathname.new("tmp/profiles")
+          end
         end
       end
 
       private
 
       def _with_profiling(&)
-        # Fastest path: global profiling disabled
-        return yield unless Axn.config.profiling_enabled
-
         # Check if this specific action should be profiled
         return yield unless _should_profile?
 
@@ -48,12 +61,13 @@ module Axn
         _ensure_output_directory_exists
 
         # Build output file path
-        output_file = File.join(Axn.config.profiling_output_dir, "#{profile_name}.json")
+        output_dir = self.class._profiling_output_dir || _default_profiling_output_dir
+        output_file = File.join(output_dir, "#{profile_name}.json")
 
         # Configure Vernier with our settings
         collector_options = {
           out: output_file,
-          allocation_sample_rate: (Axn.config.profiling_sample_rate * 1000).to_i,
+          allocation_sample_rate: (self.class._profiling_sample_rate * 1000).to_i,
         }
 
         Vernier.profile(**collector_options, &)
@@ -62,7 +76,7 @@ module Axn
       def _ensure_output_directory_exists
         return if @_profiling_directory_created
 
-        output_dir = Axn.config.profiling_output_dir
+        output_dir = self.class._profiling_output_dir || _default_profiling_output_dir
         FileUtils.mkdir_p(output_dir)
         @_profiling_directory_created = true
       end
@@ -95,6 +109,14 @@ module Axn
 
             Then run: bundle install
           ERROR
+        end
+      end
+
+      def _default_profiling_output_dir
+        if defined?(Rails) && Rails.respond_to?(:root)
+          Rails.root.join("tmp", "profiles")
+        else
+          Pathname.new("tmp/profiles")
         end
       end
     end
