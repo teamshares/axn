@@ -19,7 +19,6 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
 
-
     it "handles complex context" do
       job_id = Actions::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])
       expect(job_id).to be_a(String)
