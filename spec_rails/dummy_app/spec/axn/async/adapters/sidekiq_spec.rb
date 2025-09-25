@@ -80,6 +80,12 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       end.not_to raise_error
     end
 
+    it "executes action with no arguments successfully" do
+      expect do
+        Actions::TestActionSidekiqNoArgs.call_async
+      end.not_to raise_error
+    end
+
     it "handles complex context during execution" do
       expect do
         Actions::TestActionSidekiq.call_async(name: "Rails", age: 30, active: true, tags: ["test"])

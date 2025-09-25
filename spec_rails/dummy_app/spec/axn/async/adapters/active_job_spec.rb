@@ -64,6 +64,14 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       end.not_to raise_error
     end
 
+    it "executes action with no arguments successfully" do
+      Actions::TestActionActiveJobNoArgs.call_async
+
+      expect do
+        perform_enqueued_jobs
+      end.not_to raise_error
+    end
+
     it "handles complex context during execution" do
       Actions::TestActionActiveJob.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
 
