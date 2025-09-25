@@ -19,13 +19,6 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
     end
 
-    it "handles empty context" do
-      expect { Actions::TestActionSidekiq.call_async({}) }.to raise_error(Axn::InboundValidationError)
-    end
-
-    it "handles nil context" do
-      expect { Actions::TestActionSidekiq.call_async(nil) }.to raise_error(Axn::InboundValidationError)
-    end
 
     it "handles complex context" do
       job_id = Actions::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])

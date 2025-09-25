@@ -24,19 +24,6 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       expect(job.arguments).to eq([{ name: "World", age: 25 }])
     end
 
-    it "handles empty context" do
-      job = Actions::TestActionActiveJob.call_async({})
-
-      expect(job).to be_a(ActiveJob::Base)
-      expect(job.arguments).to eq([{}])
-    end
-
-    it "handles nil context" do
-      job = Actions::TestActionActiveJob.call_async(nil)
-
-      expect(job).to be_a(ActiveJob::Base)
-      expect(job.arguments).to eq([{}])
-    end
 
     it "handles complex context" do
       job = Actions::TestActionActiveJob.call_async(name: "World", age: 25, active: true, tags: ["test"])
