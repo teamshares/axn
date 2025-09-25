@@ -8,7 +8,7 @@ The `Axn/UncheckedResult` cop detects when you call another Action from within a
 
 > **⚠️ Warning**: This cop uses static analysis and cannot distinguish between actual Axn classes and other classes that happen to have a `call` method. If you're using legacy services or other service patterns alongside Axn, you may encounter false positives. Use RuboCop disable comments for intentional violations.
 >
-> **💡 Tip**: If you're using the Actions namespace (see [Rails Integration](/docs/usage/setup.md#rails-integration-optional)), you can configure the cop to only check `Actions::*` classes, eliminating false positives from other service objects.
+> **💡 Tip**: If you're using the Actions namespace (see [Rails Integration](/usage/setup#rails-integration-optional)), you can configure the cop to only check `Actions::*` classes, eliminating false positives from other service objects.
 
 ## Setup
 
@@ -103,4 +103,4 @@ class OuterAction
 end
 ```
 
-For detailed configuration options, usage patterns, and troubleshooting, see the [technical documentation](/lib/rubocop/cop/axn/README.md).
+For detailed configuration options, usage patterns, and troubleshooting, see the [technical documentation](https://github.com/teamshares/axn/blob/main/lib/rubocop/cop/axn/README.md).
