@@ -16,8 +16,8 @@ module Axn
         end
 
         class_methods do
-          def call_async(context = {})
-            active_job_proxy_class.perform_later(context || {})
+          def call_async(**)
+            active_job_proxy_class.perform_later(**)
           end
 
           private

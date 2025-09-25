@@ -26,14 +26,6 @@ RSpec.describe "Axn::Async with Disabled adapter" do
     it "raises NotImplementedError" do
       expect { action_class.call_async(name: "Test", age: 30) }.to raise_error(NotImplementedError)
     end
-
-    it "raises NotImplementedError with empty context" do
-      expect { action_class.call_async({}) }.to raise_error(NotImplementedError)
-    end
-
-    it "raises NotImplementedError with nil context" do
-      expect { action_class.call_async(nil) }.to raise_error(NotImplementedError)
-    end
   end
 
   describe "Disabled-specific behavior" do

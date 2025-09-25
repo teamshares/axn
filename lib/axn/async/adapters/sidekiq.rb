@@ -19,8 +19,8 @@ module Axn
         end
 
         class_methods do
-          def call_async(context = {})
-            perform_async(_params_to_global_id(context))
+          def call_async(**)
+            perform_async(_params_to_global_id(**))
           end
 
           def _params_to_global_id(context)

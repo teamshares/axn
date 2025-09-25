@@ -40,16 +40,6 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
       expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
       action_class.call_async(name: "World", age: 25)
     end
-
-    it "handles empty context" do
-      expect(action_class).to receive(:perform_async).with({})
-      action_class.call_async({})
-    end
-
-    it "handles nil context gracefully" do
-      expect(action_class).to receive(:perform_async).with({})
-      action_class.call_async(nil)
-    end
   end
 
   describe "Sidekiq-specific behavior" do

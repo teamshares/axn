@@ -21,16 +21,6 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
       action_class.call_async(name: "World", age: 25)
     end
-
-    it "handles empty context" do
-      expect_any_instance_of(Class).to receive(:perform_later).with({})
-      action_class.call_async({})
-    end
-
-    it "handles nil context" do
-      expect_any_instance_of(Class).to receive(:perform_later).with({})
-      action_class.call_async(nil)
-    end
   end
 
   describe "ActiveJob-specific behavior" do
