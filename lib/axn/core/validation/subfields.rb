@@ -17,7 +17,9 @@ module Axn
       end
 
       def read_attribute_for_validation(attr)
-        self.class.extract(attr, @source)
+        # For subfields, if we have an action context, use its reader methods
+        # which may include model resolution for model fields
+        @action ? @action.public_send(attr) : self.class.extract(attr, @source)
       end
 
       def self.extract(attr, source)
@@ -28,12 +30,15 @@ module Axn
         base.dig(*attr.to_s.split("."))
       end
 
-      def self.validate!(field:, validations:, source:, exception_klass:)
+      def self.validate!(field:, validations:, source:, exception_klass:, action: nil)
         validator = Class.new(self) do
           def self.name = "Axn::Validation::Subfields::OneOff"
 
           validates field, **validations
         end.new(source)
+
+        # Set the action context for model field resolution
+        validator.instance_variable_set(:@action, action)
 
         return if validator.valid?
 

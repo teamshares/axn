@@ -79,7 +79,24 @@ module Axn
             Axn::Validation::Subfields.extract(field, public_send(on))
           end
 
-          _define_model_reader(field, validations[:model]) { Axn::Validation::Subfields.extract(field, public_send(on)) } if validations.key?(:model)
+          _define_subfield_model_reader(field, validations[:model], on:) if validations.key?(:model)
+        end
+
+        def _define_subfield_model_reader(field, options, on:)
+          # Apply the same syntactic sugar processing as the main contract system
+          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(options, [field])
+
+          Axn::Util::Memoization.define_memoized_reader_method(self, field) do
+            # Create a data source that contains the subfield data for the resolver
+            subfield_data = public_send(on)
+
+            Axn::Core::FieldResolvers.resolve(
+              type: :model,
+              field:,
+              options: processed_options,
+              provided_data: subfield_data,
+            )
+          end
         end
       end
     end

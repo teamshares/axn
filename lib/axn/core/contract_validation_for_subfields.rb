@@ -39,6 +39,7 @@ module Axn
             validations: config.validations,
             source: public_send(parent_field),
             exception_klass: Axn::InboundValidationError,
+            action: self,
           )
         end
       end
