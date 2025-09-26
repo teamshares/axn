@@ -8,7 +8,7 @@ module Axn
       # Applies preprocessing to all subfield configurations
       def _apply_inbound_preprocessing_for_subfields!
         _for_each_relevant_subfield_config(:preprocess) do |config, parent_field, subfield, parent_value|
-          current_subfield_value = Axn::Validation::Subfields.extract(subfield, parent_value)
+          current_subfield_value = Axn::Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
           preprocessed_value = config.preprocess.call(current_subfield_value)
           _update_subfield_value(parent_field, subfield, preprocessed_value)
         rescue StandardError => e
@@ -19,7 +19,7 @@ module Axn
       # Applies default values to all subfield configurations
       def _apply_defaults_for_subfields!
         _for_each_relevant_subfield_config(:default) do |config, parent_field, subfield, parent_value|
-          next if parent_value && !Axn::Validation::Subfields.extract(subfield, parent_value).nil?
+          next if parent_value && !Axn::Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
 
           @__context.provided_data[parent_field] = {} if parent_value.nil?
 

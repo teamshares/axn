@@ -76,7 +76,7 @@ module Axn
           raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
           Axn::Util::Memoization.define_memoized_reader_method(self, field) do
-            Axn::Validation::Subfields.extract(field, public_send(on))
+            Axn::Core::FieldResolvers.resolve(type: :extract, field:, provided_data: public_send(on))
           end
 
           _define_subfield_model_reader(field, validations[:model], on:) if validations.key?(:model)
