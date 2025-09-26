@@ -248,7 +248,7 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
     end
   end
 
-  context "with Actions namespace configured" do
+  context "with Actions namespace configured as string" do
     subject(:cop) { described_class.new(config) }
     let(:config) { RuboCop::Config.new({ "Axn/UncheckedResult" => { "ActionsNamespace" => "Actions" } }) }
 
@@ -308,6 +308,106 @@ RSpec.describe RuboCop::Cop::Axn::UncheckedResult do
           end
         end
       RUBY
+    end
+  end
+
+  context "with Actions namespace configured as array" do
+    subject(:cop) { described_class.new(config) }
+    let(:config) { RuboCop::Config.new({ "Axn/UncheckedResult" => { "ActionsNamespace" => %w[Actions Services] } }) }
+
+    it "only checks calls on Actions::* and Services::* classes" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # These should NOT trigger the cop since they're not under configured namespaces
+            SomeService.call(param: "value")
+            AnotherClass.call(param: "value")
+
+            # These should trigger the cop since they're under configured namespaces
+            result = Actions::InnerAction.call(param: "value")
+            return result unless result.ok?
+
+            service_result = Services::SomeService.call(param: "value")
+            return service_result unless service_result.ok?
+          end
+        end
+      RUBY
+    end
+
+    it "reports offense for Actions::* calls without proper handling" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            Actions::InnerAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+
+    it "reports offense for Services::* calls without proper handling" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            Services::SomeService.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+          end
+        end
+      RUBY
+    end
+
+    it "ignores non-configured namespace calls even without proper handling" do
+      expect_no_offenses(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # These should NOT trigger the cop since they're not under configured namespaces
+            SomeService.call(param: "value")
+            AnotherService.call(param: "value")
+            MyClass.call(param: "value")
+            Utils::Helper.call(param: "value")
+          end
+        end
+      RUBY
+    end
+
+    it "handles mixed namespace calls correctly" do
+      expect_offense(<<~RUBY)
+        class OuterAction
+          include Axn
+          def call
+            # These should trigger since they're under configured namespaces
+            Actions::InnerAction.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+
+            Services::SomeService.call(param: "value")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+
+            # This should NOT trigger since it's not under configured namespaces
+            SomeOtherService.call(param: "value")
+          end
+        end
+      RUBY
+    end
+
+    context "with empty array configuration" do
+      let(:config) { RuboCop::Config.new({ "Axn/UncheckedResult" => { "ActionsNamespace" => [] } }) }
+
+      it "falls back to checking all .call methods" do
+        expect_offense(<<~RUBY)
+          class OuterAction
+            include Axn
+            def call
+              # With empty array, this should trigger the cop
+              SomeService.call(param: "value")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use `call!` or check `result.ok?` when calling Axns from within Axns
+            end
+          end
+        RUBY
+      end
     end
   end
 
