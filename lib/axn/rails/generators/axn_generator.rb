@@ -4,6 +4,7 @@ module Axn
   module RailsIntegration
     module Generators
       class AxnGenerator < Rails::Generators::NamedBase
+        namespace "axn"
         source_root File.expand_path("templates", __dir__)
 
         argument :expectations, type: :array, default: [], banner: "expectation1 expectation2 ..."
