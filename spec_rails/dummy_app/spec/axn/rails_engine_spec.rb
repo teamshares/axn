@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Rails::Engine" do
+RSpec.describe "Axn::RailsIntegration::Engine" do
   before(:all) do
     # Ensure Rails is fully initialized
     Rails.application.initialize! unless Rails.application.initialized?
@@ -11,23 +11,23 @@ RSpec.describe "Axn::Rails::Engine" do
 
   describe "Engine loading" do
     it "loads the Engine when Rails is available" do
-      expect(defined?(Axn::Rails::Engine)).to be_truthy
-      expect(Axn::Rails::Engine).to be < Rails::Engine
+      expect(defined?(Axn::RailsIntegration::Engine)).to be_truthy
+      expect(Axn::RailsIntegration::Engine).to be < Rails::Engine
     end
 
     it "is automatically loaded when axn is required in Rails context" do
       # The Engine should be loaded by the time we get here
-      expect(Axn::Rails::Engine).to be_truthy
+      expect(Axn::RailsIntegration::Engine).to be_truthy
     end
   end
 
   describe "Engine configuration" do
     it "has the correct engine name" do
-      expect(Axn::Rails::Engine.engine_name).to eq("axn_rails_engine")
+      expect(Axn::RailsIntegration::Engine.engine_name).to eq("axn_rails")
     end
 
     it "is isolated from the main application" do
-      expect(Axn::Rails::Engine.isolated?).to be_falsey
+      expect(Axn::RailsIntegration::Engine.isolated?).to be_falsey
     end
   end
 

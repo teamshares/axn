@@ -3,7 +3,7 @@
 require "rails/generators"
 require "axn/rails/generators/axn_generator"
 
-RSpec.describe Axn::Rails::Generators::AxnGenerator do
+RSpec.describe Axn::RailsIntegration::Generators::AxnGenerator do
   describe "class methods" do
     describe ".source_root" do
       it "returns the correct source root" do
