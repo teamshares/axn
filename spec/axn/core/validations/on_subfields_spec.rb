@@ -202,10 +202,16 @@ RSpec.describe Axn do
         context "when readers are disabled" do
           let(:readers) { false }
 
-          it "does not raise" do
+          it "does not create reader methods but still validates correctly" do
             expect { action }.not_to raise_error
+
+            # Should not create a reader method for the nested field when readers: false
+            expect(action).not_to respond_to(:foo)
+
+            # But validation should still work correctly - with improved validation system,
+            # validation works regardless of whether reader methods are created
             expect(action.call(foo: { bar: { foo: 3 } })).to be_ok
-            expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok
+            expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok # Still fails validation as expected
           end
         end
       end

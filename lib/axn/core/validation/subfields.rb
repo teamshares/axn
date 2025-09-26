@@ -17,9 +17,13 @@ module Axn
       end
 
       def read_attribute_for_validation(attr)
-        # For subfields, if we have an action context, use its reader methods
-        # which may include model resolution for model fields
-        @action ? @action.public_send(attr) : self.class.extract(attr, @source)
+        # Only use action's reader methods for model fields that need special resolution
+        # For all other fields, use extraction to avoid conflicts with top-level field names
+        if @action && @validations&.key?(:model) && @action.respond_to?(attr)
+          @action.public_send(attr)
+        else
+          self.class.extract(attr, @source)
+        end
       end
 
       def self.extract(attr, source)
@@ -39,6 +43,7 @@ module Axn
 
         # Set the action context for model field resolution
         validator.instance_variable_set(:@action, action)
+        validator.instance_variable_set(:@validations, validations)
 
         return if validator.valid?
 
