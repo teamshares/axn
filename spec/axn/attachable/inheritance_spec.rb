@@ -3,6 +3,31 @@
 RSpec.describe Axn::Attachable::Subactions do
   describe "inheritance" do
     describe "axnable_method inheritance" do
+      context "with helper methods" do
+        let(:parent_class) do
+          Class.new do
+            include Axn
+
+            axnable_method :multiply do |value:|
+              value * the_multiple
+            end
+
+            def the_multiple = 2
+          end
+        end
+
+        let(:child_class) do
+          Class.new(parent_class) do
+            def the_multiple = 3
+          end
+        end
+
+        it "can call inherited methods" do
+          expect(parent_class.multiply!(value: 5)).to eq(10)
+          expect(child_class.multiply!(value: 5)).to eq(15)
+        end
+      end
+
       context "with anonymous classes" do
         let(:parent) do
           Class.new do
@@ -139,16 +164,6 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       context "with named classes" do
-        let(:subaction) do
-          Class.new do
-            include Axn
-
-            def call(value:)
-              value + 20
-            end
-          end
-        end
-
         let(:parent_class) do
           Class.new do
             include Axn
