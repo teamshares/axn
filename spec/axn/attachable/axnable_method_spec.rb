@@ -64,5 +64,203 @@ RSpec.describe Axn do
         end
       end
     end
+
+    describe "return value behavior" do
+      it "returns the block's value directly, not wrapped in Axn::Result" do
+        result = client.number!(arg: 123)
+        expect(result).to be_a(Integer)
+        expect(result).to eq(133)
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "returns different types directly" do
+        string_client = build_axn do
+          axn_method :greeting do |name:|
+            "Hello, #{name}!"
+          end
+        end
+
+        result = string_client.greeting!(name: "World")
+        expect(result).to be_a(String)
+        expect(result).to eq("Hello, World!")
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "returns complex objects directly" do
+        hash_client = build_axn do
+          axn_method :user_data do |id:|
+            { id:, name: "User #{id}", active: true }
+          end
+        end
+
+        result = hash_client.user_data!(id: 42)
+        expect(result).to be_a(Hash)
+        expect(result).to eq({ id: 42, name: "User 42", active: true })
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "returns nil directly when block returns nil" do
+        nil_client = build_axn do
+          axn_method :nothing do
+            nil
+          end
+        end
+
+        result = nil_client.nothing!
+        expect(result).to be_nil
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "returns false directly when block returns false" do
+        false_client = build_axn do
+          axn_method :is_false do
+            false
+          end
+        end
+
+        result = false_client.is_false!
+        expect(result).to be(false)
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "returns arrays directly" do
+        array_client = build_axn do
+          axn_method :list do |items:|
+            items.map(&:upcase)
+          end
+        end
+
+        result = array_client.list!(items: %w[a b c])
+        expect(result).to be_an(Array)
+        expect(result).to eq(%w[A B C])
+        expect(result).not_to be_a(Axn::Result)
+      end
+    end
+
+    describe "custom expose_return_as" do
+      it "uses custom expose_return_as field" do
+        custom_client = build_axn do
+          axn_method :custom, expose_return_as: :data do |value:|
+            "processed: #{value}"
+          end
+        end
+
+        result = custom_client.custom!(value: "test")
+        expect(result).to eq("processed: test")
+        expect(result).not_to be_a(Axn::Result)
+      end
+    end
+
+    describe "comparison with regular axn" do
+      it "shows the difference between axn and axn_method return values" do
+        comparison_client = build_axn do
+          axn :regular_axn, expose_return_as: :value do |x:|
+            x * 2
+          end
+
+          axn_method :method_axn do |x:|
+            x * 2
+          end
+        end
+
+        # Regular axn returns Axn::Result
+        regular_result = comparison_client.regular_axn(x: 5)
+        expect(regular_result).to be_a(Axn::Result)
+        expect(regular_result.value).to eq(10)
+
+        # axn_method returns the value directly
+        method_result = comparison_client.method_axn!(x: 5)
+        expect(method_result).to eq(10)
+        expect(method_result).not_to be_a(Axn::Result)
+      end
+    end
+
+    describe "inheritance behavior" do
+      let(:parent_class) do
+        Class.new do
+          include Axn::Attachable
+          include Axn::Core::Flow
+
+          axn_method :parent_method do |value:|
+            "parent: #{value}"
+          end
+        end
+      end
+
+      let(:child_class) do
+        Class.new(parent_class) do
+          axn_method :child_method do |value:|
+            "child: #{value}"
+          end
+        end
+      end
+
+      it "inherits axn_method definitions and returns values directly" do
+        # Both should work and return values directly (axn_method creates class methods)
+        parent_result = parent_class.parent_method!(value: "test")
+        expect(parent_result).to eq("parent: test")
+        expect(parent_result).not_to be_a(Axn::Result)
+
+        child_result = child_class.parent_method!(value: "test")
+        expect(child_result).to eq("parent: test")
+        expect(child_result).not_to be_a(Axn::Result)
+
+        child_only_result = child_class.child_method!(value: "test")
+        expect(child_only_result).to eq("child: test")
+        expect(child_only_result).not_to be_a(Axn::Result)
+      end
+    end
+
+    describe "error handling with direct returns" do
+      it "raises errors immediately when using the ! method" do
+        error_client = build_axn do
+          axn_method :error_method do
+            fail! "Something went wrong"
+          end
+        end
+
+        expect { error_client.error_method! }.to raise_error(Axn::Failure) do |error|
+          expect(error.message).to eq("Something went wrong")
+        end
+      end
+
+      it "raises exceptions immediately when using the ! method" do
+        exception_client = build_axn do
+          axn_method :exception_method do
+            raise "Runtime error"
+          end
+        end
+
+        expect { exception_client.exception_method! }.to raise_error(RuntimeError) do |error|
+          expect(error.message).to eq("Runtime error")
+        end
+      end
+    end
+
+    describe "edge cases" do
+      it "handles empty blocks" do
+        empty_client = build_axn do
+          axn_method :empty do
+            # Empty block
+          end
+        end
+
+        result = empty_client.empty!
+        expect(result).to be_nil
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "handles blocks that return symbols" do
+        symbol_client = build_axn do
+          axn_method :symbol_method do
+            :success
+          end
+        end
+
+        result = symbol_client.symbol_method!
+        expect(result).to eq(:success)
+        expect(result).not_to be_a(Axn::Result)
+      end
+    end
   end
 end

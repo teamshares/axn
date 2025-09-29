@@ -61,7 +61,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        _build_axn_class(superclass, args, executable, expose_return_as).tap do |axn|
+        _build_axn_class(superclass:, args:, executable:, expose_return_as:).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -112,7 +112,7 @@ module Axn
           end
 
           # Default exposure
-          axn.exposes(expose_return_as, allow_blank: true) if expose_return_as.present?
+          axn.exposes(expose_return_as, optional: true) if expose_return_as.present?
         end
       end
       # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
@@ -150,7 +150,7 @@ module Axn
         end
       end
 
-      def _build_axn_class(superclass, args, executable, expose_return_as)
+      def _build_axn_class(superclass:, args:, executable:, expose_return_as:)
         Class.new(superclass || Object) do
           include Axn unless self < Axn
 
