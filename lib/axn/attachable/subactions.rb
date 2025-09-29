@@ -18,14 +18,11 @@ module Axn
           @_axn_methods ||= {}
         end
 
-        def axn(name, axn_klass = nil, internal: false, **action_kwargs, &block)
+        def axn(name, axn_klass = nil, _internal: false, **action_kwargs, &block) # rubocop:disable Lint/UnderscorePrefixedVariableName
           raise ArgumentError, "Unable to attach Axn -- '#{name}' is already taken" if respond_to?(name) && !_inheritance_in_progress
 
           # Store the configuration (unless this is an internal call)
-          _axns[name] = { axn_klass:, action_kwargs:, block: } unless internal
-
-          # Get or create the shared Axn namespace class
-          axn_namespace = _ensure_axn_namespace
+          _axns[name] = { axn_klass:, action_kwargs:, block: } unless _internal
 
           # Use the Factory to build the Axn class with the clean superclass
           axn_klass = axn_for_attachment(name:, axn_klass:, superclass: axn_namespace, **action_kwargs, &block)
@@ -60,8 +57,8 @@ module Axn
           # Store the configuration for inheritance
           _axn_methods[name] = { axn_klass:, action_kwargs:, block: }
 
-          # Call axn to do the heavy lifting (internal: true skips _axns storage)
-          axn_klass = axn(name, axn_klass, internal: true, **action_kwargs, &block)
+          # Call axn to do the heavy lifting (_internal: true skips _axns storage)
+          axn_klass = axn(name, axn_klass, _internal: true, **action_kwargs, &block)
 
           # Remove the base method that axn created and replace with our custom methods
           singleton_class.remove_method(name) if respond_to?(name)
@@ -82,65 +79,15 @@ module Axn
           axn_klass
         end
 
-        def _ensure_axn_namespace
+        def axn_namespace
           # Check if :Axn is defined directly on this class (not inherited)
           if const_defined?(:Axn, false)
             existing = const_get(:Axn)
             return existing if existing.is_a?(Class)
           end
 
-          # Store reference to the client class
-          client_class = self
-
-          # Create the shared SomeClient::Axn namespace class that can be used as a superclass
-          axn_class = Class.new(client_class) do
-            include Axn
-
-            # Store reference to the axn_attached_to class
-            define_singleton_method(:axn_attached_to) { client_class }
-
-            # Proxy class-level methods to the axn_attached_to class
-            define_singleton_method(:method_missing) do |method_name, *args, **kwargs, &block|
-              if axn_attached_to.respond_to?(method_name)
-                axn_attached_to.public_send(method_name, *args, **kwargs, &block)
-              else
-                super
-              end
-            end
-
-            # Proxy respond_to_missing? for proper method detection
-            define_singleton_method(:respond_to_missing?) do |method_name, include_private|
-              axn_attached_to.respond_to?(method_name, include_private) || super(method_name, include_private)
-            end
-
-            # Proxy instance-level methods to the axn_attached_to class
-            define_method(:method_missing) do |method_name, *args, **kwargs, &block|
-              if self.class.axn_attached_to.respond_to?(method_name)
-                self.class.axn_attached_to.public_send(method_name, *args, **kwargs, &block)
-              else
-                super
-              end
-            end
-
-            # Proxy respond_to_missing? for proper method detection at instance level
-            define_method(:respond_to_missing?) do |method_name, include_private|
-              self.class.axn_attached_to.respond_to?(method_name, include_private) || super(method_name, include_private)
-            end
-          end
-
-          # Set a proper name for the class so it can be used as a superclass
-          axn_class.define_singleton_method(:name) do
-            if client_class.name
-              "#{client_class.name}::Axn"
-            else
-              # Use object_id to make anonymous classes unique
-              "AnonymousClient_#{client_class.object_id}::Axn"
-            end
-          end
-
-          # Make sure it's registered as a class, not a module
-          const_set(:Axn, axn_class)
-          axn_class
+          # Create the proxy base class using the helper method
+          build_proxy_base_class(self)
         end
 
         # Need to redefine the axn methods on the subclass to ensure they properly reference the subclass's
