@@ -77,10 +77,24 @@ module Axn
           # Register as constant in the namespace if it's a proxy class
           return unless axn_namespace&.name&.end_with?("::AttachedAxns")
 
-          constant_name = name.to_s.classify
-          # Handle invalid constant names (e.g., "Step 1" -> "Step1")
-          constant_name = constant_name.gsub(/\s+/, "")
-          axn_namespace.const_set(constant_name, axn_klass) unless axn_namespace.const_defined?(constant_name)
+          constant_name = name.to_s.gsub(/\s+/, "").classify
+
+          # Handle empty or invalid constant names
+          constant_name = "AnonymousAxn" if constant_name.empty? || !constant_name.match?(/\A[A-Z]/)
+
+          # Handle collisions by incrementing the number
+          if axn_namespace.const_defined?(constant_name)
+            counter = 1
+            loop do
+              candidate_name = "#{constant_name}#{counter}"
+              break unless axn_namespace.const_defined?(candidate_name)
+
+              counter += 1
+            end
+            constant_name = "#{constant_name}#{counter}"
+          end
+
+          axn_namespace.const_set(constant_name, axn_klass)
         end
       end
     end
