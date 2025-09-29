@@ -10,7 +10,6 @@ module Axn
           attachment_type: "Axn",
           name: nil,
           axn_klass: nil,
-          superclass: nil,
           **kwargs,
           &block
         )
@@ -33,30 +32,41 @@ module Axn
             end
 
             # Set proper class name and register constant
-            _configure_axn_class_name_and_constant(axn_klass, name, superclass)
+            _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
             return axn_klass
           end
 
-          # Build the class and configure it
-          Axn::Factory.build(superclass: superclass || self, **kwargs, &block).tap do |axn_klass| # rubocop:disable Lint/ShadowingOuterLocalVariable
-            _configure_axn_class_name_and_constant(axn_klass, name, superclass)
+          # Build the class and configure it using the proxy namespace
+          Axn::Factory.build(superclass: axn_namespace, **kwargs, &block).tap do |axn_klass| # rubocop:disable Lint/ShadowingOuterLocalVariable
+            _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
           end
+        end
+
+        def axn_namespace
+          # Check if :Axn is defined directly on this class (not inherited)
+          if const_defined?(:Axn, false)
+            existing = const_get(:Axn)
+            return existing if existing.is_a?(Class)
+          end
+
+          # Create the proxy base class using the helper method
+          build_proxy_base_class(self)
         end
 
         private
 
         # Configure the Axn class name and register it as a constant
-        def _configure_axn_class_name_and_constant(axn_klass, name, superclass)
+        def _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
           # Only override the name if one is provided (otherwise keep Factory's default)
           if name.present?
             axn_klass.define_singleton_method(:name) do
               class_name = name.to_s.classify
-              if superclass&.name&.end_with?("::Axn")
+              if axn_namespace&.name&.end_with?("::Axn")
                 # We're already in a namespace, just add the method name
-                "#{superclass.name}::#{class_name}"
-              elsif superclass&.name
+                "#{axn_namespace.name}::#{class_name}"
+              elsif axn_namespace&.name
                 # Create the Axn namespace
-                "#{superclass.name}::Axn::#{class_name}"
+                "#{axn_namespace.name}::Axn::#{class_name}"
               else
                 # Fallback for anonymous classes
                 "AnonymousAction::#{class_name}"
@@ -64,11 +74,13 @@ module Axn
             end
           end
 
-          # Register as constant in the superclass if it's a namespace
-          return unless superclass&.name&.end_with?("::Axn")
+          # Register as constant in the namespace if it's a proxy class
+          return unless axn_namespace&.name&.end_with?("::Axn")
 
           constant_name = name.to_s.classify
-          superclass.const_set(constant_name, axn_klass) unless superclass.const_defined?(constant_name)
+          # Handle invalid constant names (e.g., "Step 1" -> "Step1")
+          constant_name = constant_name.gsub(/\s+/, "")
+          axn_namespace.const_set(constant_name, axn_klass) unless axn_namespace.const_defined?(constant_name)
         end
       end
     end

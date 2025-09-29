@@ -27,7 +27,7 @@ module Axn
           _axns[name] = { axn_klass:, action_kwargs:, block: } unless _internal
 
           # Use the Factory to build the Axn class with the clean superclass
-          axn_klass = attach_axn(name:, axn_klass:, superclass: axn_namespace, **action_kwargs, &block)
+          axn_klass = attach_axn(name:, axn_klass:, **action_kwargs, &block)
 
           define_singleton_method(method_name) do |**kwargs|
             axn_klass.call(**kwargs)
@@ -72,17 +72,6 @@ module Axn
 
           # Return the axn class for debugging
           axn_klass
-        end
-
-        def axn_namespace
-          # Check if :Axn is defined directly on this class (not inherited)
-          if const_defined?(:Axn, false)
-            existing = const_get(:Axn)
-            return existing if existing.is_a?(Class)
-          end
-
-          # Create the proxy base class using the helper method
-          build_proxy_base_class(self)
         end
 
         # Need to redefine the axn methods on the subclass to ensure they properly reference the subclass's

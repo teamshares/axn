@@ -23,7 +23,6 @@ module Axn
             name:,
             axn_klass:,
             attachment_type: "Step",
-            superclass: Object, # NOTE: steps skip inheriting from the wrapping class (to avoid duplicate field expectations/exposures)
             **kwargs,
             &block
           )
