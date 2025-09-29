@@ -62,7 +62,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        _build_action_class(superclass, name, args, executable, expose_return_as).tap do |axn|
+        _build_axn_class(superclass, name, args, executable, expose_return_as).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -151,7 +151,7 @@ module Axn
         end
       end
 
-      def _build_action_class(superclass, name, args, executable, expose_return_as)
+      def _build_axn_class(superclass, name, args, executable, expose_return_as)
         Class.new(superclass || Object) do
           include Axn unless self < Axn
 
