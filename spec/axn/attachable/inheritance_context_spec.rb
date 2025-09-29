@@ -1,22 +1,22 @@
 # frozen_string_literal: true
 
-# This test demonstrates the inheritance issue with axnable_method in Axn.
+# This test demonstrates the inheritance issue with axn_method in Axn.
 #
-# The problem: When a class inherits from a base class that defines `axnable_method`,
+# The problem: When a class inherits from a base class that defines `axn_method`,
 # the anonymous class created by Axn inherits from the correct subclass, but method
-# resolution doesn't work as expected. The issue is that `self` in the axnable_method
+# resolution doesn't work as expected. The issue is that `self` in the axn_method
 # block refers to an instance of the anonymous class, not the subclass, so it can't
 # access the subclass's class methods.
 #
 # This reproduces the issue described in the teamshares-rails codebase where:
-# - BaseAPI defines axnable_method :get that calls url(uuid:)
+# - BaseAPI defines axn_method :get that calls url(uuid:)
 # - CompanyAPI < BaseAPI defines owned_by :companies and url(uuid:) method
 # - When CompanyAPI.get! is called, it fails because the anonymous class can't access url()
 
 RSpec.describe Axn::Attachable::Subactions do
   describe "inheritance context issue" do
     # This test reproduces the issue described in the teamshares-rails codebase
-    # where anonymous classes created by axnable_method inherit from the wrong parent class
+    # where anonymous classes created by axn_method inherit from the wrong parent class
 
     before do
       stub_const("BaseAPI", Class.new do
@@ -36,8 +36,8 @@ RSpec.describe Axn::Attachable::Subactions do
           "https://api.example.com/#{owner}/#{uuid}"
         end
 
-        # The problematic axnable_method that creates anonymous classes
-        axnable_method :get do |uuid:|
+        # The problematic axn_method that creates anonymous classes
+        axn_method :get do |uuid:|
           # This is where the issue occurs - self.class should be the calling class,
           # but it's actually the anonymous class that inherits from BaseAPI
           url(uuid:)
@@ -53,23 +53,22 @@ RSpec.describe Axn::Attachable::Subactions do
       end)
     end
 
-    describe "the inheritance problem" do
-      it "demonstrates the method resolution issue" do
-        # The issue is that when the axnable_method block is executed, self refers to
-        # an instance of the anonymous class, not the subclass. The anonymous class
-        # inherits from the subclass, but method resolution doesn't work as expected.
+    describe "the inheritance fix" do
+      it "demonstrates that method resolution now works correctly" do
+        # With the inheritance fix, the axn_method block can now access subclass methods
+        # through the method_missing proxy in the Axn namespace class
 
-        # This fails because self.class in the axnable_method block refers to the anonymous class,
-        # and the anonymous class doesn't have access to the subclass's class methods
-        expect { CompanyAPI.get!(uuid: "123") }.to raise_error(NoMethodError, /undefined method `url'/)
+        # This should now work correctly
+        result = CompanyAPI.get!(uuid: "123")
+        expect(result).to eq("https://api.example.com/companies/123")
       end
 
-      it "shows the method resolution issue in detail" do
+      it "shows that method resolution now works correctly in detail" do
         # Let's create a test that shows exactly what's happening with method resolution
         test_class = Class.new(BaseAPI) do
           owned_by :test
 
-          axnable_method :show_context do |uuid:|
+          axn_method :show_context do |uuid:|
             {
               self_class: self.class,
               self_class_name: self.class.name,
@@ -89,27 +88,26 @@ RSpec.describe Axn::Attachable::Subactions do
 
         result = test_class.show_context!(uuid: "123")
 
-        # This shows the problem - self.class is the anonymous class, not test_class
+        # The self.class is still the Axn class (this is expected behavior)
         expect(result[:self_class]).not_to eq(test_class)
-        expect(result[:self_class_name]).to include("AnonymousAction")
+        expect(result[:self_class_name]).to include("::Axn::")
 
-        # The superclass is correct (test_class)
-        expect(result[:superclass]).to eq(test_class)
+        # The superclass is the Axn namespace class
+        expect(result[:superclass]).to eq(test_class.const_get(:Axn))
 
-        # But method resolution doesn't work - the anonymous class can't access the subclass methods
-        expect(result[:can_call_url]).to be false
-        expect(result[:can_call_owner]).to be false
-        expect(result[:url_result]).to include("NoMethodError")
+        # Method resolution now works through the method_missing proxy
+        expect(result[:can_call_url]).to be true
+        expect(result[:can_call_owner]).to be true
+        expect(result[:url_result]).to eq("https://api.example.com/test/123")
       end
 
-      it "shows that different subclasses create separate anonymous classes" do
-        # Since axn_klass is not stored in the configuration, let's test this differently
-        # by creating methods that show the class context for each subclass
+      it "shows that different subclasses create separate Axn namespaces" do
+        # Each subclass should get its own Axn namespace, allowing proper inheritance
 
         company_context = Class.new(BaseAPI) do
           owned_by :companies
 
-          axnable_method :show_context do |uuid:|
+          axn_method :show_context do |uuid:|
             {
               class_name: self.class.name,
               superclass: self.class.superclass,
@@ -122,7 +120,7 @@ RSpec.describe Axn::Attachable::Subactions do
         user_context = Class.new(BaseAPI) do
           owned_by :users
 
-          axnable_method :show_context do |uuid:|
+          axn_method :show_context do |uuid:|
             {
               class_name: self.class.name,
               superclass: self.class.superclass,
@@ -135,13 +133,13 @@ RSpec.describe Axn::Attachable::Subactions do
         company_result = company_context.show_context!(uuid: "123")
         user_result = user_context.show_context!(uuid: "123")
 
-        # Both should have their respective subclasses as superclass (which is correct)
-        expect(company_result[:superclass]).to eq(company_context)
-        expect(user_result[:superclass]).to eq(user_context)
+        # Both should have their respective Axn namespaces as superclass
+        expect(company_result[:superclass]).to eq(company_context.const_get(:Axn))
+        expect(user_result[:superclass]).to eq(user_context.const_get(:Axn))
 
-        # But method resolution doesn't work - the anonymous classes can't access the subclass methods
-        expect(company_result[:can_call_url]).to be false
-        expect(user_result[:can_call_url]).to be false
+        # Method resolution now works - the Axn classes can access the subclass methods
+        expect(company_result[:can_call_url]).to be true
+        expect(user_result[:can_call_url]).to be true
       end
     end
 
@@ -151,7 +149,7 @@ RSpec.describe Axn::Attachable::Subactions do
         working_class = Class.new(BaseAPI) do
           owned_by :working
 
-          axnable_method :get_working do |uuid:|
+          axn_method :get_working do |uuid:|
             # This works because we're calling a method that exists on the anonymous class
             "https://api.example.com/working/#{uuid}"
           end
@@ -178,39 +176,28 @@ RSpec.describe Axn::Attachable::Subactions do
             "https://api.example.com/#{self.class.owner}/#{uuid}"
           end
 
-          axnable_method :get_instance do |uuid:|
+          axn_method :get_instance do |uuid:|
             url(uuid:)
           end
         end
 
         working_class.owned_by :instance_test
         result = working_class.get_instance!(uuid: "123")
-        # This still fails because self.class in the axnable_method block refers to the anonymous class
+        # This still fails because self.class in the axn_method block refers to the anonymous class
         expect(result).to eq("https://api.example.com//123")
       end
 
-      it "shows the correct way to access subclass methods" do
-        # The correct way is to access the subclass methods through the superclass
+      it "shows that inheritance now works automatically" do
+        # With the fix, inheritance works automatically through the method_missing proxy
         working_class = Class.new(BaseAPI) do
-          def self.owned_by(owner)
-            @owner = owner
-          end
+          owned_by :correct_test
 
-          class << self
-            attr_reader :owner
-          end
-
-          def self.url(uuid:)
-            "https://api.example.com/#{owner}/#{uuid}"
-          end
-
-          axnable_method :get_correct do |uuid:|
-            # Access the method through the superclass (which is the calling class)
-            self.class.superclass.url(uuid:)
+          axn_method :get_correct do |uuid:|
+            # Can now call methods directly - no need to access through superclass
+            url(uuid:)
           end
         end
 
-        working_class.owned_by :correct_test
         result = working_class.get_correct!(uuid: "123")
         expect(result).to eq("https://api.example.com/correct_test/123")
       end

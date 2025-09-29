@@ -9,7 +9,7 @@ module Actions::Clients
       ::User.find(id || 1)
     end
 
-    axnable_method(:get_name) { |id:| self.class.user(id:).name }
+    axn_method(:get_name) { |id:| self.class.user(id:).name }
     axn(:email, expose_return_as: :value) { |id:| user(id:).email }
   end
 end

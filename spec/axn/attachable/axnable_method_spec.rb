@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn do
-  describe ".axnable_method" do
+  describe ".axn_method" do
     let(:client) do
       build_axn do
         error "bad"
 
-        axnable_method :number, error: "badbadbad" do |arg:|
+        axn_method :number, error: "badbadbad" do |arg:|
           fail! "arg was all 1s" if arg.to_s.chars.uniq == ["1"]
           raise "arg was all 2s" if arg.to_s.chars.uniq == ["2"]
 

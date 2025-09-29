@@ -156,10 +156,17 @@ module Axn
           include Axn unless self < Axn
 
           define_singleton_method(:name) do
-            [
-              superclass&.name.presence || "AnonymousAction",
-              name,
-            ].compact.join("#")
+            class_name = name.to_s.classify
+            if superclass&.name&.end_with?("::Axn")
+              # We're already in a namespace, just add the method name
+              "#{superclass.name}::#{class_name}"
+            elsif superclass&.name
+              # Create the Axn namespace
+              "#{superclass.name}::Axn::#{class_name}"
+            else
+              # Fallback for anonymous classes
+              "AnonymousAction::#{class_name}"
+            end
           end
 
           define_method(:call) do
