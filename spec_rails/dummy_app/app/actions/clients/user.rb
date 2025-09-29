@@ -10,6 +10,6 @@ module Actions::Clients
     end
 
     axnable_method(:get_name) { |id:| self.class.user(id:).name }
-    axnable_method(:get_email) { |id:| self.class.user(id:).email }
+    axn(:email, expose_return_as: :value) { |id:| user(id:).email }
   end
 end
