@@ -7,7 +7,6 @@ module Axn
       def build(
         callable = nil,
         # Builder-specific options
-        name: nil,
         superclass: nil,
         expose_return_as: nil,
 
@@ -62,7 +61,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        _build_axn_class(superclass, name, args, executable, expose_return_as).tap do |axn|
+        _build_axn_class(superclass, args, executable, expose_return_as).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -151,22 +150,13 @@ module Axn
         end
       end
 
-      def _build_axn_class(superclass, name, args, executable, expose_return_as)
+      def _build_axn_class(superclass, args, executable, expose_return_as)
         Class.new(superclass || Object) do
           include Axn unless self < Axn
 
+          # Set a default name for anonymous classes to help with debugging
           define_singleton_method(:name) do
-            class_name = name.to_s.classify
-            if superclass&.name&.end_with?("::Axn")
-              # We're already in a namespace, just add the method name
-              "#{superclass.name}::#{class_name}"
-            elsif superclass&.name
-              # Create the Axn namespace
-              "#{superclass.name}::Axn::#{class_name}"
-            else
-              # Fallback for anonymous classes
-              "AnonymousAction::#{class_name}"
-            end
+            "AnonymousAxn_#{object_id}"
           end
 
           define_method(:call) do

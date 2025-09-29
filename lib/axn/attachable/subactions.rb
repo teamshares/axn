@@ -19,30 +19,25 @@ module Axn
         end
 
         def axn(name, axn_klass = nil, _internal: false, **action_kwargs, &block) # rubocop:disable Lint/UnderscorePrefixedVariableName
-          raise ArgumentError, "Unable to attach Axn -- '#{name}' is already taken" if respond_to?(name) && !_inheritance_in_progress
+          method_name = name.to_s.underscore # handle invalid characters in names like "get name" or "SomeCapThing"
 
-          # Store the configuration (unless this is an internal call)
+          raise ArgumentError, "Unable to attach Axn -- '#{method_name}' is already taken" if respond_to?(method_name) && !_inheritance_in_progress
+
+          # Store the configuration (unless this is an internal call) - use original name for storage
           _axns[name] = { axn_klass:, action_kwargs:, block: } unless _internal
 
           # Use the Factory to build the Axn class with the clean superclass
-          axn_klass = axn_for_attachment(name:, axn_klass:, superclass: axn_namespace, **action_kwargs, &block)
+          axn_klass = attach_axn(name:, axn_klass:, superclass: axn_namespace, **action_kwargs, &block)
 
-          # Set the auto_log_level to match the client class (or use default if not set)
-          axn_klass.auto_log_level = respond_to?(:auto_log_level) ? auto_log_level : Axn.config.log_level
-
-          # Assign the class to a constant in the namespace
-          constant_name = name.to_s.classify
-          axn_namespace.const_set(constant_name, axn_klass) unless axn_namespace.const_defined?(constant_name)
-
-          define_singleton_method(name) do |**kwargs|
+          define_singleton_method(method_name) do |**kwargs|
             axn_klass.call(**kwargs)
           end
 
-          define_singleton_method("#{name}!") do |**kwargs|
+          define_singleton_method("#{method_name}!") do |**kwargs|
             axn_klass.call!(**kwargs)
           end
 
-          define_singleton_method("#{name}_async") do |**kwargs|
+          define_singleton_method("#{method_name}_async") do |**kwargs|
             axn_klass.call_async(**kwargs)
           end
 

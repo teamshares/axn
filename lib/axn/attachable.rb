@@ -22,7 +22,7 @@ module Axn
         attached_class = client_class
 
         axn_class = Class.new(client_class) do
-          include Axn
+          include ::Axn
 
           # Store reference to the axn_attached_to class
           define_singleton_method(:axn_attached_to) { attached_class }
@@ -70,7 +70,26 @@ module Axn
         # Make sure it's registered as a class, not a module
         client_class.const_set(:Axn, axn_class)
 
+        # Configure the Axn namespace class with client class settings
+        _configure_axn_namespace_class(axn_class, client_class)
+
         axn_class
+      end
+
+      private
+
+      # Configure the Axn namespace class with settings from the client class
+      def _configure_axn_namespace_class(axn_namespace_class, client_class)
+        # Set auto_log_level to match the client class (or use default if not set)
+        axn_namespace_class.auto_log_level = client_class.respond_to?(:auto_log_level) ? client_class.auto_log_level : Axn.config.log_level
+
+        # Inherit async configuration from the client class using the public API
+        return unless client_class.respond_to?(:_async_adapter) && client_class._async_adapter
+
+        axn_namespace_class.async(client_class._async_adapter, **client_class._async_config || {}, &client_class._async_config_block)
+
+        # Add any other configurations here as they're discovered
+        # This centralizes all Axn class configuration in one place
       end
     end
   end

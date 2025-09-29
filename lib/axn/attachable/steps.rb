@@ -19,7 +19,7 @@ module Axn
         end
 
         def step(name, axn_klass = nil, error_prefix: nil, **kwargs, &block)
-          axn_klass = axn_for_attachment(
+          axn_klass = attach_axn(
             name:,
             axn_klass:,
             attachment_type: "Step",
