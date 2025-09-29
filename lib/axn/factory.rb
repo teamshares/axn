@@ -9,7 +9,7 @@ module Axn
         # Builder-specific options
         name: nil,
         superclass: nil,
-        expose_return_as: :nil,
+        expose_return_as: nil,
 
         # Expose standard class-level options
         exposes: [],

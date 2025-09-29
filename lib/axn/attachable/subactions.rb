@@ -43,7 +43,23 @@ module Axn
           # Store the configuration
           _axns[name] = { axn_klass:, action_kwargs:, block: }
 
-          axn_klass = axn_for_attachment(name:, axn_klass:, **action_kwargs, &block)
+          # Create a clean base class that inherits from self but has no field expectations
+          # This gives us all the parent's capabilities (hooks, error handling, etc.) but clean field configs
+          clean_base_class = Class.new(self) do
+            # Clear field expectations since this is a sub-action that shouldn't inherit parent's field requirements
+            # but should inherit all other capabilities (hooks, error handling, etc.)
+            self.internal_field_configs = []
+            self.external_field_configs = []
+          end
+
+          axn_klass = axn_for_attachment(name:, axn_klass:, superclass: clean_base_class, **action_kwargs, &block)
+
+          # If axn_klass is an anonymous class (created from a block), assign it to a constant
+          # Check if the class name contains '#' which indicates it's not a proper constant
+          if axn_klass.name.nil? || axn_klass.name.start_with?("#<Class:") || axn_klass.name.include?("#")
+            constant_name = "#{name.to_s.camelize}Axn"
+            const_set(constant_name, axn_klass)
+          end
 
           define_singleton_method(name) do |**kwargs|
             axn_klass.call(**kwargs)
