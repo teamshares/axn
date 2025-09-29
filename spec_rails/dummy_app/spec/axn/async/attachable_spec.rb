@@ -12,9 +12,15 @@ RSpec.describe "Axn::Async with attachable" do
       action.enqueue_all_async(max: 3)
     end
 
-    expect(Axn.config.logger).to have_received(:info).with("[Actions::EnqueueAll::Tester] Action executed: I was called with number: 1 | instance_helper | class_helper")
-    expect(Axn.config.logger).to have_received(:info).with("[Actions::EnqueueAll::Tester] Action executed: I was called with number: 2 | instance_helper | class_helper")
-    expect(Axn.config.logger).to have_received(:info).with("[Actions::EnqueueAll::Tester] Action executed: I was called with number: 3 | instance_helper | class_helper")
+    expect(Axn.config.logger).to have_received(:info).with(
+      "[Actions::EnqueueAll::Tester] Action executed: I was called with number: 1 | instance_helper | class_helper",
+    )
+    expect(Axn.config.logger).to have_received(:info).with(
+      "[Actions::EnqueueAll::Tester] Action executed: I was called with number: 2 | instance_helper | class_helper",
+    )
+    expect(Axn.config.logger).to have_received(:info).with(
+      "[Actions::EnqueueAll::Tester] Action executed: I was called with number: 3 | instance_helper | class_helper",
+    )
   end
 
   it "can execute axn blocks that call async methods" do
@@ -32,6 +38,8 @@ RSpec.describe "Axn::Async with attachable" do
     # This tests that the clean base class inherits from self but clears field expectations
     action.enqueue_all(max: 1)
 
-    expect(Axn.config.logger).to have_received(:info).with("[AnonymousAction#enqueue_all] EnqueueAll block: instance_helper=instance_helper, class_helper=class_helper")
+    expect(Axn.config.logger).to have_received(:info).with(
+      "[Actions::EnqueueAll::Tester::AttachedAxns::EnqueueAll] EnqueueAll block: instance_helper=instance_helper, class_helper=class_helper",
+    )
   end
 end

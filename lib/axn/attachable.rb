@@ -60,15 +60,19 @@ module Axn
         axn_class.define_singleton_method(:name) do
           client_name = attached_class.name
           if client_name
-            "#{client_name}::Axn"
+            "#{client_name}::AttachedAxns"
           else
             # Use object_id to make anonymous classes unique
-            "AnonymousClient_#{attached_class.object_id}::Axn"
+            "AnonymousClient_#{attached_class.object_id}::AttachedAxns"
           end
         end
 
-        # Make sure it's registered as a class, not a module
-        client_class.const_set(:Axn, axn_class)
+        # Create the AttachedAxns namespace structure
+        if client_class.const_defined?(:AttachedAxns, false)
+          client_class.const_get(:AttachedAxns)
+        else
+          client_class.const_set(:AttachedAxns, axn_class)
+        end
 
         # Configure the Axn namespace class with client class settings
         _configure_axn_namespace_class(axn_class, client_class)

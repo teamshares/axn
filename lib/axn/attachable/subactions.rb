@@ -47,7 +47,7 @@ module Axn
 
         def axn_method(name, axn_klass = nil, **action_kwargs, &block)
           # Force expose_return_as to :value for direct value returns
-          action_kwargs[:expose_return_as] = :value
+          action_kwargs[:expose_return_as] = action_kwargs[:expose_return_as].presence || :value
 
           # Store the configuration for inheritance
           _axn_methods[name] = { axn_klass:, action_kwargs:, block: }
@@ -63,7 +63,7 @@ module Axn
           # Define only the ! and _axn methods, not the base method
           define_singleton_method("#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)
-            result.value # Return direct value, raises on error
+            result.public_send(action_kwargs[:expose_return_as]) # Return direct value, raises on error
           end
 
           define_singleton_method("#{name}_axn") do |**kwargs|

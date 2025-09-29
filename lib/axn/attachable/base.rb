@@ -43,10 +43,10 @@ module Axn
         end
 
         def axn_namespace
-          # Check if :Axn is defined directly on this class (not inherited)
-          if const_defined?(:Axn, false)
-            existing = const_get(:Axn)
-            return existing if existing.is_a?(Class)
+          # Check if :AttachedAxns is defined directly on this class (not inherited)
+          if const_defined?(:AttachedAxns, false)
+            axn_class = const_get(:AttachedAxns)
+            return axn_class if axn_class.is_a?(Class)
           end
 
           # Create the proxy base class using the helper method
@@ -61,21 +61,21 @@ module Axn
           if name.present?
             axn_klass.define_singleton_method(:name) do
               class_name = name.to_s.classify
-              if axn_namespace&.name&.end_with?("::Axn")
+              if axn_namespace&.name&.end_with?("::AttachedAxns")
                 # We're already in a namespace, just add the method name
                 "#{axn_namespace.name}::#{class_name}"
               elsif axn_namespace&.name
-                # Create the Axn namespace
-                "#{axn_namespace.name}::Axn::#{class_name}"
+                # Create the AttachedAxns namespace
+                "#{axn_namespace.name}::AttachedAxns::#{class_name}"
               else
                 # Fallback for anonymous classes
-                "AnonymousAction::#{class_name}"
+                "AnonymousAxn::#{class_name}"
               end
             end
           end
 
           # Register as constant in the namespace if it's a proxy class
-          return unless axn_namespace&.name&.end_with?("::Axn")
+          return unless axn_namespace&.name&.end_with?("::AttachedAxns")
 
           constant_name = name.to_s.classify
           # Handle invalid constant names (e.g., "Step 1" -> "Step1")
