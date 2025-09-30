@@ -7,7 +7,7 @@ module Axn
     class AttachmentTypeNotFound < Axn::Internal::Registry::NotFound; end
     class DuplicateAttachmentTypeError < Axn::Internal::Registry::DuplicateError; end
 
-    class AttachmentTypes < Axn::Internal::Registry
+    class AttachmentStrategies < Axn::Internal::Registry
       class << self
         def registry_directory = __dir__
 
@@ -28,7 +28,7 @@ module Axn
       end
     end
 
-    # Trigger registry loading to ensure attachment types are available
-    AttachmentTypes.all
+    # Trigger registry loading to ensure attachment strategies are available
+    AttachmentStrategies.all
   end
 end

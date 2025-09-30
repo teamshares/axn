@@ -2,7 +2,7 @@
 
 module Axn
   module Attachable
-    class AttachmentTypes
+    class AttachmentStrategies
       class Axn < Base
         module DSL
           def axn(name, axn_klass = nil, **, &)

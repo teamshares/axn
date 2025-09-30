@@ -2,8 +2,8 @@
 
 module Axn
   module Attachable
-    class AttachmentTypes
-      # Base class for all attachment types
+    class AttachmentStrategies
+      # Base class for all attachment strategies
       class Base
         # Common functionality can be added here in the future
         # This class serves as a marker for the registry system

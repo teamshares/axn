@@ -2,7 +2,7 @@
 
 module Axn
   module Attachable
-    class AttachmentTypes
+    class AttachmentStrategies
       class Step < Base
         module DSL
           def steps(*steps)

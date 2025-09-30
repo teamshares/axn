@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/attachable/attachment_types"
+require "axn/attachable/attachment_strategies"
 require "axn/attachable/validator"
 require "axn/attachable/constant_manager"
 require "axn/attachable/descriptor"
@@ -22,11 +22,11 @@ module Axn
         **kwargs,
         &block
       )
-        # Get attachment type from registry
-        attachment_type = AttachmentTypes.find(as)
+        # Get attachment strategy from registry
+        attachment_strategy = AttachmentStrategies.find(as)
 
-        # Preprocessing hook: all attachment types have this method
-        kwargs = attachment_type.preprocess_kwargs(**kwargs)
+        # Preprocessing hook: all attachment strategies have this method
+        kwargs = attachment_strategy.preprocess_kwargs(**kwargs)
 
         # Create descriptor for validation (axn_klass might be nil at this point)
         descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
@@ -48,7 +48,7 @@ module Axn
         end
 
         # Mount hook: allow attachment type to define methods and configure behavior
-        attachment_type.mount(name, axn_klass, on: self, **kwargs)
+        attachment_strategy.mount(name, axn_klass, on: self, **kwargs)
 
         # Create final descriptor with the actual axn_klass
         final_descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
@@ -84,8 +84,8 @@ module Axn
         _attached_axns.each do |name, descriptor|
           next if descriptor.as == :step
 
-          attachment_type = AttachmentTypes.find(descriptor.as)
-          attachment_type.mount(name, descriptor.axn_klass, on: subclass, **descriptor.kwargs)
+          attachment_strategy = AttachmentStrategies.find(descriptor.as)
+          attachment_strategy.mount(name, descriptor.axn_klass, on: subclass, **descriptor.kwargs)
         end
       end
     end
@@ -93,7 +93,7 @@ module Axn
     # Extend DSL methods from attachment types when module is included
     def self.included(base)
       super
-      AttachmentTypes.all.each do |(_name, klass)|
+      AttachmentStrategies.all.each do |(_name, klass)|
         base.extend klass::DSL if klass.const_defined?(:DSL)
       end
     end
