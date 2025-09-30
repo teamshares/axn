@@ -2,7 +2,7 @@
 
 module Axn
   module Attachable
-    class AttachmentValidator
+    class Validator
       def self.validate!(descriptor)
         attachment_type_name = descriptor.as.to_s.humanize
         block_given = descriptor.block.present?

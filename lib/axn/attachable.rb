@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "axn/attachable/base"
-require "axn/attachable/steps"
 require "axn/attachable/proxy_builder"
 
 module Axn
@@ -10,7 +9,6 @@ module Axn
 
     included do
       include Base
-      include Steps
     end
 
     # Extend DSL methods from attachment types when module is included

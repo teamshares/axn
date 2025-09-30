@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable::Steps do
+RSpec.describe "Step data passing" do
   subject(:result) { composed.call(num: 10, extra: 11) }
 
   let(:composed) do

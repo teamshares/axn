@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable::Steps do
+RSpec.describe "Step functionality" do
   subject(:result) { composed.call!(name: "bar") }
 
   shared_examples "a composed Axn" do

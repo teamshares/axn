@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/attachable/attachment_types"
-require "axn/attachable/attachment_validator"
+require "axn/attachable/validator"
 require "axn/attachable/constant_manager"
 require "axn/attachable/descriptor"
 
@@ -32,7 +32,7 @@ module Axn
           descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
 
           # Validation logic (centralized)
-          AttachmentValidator.validate!(descriptor)
+          descriptor.validate!
 
           if axn_klass
             # Set proper class name and register constant

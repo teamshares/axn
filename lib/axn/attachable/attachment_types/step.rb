@@ -10,20 +10,13 @@ module Axn
               next unless step_class.is_a?(Class)
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
-              step("Step #{_axn_steps.length + 1}", step_class)
+              axn_steps = _attached_axns.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass)
+              step("Step #{axn_steps.length + 1}", step_class)
             end
           end
 
           def step(name, axn_klass = nil, error_prefix: nil, **, &)
-            # Use the registry system
-            attach_axn(
-              as: :step,
-              name:,
-              axn_klass:,
-              error_prefix:,
-              **,
-              &
-            )
+            attach_axn(as: :step, name:, axn_klass:, error_prefix:, **, &)
           end
         end
 
@@ -32,6 +25,16 @@ module Axn
           error_prefix = options[:error_prefix] || "#{attachment_name}: "
           on.error from: axn_klass do |e|
             "#{error_prefix}#{e.message}"
+          end
+
+          # Define #call method dynamically to execute steps
+          on.define_method(:call) do
+            self.class._attached_axns.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass).each do |axn|
+              step_result = axn.call!(**@__context.__combined_data)
+              step_result.declared_fields.each do |field|
+                @__context.exposed_data[field] = step_result.public_send(field)
+              end
+            end
           end
         end
       end
