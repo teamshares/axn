@@ -84,8 +84,8 @@ module Axn
             return axn_class if axn_class.is_a?(Class)
           end
 
-          # Create the proxy base class using the helper method
-          build_proxy_base_class(self)
+          # Create the proxy base class using the ProxyBuilder
+          ProxyBuilder.build(self)
         end
 
         private
