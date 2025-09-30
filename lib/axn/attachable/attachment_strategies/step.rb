@@ -20,9 +20,12 @@ module Axn
           end
         end
 
-        def mount(attachment_name, axn_klass, on:, **options)
+        def mount(on:)
           # Set up error handling
-          error_prefix = options[:error_prefix] || "#{attachment_name}: "
+          axn_klass = @axn_klass
+          name = @name
+          error_prefix = @kwargs[:error_prefix] || "#{name}: "
+
           on.error from: axn_klass do |e|
             "#{error_prefix}#{e.message}"
           end
@@ -37,6 +40,10 @@ module Axn
             end
           end
         end
+
+        protected
+
+        def strategy_specific_kwargs = [:error_prefix]
       end
     end
   end

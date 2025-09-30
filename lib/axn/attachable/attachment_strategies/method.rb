@@ -26,14 +26,18 @@ module Axn
           kwargs
         end
 
-        def mount(attachment_name, axn_klass, on:, **options)
+        def mount(on:)
           # Define custom methods for axn_method behavior
-          on.define_singleton_method("#{attachment_name}!") do |**kwargs|
+          axn_klass = @axn_klass
+          name = @name
+          expose_return_as = @kwargs[:expose_return_as]
+
+          on.define_singleton_method("#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)
-            result.public_send(options[:expose_return_as]) # Return direct value, raises on error
+            result.public_send(expose_return_as) # Return direct value, raises on error
           end
 
-          on.define_singleton_method("#{attachment_name}_axn") do |**kwargs|
+          on.define_singleton_method("#{name}_axn") do |**kwargs|
             axn_klass.call(**kwargs)
           end
         end

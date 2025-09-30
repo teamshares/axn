@@ -10,16 +10,19 @@ module Axn
           end
         end
 
-        def mount(attachment_name, axn_klass, on:, **)
-          on.define_singleton_method(attachment_name) do |**kwargs|
+        def mount(on:)
+          axn_klass = @axn_klass
+          name = @name
+
+          on.define_singleton_method(name) do |**kwargs|
             axn_klass.call(**kwargs)
           end
 
-          on.define_singleton_method("#{attachment_name}!") do |**kwargs|
+          on.define_singleton_method("#{name}!") do |**kwargs|
             axn_klass.call!(**kwargs)
           end
 
-          on.define_singleton_method("#{attachment_name}_async") do |**kwargs|
+          on.define_singleton_method("#{name}_async") do |**kwargs|
             axn_klass.call_async(**kwargs)
           end
         end

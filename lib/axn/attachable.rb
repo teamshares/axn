@@ -2,6 +2,7 @@
 
 require "axn/attachable/attachment_strategies"
 require "axn/attachable/constant_manager"
+require "axn/attachable/descriptor"
 require "axn/attachable/proxy_builder"
 
 module Axn
@@ -20,14 +21,18 @@ module Axn
         **kwargs,
         &block
       )
-        AttachmentStrategies.find(as).attach_axn(
-          name:,
-          axn_klass:,
-          attachable_instance: self,
-          axn_namespace:,
-          **kwargs,
-          &block
-        )
+        strategy = AttachmentStrategies.find(as).new(name:, axn_klass:, **kwargs, &block)
+        strategy.validate!
+
+        # Create strategy instance and get descriptor
+        descriptor = strategy.attach_axn!(target: self)
+
+        # Mount the attachment
+        strategy.validate_before_mount!(on: self)
+        strategy.mount(on: self)
+
+        # Store for inheritance (steps are stored but not inherited)
+        _attached_axns[descriptor.name] = descriptor
       end
 
       def axn_namespace
