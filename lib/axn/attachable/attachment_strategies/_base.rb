@@ -7,11 +7,13 @@ module Axn
     class AttachmentStrategies
       # Base class for all attachment strategies
       class Base
-        def initialize(name:, axn_klass: nil, **, &block)
+        def initialize(name:, axn_klass: nil, **kwargs, &block)
           @name = name
           @axn_klass = axn_klass
-          @kwargs = preprocess_kwargs(**)
           @block = block
+
+          @options = kwargs.slice(*strategy_specific_kwargs)
+          @kwargs = preprocess_kwargs(**kwargs.except(*strategy_specific_kwargs))
         end
 
         # Default preprocessing - subclasses can override and call super
@@ -19,14 +21,13 @@ module Axn
         def mount(on:) = raise NotImplementedError, "Subclasses must implement mount"
 
         def attach_axn!(target:)
-          # Filter out strategy-specific kwargs before passing to Factory
-          factory_kwargs = @kwargs.except(*strategy_specific_kwargs)
+          superclass = target.axn_namespace # TODO: make this configurable -- full hydration or standalone proxy class?
 
           # Use existing class or build new one
           @axn_klass = ::Axn::Factory.wrap(
             @axn_klass,
-            superclass: target.axn_namespace,
-            **factory_kwargs,
+            superclass:,
+            **@kwargs,
             &@block
           )
 

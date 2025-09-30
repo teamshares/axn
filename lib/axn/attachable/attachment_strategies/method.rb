@@ -30,7 +30,7 @@ module Axn
           # Define custom methods for axn_method behavior
           axn_klass = @axn_klass
           name = @name
-          expose_return_as = @kwargs[:expose_return_as]
+          expose_return_as = @kwargs[:expose_return_as] || :value
 
           on.define_singleton_method("#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)

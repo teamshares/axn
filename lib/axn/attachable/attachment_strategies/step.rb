@@ -24,7 +24,7 @@ module Axn
           # Set up error handling
           axn_klass = @axn_klass
           name = @name
-          error_prefix = @kwargs[:error_prefix] || "#{name}: "
+          error_prefix = @options[:error_prefix] || "#{name}: "
 
           on.error from: axn_klass do |e|
             "#{error_prefix}#{e.message}"
