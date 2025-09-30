@@ -25,8 +25,8 @@ module Axn
         # Get attachment type from registry
         attachment_type = AttachmentTypes.find(as)
 
-        # Preprocessing hook: only call if defined
-        kwargs = attachment_type.preprocess_kwargs(**kwargs) if attachment_type.respond_to?(:preprocess_kwargs)
+        # Preprocessing hook: all attachment types have this method
+        kwargs = attachment_type.preprocess_kwargs(**kwargs)
 
         # Create descriptor for validation (axn_klass might be nil at this point)
         descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)

@@ -18,8 +18,12 @@ module Axn
         def duplicate_error_class = DuplicateAttachmentTypeError
 
         def select_constants_to_load(constants)
-          # Select classes instead of modules for attachment types
-          constants.select { |const| const.is_a?(Class) }
+          # Select classes that inherit from Base, excluding the base class itself
+          constants.select do |const|
+            const.is_a?(Class) &&
+              const != Base &&
+              const < Base
+          end
         end
       end
     end
