@@ -3,7 +3,7 @@
 module Axn
   module Attachable
     class AttachmentTypes
-      module Step
+      class Step
         module DSL
           def steps(*steps)
             Array(steps).compact.each do |step_class|

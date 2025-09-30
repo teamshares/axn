@@ -3,7 +3,7 @@
 module Axn
   module Attachable
     class AttachmentTypes
-      module Method
+      class Method
         module DSL
           def axn_method(name, axn_klass = nil, **, &)
             attach_axn(as: :method, name:, axn_klass:, **, &)

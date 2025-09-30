@@ -16,6 +16,11 @@ module Axn
         def item_type = "Attachment Type"
         def not_found_error_class = AttachmentTypeNotFound
         def duplicate_error_class = DuplicateAttachmentTypeError
+
+        def select_constants_to_load(constants)
+          # Select classes instead of modules for attachment types
+          constants.select { |const| const.is_a?(Class) }
+        end
       end
     end
 
