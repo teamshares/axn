@@ -21,7 +21,7 @@ module Axn
         def axn(name, axn_klass = nil, _internal: false, **action_kwargs, &block) # rubocop:disable Lint/UnderscorePrefixedVariableName
           method_name = name.to_s.underscore # handle invalid characters in names like "get name" or "SomeCapThing"
 
-          raise ArgumentError, "Unable to attach Axn -- '#{method_name}' is already taken" if respond_to?(method_name) && !_inheritance_in_progress
+          raise AttachmentError, "Unable to attach Axn -- '#{method_name}' is already taken" if respond_to?(method_name) && !_inheritance_in_progress
 
           # Store the configuration (unless this is an internal call) - use original name for storage
           _axns[name] = { axn_klass:, action_kwargs:, block: } unless _internal

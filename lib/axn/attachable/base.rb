@@ -7,27 +7,28 @@ module Axn
 
       class_methods do
         def attach_axn(
-          attachment_type: "Axn",
+          as: :axn,
           name: nil,
           axn_klass: nil,
           **kwargs,
           &block
         )
-          raise ArgumentError, "#{attachment_type} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
-          raise ArgumentError, "#{attachment_type} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
+          attachment_type = as.to_s.humanize
+          raise AttachmentError, "#{attachment_type} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
+          raise AttachmentError, "#{attachment_type} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
 
           if axn_klass
             if block_given?
-              raise ArgumentError,
+              raise AttachmentError,
                     "#{attachment_type} '#{name}' was given both an existing action class and a block - only one is allowed"
             end
 
             if kwargs.present?
-              raise ArgumentError, "#{attachment_type} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
+              raise AttachmentError, "#{attachment_type} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
             end
 
             unless axn_klass.respond_to?(:<) && axn_klass < Axn
-              raise ArgumentError,
+              raise AttachmentError,
                     "#{attachment_type} '#{name}' was given an already-existing class #{axn_klass.name} that does NOT inherit from Axn as expected"
             end
 

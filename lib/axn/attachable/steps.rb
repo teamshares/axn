@@ -22,7 +22,7 @@ module Axn
           axn_klass = attach_axn(
             name:,
             axn_klass:,
-            attachment_type: "Step",
+            as: :step,
             **kwargs,
             &block
           )

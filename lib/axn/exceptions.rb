@@ -27,6 +27,10 @@ module Axn
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
 
+  module Attachable
+    class AttachmentError < ArgumentError; end
+  end
+
   class ContractViolation < StandardError
     class ReservedAttributeError < ContractViolation
       def initialize(name)
