@@ -19,19 +19,19 @@ module Axn
         def mount(on:) = raise NotImplementedError, "Subclasses must implement mount"
 
         def attach_axn!(target:)
-          @axn_klass = if @axn_klass
-                         # Set proper class name and register constant
-                         ConstantManager.configure_class_name_and_constant(@axn_klass, @name.to_s, target.axn_namespace)
-                         @axn_klass
-                       else
-                         # Filter out strategy-specific kwargs before passing to Factory
-                         factory_kwargs = @kwargs.except(*strategy_specific_kwargs)
+          # Filter out strategy-specific kwargs before passing to Factory
+          factory_kwargs = @kwargs.except(*strategy_specific_kwargs)
 
-                         # Build the class and configure it using the proxy namespace
-                         ::Axn::Factory.build(superclass: target.axn_namespace, **factory_kwargs, &@block).tap do |built_axn_klass|
-                           ConstantManager.configure_class_name_and_constant(built_axn_klass, @name.to_s, target.axn_namespace)
-                         end
-                       end
+          # Use existing class or build new one
+          @axn_klass = ::Axn::Factory.wrap(
+            @axn_klass,
+            superclass: target.axn_namespace,
+            **factory_kwargs,
+            &@block
+          )
+
+          # Configure class name and register constant
+          ConstantManager.configure_class_name_and_constant(@axn_klass, @name.to_s, target.axn_namespace)
 
           # Return descriptor for later processing
           Descriptor.new(
