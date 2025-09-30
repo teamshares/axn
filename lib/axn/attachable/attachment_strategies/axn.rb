@@ -10,7 +10,7 @@ module Axn
           end
         end
 
-        def self.mount(attachment_name, axn_klass, on:, **)
+        def mount(attachment_name, axn_klass, on:, **)
           on.define_singleton_method(attachment_name) do |**kwargs|
             axn_klass.call(**kwargs)
           end

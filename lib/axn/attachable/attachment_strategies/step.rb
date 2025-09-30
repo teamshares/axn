@@ -20,7 +20,7 @@ module Axn
           end
         end
 
-        def self.mount(attachment_name, axn_klass, on:, **options)
+        def mount(attachment_name, axn_klass, on:, **options)
           # Set up error handling
           error_prefix = options[:error_prefix] || "#{attachment_name}: "
           on.error from: axn_klass do |e|

@@ -10,7 +10,7 @@ module Axn
           end
         end
 
-        def self.preprocess_kwargs(**kwargs)
+        def preprocess_kwargs(**kwargs)
           # Call parent preprocessing first
           kwargs = super
 
@@ -26,7 +26,7 @@ module Axn
           kwargs
         end
 
-        def self.mount(attachment_name, axn_klass, on:, **options)
+        def mount(attachment_name, axn_klass, on:, **options)
           # Define custom methods for axn_method behavior
           on.define_singleton_method("#{attachment_name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)

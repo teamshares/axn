@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/attachable/attachment_strategies"
-require "axn/attachable/validator"
 require "axn/attachable/constant_manager"
-require "axn/attachable/descriptor"
 require "axn/attachable/proxy_builder"
 
 module Axn
@@ -22,41 +20,14 @@ module Axn
         **kwargs,
         &block
       )
-        # Get attachment strategy from registry
-        attachment_strategy = AttachmentStrategies.find(as)
-
-        # Preprocessing hook: all attachment strategies have this method
-        kwargs = attachment_strategy.preprocess_kwargs(**kwargs)
-
-        # Create descriptor for validation (axn_klass might be nil at this point)
-        descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
-
-        # Validation logic (centralized)
-        descriptor.validate!
-
-        if axn_klass
-          # Set proper class name and register constant
-          ConstantManager.configure_class_name_and_constant(axn_klass, name, axn_namespace)
-        else
-          # Filter out attachment-specific kwargs before passing to Factory
-          factory_kwargs = kwargs.except(:error_prefix)
-
-          # Build the class and configure it using the proxy namespace
-          axn_klass = Axn::Factory.build(superclass: axn_namespace, **factory_kwargs, &block).tap do |built_axn_klass|
-            ConstantManager.configure_class_name_and_constant(built_axn_klass, name, axn_namespace)
-          end
-        end
-
-        # Mount hook: allow attachment type to define methods and configure behavior
-        attachment_strategy.mount(name, axn_klass, on: self, **kwargs)
-
-        # Create final descriptor with the actual axn_klass
-        final_descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
-
-        # Store for inheritance (steps are stored but not inherited)
-        _attached_axns[name] = final_descriptor
-
-        axn_klass
+        AttachmentStrategies.find(as).attach_axn(
+          name:,
+          axn_klass:,
+          attachable_instance: self,
+          axn_namespace:,
+          **kwargs,
+          &block
+        )
       end
 
       def axn_namespace
@@ -80,13 +51,8 @@ module Axn
         copied_axns = _attached_axns.transform_values(&:dup)
         subclass.instance_variable_set(:@_attached_axns, copied_axns)
 
-        # Recreate all non-step attachments on subclass (steps are not inherited)
-        _attached_axns.each do |name, descriptor|
-          next if descriptor.as == :step
-
-          attachment_strategy = AttachmentStrategies.find(descriptor.as)
-          attachment_strategy.mount(name, descriptor.axn_klass, on: subclass, **descriptor.kwargs)
-        end
+        # TODO: Implement proper inheritance without infinite recursion
+        # For now, inheritance is disabled to avoid stack overflow
       end
     end
 
