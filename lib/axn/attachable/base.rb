@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 require "axn/attachable/attachment_types"
+require "axn/attachable/attachment_validator"
+require "axn/attachable/constant_manager"
+require "axn/attachable/descriptor"
 
 module Axn
   module Attachable
-    Descriptor = Data.define(:as, :axn_klass, :kwargs, :block)
-
     module Base
       extend ActiveSupport::Concern
 
@@ -27,52 +28,33 @@ module Axn
           # Preprocessing hook: only call if defined
           kwargs = attachment_type.preprocess_kwargs(**kwargs) if attachment_type.respond_to?(:preprocess_kwargs)
 
-          # Validation logic (centralized)
-          attachment_type_name = as.to_s.humanize
-          raise AttachmentError, "#{attachment_type_name} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
+          # Create descriptor for validation (axn_klass might be nil at this point)
+          descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
 
-          method_name = name.to_s.underscore # handle invalid characters in names like "get name" or "SomeCapThing"
-          raise AttachmentError, "Unable to attach #{attachment_type_name} -- '#{method_name}' is already taken" if respond_to?(method_name)
-          raise AttachmentError, "#{attachment_type_name} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
+          # Validation logic (centralized)
+          AttachmentValidator.validate!(descriptor)
 
           if axn_klass
-            if block_given?
-              raise AttachmentError,
-                    "#{attachment_type_name} '#{name}' was given both an existing action class and a block - only one is allowed"
-            end
-
-            # For steps, allow additional kwargs like error_prefix
-            if kwargs.present? && as != :step
-              raise AttachmentError, "#{attachment_type_name} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
-            end
-
-            unless axn_klass.respond_to?(:<) && axn_klass < Axn
-              raise AttachmentError,
-                    "#{attachment_type_name} '#{name}' was given an already-existing class #{axn_klass.name} that does NOT inherit from Axn as expected"
-            end
-
             # Set proper class name and register constant
-            _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
+            ConstantManager.configure_class_name_and_constant(axn_klass, name, axn_namespace)
           else
             # Filter out attachment-specific kwargs before passing to Factory
             factory_kwargs = kwargs.except(:error_prefix)
 
             # Build the class and configure it using the proxy namespace
             axn_klass = Axn::Factory.build(superclass: axn_namespace, **factory_kwargs, &block).tap do |built_axn_klass|
-              _configure_axn_class_name_and_constant(built_axn_klass, name, axn_namespace)
+              ConstantManager.configure_class_name_and_constant(built_axn_klass, name, axn_namespace)
             end
           end
 
           # Mount hook: allow attachment type to define methods and configure behavior
           attachment_type.mount(name, axn_klass, on: self, **kwargs)
 
+          # Create final descriptor with the actual axn_klass
+          final_descriptor = Descriptor.new(as:, name:, axn_klass:, kwargs:, block:)
+
           # Store for inheritance (steps are stored but not inherited)
-          _attached_axns[name] = Descriptor.new(
-            as:,
-            axn_klass:,
-            kwargs:,
-            block:,
-          )
+          _attached_axns[name] = final_descriptor
 
           axn_klass
         end
@@ -89,48 +71,6 @@ module Axn
         end
 
         private
-
-        # Configure the Axn class name and register it as a constant
-        def _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
-          # Only override the name if one is provided (otherwise keep Factory's default)
-          if name.present?
-            axn_klass.define_singleton_method(:name) do
-              class_name = name.to_s.classify
-              if axn_namespace&.name&.end_with?("::AttachedAxns")
-                # We're already in a namespace, just add the method name
-                "#{axn_namespace.name}::#{class_name}"
-              elsif axn_namespace&.name
-                # Create the AttachedAxns namespace
-                "#{axn_namespace.name}::AttachedAxns::#{class_name}"
-              else
-                # Fallback for anonymous classes
-                "AnonymousAxn::#{class_name}"
-              end
-            end
-          end
-
-          # Register as constant in the namespace if it's a proxy class
-          return unless axn_namespace&.name&.end_with?("::AttachedAxns")
-
-          constant_name = name.to_s.gsub(/\s+/, "").classify
-
-          # Handle empty or invalid constant names
-          constant_name = "AnonymousAxn" if constant_name.empty? || !constant_name.match?(/\A[A-Z]/)
-
-          # Handle collisions by incrementing the number
-          if axn_namespace.const_defined?(constant_name)
-            counter = 1
-            loop do
-              candidate_name = "#{constant_name}#{counter}"
-              break unless axn_namespace.const_defined?(candidate_name)
-
-              counter += 1
-            end
-            constant_name = "#{constant_name}#{counter}"
-          end
-
-          axn_namespace.const_set(constant_name, axn_klass)
-        end
 
         # Handle inheritance of attached axns
         def inherited(subclass)

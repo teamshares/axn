@@ -26,39 +26,32 @@ module Axn
       def create_proxy_class
         attached_class = client_class
 
+        # Common proxy logic
+        method_missing_proc = proc do |method_name, *args, **kwargs, &block|
+          if attached_class.respond_to?(method_name)
+            attached_class.public_send(method_name, *args, **kwargs, &block)
+          else
+            super(method_name, *args, **kwargs, &block)
+          end
+        end
+
+        respond_to_missing_proc = proc do |method_name, include_private|
+          attached_class.respond_to?(method_name, include_private) || super(method_name, include_private)
+        end
+
         Class.new(client_class) do
           include ::Axn
 
           # Store reference to the axn_attached_to class
           define_singleton_method(:axn_attached_to) { attached_class }
 
-          # Proxy class-level methods to the axn_attached_to class
-          define_singleton_method(:method_missing) do |method_name, *args, **kwargs, &block|
-            if axn_attached_to.respond_to?(method_name)
-              axn_attached_to.public_send(method_name, *args, **kwargs, &block)
-            else
-              super(method_name, *args, **kwargs, &block)
-            end
-          end
+          # Define class-level proxy methods
+          define_singleton_method(:method_missing, &method_missing_proc)
+          define_singleton_method(:respond_to_missing?, &respond_to_missing_proc)
 
-          # Proxy respond_to_missing? for proper method detection
-          define_singleton_method(:respond_to_missing?) do |method_name, include_private|
-            axn_attached_to.respond_to?(method_name, include_private) || super(method_name, include_private)
-          end
-
-          # Proxy instance-level methods to the axn_attached_to class
-          define_method(:method_missing) do |method_name, *args, **kwargs, &block|
-            if self.class.axn_attached_to.respond_to?(method_name)
-              self.class.axn_attached_to.public_send(method_name, *args, **kwargs, &block)
-            else
-              super(method_name, *args, **kwargs, &block)
-            end
-          end
-
-          # Proxy respond_to_missing? for proper method detection at instance level
-          define_method(:respond_to_missing?) do |method_name, include_private|
-            self.class.axn_attached_to.respond_to?(method_name, include_private) || super(method_name, include_private)
-          end
+          # Define instance-level proxy methods
+          define_method(:method_missing, &method_missing_proc)
+          define_method(:respond_to_missing?, &respond_to_missing_proc)
         end
       end
 
@@ -91,9 +84,6 @@ module Axn
         return unless client_class.respond_to?(:_async_adapter) && client_class._async_adapter
 
         axn_class.async(client_class._async_adapter, **client_class._async_config || {}, &client_class._async_config_block)
-
-        # Add any other configurations here as they're discovered
-        # This centralizes all Axn class configuration in one place
       end
     end
   end
