@@ -2,7 +2,6 @@
 
 require "axn/attachable/base"
 require "axn/attachable/steps"
-require "axn/attachable/subactions"
 
 module Axn
   module Attachable
@@ -11,7 +10,6 @@ module Axn
     included do
       include Base
       include Steps
-      include Subactions
     end
 
     class_methods do
@@ -94,6 +92,14 @@ module Axn
 
         # Add any other configurations here as they're discovered
         # This centralizes all Axn class configuration in one place
+      end
+    end
+
+    # Extend DSL methods from attachment types when module is included
+    def self.included(base)
+      super
+      AttachmentTypes.all.each do |(_name, klass)|
+        base.extend klass::DSL if klass.const_defined?(:DSL)
       end
     end
   end

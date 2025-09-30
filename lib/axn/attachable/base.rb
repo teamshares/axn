@@ -4,7 +4,7 @@ require "axn/attachable/attachment_types"
 
 module Axn
   module Attachable
-    Descriptor = Data.define(:as, :axn_klass, :action_kwargs, :block)
+    Descriptor = Data.define(:as, :axn_klass, :kwargs, :block)
 
     module Base
       extend ActiveSupport::Concern
@@ -70,7 +70,7 @@ module Axn
           _attached_axns[name] = Descriptor.new(
             as:,
             axn_klass:,
-            action_kwargs: kwargs,
+            kwargs:,
             block:,
           )
 
@@ -145,7 +145,7 @@ module Axn
             next if descriptor.as == :step
 
             attachment_type = AttachmentTypes.find(descriptor.as)
-            attachment_type.mount(name, descriptor.axn_klass, on: subclass, **descriptor.action_kwargs)
+            attachment_type.mount(name, descriptor.axn_klass, on: subclass, **descriptor.kwargs)
           end
         end
       end

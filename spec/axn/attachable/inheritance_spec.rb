@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable::Subactions do
+RSpec.describe Axn::Attachable do
   describe "inheritance" do
     describe "axn_method inheritance" do
       context "with helper methods" do

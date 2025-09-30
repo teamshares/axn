@@ -9,26 +9,6 @@ module Axn
         def _axn_steps
           _attached_axns.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass)
         end
-
-        def steps(*steps)
-          Array(steps).compact.each do |step|
-            raise ArgumentError, "Step #{step} must include Axn module" if step.is_a?(Class) && !step.included_modules.include?(Axn) && !step < Axn
-
-            step("Step #{_axn_steps.length + 1}", step)
-          end
-        end
-
-        def step(name, axn_klass = nil, error_prefix: nil, **kwargs, &block)
-          # Use the registry system
-          attach_axn(
-            as: :step,
-            name:,
-            axn_klass:,
-            error_prefix:,
-            **kwargs,
-            &block
-          )
-        end
       end
 
       # Execute steps automatically when the action is called

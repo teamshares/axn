@@ -4,6 +4,12 @@ module Axn
   module Attachable
     class AttachmentTypes
       module Method
+        module DSL
+          def axn_method(name, axn_klass = nil, **, &)
+            attach_axn(as: :method, name:, axn_klass:, **, &)
+          end
+        end
+
         def self.preprocess_kwargs(**kwargs)
           # Methods require a return value
           kwargs[:expose_return_as] = kwargs[:expose_return_as].presence || :value

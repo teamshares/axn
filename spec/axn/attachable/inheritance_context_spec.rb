@@ -13,7 +13,7 @@
 # - CompanyAPI < BaseAPI defines owned_by :companies and url(uuid:) method
 # - When CompanyAPI.get! is called, it fails because the anonymous class can't access url()
 
-RSpec.describe Axn::Attachable::Subactions do
+RSpec.describe Axn::Attachable do
   describe "inheritance context issue" do
     # This test reproduces the issue described in the teamshares-rails codebase
     # where anonymous classes created by axn_method inherit from the wrong parent class
