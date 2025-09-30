@@ -46,10 +46,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(child).to respond_to(:multiply_axn)
         end
 
-        it "has separate _axn_methods configurations" do
-          expect(parent._axn_methods.keys).to eq([:multiply])
-          expect(child._axn_methods.keys).to eq([:multiply])
-          expect(parent._axn_methods.object_id).not_to eq(child._axn_methods.object_id)
+        it "has separate _attached_axns configurations" do
+          expect(parent._attached_axns.keys).to eq([:multiply])
+          expect(child._attached_axns.keys).to eq([:multiply])
+          expect(parent._attached_axns.object_id).not_to eq(child._attached_axns.object_id)
         end
 
         it "can call inherited methods" do
@@ -82,10 +82,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(ChildWithAxnableMethod).to respond_to(:add_axn)
         end
 
-        it "has separate _axn_methods configurations" do
-          expect(ParentWithAxnableMethod._axn_methods.keys).to eq([:add])
-          expect(ChildWithAxnableMethod._axn_methods.keys).to eq([:add])
-          expect(ParentWithAxnableMethod._axn_methods.object_id).not_to eq(ChildWithAxnableMethod._axn_methods.object_id)
+        it "has separate _attached_axns configurations" do
+          expect(ParentWithAxnableMethod._attached_axns.keys).to eq([:add])
+          expect(ChildWithAxnableMethod._attached_axns.keys).to eq([:add])
+          expect(ParentWithAxnableMethod._attached_axns.object_id).not_to eq(ChildWithAxnableMethod._attached_axns.object_id)
         end
 
         it "can call inherited methods" do
@@ -144,10 +144,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(child).to respond_to(:triple_async)
         end
 
-        it "has separate _axns configurations" do
-          expect(parent._axns.keys).to eq([:triple])
-          expect(child._axns.keys).to eq([:triple])
-          expect(parent._axns.object_id).not_to eq(child._axns.object_id)
+        it "has separate _attached_axns configurations" do
+          expect(parent._attached_axns.keys).to eq([:triple])
+          expect(child._attached_axns.keys).to eq([:triple])
+          expect(parent._attached_axns.object_id).not_to eq(child._attached_axns.object_id)
         end
 
         it "can call inherited methods" do
@@ -182,10 +182,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(child_class).to respond_to(:increment_async)
         end
 
-        it "has separate _axns configurations" do
-          expect(parent_class._axns.keys).to eq([:increment])
-          expect(child_class._axns.keys).to eq([:increment])
-          expect(parent_class._axns.object_id).not_to eq(child_class._axns.object_id)
+        it "has separate _attached_axns configurations" do
+          expect(parent_class._attached_axns.keys).to eq([:increment])
+          expect(child_class._attached_axns.keys).to eq([:increment])
+          expect(parent_class._attached_axns.object_id).not_to eq(child_class._attached_axns.object_id)
         end
 
         it "can call inherited methods" do
@@ -261,10 +261,9 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       it "has separate configurations for both types" do
-        expect(ParentWithMixed._axn_methods.keys).to eq([:method1])
-        expect(ParentWithMixed._axns.keys).to eq([:action1])
-        expect(ChildWithMixed._axn_methods.keys).to eq(%i[method1 method2])
-        expect(ChildWithMixed._axns.keys).to eq(%i[action1 action2])
+        expect(ParentWithMixed._attached_axns.keys).to eq(%i[method1 action1])
+        expect(ChildWithMixed._attached_axns.keys).to eq(%i[method1 action1 method2 action2])
+        expect(ParentWithMixed._attached_axns.object_id).not_to eq(ChildWithMixed._attached_axns.object_id)
       end
 
       it "can call all inherited methods" do

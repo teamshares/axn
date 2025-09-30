@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module Axn
+  module Attachable
+    class AttachmentTypes
+      module Axn
+        def self.mount(attachment_name, axn_klass, on:, **)
+          on.define_singleton_method(attachment_name) do |**kwargs|
+            axn_klass.call(**kwargs)
+          end
+
+          on.define_singleton_method("#{attachment_name}!") do |**kwargs|
+            axn_klass.call!(**kwargs)
+          end
+
+          on.define_singleton_method("#{attachment_name}_async") do |**kwargs|
+            axn_klass.call_async(**kwargs)
+          end
+        end
+      end
+    end
+  end
+end

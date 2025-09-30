@@ -1,11 +1,19 @@
 # frozen_string_literal: true
 
+require "axn/attachable/attachment_types"
+
 module Axn
   module Attachable
+    Descriptor = Data.define(:as, :axn_klass, :action_kwargs, :block)
+
     module Base
       extend ActiveSupport::Concern
 
       class_methods do
+        def _attached_axns
+          @_attached_axns ||= {}
+        end
+
         def attach_axn(
           as: :axn,
           name: nil,
@@ -13,34 +21,60 @@ module Axn
           **kwargs,
           &block
         )
-          attachment_type = as.to_s.humanize
-          raise AttachmentError, "#{attachment_type} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
-          raise AttachmentError, "#{attachment_type} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
+          # Get attachment type from registry
+          attachment_type = AttachmentTypes.find(as)
+
+          # Preprocessing hook: only call if defined
+          kwargs = attachment_type.preprocess_kwargs(**kwargs) if attachment_type.respond_to?(:preprocess_kwargs)
+
+          # Validation logic (centralized)
+          attachment_type_name = as.to_s.humanize
+          raise AttachmentError, "#{attachment_type_name} name must be a string or symbol" unless name.is_a?(String) || name.is_a?(Symbol)
+
+          method_name = name.to_s.underscore # handle invalid characters in names like "get name" or "SomeCapThing"
+          raise AttachmentError, "Unable to attach #{attachment_type_name} -- '#{method_name}' is already taken" if respond_to?(method_name)
+          raise AttachmentError, "#{attachment_type_name} '#{name}' must be given an existing action class or a block" if axn_klass.nil? && !block_given?
 
           if axn_klass
             if block_given?
               raise AttachmentError,
-                    "#{attachment_type} '#{name}' was given both an existing action class and a block - only one is allowed"
+                    "#{attachment_type_name} '#{name}' was given both an existing action class and a block - only one is allowed"
             end
 
-            if kwargs.present?
-              raise AttachmentError, "#{attachment_type} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
+            # For steps, allow additional kwargs like error_prefix
+            if kwargs.present? && as != :step
+              raise AttachmentError, "#{attachment_type_name} '#{name}' was given an existing action class and also keyword arguments - only one is allowed"
             end
 
             unless axn_klass.respond_to?(:<) && axn_klass < Axn
               raise AttachmentError,
-                    "#{attachment_type} '#{name}' was given an already-existing class #{axn_klass.name} that does NOT inherit from Axn as expected"
+                    "#{attachment_type_name} '#{name}' was given an already-existing class #{axn_klass.name} that does NOT inherit from Axn as expected"
             end
 
             # Set proper class name and register constant
             _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
-            return axn_klass
+          else
+            # Filter out attachment-specific kwargs before passing to Factory
+            factory_kwargs = kwargs.except(:error_prefix)
+
+            # Build the class and configure it using the proxy namespace
+            axn_klass = Axn::Factory.build(superclass: axn_namespace, **factory_kwargs, &block).tap do |built_axn_klass|
+              _configure_axn_class_name_and_constant(built_axn_klass, name, axn_namespace)
+            end
           end
 
-          # Build the class and configure it using the proxy namespace
-          Axn::Factory.build(superclass: axn_namespace, **kwargs, &block).tap do |axn_klass| # rubocop:disable Lint/ShadowingOuterLocalVariable
-            _configure_axn_class_name_and_constant(axn_klass, name, axn_namespace)
-          end
+          # Mount hook: allow attachment type to define methods and configure behavior
+          attachment_type.mount(name, axn_klass, on: self, **kwargs)
+
+          # Store for inheritance (steps are stored but not inherited)
+          _attached_axns[name] = Descriptor.new(
+            as:,
+            axn_klass:,
+            action_kwargs: kwargs,
+            block:,
+          )
+
+          axn_klass
         end
 
         def axn_namespace
@@ -96,6 +130,23 @@ module Axn
           end
 
           axn_namespace.const_set(constant_name, axn_klass)
+        end
+
+        # Handle inheritance of attached axns
+        def inherited(subclass)
+          super
+
+          # Initialize subclass with a copy of parent's _attached_axns to avoid sharing
+          copied_axns = _attached_axns.transform_values(&:dup)
+          subclass.instance_variable_set(:@_attached_axns, copied_axns)
+
+          # Recreate all non-step attachments on subclass (steps are not inherited)
+          _attached_axns.each do |name, descriptor|
+            next if descriptor.as == :step
+
+            attachment_type = AttachmentTypes.find(descriptor.as)
+            attachment_type.mount(name, descriptor.axn_klass, on: subclass, **descriptor.action_kwargs)
+          end
         end
       end
     end
