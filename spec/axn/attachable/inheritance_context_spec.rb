@@ -92,8 +92,8 @@ RSpec.describe Axn::Attachable do
         expect(result[:self_class]).not_to eq(test_class)
         expect(result[:self_class_name]).to include("::AttachedAxns::")
 
-        # The superclass is the AttachedAxns namespace class
-        expect(result[:superclass]).to eq(test_class.const_get(:AttachedAxns))
+        # The superclass is the proxy class (separate from the namespace)
+        expect(result[:superclass]).to eq(test_class.axn_superclass)
 
         # Method resolution now works through the method_missing proxy
         expect(result[:can_call_url]).to be true
@@ -133,9 +133,9 @@ RSpec.describe Axn::Attachable do
         company_result = company_context.show_context!(uuid: "123")
         user_result = user_context.show_context!(uuid: "123")
 
-        # Both should have their respective AttachedAxns namespaces as superclass
-        expect(company_result[:superclass]).to eq(company_context.const_get(:AttachedAxns))
-        expect(user_result[:superclass]).to eq(user_context.const_get(:AttachedAxns))
+        # Both should have their respective proxy classes as superclass
+        expect(company_result[:superclass]).to eq(company_context.axn_superclass)
+        expect(user_result[:superclass]).to eq(user_context.axn_superclass)
 
         # Method resolution now works - the Axn classes can access the subclass methods
         expect(company_result[:can_call_url]).to be true

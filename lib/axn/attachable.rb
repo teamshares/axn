@@ -36,8 +36,22 @@ module Axn
           return axn_class if axn_class.is_a?(Class)
         end
 
-        # Create the proxy base class using the ProxyBuilder
-        ProxyBuilder.build(self)
+        # Create a bare namespace class for holding constants
+        client_class = self
+        Class.new.tap do |namespace_class|
+          namespace_class.define_singleton_method(:axn_attached_to) { client_class }
+
+          namespace_class.define_singleton_method(:name) do
+            client_name = client_class.name.presence || "AnonymousClient_#{client_class.object_id}"
+            "#{client_name}::AttachedAxns"
+          end
+
+          const_set(:AttachedAxns, namespace_class)
+        end
+      end
+
+      def axn_superclass
+        @axn_superclass ||= ProxyBuilder.build_superclass(self)
       end
 
       private

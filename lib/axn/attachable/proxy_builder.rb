@@ -3,19 +3,17 @@
 module Axn
   module Attachable
     class ProxyBuilder
-      def self.build(client_class)
-        new(client_class).build
+      def self.build_superclass(client_class)
+        new(client_class).build_superclass
       end
 
       def initialize(client_class)
         @client_class = client_class
       end
 
-      def build
+      def build_superclass
         axn_class = create_proxy_class
-        configure_class_name(axn_class)
-        setup_namespace_structure(axn_class)
-        configure_axn_namespace_class(axn_class)
+        configure_proxy_class(axn_class)
         axn_class
       end
 
@@ -64,28 +62,7 @@ module Axn
         end
       end
 
-      def configure_class_name(axn_class)
-        attached_class = client_class
-        axn_class.define_singleton_method(:name) do
-          client_name = attached_class.name
-          if client_name
-            "#{client_name}::AttachedAxns"
-          else
-            # Use object_id to make anonymous classes unique
-            "AnonymousClient_#{attached_class.object_id}::AttachedAxns"
-          end
-        end
-      end
-
-      def setup_namespace_structure(axn_class)
-        if client_class.const_defined?(:AttachedAxns, false)
-          client_class.const_get(:AttachedAxns)
-        else
-          client_class.const_set(:AttachedAxns, axn_class)
-        end
-      end
-
-      def configure_axn_namespace_class(axn_class)
+      def configure_proxy_class(axn_class)
         # Set auto_log_level to match the client class (or use default if not set)
         axn_class.auto_log_level = client_class.respond_to?(:auto_log_level) ? client_class.auto_log_level : Axn.config.log_level
 

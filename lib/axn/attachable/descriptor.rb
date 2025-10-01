@@ -36,7 +36,7 @@ module Axn
 
         @attached_axn = @existing_axn_klass || begin
           # TODO: what if in kwargs? how make configurable
-          superclass = target.axn_namespace
+          superclass = target.axn_superclass
 
           Axn::Factory.build(superclass:, **@kwargs, &@block)
         end.tap do |axn|
