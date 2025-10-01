@@ -321,13 +321,17 @@ RSpec.describe Axn do
 
     describe "class naming and namespacing" do
       it "creates SomeClass::AttachedAxns::Foo from axn_method(:foo)" do
-        stub_const("SomeClass", Class.new do
+        # Create the class first, then define the constant
+        some_class = Class.new do
           include Axn
 
           axn_method :foo do
             123
           end
-        end)
+        end
+        
+        # Set the constant after the class is created
+        stub_const("SomeClass", some_class)
 
         # The axn_method should create a class in the AttachedAxns namespace
         expect(SomeClass.const_defined?(:AttachedAxns)).to be true
@@ -336,6 +340,12 @@ RSpec.describe Axn do
         expect(attached_axns.const_defined?(:Foo)).to be true
         
         foo_class = attached_axns.const_get(:Foo)
+        
+        # Debug: let's see what the actual names are
+        puts "SomeClass.name: #{SomeClass.name}"
+        puts "attached_axns.name: #{attached_axns.name}"
+        puts "foo_class.name: #{foo_class.name}"
+        
         expect(foo_class.name).to eq("SomeClass::AttachedAxns::Foo")
         
         # Verify the class works as expected
