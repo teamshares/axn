@@ -4,36 +4,34 @@ RSpec.describe Axn do
   describe "problematic method names and constant collisions" do
     describe "method names with spaces and special characters" do
       context "with spaces in method names" do
-        it "fails validation for method names with spaces" do
+        it "works with method names containing spaces" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method with spaces") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method with spaces") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method with spaces' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method with spaces!")).to eq(123)
         end
       end
 
       context "with special characters in method names" do
-        it "fails validation with $%@ characters" do
+        it "works with $%@ characters" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method$%@name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method$%@name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\$%@name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method$%@name!")).to eq(123)
         end
 
         it "fails validation with !@# characters" do
@@ -51,62 +49,60 @@ RSpec.describe Axn do
                              /method name 'method!@#name' cannot contain method suffixes/)
         end
 
-        it "fails validation with brackets and braces" do
+        it "works with brackets and braces" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method[]{}name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method[]{}name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\[\]{}name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method[]{}name!")).to eq(123)
         end
 
-        it "fails validation with pipes and backslashes" do
+        it "works with pipes and backslashes" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method|\\name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method|\\name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\|\\name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method|\\name!")).to eq(123)
         end
 
-        it "fails validation with angle brackets" do
+        it "works with angle brackets" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method<>name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method<>name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method<>name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method<>name!")).to eq(123)
         end
 
-        it "fails validation with colons and semicolons" do
+        it "works with colons and semicolons" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method:;name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method:;name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method:;name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method:;name!")).to eq(123)
         end
 
         it "works with commas and periods" do
@@ -123,266 +119,250 @@ RSpec.describe Axn do
           expect(client_class.public_send("method,.name!")).to eq(123)
         end
 
-        it "fails validation with ampersands and asterisks" do
+        it "works with ampersands and asterisks" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method&*name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method&*name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method&.*name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method&*name!")).to eq(123)
         end
 
-        it "fails validation with tildes and backticks" do
+        it "works with tildes and backticks" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method~`name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method~`name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method~`name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method~`name!")).to eq(123)
         end
 
-        it "fails validation with carets and dollars" do
+        it "works with carets and dollars" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method^$name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method^$name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\^.*name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method^$name!")).to eq(123)
         end
 
-        it "fails validation with percent and hash" do
+        it "works with percent and hash" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method%#name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method%#name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method%#name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method%#name!")).to eq(123)
         end
       end
 
       context "with newlines and tabs in method names" do
-        it "fails validation with newlines" do
+        it "works with newlines" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method\nname") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method\nname") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method[\s\S]*name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method\nname!")).to eq(123)
         end
 
-        it "fails validation with tabs" do
+        it "works with tabs" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method\tname") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method\tname") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method.*name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method\tname!")).to eq(123)
         end
       end
 
       context "with quotes in method names" do
-        it "fails validation with double quotes" do
+        it "works with double quotes" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method('method"name') do
-                123
-              end
+          client_class.class_eval do
+            axn_method('method"name') do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method"name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send('method"name!')).to eq(123)
         end
 
-        it "fails validation with single quotes" do
+        it "works with single quotes" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method'name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method'name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method'name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method'name!")).to eq(123)
         end
       end
     end
 
     describe "constant name collisions" do
       context "when different method names generate the same constant name" do
-        it "allows both 'a name' and 'a\tname' since they both fail validation" do
-          # Both should fail validation before reaching constant collision
+        it "allows both 'a name' and 'a\tname' since they both work now" do
+          # Both should work since spaces and tabs are now converted to underscores
           client_class1 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class1.class_eval do
-              axn_method("a name") do
-                123
-              end
+          client_class1.class_eval do
+            axn_method("a name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'a name' must be convertible to a valid constant name/)
+          end
 
           client_class2 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class2.class_eval do
-              axn_method("a\tname") do
-                456
-              end
+          client_class2.class_eval do
+            axn_method("a\tname") do
+              456
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'a\tname' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class1.public_send("a name!")).to eq(123)
+          expect(client_class2.public_send("a\tname!")).to eq(456)
         end
 
-        it "allows both 'method name' and 'method\tname' since they both fail validation" do
-          # Both should fail validation before reaching constant collision
+        it "allows both 'method name' and 'method\tname' since they both work now" do
+          # Both should work since spaces and tabs are now converted to underscores
           client_class1 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class1.class_eval do
-              axn_method("method name") do
-                123
-              end
+          client_class1.class_eval do
+            axn_method("method name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method name' must be convertible to a valid constant name/)
+          end
 
           client_class2 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class2.class_eval do
-              axn_method("method\tname") do
-                456
-              end
+          client_class2.class_eval do
+            axn_method("method\tname") do
+              456
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\tname' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class1.public_send("method name!")).to eq(123)
+          expect(client_class2.public_send("method\tname!")).to eq(456)
         end
       end
 
       context "when method names with different whitespace generate the same constant name" do
-        it "allows both 'method name' and 'method  name' since they both fail validation" do
-          # Both should fail validation before reaching constant collision
+        it "allows both 'method name' and 'method  name' since they both work now" do
+          # Both should work since spaces and tabs are now converted to underscores
           client_class1 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class1.class_eval do
-              axn_method("method name") do
-                123
-              end
+          client_class1.class_eval do
+            axn_method("method name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method name' must be convertible to a valid constant name/)
+          end
 
           client_class2 = Class.new do
             include Axn
           end
 
-          expect do
-            client_class2.class_eval do
-              axn_method("method  name") do
-                456
-              end
+          client_class2.class_eval do
+            axn_method("method  name") do
+              456
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method  name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class1.public_send("method name!")).to eq(123)
+          expect(client_class2.public_send("method  name!")).to eq(456)
         end
       end
     end
 
     describe "method name callability" do
       context "with method names that are not callable with normal Ruby syntax" do
-        it "fails validation for methods with spaces" do
+        it "works for methods with spaces" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method with spaces") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method with spaces") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method with spaces' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method with spaces!")).to eq(123)
         end
 
-        it "fails validation for methods with special characters" do
+        it "works for methods with special characters" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method$%@name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method$%@name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\$%@name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method$%@name!")).to eq(123)
         end
 
-        it "fails validation for methods with brackets" do
+        it "works for methods with brackets" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method[]name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method[]name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\[\]name' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("method[]name!")).to eq(123)
         end
       end
     end
@@ -434,18 +414,18 @@ RSpec.describe Axn do
           end.to raise_error(Axn::Attachable::AttachmentError, /method name '123method' must be convertible to a valid constant name/)
         end
 
-        it "fails validation for names starting with special characters" do
+        it "works for names starting with special characters" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("@method") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("@method") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name '@method' must be convertible to a valid constant name/)
+          end
+
+          expect(client_class.public_send("@method!")).to eq(123)
         end
       end
     end

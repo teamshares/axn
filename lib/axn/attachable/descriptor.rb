@@ -85,10 +85,10 @@ module Axn
         # Don't allow method suffixes (!?=) in input since they'll be added automatically
         invalid!("method name '#{method_name}' cannot contain method suffixes (!?=) as they are added automatically") if method_name.match?(/[!?=]/)
 
-        classified = method_name.underscore.classify
+        classified = method_name.parameterize(separator: "_").classify
         return if classified.match?(/\A[A-Z][A-Za-z0-9_]*\z/)
 
-        invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). Use letters, numbers, underscores, and spaces only.")
+        invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). Use letters, numbers, underscores, and common punctuation only.")
       end
 
       def configure_class_name_and_constant(axn_klass, name, axn_namespace)
@@ -117,7 +117,7 @@ module Axn
       end
 
       def register_constant(axn_klass, name, axn_namespace)
-        constant_name = generate_unique_constant_name(name, axn_namespace)
+        constant_name = generate_constant_name(name)
         axn_namespace.const_set(constant_name, axn_klass)
       end
 
@@ -126,21 +126,7 @@ module Axn
       end
 
       def generate_constant_name(name)
-        name.to_s.underscore.classify
-      end
-
-      def generate_unique_constant_name(name, axn_namespace)
-        base_name = generate_constant_name(name)
-        return base_name unless axn_namespace&.const_defined?(base_name, false)
-
-        # If collision, add a number suffix
-        counter = 1
-        loop do
-          candidate = "#{base_name}#{counter}"
-          break candidate unless axn_namespace.const_defined?(candidate, false)
-
-          counter += 1
-        end
+        name.to_s.parameterize(separator: "_").classify
       end
     end
   end
