@@ -20,6 +20,8 @@ module Axn
           end
         end
 
+        def self.strategy_specific_kwargs = [:error_prefix]
+
         def self.mount(descriptor:, target:)
           error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
           axn_klass = descriptor.attached_axn
@@ -28,7 +30,9 @@ module Axn
             "#{error_prefix}#{e.message}"
           end
 
-          # Define #call method dynamically to execute steps
+          # Only define #call method once
+          return if target.instance_variable_defined?(:@_axn_call_method_defined_for_steps)
+
           target.define_method(:call) do
             self.class._attached_axn_descriptors.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
               axn = step_descriptor.attached_axn
@@ -38,9 +42,8 @@ module Axn
               end
             end
           end
+          target.instance_variable_set(:@_axn_call_method_defined_for_steps, true)
         end
-
-        def self.strategy_specific_kwargs = [:error_prefix]
       end
     end
   end
