@@ -1,0 +1,40 @@
+# RSpec Testing Patterns
+
+## Use build_axn Spec Helper
+- Always use the `build_axn` spec helper instead of manually creating Axn classes
+- Prefer `build_axn { ... }` over `Axn::Factory.build { ... }` in test files
+- Prefer `build_axn { ... }` over `Class.new.send(:include, Axn)` patterns
+- The `build_axn` helper is already included via `Axn::Testing::SpecHelpers` and provides a cleaner, more readable way to create test Axn classes
+
+## DRY Test Setup
+- When writing RSpec tests with repeated object creation patterns, prefer using `let`/`let!` to define base objects once and override specific attributes in contexts
+- Use shared examples (`shared_examples`/`include_examples`) for testing similar methods with different parameters
+- Avoid recreating the same object structure multiple times - use `let` to override only the values that change between contexts
+
+### Example Pattern:
+```ruby
+# Instead of recreating objects in each context:
+context "scenario 1" do
+  let!(:object) { create(:model, attr1: value1, attr2: value2) }
+end
+context "scenario 2" do
+  let!(:object) { create(:model, attr1: value3, attr2: value4) }
+end
+
+# Prefer this pattern:
+let!(:object) { create(:model, attr1: attr1_value, attr2: attr2_value) }
+context "scenario 1" do
+  let(:attr1_value) { value1 }
+  let(:attr2_value) { value2 }
+end
+context "scenario 2" do
+  let(:attr1_value) { value3 }
+  let(:attr2_value) { value4 }
+end
+```
+
+## Test Organization
+- Use `it { expect(...).to eq(...) }` shorthand for simple assertions. `it { is_expected.to ... }` even better.
+- Group related tests with shared examples when testing similar methods
+- Prefer descriptive context names over verbose test descriptions
+- Don't open rails console - debug via scripts or runner instead.

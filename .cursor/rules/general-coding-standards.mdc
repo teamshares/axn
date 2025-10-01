@@ -1,0 +1,27 @@
+# General Coding Standards
+
+## Code Quality Principles
+- Always prioritize clean, elegant, and maintainable code following these principles:
+- Write code that is both functional and beautiful - elegance should be a primary concern
+- Follow existing patterns in the codebase
+- Use DRY principles and eliminate duplication
+- Create reusable/shared examples for similar test patterns
+- Consolidate similar functionality where appropriate
+- Match existing code style and structure
+- Consider maintainability and extensibility first
+- Look for refactoring opportunities
+- Use parameterized testing and shared examples in specs
+- Prefer simple, readable solutions over clever but complex ones
+- Write code that tells a story and is self-documenting
+
+## Method Organization
+- Place private method declarations under a private stanza rather than marking them private after the fact
+- Use single-line changelog edits
+- Use Ruby endless method definitions for short helper methods
+- Use a series of return-early if statements instead of long if/else chains for stylistic consistency
+
+## Communication Style
+- Be direct, neutral, and concise
+- Be sparing with praise, flattery, or enthusiasm
+- Do not say the user is right unless verified; confirm first
+- Prefer: "It appears/It seems/Based on X…" over absolute claims
