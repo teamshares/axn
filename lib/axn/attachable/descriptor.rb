@@ -25,6 +25,7 @@ module Axn
         attach_axn_to!(target:)
 
         mount_strategy.mount(descriptor: self, target:)
+        mount_on_namespace(target:)
       end
 
       def attached? = @axn.present?
@@ -127,6 +128,25 @@ module Axn
 
       def generate_constant_name(name)
         name.to_s.parameterize(separator: "_").classify
+      end
+
+      def mount_on_namespace(target:)
+        namespace = target.axn_namespace
+        axn = @attached_axn
+        name = @name
+
+        # Mount axn methods on namespace
+        namespace.define_singleton_method(name) do |**kwargs|
+          axn.call(**kwargs)
+        end
+
+        namespace.define_singleton_method("#{name}!") do |**kwargs|
+          axn.call!(**kwargs)
+        end
+
+        namespace.define_singleton_method("#{name}_async") do |**kwargs|
+          axn.call_async(**kwargs)
+        end
       end
     end
   end
