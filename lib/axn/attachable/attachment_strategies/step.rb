@@ -22,7 +22,7 @@ module Axn
           end
         end
 
-        def self.strategy_specific_kwargs = [:error_prefix]
+        def self.strategy_specific_kwargs = super + [:error_prefix]
 
         def self.mount(descriptor:, target:)
           error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "

@@ -407,5 +407,114 @@ RSpec.describe Axn do
         expect(child_class.const_get(:AttachedAxns).const_defined?(:Foo)).to be true
       end
     end
+
+    describe "standalone option" do
+      let(:base_client_class) do
+        Class.new do
+          include Axn
+
+          def self.name
+            "TestClient"
+          end
+
+          def test_method
+            "test_method_result"
+          end
+        end
+      end
+
+      context "with standalone: false (default)" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            axn_method :test, standalone: false do
+              # This should inherit from the proxy class and have access to client methods
+              test_method
+            end
+          end
+        end
+
+        it "inherits from proxy superclass" do
+          axn_class = client_class.const_get(:AttachedAxns).const_get(:Test)
+          expect(axn_class.superclass).to eq(client_class.axn_superclass)
+        end
+
+        it "has access to client methods through proxy" do
+          result = client_class.test!
+          expect(result).to eq("test_method_result")
+        end
+      end
+
+      context "with standalone: true" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            axn_method :test, standalone: true do
+              # This should inherit from Object and NOT have access to client methods
+              "standalone_result"
+            end
+          end
+        end
+
+        it "inherits from Object" do
+          axn_class = client_class.const_get(:AttachedAxns).const_get(:Test)
+          expect(axn_class.superclass).to eq(Object)
+        end
+
+        it "does not have access to client methods" do
+          result = client_class.test!
+          expect(result).to eq("standalone_result")
+        end
+
+        it "cannot call client methods from within the axn" do
+          client_class.axn_method :test_with_client_call, standalone: true do
+            test_method # This should raise an error
+          end
+
+          expect { client_class.test_with_client_call! }.to raise_error(NameError, /undefined local variable or method `test_method'/)
+        end
+      end
+
+      context "with step strategy and standalone: true" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            step :test_step, standalone: true do
+              # Simple step that doesn't expose anything
+              "standalone_step_result"
+            end
+          end
+        end
+
+        it "inherits from Object" do
+          axn_class = client_class.const_get(:AttachedAxns).const_get(:TestStep)
+          expect(axn_class.superclass).to eq(Object)
+        end
+
+        it "works as a standalone step" do
+          client = client_class.new
+          client.call
+          # The step runs without error (we can't easily test the result without exposing)
+          expect(client.instance_variable_get(:@__context)).to be_present
+        end
+      end
+
+      context "with axn strategy and standalone: true" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            axn :test_axn, standalone: true do
+              "standalone_axn_result"
+            end
+          end
+        end
+
+        it "inherits from Object" do
+          axn_class = client_class.const_get(:AttachedAxns).const_get(:TestAxn)
+          expect(axn_class.superclass).to eq(Object)
+        end
+
+        it "works as a standalone axn" do
+          result = client_class.test_axn
+          expect(result).to be_ok
+        end
+      end
+    end
   end
 end
