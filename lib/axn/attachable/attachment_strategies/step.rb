@@ -13,7 +13,7 @@ module Axn
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
               num_steps = _attached_axn_descriptors.count { |descriptor| descriptor.mount_strategy.key == :step }
-              step("Step #{num_steps + 1}", step_class)
+              step("step_#{num_steps + 1}", step_class)
             end
           end
 

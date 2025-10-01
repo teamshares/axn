@@ -362,7 +362,7 @@ RSpec.describe Axn do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- constant 'Foo' is already defined/)
+        end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- method 'foo!' is already taken/)
       end
 
       it "raises AttachmentError when trying to define both axn_method and axn with the same name (axn_method first)" do
@@ -378,7 +378,7 @@ RSpec.describe Axn do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Axn unable to attach -- constant 'Foo' is already defined/)
+        end.to raise_error(Axn::Attachable::AttachmentError, /Axn unable to attach -- method 'foo!' is already taken/)
       end
 
       it "allows child class to override parent's axn_method with the same name" do

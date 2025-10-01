@@ -141,7 +141,7 @@ RSpec.describe "Step functionality" do
       result = action.call(input: "test")
 
       expect(result).not_to be_ok
-      expect(result.error).to eq("Step 1: First step failed")
+      expect(result.error).to eq("step_1: First step failed")
     end
 
     it "uses sequential numbering for multiple steps without labels" do
@@ -174,7 +174,7 @@ RSpec.describe "Step functionality" do
       result = action.call(input: "test")
 
       expect(result).not_to be_ok
-      expect(result.error).to eq("Step 2: Second step failed")
+      expect(result.error).to eq("step_2: Second step failed")
     end
   end
 
