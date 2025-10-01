@@ -38,7 +38,7 @@ module Axn
 
           Axn::Factory.build(superclass:, **@kwargs, &@block)
         end.tap do |axn|
-          ConstantManager.configure_class_name_and_constant(axn, @name.to_s, target.axn_namespace)
+          configure_class_name_and_constant(axn, @name.to_s, target.axn_namespace)
         end
       end
 
@@ -72,6 +72,47 @@ module Axn
         return if @existing_axn_klass.respond_to?(:<) && @existing_axn_klass < ::Axn
 
         invalid!("was given an already-existing class #{@existing_axn_klass.name} that does NOT inherit from Axn as expected")
+      end
+
+      def configure_class_name_and_constant(axn_klass, name, axn_namespace)
+        configure_class_name(axn_klass, name, axn_namespace) if name.present?
+        register_constant(axn_klass, name, axn_namespace) if should_register_constant?(axn_namespace)
+      end
+
+      def configure_class_name(axn_klass, name, axn_namespace)
+        class_name = name.to_s.classify
+        namespace_name = axn_namespace&.name
+
+        axn_klass.define_singleton_method(:name) do
+          if namespace_name&.end_with?("::AttachedAxns")
+            # We're already in a namespace, just add the method name
+            "#{namespace_name}::#{class_name}"
+          elsif namespace_name
+            # Create the AttachedAxns namespace
+            "#{namespace_name}::AttachedAxns::#{class_name}"
+          else
+            # Fallback for anonymous classes
+            "AnonymousAxn::#{class_name}"
+          end
+        end
+      end
+
+      def register_constant(axn_klass, name, axn_namespace)
+        constant_name = generate_constant_name(name)
+        axn_namespace.const_set(constant_name, axn_klass)
+      end
+
+      def should_register_constant?(axn_namespace)
+        axn_namespace&.name&.end_with?("::AttachedAxns")
+      end
+
+      def generate_constant_name(name)
+        base_name = name.to_s.gsub(/\s+/, "").classify
+
+        # Handle empty or invalid constant names
+        base_name = "AnonymousAxn" if base_name.empty? || !base_name.match?(/\A[A-Z]/)
+
+        base_name
       end
     end
   end

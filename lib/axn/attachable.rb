@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "axn/attachable/attachment_strategies"
-require "axn/attachable/constant_manager"
 require "axn/attachable/descriptor"
 require "axn/attachable/proxy_builder"
 
