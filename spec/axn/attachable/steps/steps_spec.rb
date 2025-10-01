@@ -267,7 +267,7 @@ RSpec.describe "Step functionality" do
       expect(action_class.instance_methods).to include(:call)
 
       # Verify the instance variable tracking is set
-      expect(action_class.instance_variable_get(:@_axn_call_method_defined)).to be true
+      expect(action_class.instance_variable_get(:@_axn_call_method_defined_for_steps)).to be true
 
       # Verify it works correctly
       result = action_class.call!(input: "test")
