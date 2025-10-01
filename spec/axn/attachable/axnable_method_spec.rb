@@ -408,7 +408,7 @@ RSpec.describe Axn do
       end
     end
 
-    describe "standalone option" do
+    describe "superclass option" do
       let(:base_client_class) do
         Class.new do
           include Axn
@@ -423,10 +423,10 @@ RSpec.describe Axn do
         end
       end
 
-      context "with standalone: false (default)" do
+      context "with default superclass (no explicit superclass)" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn_method :test, standalone: false do
+            axn_method :test do
               # This should inherit from the proxy class and have access to client methods
               test_method
             end
@@ -444,10 +444,10 @@ RSpec.describe Axn do
         end
       end
 
-      context "with standalone: true" do
+      context "with superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn_method :test, standalone: true do
+            axn_method :test, superclass: Object do
               # This should inherit from Object and NOT have access to client methods
               "standalone_result"
             end
@@ -465,7 +465,7 @@ RSpec.describe Axn do
         end
 
         it "cannot call client methods from within the axn" do
-          client_class.axn_method :test_with_client_call, standalone: true do
+          client_class.axn_method :test_with_client_call, superclass: Object do
             test_method # This should raise an error
           end
 
@@ -473,10 +473,10 @@ RSpec.describe Axn do
         end
       end
 
-      context "with step strategy and standalone: true" do
+      context "with step strategy and superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            step :test_step, standalone: true do
+            step :test_step, superclass: Object do
               # Simple step that doesn't expose anything
               "standalone_step_result"
             end
@@ -496,10 +496,10 @@ RSpec.describe Axn do
         end
       end
 
-      context "with axn strategy and standalone: true" do
+      context "with axn strategy and superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn :test_axn, standalone: true do
+            axn :test_axn, superclass: Object do
               "standalone_axn_result"
             end
           end

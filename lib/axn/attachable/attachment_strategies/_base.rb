@@ -9,7 +9,7 @@ module Axn
       module Base
         # Class-level hooks for strategy modules to configure themselves
         def preprocess_kwargs(**kwargs) = kwargs
-        def strategy_specific_kwargs = [:standalone]
+        def strategy_specific_kwargs = []
 
         # The actual per-strategy mounting logic
         def mount(descriptor:, target:) = raise NotImplementedError, "Strategy modules must implement mount"
