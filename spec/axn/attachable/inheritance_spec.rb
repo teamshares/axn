@@ -47,8 +47,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "has separate _attached_axn_descriptors configurations" do
-          expect(parent._attached_axn_descriptors.keys).to eq([:multiply])
-          expect(child._attached_axn_descriptors.keys).to eq([:multiply])
+          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:multiply])
+          expect(child._attached_axn_descriptors.map(&:name)).to eq([:multiply])
           expect(parent._attached_axn_descriptors.object_id).not_to eq(child._attached_axn_descriptors.object_id)
         end
 
@@ -83,8 +83,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "has separate _attached_axn_descriptors configurations" do
-          expect(ParentWithAxnableMethod._attached_axn_descriptors.keys).to eq([:add])
-          expect(ChildWithAxnableMethod._attached_axn_descriptors.keys).to eq([:add])
+          expect(ParentWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
+          expect(ChildWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
           expect(ParentWithAxnableMethod._attached_axn_descriptors.object_id).not_to eq(ChildWithAxnableMethod._attached_axn_descriptors.object_id)
         end
 
@@ -145,8 +145,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "has separate _attached_axn_descriptors configurations" do
-          expect(parent._attached_axn_descriptors.keys).to eq([:triple])
-          expect(child._attached_axn_descriptors.keys).to eq([:triple])
+          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:triple])
+          expect(child._attached_axn_descriptors.map(&:name)).to eq([:triple])
           expect(parent._attached_axn_descriptors.object_id).not_to eq(child._attached_axn_descriptors.object_id)
         end
 
@@ -183,8 +183,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "has separate _attached_axn_descriptors configurations" do
-          expect(parent_class._attached_axn_descriptors.keys).to eq([:increment])
-          expect(child_class._attached_axn_descriptors.keys).to eq([:increment])
+          expect(parent_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
+          expect(child_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
           expect(parent_class._attached_axn_descriptors.object_id).not_to eq(child_class._attached_axn_descriptors.object_id)
         end
 
@@ -261,8 +261,8 @@ RSpec.describe Axn::Attachable do
       end
 
       it "has separate configurations for both types" do
-        expect(ParentWithMixed._attached_axn_descriptors.keys).to eq(%i[method1 action1])
-        expect(ChildWithMixed._attached_axn_descriptors.keys).to eq(%i[method1 action1 method2 action2])
+        expect(ParentWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1])
+        expect(ChildWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1 method2 action2])
         expect(ParentWithMixed._attached_axn_descriptors.object_id).not_to eq(ChildWithMixed._attached_axn_descriptors.object_id)
       end
 

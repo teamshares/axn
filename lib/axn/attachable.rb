@@ -11,7 +11,7 @@ module Axn
 
     class_methods do
       def _attached_axn_descriptors
-        @_attached_axn_descriptors ||= {}
+        @_attached_axn_descriptors ||= []
       end
 
       def attach_axn(
@@ -22,7 +22,7 @@ module Axn
         &block
       )
         descriptor = Descriptor.new(name:, axn_klass:, as:, block:, kwargs:)
-        _attached_axn_descriptors[descriptor.name] = descriptor
+        _attached_axn_descriptors << descriptor
         _mount_axn_from_descriptor(descriptor)
       end
 
@@ -48,11 +48,11 @@ module Axn
         super
 
         # Initialize subclass with a copy of parent's _attached_axn_descriptors to avoid sharing
-        copied_axns = _attached_axn_descriptors.transform_values(&:dup) # TODO: if descriptors are frozen, do we need the dup?
+        copied_axns = _attached_axn_descriptors.map(&:dup) # TODO: if descriptors are frozen, do we need the dup?
         subclass.instance_variable_set(:@_attached_axn_descriptors, copied_axns)
 
         # TODO: fix inheritance of attached axns
-        # subclass._attached_axn_descriptors.values.each do |descriptor|
+        # subclass._attached_axn_descriptors.each do |descriptor|
         #   subclass._mount_axn_from_descriptor(descriptor)
         # end
       end

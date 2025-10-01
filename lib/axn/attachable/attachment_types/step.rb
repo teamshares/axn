@@ -10,7 +10,7 @@ module Axn
               next unless step_class.is_a?(Class)
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
-              axn_steps = _attached_axn_descriptors.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass)
+              axn_steps = _attached_axn_descriptors.select { |descriptor| descriptor.as == :step }.map(&:axn_klass)
               step("Step #{axn_steps.length + 1}", step_class)
             end
           end
@@ -29,7 +29,7 @@ module Axn
 
           # Define #call method dynamically to execute steps
           on.define_method(:call) do
-            self.class._attached_axn_descriptors.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass).each do |axn|
+            self.class._attached_axn_descriptors.select { |descriptor| descriptor.as == :step }.map(&:axn_klass).each do |axn|
               step_result = axn.call!(**@__context.__combined_data)
               step_result.declared_fields.each do |field|
                 @__context.exposed_data[field] = step_result.public_send(field)

@@ -10,7 +10,7 @@ module Axn
               next unless step_class.is_a?(Class)
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
-              num_steps = _attached_axn_descriptors.values.count { |descriptor| descriptor.mount_strategy.key == :step }
+              num_steps = _attached_axn_descriptors.count { |descriptor| descriptor.mount_strategy.key == :step }
               step("Step #{num_steps + 1}", step_class)
             end
           end
@@ -30,7 +30,7 @@ module Axn
 
           # Define #call method dynamically to execute steps
           target.define_method(:call) do
-            self.class._attached_axn_descriptors.values.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
+            self.class._attached_axn_descriptors.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
               axn = step_descriptor.attached_axn
               step_result = axn.call!(**@__context.__combined_data)
               step_result.declared_fields.each do |field|
