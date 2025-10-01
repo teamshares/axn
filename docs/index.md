@@ -22,11 +22,13 @@ hero:
 
 features:
   - title: Declarative interface
-    details: Lorem ipsum dolor sit amet, consectetur adipiscing elit
+    details: Clear, explicit contracts for inputs and outputs with `expects` and `exposes`
   - title: Exception swallowing
-    details: Lorem ipsum dolor sit amet, consectetur adipiscing elit
+    details: Automatic error handling with user-safe error messages and internal logging
+  - title: Advanced Patterns
+    details: Attachable actions, workflow composition, and background processing capabilities
   - title: Default Observability
-    details: Lorem ipsum dolor sit amet, consectetur adipiscing elit
+    details: Built-in logging, timing, and error tracking out of the box
 ---
 
 ::: danger ALPHA RELEASE
