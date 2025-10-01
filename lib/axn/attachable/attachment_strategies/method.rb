@@ -36,14 +36,14 @@ module Axn
           # Determine expose_return_as by introspecting the axn class
           expose_return_as = _determine_exposure_to_return(axn_klass)
 
-          target.define_singleton_method("#{name}!") do |**kwargs|
+          mount_method(target:, method_name: "#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)
             return result if expose_return_as.nil?
 
             result.public_send(expose_return_as) # Return direct value, raises on error
           end
 
-          target.define_singleton_method("#{name}_axn") do |**kwargs|
+          mount_method(target:, method_name: "#{name}_axn") do |**kwargs|
             axn_klass.call(**kwargs)
           end
         end

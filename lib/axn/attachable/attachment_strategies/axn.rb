@@ -16,15 +16,15 @@ module Axn
           axn = descriptor.attached_axn
           name = descriptor.name
 
-          target.define_singleton_method(name) do |**kwargs|
+          mount_method(target:, method_name: name) do |**kwargs|
             axn.call(**kwargs)
           end
 
-          target.define_singleton_method("#{name}!") do |**kwargs|
+          mount_method(target:, method_name: "#{name}!") do |**kwargs|
             axn.call!(**kwargs)
           end
 
-          target.define_singleton_method("#{name}_async") do |**kwargs|
+          mount_method(target:, method_name: "#{name}_async") do |**kwargs|
             axn.call_async(**kwargs)
           end
         end

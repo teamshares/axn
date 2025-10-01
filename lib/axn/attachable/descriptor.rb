@@ -50,23 +50,18 @@ module Axn
         axn_namespace = target.axn_namespace
 
         # Check if there's already an attached axn with the same name on this target
-        if axn_namespace.const_defined?(constant_name, false) && (target.respond_to?(:_attached_axn_descriptors) &&
+        return unless axn_namespace.const_defined?(constant_name, false) && (target.respond_to?(:_attached_axn_descriptors) &&
                      target._attached_axn_descriptors.any? { |descriptor| descriptor.name.to_s == @name.to_s })
-          # If this is a child class with a parent that has axn methods, allow overriding
-          if target.superclass && target.superclass.respond_to?(:_attached_axn_descriptors)
-            # This is a child class trying to override a parent's axn method, allow it
-            return
-          end
 
-          invalid!("unable to attach -- constant '#{constant_name}' is already defined in #{axn_namespace.name}")
+        # If this is a child class with a parent that has axn methods, allow overriding
+        # Check if the constant was defined by a parent class (inheritance scenario)
+        if target.superclass && target.superclass.respond_to?(:_attached_axn_descriptors)
+          # Check if the parent has a descriptor with the same name
+          parent_has_same_descriptor = target.superclass._attached_axn_descriptors.any? { |descriptor| descriptor.name.to_s == @name.to_s }
+          return if parent_has_same_descriptor
         end
-        # If the constant exists but there's no descriptor on this target, it's likely an inheritance scenario
-        # Allow it to proceed (the constant will be redefined, which is expected for inheritance)
 
-        # Check if the method name is already taken (for backward compatibility)
-        return unless target.respond_to?(method_name)
-
-        invalid!("unable to attach -- '#{method_name}' is already taken")
+        invalid!("unable to attach -- constant '#{constant_name}' is already defined in #{axn_namespace.name}")
       end
 
       def attachment_type_name
