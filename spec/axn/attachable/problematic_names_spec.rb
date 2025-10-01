@@ -16,7 +16,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method with spaces' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method with spaces' must be convertible to a valid constant name/)
         end
       end
 
@@ -33,7 +33,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\$%@name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\$%@name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with !@# characters" do
@@ -48,7 +48,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method!@#name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method!@#name' cannot contain method suffixes/)
         end
 
         it "fails validation with brackets and braces" do
@@ -63,7 +63,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\[\]{}name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\[\]{}name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with pipes and backslashes" do
@@ -78,7 +78,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\|\\name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\|\\name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with angle brackets" do
@@ -92,7 +92,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method<>name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method<>name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with colons and semicolons" do
@@ -106,21 +106,21 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method:;name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method:;name' must be convertible to a valid constant name/)
         end
 
-        it "fails validation with commas and periods" do
+        it "works with commas and periods" do
           client_class = Class.new do
             include Axn
           end
 
-          expect do
-            client_class.class_eval do
-              axn_method("method,.name") do
-                123
-              end
+          client_class.class_eval do
+            axn_method("method,.name") do
+              123
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method,.name' contains characters that make it uncallable with normal Ruby syntax/)
+          end
+
+          expect(client_class.public_send("method,.name!")).to eq(123)
         end
 
         it "fails validation with ampersands and asterisks" do
@@ -135,7 +135,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method&.*name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method&.*name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with tildes and backticks" do
@@ -149,7 +149,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method~`name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method~`name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with carets and dollars" do
@@ -164,7 +164,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\^.*name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\^.*name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with percent and hash" do
@@ -178,7 +178,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method%#name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method%#name' must be convertible to a valid constant name/)
         end
       end
 
@@ -195,7 +195,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method[\s\S]*name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method[\s\S]*name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with tabs" do
@@ -210,7 +210,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method.*name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method.*name' must be convertible to a valid constant name/)
         end
       end
 
@@ -226,7 +226,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method"name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method"name' must be convertible to a valid constant name/)
         end
 
         it "fails validation with single quotes" do
@@ -240,7 +240,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method'name' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name 'method'name' must be convertible to a valid constant name/)
         end
       end
     end
@@ -260,7 +260,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'a name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'a name' must be convertible to a valid constant name/)
 
           client_class2 = Class.new do
             include Axn
@@ -273,7 +273,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'a\tname' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'a\tname' must be convertible to a valid constant name/)
         end
 
         it "allows both 'method name' and 'method\tname' since they both fail validation" do
@@ -289,7 +289,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method name' must be convertible to a valid constant name/)
 
           client_class2 = Class.new do
             include Axn
@@ -302,7 +302,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\tname' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\tname' must be convertible to a valid constant name/)
         end
       end
 
@@ -320,7 +320,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method name' must be convertible to a valid constant name/)
 
           client_class2 = Class.new do
             include Axn
@@ -333,7 +333,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method  name' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method  name' must be convertible to a valid constant name/)
         end
       end
     end
@@ -352,7 +352,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method with spaces' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method with spaces' must be convertible to a valid constant name/)
         end
 
         it "fails validation for methods with special characters" do
@@ -367,7 +367,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\$%@name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\$%@name' must be convertible to a valid constant name/)
         end
 
         it "fails validation for methods with brackets" do
@@ -382,7 +382,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name 'method\[\]name' contains characters that make it uncallable with normal Ruby syntax/)
+                             /method name 'method\[\]name' must be convertible to a valid constant name/)
         end
       end
     end
@@ -415,7 +415,7 @@ RSpec.describe Axn do
               end
             end
           end.to raise_error(Axn::Attachable::AttachmentError,
-                             /method name '   ' contains whitespace characters that make it uncallable with normal Ruby syntax/)
+                             /method name '   ' must be convertible to a valid constant name/)
         end
       end
 
@@ -431,7 +431,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name '123method' cannot start with a number/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name '123method' must be convertible to a valid constant name/)
         end
 
         it "fails validation for names starting with special characters" do
@@ -445,7 +445,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name '@method' contains characters that make it uncallable with normal Ruby syntax/)
+          end.to raise_error(Axn::Attachable::AttachmentError, /method name '@method' must be convertible to a valid constant name/)
         end
       end
     end
@@ -494,46 +494,49 @@ RSpec.describe Axn do
           expect(client_class.method123!).to eq(123)
         end
 
-        it "works with method names containing question marks" do
+        it "fails validation with method names containing question marks" do
           client_class = Class.new do
             include Axn
           end
 
-          client_class.class_eval do
-            axn_method("method?") do
-              123
+          expect do
+            client_class.class_eval do
+              axn_method("method?") do
+                123
+              end
             end
-          end
-
-          expect(client_class.public_send("method?!")).to eq(123)
+          end.to raise_error(Axn::Attachable::AttachmentError,
+                             /method name 'method\?' cannot contain method suffixes/)
         end
 
-        it "works with method names containing exclamation marks" do
+        it "fails validation with method names containing exclamation marks" do
           client_class = Class.new do
             include Axn
           end
 
-          client_class.class_eval do
-            axn_method("method!") do
-              123
+          expect do
+            client_class.class_eval do
+              axn_method("method!") do
+                123
+              end
             end
-          end
-
-          expect(client_class.public_send("method!!")).to eq(123)
+          end.to raise_error(Axn::Attachable::AttachmentError,
+                             /method name 'method!' cannot contain method suffixes/)
         end
 
-        it "works with method names containing equals signs" do
+        it "fails validation with method names containing equals signs" do
           client_class = Class.new do
             include Axn
           end
 
-          client_class.class_eval do
-            axn_method("method=") do
-              123
+          expect do
+            client_class.class_eval do
+              axn_method("method=") do
+                123
+              end
             end
-          end
-
-          expect(client_class.public_send("method=!")).to eq(123)
+          end.to raise_error(Axn::Attachable::AttachmentError,
+                             /method name 'method=' cannot contain method suffixes/)
         end
       end
     end

@@ -13,8 +13,10 @@ module Axn
         @name = name
         @block = block
         @raw_kwargs = kwargs
+
         @kwargs = mount_strategy.preprocess_kwargs(**kwargs.except(*mount_strategy.strategy_specific_kwargs))
         @options = kwargs.slice(*mount_strategy.strategy_specific_kwargs)
+
         validate!
       end
 
@@ -77,25 +79,16 @@ module Axn
       end
 
       def validate_method_name!(method_name)
-        # Check if the method name is callable with normal Ruby syntax
-        # This is a basic check - more comprehensive validation could be added
         invalid!("method name cannot be empty") if method_name.empty?
 
-        # Check for spaces and other whitespace (these make methods uncallable with normal syntax)
-        if method_name.match?(/\s/)
-          invalid!("method name '#{method_name}' contains whitespace characters that make it uncallable with normal Ruby syntax. Use underscores instead of spaces")
-        end
+        # Check that the name can be converted to a valid constant name
+        # Don't allow method suffixes (!?=) in input since they'll be added automatically
+        invalid!("method name '#{method_name}' cannot contain method suffixes (!?=) as they are added automatically") if method_name.match?(/[!?=]/)
 
-        # Check for characters that make method names uncallable with normal syntax
-        # Allow letters, numbers, underscores, and ending punctuation (!?=)
-        if method_name.match?(/[^a-zA-Z0-9_!?=]/)
-          invalid!("method name '#{method_name}' contains characters that make it uncallable with normal Ruby syntax. Use only letters, numbers, underscores, and ending punctuation (!?=)")
-        end
+        classified = method_name.underscore.classify
+        return if classified.match?(/\A[A-Z][A-Za-z0-9_]*\z/)
 
-        # Check that it doesn't start with a number
-        return unless method_name.match?(/\A[0-9]/)
-
-        invalid!("method name '#{method_name}' cannot start with a number")
+        invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). Use letters, numbers, underscores, and spaces only.")
       end
 
       def configure_class_name_and_constant(axn_klass, name, axn_namespace)
@@ -133,12 +126,7 @@ module Axn
       end
 
       def generate_constant_name(name)
-        sanitized_name = sanitize_constant_name(name.to_s)
-
-        # Handle empty or invalid constant names
-        sanitized_name = "AnonymousAxn" if sanitized_name.empty? || !sanitized_name.match?(/\A[A-Z]/)
-
-        sanitized_name
+        name.to_s.underscore.classify
       end
 
       def generate_unique_constant_name(name, axn_namespace)
@@ -153,23 +141,6 @@ module Axn
 
           counter += 1
         end
-      end
-
-      def sanitize_constant_name(name)
-        return "AnonymousAxn" if name.empty?
-
-        # Remove all whitespace characters (spaces, tabs, newlines, etc.)
-        sanitized = name.gsub(/\s+/, "")
-
-        # Remove all special characters that are not allowed in constant names
-        # Keep only letters, numbers, and underscores
-        sanitized = sanitized.gsub(/[^A-Za-z0-9_]/, "")
-
-        # Ensure it starts with a letter or underscore
-        sanitized = "Axn#{sanitized}" if sanitized.empty? || !sanitized.match?(/\A[A-Za-z]/)
-
-        # Convert to PascalCase
-        sanitized.classify
       end
     end
   end
