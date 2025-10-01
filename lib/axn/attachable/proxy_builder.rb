@@ -28,18 +28,27 @@ module Axn
 
         # Common proxy logic
         method_missing_proc = proc do |method_name, *args, **kwargs, &block|
+          # Try class methods first
           if attached_class.respond_to?(method_name)
             attached_class.public_send(method_name, *args, **kwargs, &block)
+          # Then try instance methods
+          elsif attached_class.instance_methods.include?(method_name) || attached_class.private_instance_methods.include?(method_name)
+            # Create a temporary instance to call the method
+            temp_instance = attached_class.new
+            temp_instance.public_send(method_name, *args, **kwargs, &block)
           else
             super(method_name, *args, **kwargs, &block)
           end
         end
 
         respond_to_missing_proc = proc do |method_name, include_private|
-          attached_class.respond_to?(method_name, include_private) || super(method_name, include_private)
+          attached_class.respond_to?(method_name, include_private) ||
+            attached_class.instance_methods.include?(method_name) ||
+            (include_private && attached_class.private_instance_methods.include?(method_name)) ||
+            super(method_name, include_private)
         end
 
-        Class.new(client_class) do
+        Class.new do
           include ::Axn
 
           # Store reference to the axn_attached_to class

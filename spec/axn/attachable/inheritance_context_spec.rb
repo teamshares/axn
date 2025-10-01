@@ -183,8 +183,7 @@ RSpec.describe Axn::Attachable do
 
         working_class.owned_by :instance_test
         result = working_class.get_instance!(uuid: "123")
-        # This still fails because self.class in the axn_method block refers to the anonymous class
-        expect(result).to eq("https://api.example.com//123")
+        expect(result).to eq("https://api.example.com/instance_test/123")
       end
 
       it "shows that inheritance now works automatically" do

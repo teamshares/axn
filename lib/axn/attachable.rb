@@ -51,10 +51,15 @@ module Axn
         copied_axns = _attached_axn_descriptors.map(&:dup) # TODO: if descriptors are frozen, do we need the dup?
         subclass.instance_variable_set(:@_attached_axn_descriptors, copied_axns)
 
-        # TODO: fix inheritance of attached axns
-        # subclass._attached_axn_descriptors.each do |descriptor|
-        #   subclass._mount_axn_from_descriptor(descriptor)
-        # end
+        # Mount inherited axn methods on subclasses (only if not already defined)
+        subclass._attached_axn_descriptors.each do |descriptor|
+          subclass._mount_axn_from_descriptor(descriptor)
+        rescue AttachmentError => e
+          # Skip if method is already taken (already defined on subclass)
+          next if e.message.include?("already taken")
+
+          raise
+        end
       end
     end
 

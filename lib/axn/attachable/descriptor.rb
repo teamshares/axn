@@ -38,7 +38,7 @@ module Axn
 
           Axn::Factory.build(superclass:, **@kwargs, &@block)
         end.tap do |axn|
-          ConstantManager.configure_class_name_and_constant(axn, @name.to_s, target)
+          ConstantManager.configure_class_name_and_constant(axn, @name.to_s, target.axn_namespace)
         end
       end
 
