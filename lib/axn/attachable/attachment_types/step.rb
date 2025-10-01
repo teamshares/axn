@@ -10,8 +10,8 @@ module Axn
               next unless step_class.is_a?(Class)
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
-              num_steps = _attached_axn_descriptors.values.count { |descriptor| descriptor.mount_strategy.key == :step }
-              step("Step #{num_steps + 1}", step_class)
+              axn_steps = _attached_axn_descriptors.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass)
+              step("Step #{axn_steps.length + 1}", step_class)
             end
           end
 
@@ -20,18 +20,16 @@ module Axn
           end
         end
 
-        def self.mount(descriptor:, target:)
-          error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
-          axn_klass = descriptor.attached_axn
-
-          target.error from: axn_klass do |e|
+        def self.mount(attachment_name, axn_klass, on:, **options)
+          # Set up error handling
+          error_prefix = options[:error_prefix] || "#{attachment_name}: "
+          on.error from: axn_klass do |e|
             "#{error_prefix}#{e.message}"
           end
 
           # Define #call method dynamically to execute steps
-          target.define_method(:call) do
-            self.class._attached_axn_descriptors.values.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
-              axn = step_descriptor.attached_axn
+          on.define_method(:call) do
+            self.class._attached_axn_descriptors.values.select { |descriptor| descriptor.as == :step }.map(&:axn_klass).each do |axn|
               step_result = axn.call!(**@__context.__combined_data)
               step_result.declared_fields.each do |field|
                 @__context.exposed_data[field] = step_result.public_send(field)
@@ -39,8 +37,6 @@ module Axn
             end
           end
         end
-
-        def self.strategy_specific_kwargs = [:error_prefix]
       end
     end
   end

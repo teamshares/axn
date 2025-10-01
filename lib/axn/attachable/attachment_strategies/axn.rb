@@ -10,20 +10,20 @@ module Axn
           end
         end
 
-        def mount(on:)
-          axn_klass = @axn_klass
-          name = @name
+        def self.mount(descriptor:, target:)
+          axn = descriptor.attached_axn
+          name = descriptor.name
 
-          on.define_singleton_method(name) do |**kwargs|
-            axn_klass.call(**kwargs)
+          target.define_singleton_method(name) do |**kwargs|
+            axn.call(**kwargs)
           end
 
-          on.define_singleton_method("#{name}!") do |**kwargs|
-            axn_klass.call!(**kwargs)
+          target.define_singleton_method("#{name}!") do |**kwargs|
+            axn.call!(**kwargs)
           end
 
-          on.define_singleton_method("#{name}_async") do |**kwargs|
-            axn_klass.call_async(**kwargs)
+          target.define_singleton_method("#{name}_async") do |**kwargs|
+            axn.call_async(**kwargs)
           end
         end
       end

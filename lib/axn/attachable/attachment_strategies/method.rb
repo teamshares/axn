@@ -10,34 +10,36 @@ module Axn
           end
         end
 
-        def preprocess_kwargs(**kwargs)
+        def self.preprocess_kwargs(**kwargs)
           # Call parent preprocessing first
-          kwargs = super
+          processed_kwargs = super
 
           # Methods require a return value
-          kwargs[:expose_return_as] = kwargs[:expose_return_as].presence || :value
+          processed_kwargs[:expose_return_as] = processed_kwargs[:expose_return_as].presence || :value
 
           # Methods aren't capable of returning multiple values
-          if kwargs[:exposes].present?
+          if processed_kwargs[:exposes].present?
             raise AttachmentError,
                   "Methods aren't capable of exposing multiple values (will automatically expose return value instead)"
           end
 
-          kwargs
+          processed_kwargs
         end
 
-        def mount(on:)
+        def self.mount(descriptor:, target:)
           # Define custom methods for axn_method behavior
-          axn_klass = @axn_klass
-          name = @name
-          expose_return_as = @kwargs[:expose_return_as] || :value
+          name = descriptor.name
+          axn_klass = descriptor.attached_axn
 
-          on.define_singleton_method("#{name}!") do |**kwargs|
+          # TODO: if given an existing axn, kwargs may not be live - we should introspect the axn itself to determine this
+          expose_return_as = descriptor.instance_variable_get(:@kwargs)[:expose_return_as] || :value
+
+          target.define_singleton_method("#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)
             result.public_send(expose_return_as) # Return direct value, raises on error
           end
 
-          on.define_singleton_method("#{name}_axn") do |**kwargs|
+          target.define_singleton_method("#{name}_axn") do |**kwargs|
             axn_klass.call(**kwargs)
           end
         end

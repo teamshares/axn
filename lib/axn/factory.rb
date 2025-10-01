@@ -4,15 +4,6 @@ module Axn
   class Factory
     class << self
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
-      def wrap(
-        axn_klass = nil,
-        superclass: nil,
-        **,
-        &
-      )
-        axn_klass || build(superclass:, **, &)
-      end
-
       def build(
         callable = nil,
         # Builder-specific options
