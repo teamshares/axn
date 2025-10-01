@@ -329,29 +329,82 @@ RSpec.describe Axn do
             123
           end
         end
-        
+
         # Set the constant after the class is created
         stub_const("SomeClass", some_class)
 
         # The axn_method should create a class in the AttachedAxns namespace
         expect(SomeClass.const_defined?(:AttachedAxns)).to be true
-        
+
         attached_axns = SomeClass.const_get(:AttachedAxns)
         expect(attached_axns.const_defined?(:Foo)).to be true
-        
+
         foo_class = attached_axns.const_get(:Foo)
-        
-        # Debug: let's see what the actual names are
-        puts "SomeClass.name: #{SomeClass.name}"
-        puts "attached_axns.name: #{attached_axns.name}"
-        puts "foo_class.name: #{foo_class.name}"
-        
         expect(foo_class.name).to eq("SomeClass::AttachedAxns::Foo")
-        
-        # Verify the class works as expected
-        instance = foo_class.new
-        result = instance.call
+
+        # Verify the class works as expected by calling the method on the client
+        result = SomeClass.foo!
         expect(result).to eq(123)
+      end
+    end
+
+    describe "name collision handling" do
+      it "raises AttachmentError when trying to define both axn and axn_method with the same name (axn first)" do
+        expect do
+          Class.new do
+            include Axn
+
+            axn(:foo) do
+              1
+            end
+
+            axn_method(:foo) do
+              2
+            end
+          end
+        end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- constant 'Foo' is already defined/)
+      end
+
+      it "raises AttachmentError when trying to define both axn_method and axn with the same name (axn_method first)" do
+        expect do
+          Class.new do
+            include Axn
+
+            axn_method(:foo) do
+              1
+            end
+
+            axn(:foo) do
+              2
+            end
+          end
+        end.to raise_error(Axn::Attachable::AttachmentError, /Axn unable to attach -- constant 'Foo' is already defined/)
+      end
+
+      it "allows child class to override parent's axn_method with the same name" do
+        parent_class = Class.new do
+          include Axn
+
+          axn_method :foo do
+            "parent"
+          end
+        end
+
+        child_class = Class.new(parent_class) do
+          axn_method :foo do
+            "child"
+          end
+        end
+
+        # Parent should still work with its original implementation
+        expect(parent_class.foo!).to eq("parent")
+
+        # Child should use its overridden implementation
+        expect(child_class.foo!).to eq("child")
+
+        # Both should have the constant defined in their AttachedAxns namespace
+        expect(parent_class.const_get(:AttachedAxns).const_defined?(:Foo)).to be true
+        expect(child_class.const_get(:AttachedAxns).const_defined?(:Foo)).to be true
       end
     end
   end

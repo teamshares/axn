@@ -45,6 +45,25 @@ module Axn
       def method_name = @name.to_s.underscore
 
       def validate_before_mount!(target:)
+        # Check if the constant is already defined in the AttachedAxns namespace
+        constant_name = generate_constant_name(@name.to_s)
+        axn_namespace = target.axn_namespace
+
+        # Check if there's already an attached axn with the same name on this target
+        if axn_namespace.const_defined?(constant_name, false) && (target.respond_to?(:_attached_axn_descriptors) &&
+                     target._attached_axn_descriptors.any? { |descriptor| descriptor.name.to_s == @name.to_s })
+          # If this is a child class with a parent that has axn methods, allow overriding
+          if target.superclass && target.superclass.respond_to?(:_attached_axn_descriptors)
+            # This is a child class trying to override a parent's axn method, allow it
+            return
+          end
+
+          invalid!("unable to attach -- constant '#{constant_name}' is already defined in #{axn_namespace.name}")
+        end
+        # If the constant exists but there's no descriptor on this target, it's likely an inheritance scenario
+        # Allow it to proceed (the constant will be redefined, which is expected for inheritance)
+
+        # Check if the method name is already taken (for backward compatibility)
         return unless target.respond_to?(method_name)
 
         invalid!("unable to attach -- '#{method_name}' is already taken")
@@ -81,15 +100,17 @@ module Axn
 
       def configure_class_name(axn_klass, name, axn_namespace)
         class_name = name.to_s.classify
-        namespace_name = axn_namespace&.name
 
         axn_klass.define_singleton_method(:name) do
-          if namespace_name&.end_with?("::AttachedAxns")
+          # Evaluate namespace name dynamically when the method is called
+          current_namespace_name = axn_namespace&.name
+
+          if current_namespace_name&.end_with?("::AttachedAxns")
             # We're already in a namespace, just add the method name
-            "#{namespace_name}::#{class_name}"
-          elsif namespace_name
+            "#{current_namespace_name}::#{class_name}"
+          elsif current_namespace_name
             # Create the AttachedAxns namespace
-            "#{namespace_name}::AttachedAxns::#{class_name}"
+            "#{current_namespace_name}::AttachedAxns::#{class_name}"
           else
             # Fallback for anonymous classes
             "AnonymousAxn::#{class_name}"

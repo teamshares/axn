@@ -55,7 +55,8 @@ module Axn
           subclass._mount_axn_from_descriptor(descriptor)
         rescue AttachmentError => e
           # Skip if method is already taken (already defined on subclass)
-          next if e.message.include?("already taken")
+          # or if constant is already defined (inheritance scenario)
+          next if e.message.include?("already taken") || e.message.include?("already defined")
 
           raise
         end
