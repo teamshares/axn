@@ -5,16 +5,16 @@ require "ostruct"
 module Axn
   module Attachable
     class AttachmentStrategies
-      # Base class for all attachment strategies
-      class Base
-        # Class-level hooks for subclasses to configure themselves
-        def self.preprocess_kwargs(**kwargs) = kwargs
-        def self.strategy_specific_kwargs = []
+      # Base module for all attachment strategies
+      module Base
+        # Class-level hooks for strategy modules to configure themselves
+        def preprocess_kwargs(**kwargs) = kwargs
+        def strategy_specific_kwargs = []
 
         # The actual per-strategy mounting logic
-        def self.mount(descriptor:, target:) = raise NotImplementedError, "Subclasses must implement mount"
+        def mount(descriptor:, target:) = raise NotImplementedError, "Strategy modules must implement mount"
 
-        def self.key = name.split("::").last.underscore.to_sym
+        def key = name.split("::").last.underscore.to_sym
       end
     end
   end

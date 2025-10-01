@@ -3,7 +3,9 @@
 module Axn
   module Attachable
     class AttachmentStrategies
-      class Step < Base
+      module Step
+        extend Base
+
         module DSL
           def steps(*steps)
             Array(steps).compact.each do |step_class|

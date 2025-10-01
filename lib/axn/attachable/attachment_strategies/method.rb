@@ -3,7 +3,9 @@
 module Axn
   module Attachable
     class AttachmentStrategies
-      class Method < Base
+      module Method
+        extend Base
+
         module DSL
           def axn_method(name, axn_klass = nil, **, &)
             attach_axn(as: :method, name:, axn_klass:, **, &)
