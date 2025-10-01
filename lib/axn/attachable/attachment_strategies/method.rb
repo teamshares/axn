@@ -31,16 +31,34 @@ module Axn
           name = descriptor.name
           axn_klass = descriptor.attached_axn
 
-          # TODO: if given an existing axn, kwargs may not be live - we should introspect the axn itself to determine this
-          expose_return_as = descriptor.instance_variable_get(:@kwargs)[:expose_return_as] || :value
+          # Determine expose_return_as by introspecting the axn class
+          expose_return_as = _determine_exposure_to_return(axn_klass)
 
           target.define_singleton_method("#{name}!") do |**kwargs|
             result = axn_klass.call!(**kwargs)
+            return result if expose_return_as.nil?
+
             result.public_send(expose_return_as) # Return direct value, raises on error
           end
 
           target.define_singleton_method("#{name}_axn") do |**kwargs|
             axn_klass.call(**kwargs)
+          end
+        end
+
+        private_class_method def self._determine_exposure_to_return(axn_klass)
+          # Introspect the axn class to determine expose_return_as
+          exposed_fields = axn_klass.external_field_configs.map(&:field)
+
+          case exposed_fields.size
+          when 0
+            nil # No exposed fields, return nil to avoid public_send
+          when 1
+            exposed_fields.first # Single field, assume it's expose_return_as
+          else
+            raise AttachmentError,
+                  "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
+                  "Use a fresh block with axn_method or ensure the axn class has exactly one exposed field."
           end
         end
       end

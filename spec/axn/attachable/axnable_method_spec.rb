@@ -262,5 +262,61 @@ RSpec.describe Axn do
         expect(result).not_to be_a(Axn::Result)
       end
     end
+
+    describe "with existing axn classes" do
+      it "works with existing axn class that has single exposed field" do
+        single_exposure_axn = Axn::Factory.build(exposes: [:value]) do |value:|
+          expose :value, value * 2
+        end
+
+        client = build_axn do
+          axn_method :single, axn_klass: single_exposure_axn
+        end
+
+        result = client.single!(value: 5)
+        expect(result).to eq(10)
+        expect(result).not_to be_a(Axn::Result)
+      end
+
+      it "works with existing axn class that has no exposed fields" do
+        no_exposure_axn = Axn::Factory.build do |value:|
+          value * 2
+        end
+
+        client = build_axn do
+          axn_method :none, axn_klass: no_exposure_axn
+        end
+
+        result = client.none!(value: 5)
+        expect(result).to be_a(Axn::Result)
+        expect(result).to be_ok
+      end
+
+      it "raises error with existing axn class that has multiple exposed fields" do
+        multiple_exposure_axn = Axn::Factory.build(exposes: %i[value extra]) do |value:|
+          expose :value, value * 2
+          expose :extra, "processed"
+        end
+
+        expect do
+          build_axn do
+            axn_method :multiple, axn_klass: multiple_exposure_axn
+          end
+        end.to raise_error(Axn::Attachable::AttachmentError,
+                           /Cannot determine expose_return_as for existing axn class with multiple exposed fields: value, extra/)
+      end
+
+      it "still works with fresh blocks even when existing axn classes are problematic" do
+        client = build_axn do
+          axn_method :fresh, expose_return_as: :data do |value:|
+            "fresh: #{value * 2}"
+          end
+        end
+
+        result = client.fresh!(value: 5)
+        expect(result).to eq("fresh: 10")
+        expect(result).not_to be_a(Axn::Result)
+      end
+    end
   end
 end

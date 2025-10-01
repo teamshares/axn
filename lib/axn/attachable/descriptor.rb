@@ -12,6 +12,7 @@ module Axn
 
         @name = name
         @block = block
+        @raw_kwargs = kwargs
         @kwargs = mount_strategy.preprocess_kwargs(**kwargs.except(*mount_strategy.strategy_specific_kwargs))
         @options = kwargs.slice(*mount_strategy.strategy_specific_kwargs)
         validate!
@@ -64,7 +65,7 @@ module Axn
         return unless @existing_axn_klass
 
         invalid!("was given both an existing axn class and also a block - only one is allowed") if @block.present?
-        if @kwargs.present? && mount_strategy != AttachmentStrategies::Step
+        if @raw_kwargs.present? && mount_strategy != AttachmentStrategies::Step
           invalid!("was given an existing axn class and also keyword arguments - only one is allowed")
         end
 
