@@ -59,20 +59,7 @@ module Axn
         # Handle empty or invalid constant names
         base_name = "AnonymousAxn" if base_name.empty? || !base_name.match?(/\A[A-Z]/)
 
-        # Handle collisions by incrementing the number
-        find_unique_constant_name(base_name)
-      end
-
-      def find_unique_constant_name(base_name)
-        return base_name unless axn_namespace.const_defined?(base_name)
-
-        counter = 1
-        loop do
-          candidate_name = "#{base_name}#{counter}"
-          return candidate_name unless axn_namespace.const_defined?(candidate_name)
-
-          counter += 1
-        end
+        base_name
       end
     end
   end
