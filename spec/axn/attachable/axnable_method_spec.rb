@@ -318,5 +318,31 @@ RSpec.describe Axn do
         expect(result).not_to be_a(Axn::Result)
       end
     end
+
+    describe "class naming and namespacing" do
+      it "creates SomeClass::AttachedAxns::Foo from axn_method(:foo)" do
+        stub_const("SomeClass", Class.new do
+          include Axn
+
+          axn_method :foo do
+            123
+          end
+        end)
+
+        # The axn_method should create a class in the AttachedAxns namespace
+        expect(SomeClass.const_defined?(:AttachedAxns)).to be true
+        
+        attached_axns = SomeClass.const_get(:AttachedAxns)
+        expect(attached_axns.const_defined?(:Foo)).to be true
+        
+        foo_class = attached_axns.const_get(:Foo)
+        expect(foo_class.name).to eq("SomeClass::AttachedAxns::Foo")
+        
+        # Verify the class works as expected
+        instance = foo_class.new
+        result = instance.call
+        expect(result).to eq(123)
+      end
+    end
   end
 end
