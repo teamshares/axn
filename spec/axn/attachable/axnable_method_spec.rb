@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../../support/shared_examples/axn_attached_to_behavior"
+require_relative "../../support/shared_examples/__axn_attached_to__behavior"
 
 RSpec.describe Axn do
   describe ".axn_method" do
@@ -581,7 +581,7 @@ RSpec.describe Axn do
             expect(result).to eq("helper_result")
           end
 
-          it "provides access to axn_attached_to from included methods" do
+          it "provides access to __axn_attached_to__ from included methods" do
             client_class_with_attached = Class.new do
               include Axn
 
@@ -906,7 +906,7 @@ RSpec.describe Axn do
             end
 
             def build_resource_name
-              axn_attached_to.name.demodulize.downcase
+              __axn_attached_to__.name.demodulize.downcase
             end
           end)
         end
@@ -933,7 +933,7 @@ RSpec.describe Axn do
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
         end
 
-        it "shows that axn_attached_to is available in included modules" do
+        it "shows that __axn_attached_to__ is available in included modules" do
           # This test verifies that the included module can access the attached class
           result = client_class.get_user!(uuid: "456")
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
@@ -941,8 +941,8 @@ RSpec.describe Axn do
       end
     end
 
-    describe "axn_attached_to" do
-      include_examples "axn_attached_to behavior", :axn_method
+    describe "__axn_attached_to__" do
+      include_examples "__axn_attached_to__ behavior", :axn_method
     end
   end
 end

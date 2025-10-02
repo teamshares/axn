@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../../support/shared_examples/axn_attached_to_behavior"
+require_relative "../../support/shared_examples/__axn_attached_to__behavior"
 
 RSpec.describe Axn do
   describe ".axn" do
@@ -278,7 +278,7 @@ RSpec.describe Axn do
             expect(result.value).to eq("helper_result")
           end
 
-          it "provides access to axn_attached_to from included methods" do
+          it "provides access to __axn_attached_to__ from included methods" do
             client_class_with_attached = Class.new do
               include Axn
 
@@ -597,8 +597,8 @@ RSpec.describe Axn do
       end
     end
 
-    describe "axn_attached_to" do
-      include_examples "axn_attached_to behavior", :axn
+    describe "__axn_attached_to__" do
+      include_examples "__axn_attached_to__ behavior", :axn
 
       context "with inheritance" do
         let(:parent_class) do
@@ -627,19 +627,19 @@ RSpec.describe Axn do
           end
         end
 
-        it "sets axn_attached_to correctly for parent actions" do
+        it "sets __axn_attached_to__ correctly for parent actions" do
           parent_axn = parent_class.const_get(:Axns).const_get(:ParentAction)
-          expect(parent_axn.axn_attached_to).to eq(parent_class)
+          expect(parent_axn.__axn_attached_to__).to eq(parent_class)
         end
 
-        it "sets axn_attached_to correctly for child actions" do
+        it "sets __axn_attached_to__ correctly for child actions" do
           child_axn = child_class.const_get(:Axns).const_get(:ChildAction)
-          expect(child_axn.axn_attached_to).to eq(child_class)
+          expect(child_axn.__axn_attached_to__).to eq(child_class)
         end
 
         it "inherited actions get re-attached to the child class" do
           inherited_axn = child_class.const_get(:Axns).const_get(:ParentAction)
-          expect(inherited_axn.axn_attached_to).to eq(child_class)
+          expect(inherited_axn.__axn_attached_to__).to eq(child_class)
         end
       end
     end

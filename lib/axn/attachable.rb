@@ -38,7 +38,7 @@ module Axn
         # Create a bare namespace class for holding constants
         client_class = self
         Class.new.tap do |namespace_class|
-          namespace_class.define_singleton_method(:axn_attached_to) { client_class }
+          namespace_class.define_singleton_method(:__axn_attached_to__) { client_class }
 
           namespace_class.define_singleton_method(:name) do
             client_name = client_class.name.presence || "AnonymousClient_#{client_class.object_id}"

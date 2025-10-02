@@ -97,8 +97,8 @@ module Axn
       end
 
       def configure_axn_attached_to(axn_klass, target)
-        axn_klass.define_singleton_method(:axn_attached_to) { target }
-        axn_klass.define_method(:axn_attached_to) { target }
+        axn_klass.define_singleton_method(:__axn_attached_to__) { target }
+        axn_klass.define_method(:__axn_attached_to__) { target }
       end
 
       def configure_class_name(axn_klass, name, axn_namespace)
