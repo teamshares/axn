@@ -4,7 +4,12 @@ outline: deep
 
 # Attachable Actions
 
-The attachable functionality is an advanced feature that allows you to attach actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for service objects, background processors, and other classes that need to execute specific actions as part of their core functionality.
+The attachable functionality is an advanced feature that allows you to attach actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for API clients to automatically wrap bits of logic in full Axn affordances, and for tacking on `enqueue_all` methods that can then be themselves run in a background job via enqueue_all_async (without requiring creating a separate worker class just to trigger the Axn).
+
+::: danger ALPHA
+This is in VERY EXPERIMENTAL use at Teamshares, but the API is still definitely in flux.
+In particular we don't current support `inherit: self` (we're hoping to figure this out eventually), so for now in practice using this requires an awkward dance where you wrap up code to want to share in explicit modules. Note you can reference back to the mounting class via `__axn_attached_to__` (name likely to change, hence the underscores).
+:::
 
 ## Overview
 
@@ -40,8 +45,8 @@ end
 
 **Mounted methods:**
 - `UserService.create_user(**kwargs)` - Returns `Axn::Result`
-- `UserService.create_user!(**kwargs)` - Returns `Axn::Result`, raises on error
-- `UserService.create_user_async(**kwargs)` - Executes asynchronously
+- `UserService.create_user!(**kwargs)` - Returns `Axn::Result` on success, raises on error
+- `UserService.create_user_async(**kwargs)` - Executes asynchronously (requires async adapter configuration)
 
 ### `axn_method` Strategy
 
@@ -66,8 +71,8 @@ end
 sum = Calculator.add!(a: 5, b: 3)        # Returns 8 directly
 product = Calculator.multiply!(a: 4, b: 6) # Returns 24 directly
 
-# You can still access the full result if needed
-result = Calculator.Axns::add(a: 5, b: 3)   # Returns Axn::Result
+# NOTE: you can still access the underlying Axn on the <wrapping_class>::Axns namespace
+result = Calculator::Axns.add(a: 5, b: 3)   # Returns Axn::Result
 ```
 
 **Mounted methods:**
@@ -112,26 +117,43 @@ end
 **Available methods:**
 - `OrderProcessor.call(**kwargs)` - Executes all steps in sequence
 
-## Advanced Options
+## Async Execution
 
-### Custom Superclass
+Attachable actions automatically support async execution when an async adapter is configured. Each attached action gets a `_async` method that executes the action in the background.
 
-You can specify a custom superclass for attached actions using the `superclass` option:
+### Configuring Async Adapters
 
 ```ruby
-class BaseService
+class DataProcessor
   include Axn
 
-  # Inherit from Object instead of the default proxy superclass
-  axn(:utility_method, superclass: Object) do
-    def call
-      "This action inherits from Object"
-    end
+  # Configure async adapter (e.g., Sidekiq, ActiveJob)
+  async :sidekiq
+
+  axn(:process_data, async: :sidekiq) do |data:|
+    # Processing logic
+    expose :processed_count, data.count
   end
 end
+
+# Usage
+# Synchronous execution
+result = DataProcessor.process_data(data: large_dataset)
+
+# Asynchronous execution
+DataProcessor.process_data_async(data: large_dataset)
 ```
 
-This is useful when you want the attached action to inherit from a specific base class rather than the default proxy superclass.
+### Available Async Methods
+
+When you attach an action using the `axn` strategy, you automatically get:
+- `ClassName.action_name(**kwargs)` - Synchronous execution
+- `ClassName.action_name!(**kwargs)` - Synchronous execution, raises on error
+- `ClassName.action_name_async(**kwargs)` - Asynchronous execution
+
+The `_async` methods require an async adapter to be configured. See the [async configuration documentation](/reference/class#async) and [global async configuration](/reference/configuration#set-default-async) for more details on available adapters and configuration options.
+
+## Advanced Options
 
 ### Error Prefixing for Steps
 
@@ -195,22 +217,16 @@ axn(:user@domain)    # Becomes UserDomain constant
 
 ```ruby
 # ✅ Good: Focused action
-axn(:send_welcome_email) do
-  expects :user_id
-  def call
-    WelcomeMailer.send_welcome(user_id).deliver_now
-  end
+axn(:send_welcome_email) do |user_id:|
+  WelcomeMailer.send_welcome(user_id).deliver_now
 end
 
 # ❌ Bad: Too many responsibilities - prefer a standalone class
-axn(:process_user) do
-  expects :user_data
-  def call
-    user = User.create!(user_data)
-    WelcomeMailer.send_welcome(user.id).deliver_now
-    Analytics.track_user_signup(user.id)
-    # ... more logic
-  end
+axn(:process_user) do |user_data:|
+  user = User.create!(user_data)
+  WelcomeMailer.send_welcome(user.id).deliver_now
+  Analytics.track_user_signup(user.id)
+  # ... more logic
 end
 ```
 
@@ -228,27 +244,7 @@ axn_method(:do_thing)
 step(:step1)
 ```
 
-### 4. Handle Errors Appropriately
 
-```ruby
-# For expected failures, use fail!
-axn(:validate_user) do
-  expects :email
-  def call
-    fail! "Email is required" if email.blank?
-    fail! "Invalid email format" unless email.match?(/\A[^@\s]+@[^@\s]+\z/)
-  end
-end
-
-# For unexpected errors, let them bubble up
-axn(:external_api_call) do
-  expects :data
-  def call
-    # This will be caught and handled by the error system
-    ExternalAPI.post(data)
-  end
-end
-```
 
 ## Common Patterns
 
@@ -273,38 +269,6 @@ result = UserService.create(email: "user@example.com", name: "John")
 user = UserService.find_by_email!(email: "user@example.com")
 ```
 
-### Background Job Processing
-
-```ruby
-class DataProcessor
-  include Axn
-
-  axn(:process_batch) do |batch_id:, data:|
-    processed = 0
-    errors = []
-
-    data.each do |item|
-      begin
-        process_item(item)
-        processed += 1
-      rescue => e
-        errors << e.message
-      end
-    end
-
-    expose :processed_count, processed
-    expose :errors, errors
-  end
-
-  axn_method(:queue_processing) do |batch_id:|
-    ProcessDataJob.perform_later(batch_id)
-  end
-end
-
-# Usage
-result = DataProcessor.process_batch(batch_id: "123", data: large_dataset)
-job_id = DataProcessor.queue_processing!(batch_id: "123")
-```
 
 ### Workflow Composition
 
