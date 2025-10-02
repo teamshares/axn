@@ -43,7 +43,8 @@ RSpec.describe Axn::Attachable do
 
         it "inherits axn_method definitions" do
           expect(child).to respond_to(:multiply!)
-          expect(child).to respond_to(:multiply_axn)
+          expect(child.const_defined?(:Axns)).to be true
+          expect(child.const_get(:Axns).const_defined?(:Multiply)).to be true
         end
 
         it "has separate _attached_axn_descriptors configurations" do
@@ -58,7 +59,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "can call inherited axn methods" do
-          result = child.multiply_axn(value: 5)
+          multiply_axn = child.const_get(:Axns).const_get(:Multiply)
+          result = multiply_axn.call(value: 5)
           expect(result).to be_ok
           expect(result.value).to eq(10)
         end
@@ -79,7 +81,8 @@ RSpec.describe Axn::Attachable do
 
         it "inherits axn_method definitions" do
           expect(ChildWithAxnableMethod).to respond_to(:add!)
-          expect(ChildWithAxnableMethod).to respond_to(:add_axn)
+          expect(ChildWithAxnableMethod.const_defined?(:Axns)).to be true
+          expect(ChildWithAxnableMethod.const_get(:Axns).const_defined?(:Add)).to be true
         end
 
         it "has separate _attached_axn_descriptors configurations" do
@@ -94,7 +97,8 @@ RSpec.describe Axn::Attachable do
         end
 
         it "can call inherited axn methods" do
-          result = ChildWithAxnableMethod.add_axn(value: 5)
+          add_axn = ChildWithAxnableMethod.const_get(:Axns).const_get(:Add)
+          result = add_axn.call(value: 5)
           expect(result).to be_ok
           expect(result.value).to eq(15)
         end
@@ -254,9 +258,12 @@ RSpec.describe Axn::Attachable do
       end
 
       it "inherits both axn_method and axn definitions" do
-        expect(ChildWithMixed).to respond_to(:method1!, :method1_axn)
+        expect(ChildWithMixed).to respond_to(:method1!)
+        expect(ChildWithMixed.const_defined?(:Axns)).to be true
+        expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method1)).to be true
         expect(ChildWithMixed).to respond_to(:action1, :action1!, :action1_async)
-        expect(ChildWithMixed).to respond_to(:method2!, :method2_axn)
+        expect(ChildWithMixed).to respond_to(:method2!)
+        expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method2)).to be true
         expect(ChildWithMixed).to respond_to(:action2, :action2!, :action2_async)
       end
 

@@ -42,10 +42,6 @@ module Axn
 
             result.public_send(expose_return_as) # Return direct value, raises on error
           end
-
-          mount_method(target:, method_name: "#{name}_axn") do |**kwargs|
-            axn_klass.call(**kwargs)
-          end
         end
 
         private_class_method def self._determine_exposure_to_return(axn_klass)

@@ -20,18 +20,36 @@ RSpec.describe Axn do
     it "exposes expected API" do
       expect(client).not_to respond_to(:number)
       expect(client).to respond_to(:number!)
-      expect(client).to respond_to(:number_axn)
+      expect(client.const_defined?(:Axns)).to be true
+      expect(client.const_get(:Axns).const_defined?(:Number)).to be true
+    end
+
+    it "allows direct access via client.const_get(:Axns).number" do
+      number_axn = client.const_get(:Axns).const_get(:Number)
+      result = number_axn.call(arg: 123)
+      expect(result).to be_ok
+      expect(result.value).to eq(133)
+    end
+
+    it "allows access via client.const_get(:Axns).number as method call" do
+      axns_module = client.const_get(:Axns)
+      expect(axns_module).to respond_to(:number)
+      result = axns_module.number(arg: 123)
+      expect(result).to be_ok
+      expect(result.value).to eq(133)
     end
 
     describe "when called as axn" do
       it "handles success" do
-        result = client.number_axn(arg: 123)
+        number_axn = client.const_get(:Axns).const_get(:Number)
+        result = number_axn.call(arg: 123)
         expect(result).to be_ok
         expect(result.value).to eq(133)
       end
 
       it "handles fail!" do
-        result = client.number_axn(arg: 111)
+        number_axn = client.const_get(:Axns).const_get(:Number)
+        result = number_axn.call(arg: 111)
         expect(result).not_to be_ok
         expect(result.error).to eq("arg was all 1s")
         expect(result.exception).to be_a(Axn::Failure)
@@ -40,7 +58,8 @@ RSpec.describe Axn do
       end
 
       it "handles raise" do
-        result = client.number_axn(arg: 22)
+        number_axn = client.const_get(:Axns).const_get(:Number)
+        result = number_axn.call(arg: 22)
         expect(result).not_to be_ok
         expect(result.error).to eq("badbadbad")
         expect(result.exception).to be_a(RuntimeError)
