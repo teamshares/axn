@@ -20,13 +20,13 @@ module Axn
 
             # Get all modules defined within this class
             constants = self.constants.map { |const| const_get(const) }
-            mods = constants.select { |const| const.is_a?(Module) }
+            items = select_constants_to_load(constants)
 
             # Convert module names to keys
-            mods.to_h do |mod|
-              name = mod.name.split("::").last
+            items.to_h do |item|
+              name = item.name.split("::").last
               key = name.underscore.to_sym
-              [key, mod]
+              [key, item]
             end
           end
         end
@@ -75,6 +75,11 @@ module Axn
         def registry_directory
           # Subclasses must override this to return their directory
           raise NotImplementedError, "Subclasses must implement registry_directory method"
+        end
+
+        def select_constants_to_load(constants)
+          # Subclasses can override this to select which constants to load
+          constants.select { |const| const.is_a?(Module) }
         end
       end
     end

@@ -1,14 +1,40 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable::Subactions do
+RSpec.describe Axn::Attachable do
   describe "inheritance" do
-    describe "axnable_method inheritance" do
+    describe "axn_method inheritance" do
+      context "with helper methods" do
+        let(:parent_class) do
+          Class.new do
+            include Axn
+
+            axn_method :multiply do |value:|
+              value * the_multiple
+            end
+
+            def the_multiple = 2
+          end
+        end
+
+        let(:child_class) do
+          Class.new(parent_class) do
+            def the_multiple = 3
+          end
+        end
+
+        it "can call inherited methods" do
+          pending "We don't fully support inheritance of axn_method yet (infinite loop issues on inherited)"
+          expect(parent_class.multiply!(value: 5)).to eq(10)
+          expect(child_class.multiply!(value: 5)).to eq(15)
+        end
+      end
+
       context "with anonymous classes" do
         let(:parent) do
           Class.new do
             include Axn
 
-            axnable_method :multiply do |value:|
+            axn_method :multiply do |value:|
               value * 2
             end
           end
@@ -16,15 +42,16 @@ RSpec.describe Axn::Attachable::Subactions do
 
         let(:child) { Class.new(parent) }
 
-        it "inherits axnable_method definitions" do
+        it "inherits axn_method definitions" do
           expect(child).to respond_to(:multiply!)
-          expect(child).to respond_to(:multiply_axn)
+          expect(child.const_defined?(:Axns)).to be true
+          expect(child.const_get(:Axns).const_defined?(:Multiply)).to be true
         end
 
-        it "has separate _axnable_methods configurations" do
-          expect(parent._axnable_methods.keys).to eq([:multiply])
-          expect(child._axnable_methods.keys).to eq([:multiply])
-          expect(parent._axnable_methods.object_id).not_to eq(child._axnable_methods.object_id)
+        it "has separate _attached_axn_descriptors configurations" do
+          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:multiply])
+          expect(child._attached_axn_descriptors.map(&:name)).to eq([:multiply])
+          expect(parent._attached_axn_descriptors.object_id).not_to eq(child._attached_axn_descriptors.object_id)
         end
 
         it "can call inherited methods" do
@@ -33,7 +60,8 @@ RSpec.describe Axn::Attachable::Subactions do
         end
 
         it "can call inherited axn methods" do
-          result = child.multiply_axn(value: 5)
+          multiply_axn = child.const_get(:Axns).const_get(:Multiply)
+          result = multiply_axn.call(value: 5)
           expect(result).to be_ok
           expect(result.value).to eq(10)
         end
@@ -44,7 +72,7 @@ RSpec.describe Axn::Attachable::Subactions do
           stub_const("ParentWithAxnableMethod", Class.new do
             include Axn
 
-            axnable_method :add do |value:|
+            axn_method :add do |value:|
               value + 10
             end
           end)
@@ -52,15 +80,16 @@ RSpec.describe Axn::Attachable::Subactions do
           stub_const("ChildWithAxnableMethod", Class.new(ParentWithAxnableMethod))
         end
 
-        it "inherits axnable_method definitions" do
+        it "inherits axn_method definitions" do
           expect(ChildWithAxnableMethod).to respond_to(:add!)
-          expect(ChildWithAxnableMethod).to respond_to(:add_axn)
+          expect(ChildWithAxnableMethod.const_defined?(:Axns)).to be true
+          expect(ChildWithAxnableMethod.const_get(:Axns).const_defined?(:Add)).to be true
         end
 
-        it "has separate _axnable_methods configurations" do
-          expect(ParentWithAxnableMethod._axnable_methods.keys).to eq([:add])
-          expect(ChildWithAxnableMethod._axnable_methods.keys).to eq([:add])
-          expect(ParentWithAxnableMethod._axnable_methods.object_id).not_to eq(ChildWithAxnableMethod._axnable_methods.object_id)
+        it "has separate _attached_axn_descriptors configurations" do
+          expect(ParentWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
+          expect(ChildWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
+          expect(ParentWithAxnableMethod._attached_axn_descriptors.object_id).not_to eq(ChildWithAxnableMethod._attached_axn_descriptors.object_id)
         end
 
         it "can call inherited methods" do
@@ -69,7 +98,8 @@ RSpec.describe Axn::Attachable::Subactions do
         end
 
         it "can call inherited axn methods" do
-          result = ChildWithAxnableMethod.add_axn(value: 5)
+          add_axn = ChildWithAxnableMethod.const_get(:Axns).const_get(:Add)
+          result = add_axn.call(value: 5)
           expect(result).to be_ok
           expect(result.value).to eq(15)
         end
@@ -80,13 +110,13 @@ RSpec.describe Axn::Attachable::Subactions do
           stub_const("ParentWithOverride", Class.new do
             include Axn
 
-            axnable_method :calculate do |value:|
+            axn_method :calculate do |value:|
               value * 2
             end
           end)
 
           stub_const("ChildWithOverride", Class.new(ParentWithOverride) do
-            axnable_method :calculate do |value:|
+            axn_method :calculate do |value:|
               value * 3
             end
           end)
@@ -119,10 +149,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(child).to respond_to(:triple_async)
         end
 
-        it "has separate _axns configurations" do
-          expect(parent._axns.keys).to eq([:triple])
-          expect(child._axns.keys).to eq([:triple])
-          expect(parent._axns.object_id).not_to eq(child._axns.object_id)
+        it "has separate _attached_axn_descriptors configurations" do
+          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:triple])
+          expect(child._attached_axn_descriptors.map(&:name)).to eq([:triple])
+          expect(parent._attached_axn_descriptors.object_id).not_to eq(child._attached_axn_descriptors.object_id)
         end
 
         it "can call inherited methods" do
@@ -139,16 +169,6 @@ RSpec.describe Axn::Attachable::Subactions do
       end
 
       context "with named classes" do
-        let(:subaction) do
-          Class.new do
-            include Axn
-
-            def call(value:)
-              value + 20
-            end
-          end
-        end
-
         let(:parent_class) do
           Class.new do
             include Axn
@@ -167,10 +187,10 @@ RSpec.describe Axn::Attachable::Subactions do
           expect(child_class).to respond_to(:increment_async)
         end
 
-        it "has separate _axns configurations" do
-          expect(parent_class._axns.keys).to eq([:increment])
-          expect(child_class._axns.keys).to eq([:increment])
-          expect(parent_class._axns.object_id).not_to eq(child_class._axns.object_id)
+        it "has separate _attached_axn_descriptors configurations" do
+          expect(parent_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
+          expect(child_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
+          expect(parent_class._attached_axn_descriptors.object_id).not_to eq(child_class._attached_axn_descriptors.object_id)
         end
 
         it "can call inherited methods" do
@@ -218,7 +238,7 @@ RSpec.describe Axn::Attachable::Subactions do
         stub_const("ParentWithMixed", Class.new do
           include Axn
 
-          axnable_method :method1 do |value:|
+          axn_method :method1 do |value:|
             value + 1
           end
 
@@ -228,7 +248,7 @@ RSpec.describe Axn::Attachable::Subactions do
         end)
 
         stub_const("ChildWithMixed", Class.new(ParentWithMixed) do
-          axnable_method :method2 do |value:|
+          axn_method :method2 do |value:|
             value + 2
           end
 
@@ -238,18 +258,20 @@ RSpec.describe Axn::Attachable::Subactions do
         end)
       end
 
-      it "inherits both axnable_method and axn definitions" do
-        expect(ChildWithMixed).to respond_to(:method1!, :method1_axn)
+      it "inherits both axn_method and axn definitions" do
+        expect(ChildWithMixed).to respond_to(:method1!)
+        expect(ChildWithMixed.const_defined?(:Axns)).to be true
+        expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method1)).to be true
         expect(ChildWithMixed).to respond_to(:action1, :action1!, :action1_async)
-        expect(ChildWithMixed).to respond_to(:method2!, :method2_axn)
+        expect(ChildWithMixed).to respond_to(:method2!)
+        expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method2)).to be true
         expect(ChildWithMixed).to respond_to(:action2, :action2!, :action2_async)
       end
 
       it "has separate configurations for both types" do
-        expect(ParentWithMixed._axnable_methods.keys).to eq([:method1])
-        expect(ParentWithMixed._axns.keys).to eq([:action1])
-        expect(ChildWithMixed._axnable_methods.keys).to eq(%i[method1 method2])
-        expect(ChildWithMixed._axns.keys).to eq(%i[action1 action2])
+        expect(ParentWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1])
+        expect(ChildWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1 method2 action2])
+        expect(ParentWithMixed._attached_axn_descriptors.object_id).not_to eq(ChildWithMixed._attached_axn_descriptors.object_id)
       end
 
       it "can call all inherited methods" do
@@ -270,7 +292,7 @@ RSpec.describe Axn::Attachable::Subactions do
           Class.new do
             include Axn
 
-            axnable_method :test do |value:|
+            axn_method :test do |value:|
               value * 2
             end
           end
@@ -282,7 +304,7 @@ RSpec.describe Axn::Attachable::Subactions do
           parent = Class.new do
             include Axn
 
-            axnable_method :test do |value:|
+            axn_method :test do |value:|
               value * 2
             end
           end

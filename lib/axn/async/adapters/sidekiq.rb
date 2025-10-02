@@ -23,7 +23,7 @@ module Axn
             perform_async(_params_to_global_id(**))
           end
 
-          def _params_to_global_id(context)
+          def _params_to_global_id(context = {})
             return {} if context.nil?
 
             context.stringify_keys.each_with_object({}) do |(key, value), hash|

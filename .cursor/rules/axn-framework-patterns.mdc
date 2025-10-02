@@ -1,0 +1,43 @@
+# Axn Framework Usage Patterns
+
+## Basic Action Structure
+- Always include `Axn` module: `class MyAction; include Axn; end`
+- Declare interface with `expects` and `exposes` at class level
+- Implement `call` method for action logic
+- Use `expose` to return data (must be declared in `exposes` first)
+- Use `fail!` for expected failures, `done!` for early success completion
+
+## Execution Patterns
+- Use `call` for result objects (swallows exceptions, returns `Axn::Result`)
+- Use `call!` for exception-throwing behavior (re-raises exceptions)
+- Use `call_async` for background execution (requires async configuration)
+
+## Data Flow and Validation
+- `expects` declares required input parameters with validation options
+- `exposes` declares output data that must be provided via `expose`
+- Common validation options: `type:`, `optional:`, `allow_nil:`, `allow_blank:`, `default:`, `sensitive:`
+- Use `model: true` for auto-hydrating records from IDs
+- Use `on:` for nested field expectations and accessors
+
+## Composition Patterns
+- Use `step :name, expects: [:input], exposes: [:output]` for inline steps
+- Use `steps(Class1, Class2)` to compose existing action classes
+- Steps execute sequentially and share data through `expects`/`exposes`
+- Step failures are automatically prefixed with step name
+
+## Message and Error Handling
+- Use `success` and `error` declarations for custom messages
+- Support conditional messages with `if:`/`unless:` matchers
+- Use `from:` parameter for error message inheritance from child actions
+- Use `prefix:` for consistent error message formatting
+- Define static messages first, then conditional messages
+
+## Async and Background Processing
+- Configure with `async :sidekiq` or `async :active_job`
+- Use `call_async` for background execution
+- Supports all adapter-specific configuration options
+
+## Hooks and Callbacks
+- Hooks (`before`/`after`/`around`) execute as part of `call` - failures affect `result.ok?`
+- Callbacks (`on_success`/`on_error`/`on_failure`/`on_exception`) execute after `call` - failures don't affect `result.ok?`
+- Use `done!` for early completion (skips `after` hooks, allows `around` hooks to complete)

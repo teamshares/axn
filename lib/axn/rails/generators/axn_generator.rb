@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 module Axn
-  module Rails
+  module RailsIntegration
     module Generators
-      class AxnGenerator < ::Rails::Generators::NamedBase
+      class AxnGenerator < Rails::Generators::NamedBase
+        namespace "axn"
         source_root File.expand_path("templates", __dir__)
 
         argument :expectations, type: :array, default: [], banner: "expectation1 expectation2 ..."
@@ -44,9 +45,9 @@ module Axn
         end
 
         def spec_generation_skipped?
-          return false unless defined?(::Rails) && ::Rails.application&.config&.generators
+          return false unless defined?(Rails) && Rails.application&.config&.generators
 
-          generators_config = ::Rails.application.config.generators
+          generators_config = Rails.application.config.generators
 
           # Check individual boolean flags (modern style)
           return true if generators_config.respond_to?(:test_framework) &&

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/field_resolvers/model"
+require "axn/core/field_resolvers/extract"
 
 module Axn
   module Core
@@ -9,9 +10,10 @@ module Axn
       # This allows us to easily add new field types in the future
       RESOLVERS = {
         model: FieldResolvers::Model,
+        extract: FieldResolvers::Extract,
       }.freeze
 
-      def self.resolve(type:, field:, options:, provided_data:)
+      def self.resolve(type:, field:, provided_data:, options: {})
         resolver_class = RESOLVERS[type]
         raise ArgumentError, "Unknown field resolver type: #{type}" unless resolver_class
 

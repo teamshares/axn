@@ -238,4 +238,126 @@ RSpec.describe Axn::Validators::ModelValidator do
       ).at_least(:once)
     end
   end
+
+  describe "model validation as subfields" do
+    let(:user) { User.create!(name: "Test User") }
+
+    it "validates model fields within nested data structures" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+        exposes :the_user
+
+        def call
+          expose :the_user, user
+        end
+      end
+
+      # Test with user object directly in nested data
+      result = action.call(data: { user: })
+      expect(result).to be_ok
+      expect(result.the_user).to eq(user)
+    end
+
+    it "finds user by ID when user_id provided in nested data" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+        exposes :the_user
+
+        def call
+          expose :the_user, user
+        end
+      end
+
+      result = action.call(data: { user_id: user.id })
+      expect(result).to be_ok
+      expect(result.the_user).to eq(user)
+    end
+
+    it "prefers user object over user_id when both provided in nested data" do
+      other_user = User.create!(name: "Other User")
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+        exposes :the_user
+
+        def call
+          expose :the_user, user
+        end
+      end
+
+      result = action.call(data: { user:, user_id: other_user.id })
+      expect(result).to be_ok
+      expect(result.the_user).to eq(user)
+    end
+
+    it "validates user object type in nested data" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+      end
+
+      result = action.call(data: { user: "not a user" })
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to include("is not a User")
+    end
+
+    it "fails when user not found by ID in nested data" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+      end
+
+      result = action.call(data: { user_id: 99_999 })
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "fails when neither user nor user_id provided in nested data" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data
+      end
+
+      result = action.call(data: {})
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "works with allow_nil for nested model fields" do
+      action = build_axn do
+        expects :data
+        expects :user, model: { klass: User }, on: :data, allow_nil: true
+        exposes :user_name, allow_nil: true
+
+        def call
+          expose :user_name, user&.name
+        end
+      end
+
+      result = action.call(data: { some_field: "value" })
+      expect(result).to be_ok
+      expect(result.user_name).to be_nil
+    end
+
+    it "handles model: true syntax for nested fields" do
+      action = build_axn do
+        expects :data
+        expects :user, model: true, on: :data
+        exposes :user_name
+
+        def call
+          expose :user_name, user.name
+        end
+      end
+
+      allow(User).to receive(:find).with(user.id).and_return(user)
+
+      result = action.call(data: { user_id: user.id })
+      expect(result).to be_ok
+      expect(result.user_name).to eq("Test User")
+    end
+  end
 end

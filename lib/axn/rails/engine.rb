@@ -3,8 +3,11 @@
 # Only define the Engine if Rails is available
 if defined?(Rails) && Rails.const_defined?(:Engine)
   module Axn
-    module Rails
-      class Engine < ::Rails::Engine
+    module RailsIntegration
+      class Engine < Rails::Engine
+        # Set a custom engine name that's more concise than the module path
+        engine_name "axn_rails"
+
         # This engine is automatically loaded when AXN is used in a Rails context
         # It ensures proper initialization and integration with Rails
 
@@ -31,10 +34,10 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
               namespace = Module.new
               Object.const_set(autoload_namespace, namespace)
             end
-            ::Rails.autoloaders.main.push_dir(actions_path, namespace:)
+            Rails.autoloaders.main.push_dir(actions_path, namespace:)
           else
             # No namespace - load directly
-            ::Rails.autoloaders.main.push_dir(actions_path)
+            Rails.autoloaders.main.push_dir(actions_path)
           end
         end
 

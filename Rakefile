@@ -20,7 +20,7 @@ end
 require "rubocop/rake_task"
 
 # RuboCop with Axn custom cops (targeting examples/rubocop directory)
-task :rubocop_axn do
+task :rubocop_examples do
   sh "bundle exec rubocop --require axn/rubocop examples/rubocop/ || true"
 end
 
@@ -28,4 +28,7 @@ end
 RuboCop::RakeTask.new
 
 task default: %i[spec rubocop]
+task rails_specs: %i[spec_rails]
+task rubocop_specs: %i[spec_rubocop]
 task all_specs: %i[spec spec_rubocop spec_rails]
+task specs: %i[all_specs]

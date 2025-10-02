@@ -37,7 +37,7 @@ module RuboCop
       #     end
       #   end
       #
-      # @example With ActionsNamespace configured
+      # @example With ActionsNamespace configured as string
       #   # .rubocop.yml
       #   Axn/UncheckedResult:
       #     ActionsNamespace: "Actions"
@@ -48,6 +48,21 @@ module RuboCop
       #     def call
       #       SomeService.call(param: "value")  # Won't trigger cop
       #       Actions::InnerAction.call(param: "value")  # Will trigger cop
+      #     end
+      #   end
+      #
+      # @example With ActionsNamespace configured as array
+      #   # .rubocop.yml
+      #   Axn/UncheckedResult:
+      #     ActionsNamespace: ["Actions", "Services"]
+      #
+      #   # This will check both Actions::* and Services::* classes
+      #   class OuterAction
+      #     include Axn
+      #     def call
+      #       SomeService.call(param: "value")  # Won't trigger cop
+      #       Actions::InnerAction.call(param: "value")  # Will trigger cop
+      #       Services::SomeService.call(param: "value")  # Will trigger cop
       #     end
       #   end
       #
@@ -62,8 +77,8 @@ module RuboCop
           @configuration_schema ||= RuboCop::ConfigSchema::Schema.new(
             {
               "ActionsNamespace" => {
-                "type" => "string",
-                "description" => 'Only check calls on classes under this namespace (e.g., "Actions")',
+                "type" => %w[string array],
+                "description" => 'Only check calls on classes under this namespace (e.g., "Actions") or array of namespaces (e.g., ["Actions", "Services"])',
               },
               "CheckNested" => {
                 "type" => "boolean",
@@ -170,9 +185,18 @@ module RuboCop
           # Check if we have the Actions namespace configured
           namespace = actions_namespace
 
-          return const_name.start_with?("#{namespace}::") if namespace
+          if namespace
+            # Handle both string and array configurations
+            case namespace
+            when String
+              return const_name.start_with?("#{namespace}::")
+            when Array
+              # If array is empty, fall back to checking all calls
+              return true if namespace.empty?
 
-          # If Actions namespace is configured, only check calls on Actions::* classes
+              return namespace.any? { |ns| const_name.start_with?("#{ns}::") }
+            end
+          end
 
           # If no namespace is configured, we can't be as precise
           # Fall back to checking if the class includes Axn (more complex)
@@ -197,7 +221,18 @@ module RuboCop
 
         def actions_namespace
           # First try to get from RuboCop configuration
-          cop_config["ActionsNamespace"]&.to_s
+          config_value = cop_config["ActionsNamespace"]
+          return nil unless config_value
+
+          # Handle both string and array configurations
+          case config_value
+          when String
+            config_value
+          when Array
+            config_value.map(&:to_s)
+          else
+            config_value.to_s
+          end
         rescue StandardError => _e
           # If there's any error accessing the configuration, return nil
           nil

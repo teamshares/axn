@@ -68,12 +68,16 @@ Lint/EmptyBlock:
   Enabled: false
 
 Naming/MethodParameterName:
-  AllowedNames: e, on, id, if
+  AllowedNames: e, on, id, if, as
 
 Metrics/ParameterLists:
   Max: 10
 
 Layout/LineLength:
   Max: 160
+
+Naming/VariableNumber:
+  Exclude:
+    - 'spec/**/*'
 
 

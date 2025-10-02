@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable::Steps do
+RSpec.describe "Step functionality" do
   describe "basic step functionality" do
     it "executes a simple step" do
       action = build_axn do
@@ -245,6 +245,34 @@ RSpec.describe Axn::Attachable::Steps do
       expect(result).to be_ok
       expect(result.validated_email).to eq("user@example.com")
       expect(result.welcome_message).to eq("Welcome user@example.com!")
+    end
+  end
+
+  describe "call method optimization" do
+    it "only defines call method once even with multiple steps" do
+      action_class = build_axn do
+        expects :input
+        exposes :output
+
+        step :step1, expects: [:input], exposes: [:intermediate] do
+          expose :intermediate, input.upcase
+        end
+
+        step :step2, expects: [:intermediate], exposes: [:output] do
+          expose :output, "Final: #{intermediate}"
+        end
+      end
+
+      # Verify the call method is defined
+      expect(action_class.instance_methods).to include(:call)
+
+      # Verify the instance variable tracking is set
+      expect(action_class.instance_variable_get(:@_axn_call_method_defined_for_steps)).to be true
+
+      # Verify it works correctly
+      result = action_class.call!(input: "test")
+      expect(result).to be_ok
+      expect(result.output).to eq("Final: TEST")
     end
   end
 
