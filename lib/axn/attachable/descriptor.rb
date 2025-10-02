@@ -37,9 +37,10 @@ module Axn
 
         @attached_axn = @existing_axn_klass || begin
           Axn::Factory.build(**@kwargs, &@block)
-        end.tap do |axn|
-          configure_class_name_and_constant(axn, @name.to_s, target.axn_namespace)
         end
+
+        configure_class_name_and_constant(@attached_axn, @name.to_s, target.axn_namespace)
+        configure_axn_attached_to(@attached_axn, target)
       end
 
       def method_name = @name.to_s.underscore
@@ -92,6 +93,11 @@ module Axn
       def configure_class_name_and_constant(axn_klass, name, axn_namespace)
         configure_class_name(axn_klass, name, axn_namespace) if name.present?
         register_constant(axn_klass, name, axn_namespace) if should_register_constant?(axn_namespace)
+      end
+
+      def configure_axn_attached_to(axn_klass, target)
+        axn_klass.define_singleton_method(:axn_attached_to) { target }
+        axn_klass.define_method(:axn_attached_to) { target }
       end
 
       def configure_class_name(axn_klass, name, axn_namespace)

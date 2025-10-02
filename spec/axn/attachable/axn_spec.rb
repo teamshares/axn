@@ -239,5 +239,109 @@ RSpec.describe Axn do
         end
       end
     end
+
+    describe "axn_attached_to" do
+      let(:client_class) do
+        Class.new do
+          include Axn
+
+          def self.name
+            "TestClient"
+          end
+        end
+      end
+
+      context "with axn defined from block" do
+        before do
+          client_class.axn(:test_action) do
+            "test result"
+          end
+        end
+
+        it "sets axn_attached_to on the attached axn class" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+          expect(axn_class.axn_attached_to).to eq(client_class)
+        end
+
+        it "returns the correct class when called" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+          expect(axn_class.axn_attached_to.name).to eq("TestClient")
+        end
+
+        it "provides instance method axn_attached_to" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+          axn_instance = axn_class.new
+          expect(axn_instance.axn_attached_to).to eq(client_class)
+        end
+      end
+
+      context "with existing axn class" do
+        let(:existing_axn) do
+          build_axn do
+            "existing result"
+          end
+        end
+
+        before do
+          client_class.axn(:existing_action, existing_axn)
+        end
+
+        it "sets axn_attached_to on the existing axn class" do
+          expect(existing_axn.axn_attached_to).to eq(client_class)
+        end
+
+        it "returns the correct class when called" do
+          expect(existing_axn.axn_attached_to.name).to eq("TestClient")
+        end
+
+        it "provides instance method axn_attached_to" do
+          axn_instance = existing_axn.new
+          expect(axn_instance.axn_attached_to).to eq(client_class)
+        end
+      end
+
+      context "with inheritance" do
+        let(:parent_class) do
+          Class.new do
+            include Axn
+
+            def self.name
+              "ParentClient"
+            end
+
+            axn(:parent_action) do
+              "parent result"
+            end
+          end
+        end
+
+        let(:child_class) do
+          Class.new(parent_class) do
+            def self.name
+              "ChildClient"
+            end
+
+            axn(:child_action) do
+              "child result"
+            end
+          end
+        end
+
+        it "sets axn_attached_to correctly for parent actions" do
+          parent_axn = parent_class.const_get(:Axns).const_get(:ParentAction)
+          expect(parent_axn.axn_attached_to).to eq(parent_class)
+        end
+
+        it "sets axn_attached_to correctly for child actions" do
+          child_axn = child_class.const_get(:Axns).const_get(:ChildAction)
+          expect(child_axn.axn_attached_to).to eq(child_class)
+        end
+
+        it "inherited actions get re-attached to the child class" do
+          inherited_axn = child_class.const_get(:Axns).const_get(:ParentAction)
+          expect(inherited_axn.axn_attached_to).to eq(child_class)
+        end
+      end
+    end
   end
 end
