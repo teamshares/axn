@@ -76,4 +76,8 @@ Metrics/ParameterLists:
 Layout/LineLength:
   Max: 160
 
+Naming/VariableNumber:
+  Exclude:
+    - 'spec/**/*'
+
 

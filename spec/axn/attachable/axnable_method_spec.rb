@@ -920,8 +920,8 @@ RSpec.describe Axn do
             end
 
             axn_method :get_user, include: ApiHelpers do |uuid:|
-              url = url_builder(resource: build_resource_name, uuid:)
-              # Simulate API call
+              # Simulate API call (url would be used in real implementation)
+              url_builder(resource: build_resource_name, uuid:)
               response = '{"id": 123, "name": "John Doe"}'
               parse_response(response)
             end

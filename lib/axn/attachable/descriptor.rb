@@ -87,7 +87,8 @@ module Axn
         classified = method_name.parameterize(separator: "_").classify
         return if classified.match?(/\A[A-Z][A-Za-z0-9_]*\z/)
 
-        invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). Use letters, numbers, underscores, and common punctuation only.")
+        invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). " \
+                 "Use letters, numbers, underscores, and common punctuation only.")
       end
 
       def configure_class_name_and_constant(axn_klass, name, axn_namespace)
