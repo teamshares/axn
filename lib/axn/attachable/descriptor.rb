@@ -36,10 +36,7 @@ module Axn
         raise "axn already attached" if attached?
 
         @attached_axn = @existing_axn_klass || begin
-          # Use explicit superclass if provided, otherwise default to target's proxy superclass
-          superclass = @kwargs[:superclass].presence || target.axn_superclass
-
-          Axn::Factory.build(superclass:, **@kwargs, &@block)
+          Axn::Factory.build(**@kwargs, &@block)
         end.tap do |axn|
           configure_class_name_and_constant(axn, @name.to_s, target.axn_namespace)
         end

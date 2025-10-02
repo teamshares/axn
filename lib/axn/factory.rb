@@ -10,6 +10,11 @@ module Axn
         superclass: nil,
         expose_return_as: nil,
 
+        # Module inclusion options
+        include: [],
+        extend: [],
+        prepend: [],
+
         # Expose standard class-level options
         exposes: [],
         expects: [],
@@ -61,7 +66,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        _build_axn_class(superclass:, args:, executable:, expose_return_as:).tap do |axn|
+        _build_axn_class(superclass:, args:, executable:, expose_return_as:, include:, extend:, prepend:).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -150,9 +155,13 @@ module Axn
         end
       end
 
-      def _build_axn_class(superclass:, args:, executable:, expose_return_as:)
+      def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil)
         Class.new(superclass || Object) do
           include Axn unless self < Axn
+
+          Array(include).each { |mod| include mod }
+          Array(extend).each { |mod| extend mod }
+          Array(prepend).each { |mod| prepend mod }
 
           # Set a default name for anonymous classes to help with debugging
           define_singleton_method(:name) do

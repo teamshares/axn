@@ -2,7 +2,6 @@
 
 require "axn/attachable/attachment_strategies"
 require "axn/attachable/descriptor"
-require "axn/attachable/proxy_builder"
 
 module Axn
   module Attachable
@@ -48,10 +47,6 @@ module Axn
 
           const_set(:AttachedAxns, namespace_class)
         end
-      end
-
-      def axn_superclass
-        @axn_superclass ||= ProxyBuilder.build_superclass(self)
       end
 
       private

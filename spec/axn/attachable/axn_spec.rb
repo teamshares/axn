@@ -3,9 +3,7 @@
 RSpec.describe Axn do
   describe ".axn" do
     let(:client) do
-      build_axn do
-        auto_log :debug
-      end
+      build_axn
     end
 
     context "with existing action class" do
@@ -36,9 +34,9 @@ RSpec.describe Axn do
         expect(client.foo).not_to be_ok
 
         # The automatic logging will log before and after execution, so we need to expect multiple calls
-        expect(Axn.config.logger).to receive(:debug).with(/About to execute with: {expected: true, arg: 123}/).ordered
+        expect(Axn.config.logger).to receive(:info).with(/About to execute with: {expected: true, arg: 123}/).ordered
         expect(Axn.config.logger).to receive(:info).with(/got expected=true, arg=123/).ordered
-        expect(Axn.config.logger).to receive(:debug).with(/Execution completed \(with outcome: success\)/).ordered
+        expect(Axn.config.logger).to receive(:info).with(/Execution completed \(with outcome: success\)/).ordered
         expect(client.foo(expected: true, arg: 123)).to be_ok
       end
 
@@ -139,7 +137,12 @@ RSpec.describe Axn do
 
     context "with Client class customization" do
       before do
-        client.axn(:foo, exposes: :resp, &subaction)
+        # Create a superclass that provides the awesome_thing method
+        awesome_class = Class.new do
+          def self.awesome_thing = 123
+        end
+
+        client.axn(:foo, exposes: :resp, superclass: awesome_class, &subaction)
       end
 
       let(:client) do

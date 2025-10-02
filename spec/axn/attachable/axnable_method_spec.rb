@@ -423,22 +423,30 @@ RSpec.describe Axn do
         end
       end
 
-      context "with default superclass (no explicit superclass)" do
+      context "with explicit superclass" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn_method :test do
-              # This should inherit from the proxy class and have access to client methods
+            # Create a superclass that provides the test_method
+            test_superclass = Class.new do
+              def test_method
+                "test_method_result"
+              end
+            end
+
+            axn_method :test, superclass: test_superclass do
+              # Now has access to test_method through superclass
               test_method
             end
           end
         end
 
-        it "inherits from proxy superclass" do
+        it "inherits from explicit superclass" do
           axn_class = client_class.const_get(:AttachedAxns).const_get(:Test)
-          expect(axn_class.superclass).to eq(client_class.axn_superclass)
+          expect(axn_class.superclass).to be_a(Class)
+          expect(axn_class.superclass.instance_methods).to include(:test_method)
         end
 
-        it "has access to client methods through proxy" do
+        it "has access to client methods through superclass" do
           result = client_class.test!
           expect(result).to eq("test_method_result")
         end
