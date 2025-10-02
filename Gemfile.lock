@@ -235,7 +235,7 @@ GEM
       unicode-emoji (~> 4.0, >= 4.0.4)
     unicode-emoji (4.0.4)
     useragent (0.16.11)
-    vernier (0.8.0)
+    vernier (1.8.1)
     websocket-driver (0.8.0)
       base64
       websocket-extensions (>= 0.1.0)
@@ -254,7 +254,7 @@ DEPENDENCIES
   rspec (~> 3.2)
   rubocop (~> 1.21)
   sqlite3 (~> 2.0)
-  vernier (~> 0.1)
+  vernier (~> 1.0)
 
 BUNDLED WITH
    2.5.6
