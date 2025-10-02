@@ -320,7 +320,7 @@ RSpec.describe Axn do
     end
 
     describe "class naming and namespacing" do
-      it "creates SomeClass::AttachedAxns::Foo from axn_method(:foo)" do
+      it "creates SomeClass::Axns::Foo from axn_method(:foo)" do
         # Create the class first, then define the constant
         some_class = Class.new do
           include Axn
@@ -333,14 +333,14 @@ RSpec.describe Axn do
         # Set the constant after the class is created
         stub_const("SomeClass", some_class)
 
-        # The axn_method should create a class in the AttachedAxns namespace
-        expect(SomeClass.const_defined?(:AttachedAxns)).to be true
+        # The axn_method should create a class in the Axns namespace
+        expect(SomeClass.const_defined?(:Axns)).to be true
 
-        attached_axns = SomeClass.const_get(:AttachedAxns)
+        attached_axns = SomeClass.const_get(:Axns)
         expect(attached_axns.const_defined?(:Foo)).to be true
 
         foo_class = attached_axns.const_get(:Foo)
-        expect(foo_class.name).to eq("SomeClass::AttachedAxns::Foo")
+        expect(foo_class.name).to eq("SomeClass::Axns::Foo")
 
         # Verify the class works as expected by calling the method on the client
         result = SomeClass.foo!
@@ -402,9 +402,9 @@ RSpec.describe Axn do
         # Child should use its overridden implementation
         expect(child_class.foo!).to eq("child")
 
-        # Both should have the constant defined in their AttachedAxns namespace
-        expect(parent_class.const_get(:AttachedAxns).const_defined?(:Foo)).to be true
-        expect(child_class.const_get(:AttachedAxns).const_defined?(:Foo)).to be true
+        # Both should have the constant defined in their Axns namespace
+        expect(parent_class.const_get(:Axns).const_defined?(:Foo)).to be true
+        expect(child_class.const_get(:Axns).const_defined?(:Foo)).to be true
       end
     end
 
@@ -441,7 +441,7 @@ RSpec.describe Axn do
         end
 
         it "inherits from explicit superclass" do
-          axn_class = client_class.const_get(:AttachedAxns).const_get(:Test)
+          axn_class = client_class.const_get(:Axns).const_get(:Test)
           expect(axn_class.superclass).to be_a(Class)
           expect(axn_class.superclass.instance_methods).to include(:test_method)
         end
@@ -463,7 +463,7 @@ RSpec.describe Axn do
         end
 
         it "inherits from Object" do
-          axn_class = client_class.const_get(:AttachedAxns).const_get(:Test)
+          axn_class = client_class.const_get(:Axns).const_get(:Test)
           expect(axn_class.superclass).to eq(Object)
         end
 
@@ -492,7 +492,7 @@ RSpec.describe Axn do
         end
 
         it "inherits from Object" do
-          axn_class = client_class.const_get(:AttachedAxns).const_get(:TestStep)
+          axn_class = client_class.const_get(:Axns).const_get(:TestStep)
           expect(axn_class.superclass).to eq(Object)
         end
 
@@ -514,7 +514,7 @@ RSpec.describe Axn do
         end
 
         it "inherits from Object" do
-          axn_class = client_class.const_get(:AttachedAxns).const_get(:TestAxn)
+          axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
           expect(axn_class.superclass).to eq(Object)
         end
 

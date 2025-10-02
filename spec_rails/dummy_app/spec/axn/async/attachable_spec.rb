@@ -39,7 +39,7 @@ RSpec.describe "Axn::Async with attachable" do
     action.enqueue_all(max: 1)
 
     expect(Axn.config.logger).to have_received(:info).with(
-      "[Actions::EnqueueAll::Tester::AttachedAxns::EnqueueAll] EnqueueAll block: instance_helper=instance_helper, class_helper=class_helper",
+      "[Actions::EnqueueAll::Tester::Axns::EnqueueAll] EnqueueAll block: instance_helper=instance_helper, class_helper=class_helper",
     )
   end
 end

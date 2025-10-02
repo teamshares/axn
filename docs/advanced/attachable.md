@@ -11,7 +11,7 @@ The attachable functionality is an advanced feature that allows you to attach ac
 When you attach an action to a class, you get multiple ways to access it:
 
 1. **Direct method calls** on the class (e.g., `SomeClass.foo`), which depend on how you told it to mount
-3. **Namespace method calls** (e.g., `SomeClass::AttachedAxns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
+3. **Namespace method calls** (e.g., `SomeClass::Axns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
 
 ## Attachment Strategies
 
@@ -67,12 +67,12 @@ sum = Calculator.add!(a: 5, b: 3)        # Returns 8 directly
 product = Calculator.multiply!(a: 4, b: 6) # Returns 24 directly
 
 # You can still access the full result if needed
-result = Calculator.AttachedAxns::add(a: 5, b: 3)   # Returns Axn::Result
+result = Calculator.Axns::add(a: 5, b: 3)   # Returns Axn::Result
 ```
 
 **Mounted methods:**
 - `Calculator.add!(**kwargs)` - Returns the extracted value directly, raises on error
-- `Calculator::AttachedAxns.add(**kwargs)` - Returns `Axn::Result`
+- `Calculator::Axns.add(**kwargs)` - Returns `Axn::Result`
 
 ### `step` Strategy
 

@@ -29,9 +29,9 @@ module Axn
       end
 
       def axn_namespace
-        # Check if :AttachedAxns is defined directly on this class (not inherited)
-        if const_defined?(:AttachedAxns, false)
-          axn_class = const_get(:AttachedAxns)
+        # Check if :Axns is defined directly on this class (not inherited)
+        if const_defined?(:Axns, false)
+          axn_class = const_get(:Axns)
           return axn_class if axn_class.is_a?(Class)
         end
 
@@ -42,10 +42,10 @@ module Axn
 
           namespace_class.define_singleton_method(:name) do
             client_name = client_class.name.presence || "AnonymousClient_#{client_class.object_id}"
-            "#{client_name}::AttachedAxns"
+            "#{client_name}::Axns"
           end
 
-          const_set(:AttachedAxns, namespace_class)
+          const_set(:Axns, namespace_class)
         end
       end
 

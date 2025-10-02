@@ -101,12 +101,12 @@ module Axn
           # Evaluate namespace name dynamically when the method is called
           current_namespace_name = axn_namespace&.name
 
-          if current_namespace_name&.end_with?("::AttachedAxns")
+          if current_namespace_name&.end_with?("::Axns")
             # We're already in a namespace, just add the method name
             "#{current_namespace_name}::#{class_name}"
           elsif current_namespace_name
-            # Create the AttachedAxns namespace
-            "#{current_namespace_name}::AttachedAxns::#{class_name}"
+            # Create the Axns namespace
+            "#{current_namespace_name}::Axns::#{class_name}"
           else
             # Fallback for anonymous classes
             "AnonymousAxn::#{class_name}"
@@ -120,7 +120,7 @@ module Axn
       end
 
       def should_register_constant?(axn_namespace)
-        axn_namespace&.name&.end_with?("::AttachedAxns")
+        axn_namespace&.name&.end_with?("::Axns")
       end
 
       def generate_constant_name(name)

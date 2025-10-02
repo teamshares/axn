@@ -88,9 +88,9 @@ RSpec.describe Axn::Attachable do
 
         result = test_class.show_context!(uuid: "123")
 
-        # The self.class is still the AttachedAxns class (this is expected behavior)
+        # The self.class is still the Axns class (this is expected behavior)
         expect(result[:self_class]).not_to eq(test_class)
-        expect(result[:self_class_name]).to include("::AttachedAxns::")
+        expect(result[:self_class_name]).to include("::Axns::")
 
         # The superclass is the proxy class (separate from the namespace)
         expect(result[:superclass]).to eq(test_class.axn_superclass)
