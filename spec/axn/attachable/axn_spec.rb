@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../../support/shared_examples/axn_attached_to_behavior"
+
 RSpec.describe Axn do
   describe ".axn" do
     let(:client) do
@@ -240,65 +242,363 @@ RSpec.describe Axn do
       end
     end
 
+    describe "module inclusion options" do
+      describe "include parameter" do
+        context "with single module" do
+          before do
+            stub_const("HelperModule", Module.new do
+              def helper_method
+                "helper_result"
+              end
+
+              def url_builder(uuid:)
+                "https://api.example.com/#{uuid}"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, include: HelperModule, exposes: [:value] do
+                expose :value, helper_method
+              end
+            end
+          end
+
+          it "includes the module in the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.included_modules).to include(HelperModule)
+          end
+
+          it "makes module methods available in the axn block" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("helper_result")
+          end
+
+          it "provides access to axn_attached_to from included methods" do
+            client_class_with_attached = Class.new do
+              include Axn
+
+              def self.name
+                "TestClient"
+              end
+
+              axn :test_action, include: HelperModule, exposes: [:value] do
+                expose :value, url_builder(uuid: "123")
+              end
+            end
+
+            result = client_class_with_attached.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("https://api.example.com/123")
+          end
+        end
+
+        context "with multiple modules" do
+          before do
+            stub_const("HelperModule1", Module.new do
+              def method_1
+                "from_module_1"
+              end
+            end)
+
+            stub_const("HelperModule2", Module.new do
+              def method_2
+                "from_module_2"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, include: [HelperModule1, HelperModule2], exposes: [:value] do
+                expose :value, "#{method_1}_#{method_2}"
+              end
+            end
+          end
+
+          it "includes all modules in the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.included_modules).to include(HelperModule1)
+            expect(axn_class.included_modules).to include(HelperModule2)
+          end
+
+          it "makes all module methods available in the axn block" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("from_module_1_from_module_2")
+          end
+        end
+
+        context "with empty array" do
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, include: [], exposes: [:value] do
+                expose :value, "no_modules"
+              end
+            end
+          end
+
+          it "works without any modules" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("no_modules")
+          end
+        end
+      end
+
+      describe "extend parameter" do
+        context "with single module" do
+          before do
+            stub_const("ExtenderModule", Module.new do
+              def extended_method
+                "extended_result"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, extend: ExtenderModule, exposes: [:value] do
+                expose :value, extended_method
+              end
+            end
+          end
+
+          it "extends the axn class with the module" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.singleton_class.included_modules).to include(ExtenderModule)
+          end
+
+          it "makes extended methods available as class methods on the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.extended_method).to eq("extended_result")
+          end
+        end
+
+        context "with multiple modules" do
+          before do
+            stub_const("ExtenderModule1", Module.new do
+              def extended_method_1
+                "extended_1"
+              end
+            end)
+
+            stub_const("ExtenderModule2", Module.new do
+              def extended_method_2
+                "extended_2"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, extend: [ExtenderModule1, ExtenderModule2], exposes: [:value] do
+                expose :value, "#{extended_method_1}_#{extended_method_2}"
+              end
+            end
+          end
+
+          it "extends the axn class with all modules" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.singleton_class.included_modules).to include(ExtenderModule1)
+            expect(axn_class.singleton_class.included_modules).to include(ExtenderModule2)
+          end
+
+          it "makes all extended methods available as class methods on the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.extended_method_1).to eq("extended_1")
+            expect(axn_class.extended_method_2).to eq("extended_2")
+          end
+        end
+      end
+
+      describe "prepend parameter" do
+        context "with single module" do
+          before do
+            stub_const("PrependerModule", Module.new do
+              def prepended_method
+                "prepended_result"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, prepend: PrependerModule, exposes: [:value] do
+                expose :value, prepended_method
+              end
+            end
+          end
+
+          it "prepends the module to the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.included_modules).to include(PrependerModule)
+            # Prepend puts the module first in the ancestor chain
+            expect(axn_class.included_modules.first).to eq(PrependerModule)
+          end
+
+          it "makes prepended methods available in the axn block" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("prepended_result")
+          end
+        end
+
+        context "with multiple modules" do
+          before do
+            stub_const("PrependerModule1", Module.new do
+              def prepended_method_1
+                "prepended_1"
+              end
+            end)
+
+            stub_const("PrependerModule2", Module.new do
+              def prepended_method_2
+                "prepended_2"
+              end
+            end)
+          end
+
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, prepend: [PrependerModule1, PrependerModule2], exposes: [:value] do
+                expose :value, "#{prepended_method_1}_#{prepended_method_2}"
+              end
+            end
+          end
+
+          it "prepends all modules to the axn class" do
+            axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+            expect(axn_class.included_modules).to include(PrependerModule1)
+            expect(axn_class.included_modules).to include(PrependerModule2)
+            # Last prepended module should be first in the chain (prepend adds to front)
+            expect(axn_class.included_modules.first).to eq(PrependerModule2)
+          end
+
+          it "makes all prepended methods available in the axn block" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("prepended_1_prepended_2")
+          end
+        end
+      end
+
+      describe "combined module options" do
+        before do
+          stub_const("IncludeModule", Module.new do
+            def included_method
+              "included"
+            end
+          end)
+
+          stub_const("ExtendModule", Module.new do
+            def extended_method
+              "extended"
+            end
+          end)
+
+          stub_const("PrependModule", Module.new do
+            def prepended_method
+              "prepended"
+            end
+          end)
+        end
+
+        let(:client_class) do
+          Class.new do
+            include Axn
+
+            axn :test_action, include: IncludeModule, extend: ExtendModule, prepend: PrependModule, exposes: [:value] do
+              expose :value, "#{prepended_method}_#{included_method}"
+            end
+          end
+        end
+
+        it "applies all module options to the axn class" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+
+          # Check include
+          expect(axn_class.included_modules).to include(IncludeModule)
+
+          # Check extend
+          expect(axn_class.singleton_class.included_modules).to include(ExtendModule)
+
+          # Check prepend (should be first in the chain)
+          expect(axn_class.included_modules).to include(PrependModule)
+          expect(axn_class.included_modules.first).to eq(PrependModule)
+        end
+
+        it "makes included and prepended methods available in the axn block" do
+          result = client_class.test_action
+          expect(result).to be_ok
+          expect(result.value).to eq("prepended_included")
+        end
+
+        it "makes extended methods available as class methods on the axn class" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
+          expect(axn_class.extended_method).to eq("extended")
+        end
+      end
+
+      describe "module method precedence" do
+        before do
+          stub_const("BaseModule", Module.new do
+            def conflicting_method
+              "base_module"
+            end
+          end)
+
+          stub_const("PrependModule", Module.new do
+            def conflicting_method
+              "prepend_module"
+            end
+          end)
+
+          stub_const("IncludeModule", Module.new do
+            def conflicting_method
+              "include_module"
+            end
+          end)
+        end
+
+        context "with prepend and include having conflicting methods" do
+          let(:client_class) do
+            Class.new do
+              include Axn
+
+              axn :test_action, include: [BaseModule, IncludeModule], prepend: PrependModule, exposes: [:value] do
+                expose :value, conflicting_method
+              end
+            end
+          end
+
+          it "prepend takes precedence over include" do
+            result = client_class.test_action
+            expect(result).to be_ok
+            expect(result.value).to eq("prepend_module")
+          end
+        end
+      end
+    end
+
     describe "axn_attached_to" do
-      let(:client_class) do
-        Class.new do
-          include Axn
-
-          def self.name
-            "TestClient"
-          end
-        end
-      end
-
-      context "with axn defined from block" do
-        before do
-          client_class.axn(:test_action) do
-            "test result"
-          end
-        end
-
-        it "sets axn_attached_to on the attached axn class" do
-          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-          expect(axn_class.axn_attached_to).to eq(client_class)
-        end
-
-        it "returns the correct class when called" do
-          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-          expect(axn_class.axn_attached_to.name).to eq("TestClient")
-        end
-
-        it "provides instance method axn_attached_to" do
-          axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-          axn_instance = axn_class.new
-          expect(axn_instance.axn_attached_to).to eq(client_class)
-        end
-      end
-
-      context "with existing axn class" do
-        let(:existing_axn) do
-          build_axn do
-            "existing result"
-          end
-        end
-
-        before do
-          client_class.axn(:existing_action, existing_axn)
-        end
-
-        it "sets axn_attached_to on the existing axn class" do
-          expect(existing_axn.axn_attached_to).to eq(client_class)
-        end
-
-        it "returns the correct class when called" do
-          expect(existing_axn.axn_attached_to.name).to eq("TestClient")
-        end
-
-        it "provides instance method axn_attached_to" do
-          axn_instance = existing_axn.new
-          expect(axn_instance.axn_attached_to).to eq(client_class)
-        end
-      end
+      include_examples "axn_attached_to behavior", :axn
 
       context "with inheritance" do
         let(:parent_class) do
