@@ -11,6 +11,14 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
             # Mock implementation
           end
 
+          def self.perform_in(interval, *args)
+            # Mock implementation for delayed execution
+          end
+
+          def self.perform_at(timestamp, *args)
+            # Mock implementation for scheduled execution
+          end
+
           def self.sidekiq_options(**options)
             @sidekiq_options = options
           end
@@ -39,6 +47,29 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     it "calls perform_async with processed context" do
       expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
       action_class.call_async(name: "World", age: 25)
+    end
+
+    context "with delayed execution" do
+      it "calls perform_in when _async contains wait option" do
+        expect(action_class).to receive(:perform_in).with(3600, hash_including("name" => "World", "age" => 25))
+        action_class.call_async(name: "World", age: 25, _async: { wait: 3600 })
+      end
+
+      it "calls perform_at when _async contains wait_until option" do
+        future_time = Time.now + 3600
+        expect(action_class).to receive(:perform_at).with(future_time, hash_including("name" => "World", "age" => 25))
+        action_class.call_async(name: "World", age: 25, _async: { wait_until: future_time })
+      end
+
+      it "calls perform_async when _async is not a hash" do
+        expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25, "_async" => "user_value"))
+        action_class.call_async(name: "World", age: 25, _async: "user_value")
+      end
+
+      it "calls perform_async when _async is an empty hash" do
+        expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
+        action_class.call_async(name: "World", age: 25, _async: {})
+      end
     end
   end
 

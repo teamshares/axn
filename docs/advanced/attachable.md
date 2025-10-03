@@ -151,7 +151,7 @@ When you attach an action using the `axn` strategy, you automatically get:
 - `ClassName.action_name!(**kwargs)` - Synchronous execution, raises on error
 - `ClassName.action_name_async(**kwargs)` - Asynchronous execution
 
-The `_async` methods require an async adapter to be configured. See the [async configuration documentation](/reference/class#async) and [global async configuration](/reference/configuration#set-default-async) for more details on available adapters and configuration options.
+The `_async` methods require an async adapter to be configured. See the [Async Execution documentation](/reference/async) for more details on available adapters and configuration options.
 
 ## Advanced Options
 

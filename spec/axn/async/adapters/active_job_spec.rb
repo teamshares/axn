@@ -21,6 +21,37 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
       action_class.call_async(name: "World", age: 25)
     end
+
+    context "with delayed execution" do
+      it "calls set(wait:) and perform_later when _async contains wait option" do
+        proxy_instance = double("proxy")
+        allow(action_class).to receive(:active_job_proxy_class).and_return(proxy_instance)
+        allow(proxy_instance).to receive(:set).with(wait: 3600).and_return(proxy_instance)
+
+        expect(proxy_instance).to receive(:perform_later).with(name: "World", age: 25)
+        action_class.call_async(name: "World", age: 25, _async: { wait: 3600 })
+      end
+
+      it "calls set(wait_until:) and perform_later when _async contains wait_until option" do
+        future_time = Time.now + 3600
+        proxy_instance = double("proxy")
+        allow(action_class).to receive(:active_job_proxy_class).and_return(proxy_instance)
+        allow(proxy_instance).to receive(:set).with(wait_until: future_time).and_return(proxy_instance)
+
+        expect(proxy_instance).to receive(:perform_later).with(name: "World", age: 25)
+        action_class.call_async(name: "World", age: 25, _async: { wait_until: future_time })
+      end
+
+      it "calls perform_later when _async is not a hash" do
+        expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25, _async: "user_value")
+        action_class.call_async(name: "World", age: 25, _async: "user_value")
+      end
+
+      it "calls perform_later when _async is an empty hash" do
+        expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
+        action_class.call_async(name: "World", age: 25, _async: {})
+      end
+    end
   end
 
   describe "ActiveJob-specific behavior" do

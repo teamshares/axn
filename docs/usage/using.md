@@ -65,4 +65,4 @@ result = ProcessDataAction.call(data: large_dataset)
 ProcessDataAction.call_async(data: large_dataset)
 ```
 
-For detailed information about configuring async adapters (Sidekiq, ActiveJob, etc.), see the [async configuration documentation](/reference/class#async) and [global async configuration](/reference/configuration#set-default-async).
+For detailed information about configuring async adapters (Sidekiq, ActiveJob, etc.), see the [Async Execution documentation](/reference/async).

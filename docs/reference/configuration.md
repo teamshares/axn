@@ -151,46 +151,27 @@ Axn.configure do |c|
 end
 ```
 
-### Available Async Adapters
+### Async Configuration
 
-#### Sidekiq
+Axn supports asynchronous execution through background job processing libraries. You can configure async behavior globally or per-action.
 
-The Sidekiq adapter provides integration with the Sidekiq background job processing library.
+**Available adapters:**
+- `:sidekiq` - Sidekiq background job processing
+- `:active_job` - Rails ActiveJob framework
+- `false` - Disable async execution
 
+**Basic usage:**
 ```ruby
-# In your action class
-async :sidekiq do
-  sidekiq_options queue: "high_priority", retry: 5, priority: 10
-end
+# Configure per-action
+async :sidekiq, queue: "high_priority"
 
-# Or with keyword arguments (shorthand)
-async :sidekiq, queue: "high_priority", retry: 5
-```
-
-**Configuration options:**
-- `queue`: The Sidekiq queue name (default: "default")
-- `retry`: Number of retry attempts (default: 25)
-- `priority`: Job priority (default: 0)
-- Any other Sidekiq options supported by `sidekiq_options`
-
-#### ActiveJob
-
-The ActiveJob adapter provides integration with Rails' ActiveJob framework.
-
-```ruby
-# In your action class
-async :active_job do
-  queue_as "high_priority"
-  self.priority = 10
-  self.wait = 5.minutes
+# Configure globally
+Axn.configure do |c|
+  c.set_default_async(:sidekiq, queue: "default")
 end
 ```
 
-**Configuration options:**
-- `queue_as`: The ActiveJob queue name
-- `priority`: Job priority
-- `wait`: Delay before execution
-- Any other ActiveJob options
+For detailed information about async execution, including delayed execution, adapter configuration options, and best practices, see the [Async Execution documentation](/reference/async).
 
 #### Disabled
 

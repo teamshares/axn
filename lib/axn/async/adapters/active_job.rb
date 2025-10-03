@@ -16,8 +16,19 @@ module Axn
         end
 
         class_methods do
-          def call_async(**)
-            active_job_proxy_class.perform_later(**)
+          def call_async(**kwargs)
+            job = active_job_proxy_class
+
+            if kwargs[:_async].is_a?(Hash)
+              options = kwargs.delete(:_async)
+              if options[:wait_until]
+                job = job.set(wait_until: options[:wait_until])
+              elsif options[:wait]
+                job = job.set(wait: options[:wait])
+              end
+            end
+
+            job.perform_later(**kwargs)
           end
 
           private

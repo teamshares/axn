@@ -19,8 +19,19 @@ module Axn
         end
 
         class_methods do
-          def call_async(**)
-            perform_async(_params_to_global_id(**))
+          def call_async(**kwargs)
+            job_kwargs = _params_to_global_id(kwargs)
+
+            if kwargs[:_async].is_a?(Hash)
+              options = kwargs.delete(:_async)
+              if options[:wait_until]
+                return perform_at(options[:wait_until], job_kwargs)
+              elsif options[:wait]
+                return perform_in(options[:wait], job_kwargs)
+              end
+            end
+
+            perform_async(job_kwargs)
           end
 
           def _params_to_global_id(context = {})
