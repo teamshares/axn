@@ -8,7 +8,7 @@ RSpec.describe Axn::Attachable do
           Class.new do
             include Axn
 
-            axn_method :multiply do |value:|
+            axn_method :multiply, superclass: self do |value:|
               value * the_multiple
             end
 
@@ -23,9 +23,11 @@ RSpec.describe Axn::Attachable do
         end
 
         it "can call inherited methods" do
-          pending "We don't fully support inheritance of axn_method yet (infinite loop issues on inherited)"
           expect(parent_class.multiply!(value: 5)).to eq(10)
-          expect(child_class.multiply!(value: 5)).to eq(15)
+          class Child < parent_class
+            def the_multiple = 3
+          end
+          expect(Child.multiply!(value: 5)).to eq(15)
         end
       end
 
