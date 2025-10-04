@@ -26,7 +26,7 @@ module Axn
 
         def self.mount(descriptor:, target:)
           error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
-          axn_klass = descriptor.attached_axn
+          axn_klass = descriptor.attached_axn_for(target:)
 
           target.error from: axn_klass do |e|
             "#{error_prefix}#{e.message}"
@@ -37,7 +37,7 @@ module Axn
 
           target.define_method(:call) do
             self.class._attached_axn_descriptors.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
-              axn = step_descriptor.attached_axn
+              axn = step_descriptor.attached_axn_for(target:)
               step_result = axn.call!(**@__context.__combined_data)
               step_result.declared_fields.each do |field|
                 @__context.exposed_data[field] = step_result.public_send(field)

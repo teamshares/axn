@@ -13,18 +13,20 @@ module Axn
         end
 
         def self.mount(descriptor:, target:)
-          axn = descriptor.attached_axn
           name = descriptor.name
 
           mount_method(target:, method_name: name) do |**kwargs|
+            axn = descriptor.attached_axn_for(target: self)
             axn.call(**kwargs)
           end
 
           mount_method(target:, method_name: "#{name}!") do |**kwargs|
+            axn = descriptor.attached_axn_for(target: self)
             axn.call!(**kwargs)
           end
 
           mount_method(target:, method_name: "#{name}_async") do |**kwargs|
+            axn = descriptor.attached_axn_for(target: self)
             axn.call_async(**kwargs)
           end
         end

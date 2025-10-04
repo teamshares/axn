@@ -22,26 +22,58 @@ module Axn
 
       def mount(target:)
         validate_before_mount!(target:)
-        attach_axn_to!(target:)
-
         mount_strategy.mount(descriptor: self, target:)
         mount_on_namespace(target:)
+
+        # Register constant immediately for immediate access
+        namespace = self.class._get_or_create_namespace(target)
+        return unless should_register_constant?(namespace)
+
+        attached_axn = @existing_axn_klass || begin
+          # Always use the current target as superclass for inheritance
+          Axn::Factory.build(**@kwargs.merge(superclass: target), &@block)
+        end
+        configure_class_name_and_constant(attached_axn, @name.to_s, namespace)
+        configure_axn_attached_to(attached_axn, target)
       end
 
-      def attached? = @axn.present?
+      def attached_axn_for(target:)
+        # Check if the target already has this action class cached
+        cache_key = "#{@name}_#{object_id}_#{target.object_id}"
 
-      private
+        # Use a class variable to store the cache on the target
+        cache_var = :@_axn_cache
+        target.instance_variable_set(cache_var, {}) unless target.instance_variable_defined?(cache_var)
+        cache = target.instance_variable_get(cache_var)
 
-      def attach_axn_to!(target:)
-        raise "axn already attached" if attached?
+        return cache[cache_key] if cache.key?(cache_key)
 
-        @attached_axn = @existing_axn_klass || begin
-          Axn::Factory.build(**@kwargs, &@block)
+        # Check if constant is already registered
+        namespace = self.class._get_or_create_namespace(target)
+        constant_name = generate_constant_name(@name.to_s)
+        if namespace.const_defined?(constant_name, false)
+          attached_axn = namespace.const_get(constant_name)
+          cache[cache_key] = attached_axn
+          return attached_axn
         end
 
-        configure_class_name_and_constant(@attached_axn, @name.to_s, target.axn_namespace)
-        configure_axn_attached_to(@attached_axn, target)
+        # Build action class with current target as superclass
+        attached_axn = @existing_axn_klass || begin
+          # Always use the current target as superclass for inheritance
+          Axn::Factory.build(**@kwargs.merge(superclass: target), &@block)
+        end
+
+        configure_class_name_and_constant(attached_axn, @name.to_s, namespace)
+        configure_axn_attached_to(attached_axn, target)
+
+        # Cache on the target
+        cache[cache_key] = attached_axn
+        attached_axn
       end
+
+      def attached? = @attached_axn.present?
+
+      private
 
       def method_name = @name.to_s.underscore
 
@@ -64,6 +96,9 @@ module Axn
 
         # Validate method name callability
         validate_method_name!(@name.to_s)
+
+        # Validate callable if it's a block
+        validate_callable!(@block) if @block.present? && @existing_axn_klass.nil?
 
         return unless @existing_axn_klass
 
@@ -89,6 +124,19 @@ module Axn
 
         invalid!("method name '#{method_name}' must be convertible to a valid constant name (got '#{classified}'). " \
                  "Use letters, numbers, underscores, and common punctuation only.")
+      end
+
+      def validate_callable!(callable)
+        return unless callable.respond_to?(:parameters)
+
+        args = callable.parameters.group_by(&:first).transform_values(&:count)
+
+        invalid!("callable expects positional arguments") if args[:opt].present? || args[:req].present? || args[:rest].present?
+        invalid!("callable expects a splat of keyword arguments") if args[:keyrest].present?
+
+        return unless args[:key].present?
+
+        invalid!("callable expects keyword arguments with defaults (ruby does not allow introspecting)")
       end
 
       def configure_class_name_and_constant(axn_klass, name, axn_namespace)
@@ -135,21 +183,46 @@ module Axn
       end
 
       def mount_on_namespace(target:)
-        namespace = target.axn_namespace
-        axn = @attached_axn
+        namespace = self.class._get_or_create_namespace(target)
         name = @name
 
-        # Mount axn methods on namespace
+        # Mount methods that delegate to the cached action
         namespace.define_singleton_method(name) do |**kwargs|
+          axn = attached_axn_for(target:)
           axn.call(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}!") do |**kwargs|
+          axn = attached_axn_for(target:)
           axn.call!(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}_async") do |**kwargs|
+          axn = attached_axn_for(target:)
           axn.call_async(**kwargs)
+        end
+      end
+
+      class << self
+        def _get_or_create_namespace(target)
+          # Check if :Axns is defined directly on this class (not inherited)
+          if target.const_defined?(:Axns, false)
+            axn_class = target.const_get(:Axns)
+            return axn_class if axn_class.is_a?(Class)
+          end
+
+          # Create a bare namespace class for holding constants
+          client_class = target
+          Class.new.tap do |namespace_class|
+            namespace_class.define_singleton_method(:__axn_attached_to__) { client_class }
+
+            namespace_class.define_singleton_method(:name) do
+              client_name = client_class.name.presence || "AnonymousClient_#{client_class.object_id}"
+              "#{client_name}::Axns"
+            end
+
+            target.const_set(:Axns, namespace_class)
+          end
         end
       end
     end

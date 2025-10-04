@@ -29,18 +29,20 @@ module Axn
         end
 
         def self.mount(descriptor:, target:)
-          # Define custom methods for axn_method behavior
           name = descriptor.name
-          axn_klass = descriptor.attached_axn
-
-          # Determine expose_return_as by introspecting the axn class
-          expose_return_as = _determine_exposure_to_return(axn_klass)
 
           mount_method(target:, method_name: "#{name}!") do |**kwargs|
+            # Lazy load the action class for the current target
+            axn_klass = descriptor.attached_axn_for(target: self)
+
+            # Determine expose_return_as by introspecting the axn class
+            exposed_fields = axn_klass.external_field_configs.map(&:field)
+            expose_return_as = exposed_fields.size == 1 ? exposed_fields.first : nil
+
             result = axn_klass.call!(**kwargs)
             return result if expose_return_as.nil?
 
-            result.public_send(expose_return_as) # Return direct value, raises on error
+            result.public_send(expose_return_as)
           end
         end
 

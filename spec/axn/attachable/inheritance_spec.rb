@@ -8,7 +8,7 @@ RSpec.describe Axn::Attachable do
           Class.new do
             include Axn
 
-            axn_method :multiply, superclass: self do |value:|
+            axn_method :multiply do |value:|
               value * the_multiple
             end
 
