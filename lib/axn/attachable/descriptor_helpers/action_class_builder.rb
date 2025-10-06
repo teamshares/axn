@@ -46,8 +46,12 @@ module Axn
 
           unless factory_kwargs.key?(:superclass)
             # For steps, inherit from Object to avoid duplicate field declarations
-            default_superclass = mount_strategy.key == :step ? Object : target
-            factory_kwargs[:superclass] = default_superclass
+            if mount_strategy.key == :step
+              factory_kwargs[:superclass] = Object
+            else
+              # Handle module targets by creating a base class that includes the module
+              factory_kwargs[:superclass] = target.is_a?(Module) && !target.is_a?(Class) ? create_module_base_class(target) : target
+            end
           end
 
           Axn::Factory.build(**factory_kwargs, &block)
@@ -65,6 +69,14 @@ module Axn
 
         def should_register_constant?(axn_namespace)
           axn_namespace&.name&.end_with?("::Axns")
+        end
+
+        def create_module_base_class(target_module)
+          # Create a base class that includes the target module
+          # This allows the action class to inherit from a class while still having access to module methods
+          Class.new do
+            include target_module
+          end
         end
 
         def configure_class_name(axn_klass, name, axn_namespace)

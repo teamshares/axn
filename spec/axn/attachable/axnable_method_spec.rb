@@ -677,6 +677,82 @@ RSpec.describe Axn do
       end
     end
 
+    describe "module target behavior" do
+      context "when target is a module" do
+        let(:test_module) do
+          Module.new do
+            def module_method
+              "module_method_result"
+            end
+
+            def self.class_method
+              "class_method_result"
+            end
+          end
+        end
+
+        it "raises an error when trying to use module as superclass directly" do
+          expect do
+            Class.new(test_module)
+          end.to raise_error(TypeError, /superclass must be an instance of Class/)
+        end
+
+        it "raises an error when trying to include Axn in a module" do
+          expect do
+            Module.new do
+              include Axn
+            end
+          end.to raise_error(NoMethodError, /undefined method `class_attribute' for module/)
+        end
+
+        context "with explicit module superclass" do
+          let(:test_module) do
+            Module.new do
+              def module_method
+                "module_method_result"
+              end
+            end
+          end
+
+          it "raises an error when explicitly setting module as superclass" do
+            module_ref = test_module
+            expect {
+              Class.new do
+                include Axn
+
+                axn :test_axn, superclass: module_ref, expose_return_as: :value do
+                  module_method
+                end
+              end
+            }.to raise_error(TypeError, /superclass must be an instance of Class/)
+          end
+        end
+
+        context "with explicit module superclass for step strategy" do
+          let(:test_module) do
+            Module.new do
+              def module_method
+                "module_method_result"
+              end
+            end
+          end
+
+          it "raises an error when explicitly setting module as superclass" do
+            module_ref = test_module
+            expect {
+              Class.new do
+                include Axn
+
+                step :test_step, superclass: module_ref do
+                  module_method
+                end
+              end
+            }.to raise_error(TypeError, /superclass must be an instance of Class/)
+          end
+        end
+      end
+    end
+
     describe "module inclusion options" do
       describe "include parameter" do
         context "with single module" do
