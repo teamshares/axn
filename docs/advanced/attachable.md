@@ -155,6 +155,63 @@ The `_async` methods require an async adapter to be configured. See the [Async E
 
 ## Advanced Options
 
+### Inheritance Behavior
+
+By default, attached actions inherit from their target class, allowing them to access target methods and share behavior. However, the `step` strategy defaults to inheriting from `Object` to avoid field conflicts with `expects` and `exposes` declarations.
+
+#### Default Behavior
+
+- **`axn` and `axn_method` strategies**: Inherit from target class by default
+- **`step` strategy**: Inherits from `Object` by default to avoid field conflicts
+
+```ruby
+class UserService
+  include Axn
+
+  def shared_method
+    "from target"
+  end
+
+  # Inherits from UserService - can access shared_method
+  axn :create_user do
+    expose :user_id, shared_method
+  end
+
+  # Inherits from Object - cannot access shared_method
+  step :validate_user do
+    expose :valid, true
+  end
+end
+```
+
+#### Controlling Inheritance
+
+You can control inheritance behavior using the `_inherit_from_target` parameter:
+
+```ruby
+class UserService
+  include Axn
+
+  def shared_method
+    "from target"
+  end
+
+  # Force step to inherit from target
+  step :validate_user, _inherit_from_target: true do
+    expose :valid, shared_method  # Can now access target methods
+  end
+
+  # Force axn to inherit from Object
+  axn :standalone_action, _inherit_from_target: false do
+    expose :result, "standalone"  # Cannot access target methods
+  end
+end
+```
+
+::: danger Experimental Feature
+The `_inherit_from_target` parameter is experimental and likely to change in future versions. This is why the parameter name is underscore-prefixed. Use with caution and be prepared to update your code when this feature stabilizes.
+:::
+
 ### Error Prefixing for Steps
 
 Steps automatically prefix error messages with the step name:

@@ -716,7 +716,7 @@ RSpec.describe Axn do
 
           it "raises an error when explicitly setting module as superclass" do
             module_ref = test_module
-            expect {
+            expect do
               Class.new do
                 include Axn
 
@@ -724,7 +724,7 @@ RSpec.describe Axn do
                   module_method
                 end
               end
-            }.to raise_error(TypeError, /superclass must be an instance of Class/)
+            end.to raise_error(TypeError, /superclass must be an instance of Class/)
           end
         end
 
@@ -739,7 +739,7 @@ RSpec.describe Axn do
 
           it "raises an error when explicitly setting module as superclass" do
             module_ref = test_module
-            expect {
+            expect do
               Class.new do
                 include Axn
 
@@ -747,7 +747,7 @@ RSpec.describe Axn do
                   module_method
                 end
               end
-            }.to raise_error(TypeError, /superclass must be an instance of Class/)
+            end.to raise_error(TypeError, /superclass must be an instance of Class/)
           end
         end
       end

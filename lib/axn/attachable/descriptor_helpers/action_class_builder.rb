@@ -37,7 +37,6 @@ module Axn
           existing_axn_klass = @descriptor.instance_variable_get(:@existing_axn_klass)
           return existing_axn_klass if existing_axn_klass
 
-          mount_strategy = @descriptor.instance_variable_get(:@mount_strategy)
           kwargs = @descriptor.instance_variable_get(:@kwargs)
           block = @descriptor.instance_variable_get(:@block)
 
@@ -45,13 +44,15 @@ module Axn
           factory_kwargs = kwargs.except(:axn_klass)
 
           unless factory_kwargs.key?(:superclass)
-            # For steps, inherit from Object to avoid duplicate field declarations
-            if mount_strategy.key == :step
-              factory_kwargs[:superclass] = Object
-            else
-              # Handle module targets by creating a base class that includes the module
-              factory_kwargs[:superclass] = target.is_a?(Module) && !target.is_a?(Class) ? create_module_base_class(target) : target
-            end
+            inherit_from_target = @descriptor.options[:_inherit_from_target]
+
+            # Determine superclass based on inherit_from_target option
+            factory_kwargs[:superclass] = if inherit_from_target == false
+                                            Object
+                                          else
+                                            # Handle module targets by creating a base class that includes the module
+                                            target.is_a?(Module) && !target.is_a?(Class) ? create_module_base_class(target) : target
+                                          end
           end
 
           Axn::Factory.build(**factory_kwargs, &block)
