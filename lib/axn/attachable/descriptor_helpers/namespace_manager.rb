@@ -17,6 +17,9 @@ module Axn
           parent_axns = find_parent_axns_namespace(client_class)
           namespace_class = create_namespace_class(client_class, parent_axns)
 
+          # Only set the constant if it doesn't exist
+          return if target.const_defined?(:Axns, false)
+
           target.const_set(:Axns, namespace_class)
         end
 

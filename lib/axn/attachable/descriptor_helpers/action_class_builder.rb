@@ -102,6 +102,10 @@ module Axn
 
         def register_constant(axn_klass, name, axn_namespace)
           constant_name = generate_constant_name(name)
+
+          # Only set the constant if it doesn't exist
+          return if axn_namespace.const_defined?(constant_name, false)
+
           axn_namespace.const_set(constant_name, axn_klass)
         end
       end
