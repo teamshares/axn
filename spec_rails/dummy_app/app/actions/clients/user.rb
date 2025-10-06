@@ -4,13 +4,11 @@ module Actions::Clients
   class User
     include Axn
 
-    module ApiHelpers
-      def user(id: nil)
-        ::User.find(id || 1)
-      end
+    def user(id: nil)
+      ::User.find(id || 1)
     end
 
-    axn_method(:get_name, include: ApiHelpers) { |id:| user(id:).name }
-    axn(:email, expose_return_as: :value, include: ApiHelpers) { |id:| user(id:).email }
+    axn_method(:get_name) { |id:| user(id:).name }
+    axn(:email, expose_return_as: :value) { |id:| user(id:).email }
   end
 end
