@@ -2,6 +2,9 @@
 
 require "axn/attachable/attachment_strategies"
 require "axn/attachable/descriptor"
+require "axn/attachable/descriptor_helpers/validator"
+require "axn/attachable/descriptor_helpers/action_class_builder"
+require "axn/attachable/descriptor_helpers/namespace_manager"
 
 module Axn
   module Attachable

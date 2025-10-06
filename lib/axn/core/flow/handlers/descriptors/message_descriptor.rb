@@ -12,8 +12,8 @@ module Axn
             attr_reader :prefix
 
             def initialize(matcher:, handler:, prefix: nil)
-              super(matcher:, handler:)
               @prefix = prefix
+              super(matcher:, handler:)
             end
 
             def self.build(handler: nil, if: nil, unless: nil, prefix: nil, from: nil, **)
