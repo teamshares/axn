@@ -28,7 +28,7 @@ module Actions
         info "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      axn :enqueue_all, expose_return_as: :value, include: InstanceHelpers, extend: ClassHelpers do |max:|
+      axn :enqueue_all, superclass: Object, expose_return_as: :value, include: InstanceHelpers, extend: ClassHelpers do |max:|
         info "EnqueueAll block: instance_helper=#{instance_helper}, class_helper=#{self.class.class_helper}"
 
         1.upto(max).map do |i|

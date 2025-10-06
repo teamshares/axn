@@ -26,7 +26,7 @@ module Axn
         &block
       )
         descriptor = Descriptor.new(name:, axn_klass:, as:, block:, kwargs:)
-        _attached_axn_descriptors << descriptor
+        self._attached_axn_descriptors += [descriptor]
         _mount_axn_from_descriptor(descriptor)
       end
 

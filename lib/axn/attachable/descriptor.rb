@@ -14,7 +14,7 @@ module Axn
         @block = block
         @raw_kwargs = kwargs
 
-        @kwargs = mount_strategy.preprocess_kwargs(**kwargs.except(*mount_strategy.strategy_specific_kwargs))
+        @kwargs = mount_strategy.preprocess_kwargs(**kwargs.except(*mount_strategy.strategy_specific_kwargs), axn_klass:)
         @options = kwargs.slice(*mount_strategy.strategy_specific_kwargs)
 
         validate!
@@ -29,10 +29,7 @@ module Axn
         namespace = self.class._get_or_create_namespace(target)
         return unless should_register_constant?(namespace)
 
-        attached_axn = @existing_axn_klass || begin
-          # Always use the current target as superclass for inheritance
-          Axn::Factory.build(**@kwargs.merge(superclass: target), &@block)
-        end
+        attached_axn = _build_action_class(target)
         configure_class_name_and_constant(attached_axn, @name.to_s, namespace)
         configure_axn_attached_to(attached_axn, target)
       end
@@ -57,11 +54,8 @@ module Axn
           return attached_axn
         end
 
-        # Build action class with current target as superclass
-        attached_axn = @existing_axn_klass || begin
-          # Always use the current target as superclass for inheritance
-          Axn::Factory.build(**@kwargs.merge(superclass: target), &@block)
-        end
+        # Build action class with appropriate superclass
+        attached_axn = _build_action_class(target)
 
         configure_class_name_and_constant(attached_axn, @name.to_s, namespace)
         configure_axn_attached_to(attached_axn, target)
@@ -126,6 +120,29 @@ module Axn
                  "Use letters, numbers, underscores, and common punctuation only.")
       end
 
+      def _build_action_class(target)
+        if @existing_axn_klass
+          # Use the existing action class as-is
+          @existing_axn_klass
+        else
+          # Remove axn_klass from kwargs as it's not a valid parameter for Factory.build
+          factory_kwargs = @kwargs.except(:axn_klass)
+
+          # For steps, inherit from Object to avoid duplicate field declarations
+          if @mount_strategy.key == :step
+            factory_kwargs[:superclass] = Object
+          else
+            # Only use target as superclass if no explicit superclass was provided
+            factory_kwargs[:superclass] = target unless factory_kwargs.key?(:superclass)
+          end
+
+          # Don't inherit field context from parent class for attached actions
+          # Each attached action should only expect/expose fields explicitly declared in its block
+
+          Axn::Factory.build(**factory_kwargs, &@block)
+        end
+      end
+
       def validate_callable!(callable)
         return unless callable.respond_to?(:parameters)
 
@@ -185,20 +202,21 @@ module Axn
       def mount_on_namespace(target:)
         namespace = self.class._get_or_create_namespace(target)
         name = @name
+        descriptor = self
 
         # Mount methods that delegate to the cached action
         namespace.define_singleton_method(name) do |**kwargs|
-          axn = attached_axn_for(target:)
+          axn = descriptor.attached_axn_for(target:)
           axn.call(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}!") do |**kwargs|
-          axn = attached_axn_for(target:)
+          axn = descriptor.attached_axn_for(target:)
           axn.call!(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}_async") do |**kwargs|
-          axn = attached_axn_for(target:)
+          axn = descriptor.attached_axn_for(target:)
           axn.call_async(**kwargs)
         end
       end
@@ -211,17 +229,46 @@ module Axn
             return axn_class if axn_class.is_a?(Class)
           end
 
-          # Create a bare namespace class for holding constants
+          # Create a namespace class that inherits from parent's Axns if available
           client_class = target
-          Class.new.tap do |namespace_class|
-            namespace_class.define_singleton_method(:__axn_attached_to__) { client_class }
+          parent_axns = _find_parent_axns_namespace(client_class)
+          namespace_class = _create_namespace_class(client_class, parent_axns)
 
-            namespace_class.define_singleton_method(:name) do
+          target.const_set(:Axns, namespace_class)
+        end
+
+        private
+
+        def _find_parent_axns_namespace(client_class)
+          return nil unless client_class.superclass.respond_to?(:_attached_axn_descriptors)
+          return nil unless client_class.superclass.const_defined?(:Axns, false)
+
+          client_class.superclass.const_get(:Axns)
+        end
+
+        def _create_namespace_class(client_class, parent_axns)
+          base_class = parent_axns || Class.new
+
+          Class.new(base_class) do
+            define_singleton_method(:__axn_attached_to__) { client_class }
+
+            define_singleton_method(:name) do
               client_name = client_class.name.presence || "AnonymousClient_#{client_class.object_id}"
               "#{client_name}::Axns"
             end
+          end.tap do |ns|
+            _update_inherited_action_classes(ns, client_class) if parent_axns
+          end
+        end
 
-            target.const_set(:Axns, namespace_class)
+        def _update_inherited_action_classes(namespace, client_class)
+          namespace.constants.each do |const_name|
+            const_value = namespace.const_get(const_name)
+            next unless const_value.is_a?(Class) && const_value.respond_to?(:__axn_attached_to__)
+
+            # Update __axn_attached_to__ method on the existing class
+            const_value.define_singleton_method(:__axn_attached_to__) { client_class }
+            const_value.define_method(:__axn_attached_to__) { client_class }
           end
         end
       end

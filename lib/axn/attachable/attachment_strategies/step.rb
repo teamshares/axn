@@ -36,12 +36,20 @@ module Axn
           return if target.instance_variable_defined?(:@_axn_call_method_defined_for_steps)
 
           target.define_method(:call) do
-            self.class._attached_axn_descriptors.select { |d| d.mount_strategy.key == :step }.each do |step_descriptor|
+            step_descriptors = self.class._attached_axn_descriptors.select { |d| d.mount_strategy.key == :step }
+
+            step_descriptors.each do |step_descriptor|
               axn = step_descriptor.attached_axn_for(target:)
               step_result = axn.call!(**@__context.__combined_data)
+
+              # Extract exposed fields from step result and merge into context
+              # All step results are Axn::Result objects, so we can use declared_fields consistently
               step_result.declared_fields.each do |field|
                 @__context.exposed_data[field] = step_result.public_send(field)
               end
+
+              # Update combined data for next step - merge exposed data into combined data
+              @__context.__combined_data.merge!(@__context.exposed_data)
             end
           end
           target.instance_variable_set(:@_axn_call_method_defined_for_steps, true)
