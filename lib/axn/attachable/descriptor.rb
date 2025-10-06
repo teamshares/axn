@@ -21,6 +21,7 @@ module Axn
         @action_class_builder = DescriptorHelpers::ActionClassBuilder.new(self)
 
         @validator.validate!
+        freeze
       end
 
       def mount(target:)
