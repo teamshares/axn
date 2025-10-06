@@ -35,31 +35,22 @@ module Axn
 
         def build_action_class(target)
           existing_axn_klass = @descriptor.instance_variable_get(:@existing_axn_klass)
+          return existing_axn_klass if existing_axn_klass
+
           mount_strategy = @descriptor.instance_variable_get(:@mount_strategy)
           kwargs = @descriptor.instance_variable_get(:@kwargs)
           block = @descriptor.instance_variable_get(:@block)
 
-          if existing_axn_klass
-            # Use the existing action class as-is
-            existing_axn_klass
-          else
-            # Remove axn_klass from kwargs as it's not a valid parameter for Factory.build
-            factory_kwargs = kwargs.except(:axn_klass)
+          # Remove axn_klass from kwargs as it's not a valid parameter for Factory.build
+          factory_kwargs = kwargs.except(:axn_klass)
 
+          unless factory_kwargs.key?(:superclass)
             # For steps, inherit from Object to avoid duplicate field declarations
-            # unless an explicit superclass was provided
-            if mount_strategy.key == :step
-              factory_kwargs[:superclass] = Object unless factory_kwargs.key?(:superclass)
-            else
-              # Only use target as superclass if no explicit superclass was provided
-              factory_kwargs[:superclass] = target unless factory_kwargs.key?(:superclass)
-            end
-
-            # Don't inherit field context from parent class for attached actions
-            # Each attached action should only expect/expose fields explicitly declared in its block
-
-            Axn::Factory.build(**factory_kwargs, &block)
+            default_superclass = mount_strategy.key == :step ? Object : target
+            factory_kwargs[:superclass] = default_superclass
           end
+
+          Axn::Factory.build(**factory_kwargs, &block)
         end
 
         def configure_class_name_and_constant(axn_klass, name, axn_namespace)
