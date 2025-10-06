@@ -525,10 +525,62 @@ RSpec.describe Axn do
         end
       end
 
+      context "with step strategy and explicit custom superclass" do
+        let(:custom_superclass) do
+          Class.new do
+            def step_helper_method
+              "step_helper_result"
+            end
+          end
+        end
+
+        let(:client_class) do
+          superclass = custom_superclass
+          Class.new(base_client_class) do
+            step(:test_step, superclass:) do
+              step_helper_method
+            end
+          end
+        end
+
+        it "inherits from explicit superclass" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestStep)
+          expect(axn_class.superclass).to eq(custom_superclass)
+          expect(axn_class.superclass.instance_methods).to include(:step_helper_method)
+        end
+
+        it "has access to superclass methods" do
+          client = client_class.new
+          client.call
+          # The step runs without error and has access to superclass methods
+          expect(client.instance_variable_get(:@__context)).to be_present
+        end
+      end
+
+      context "with step strategy and default superclass behavior" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            step :test_step do
+              test_method
+            end
+          end
+        end
+
+        it "inherits from Object by default for steps" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestStep)
+          expect(axn_class.superclass).to eq(Object)
+        end
+
+        it "does not have access to target methods by default" do
+          client = client_class.new
+          expect { client.call }.to raise_error(NameError, /undefined local variable or method `test_method'/)
+        end
+      end
+
       context "with axn strategy and superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn :test_axn, superclass: Object do
+            axn :test_axn, superclass: Object, expose_return_as: :value do
               "standalone_axn_result"
             end
           end
@@ -542,6 +594,85 @@ RSpec.describe Axn do
         it "works as a standalone axn" do
           result = client_class.test_axn
           expect(result).to be_ok
+          expect(result.value).to eq("standalone_axn_result")
+        end
+
+        it "does not have access to client methods" do
+          client_class.axn :test_with_client_call, superclass: Object do
+            test_method # This should raise an error
+          end
+
+          result = client_class.test_with_client_call
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(NameError)
+          expect(result.exception.message).to match(/undefined local variable or method `test_method'/)
+        end
+      end
+
+      context "with axn strategy and explicit custom superclass" do
+        let(:custom_superclass) do
+          Class.new do
+            def custom_method
+              "custom_method_result"
+            end
+
+            def self.class_method
+              "class_method_result"
+            end
+          end
+        end
+
+        let(:client_class) do
+          superclass = custom_superclass
+          Class.new(base_client_class) do
+            axn :test_axn, superclass:, expose_return_as: :value do
+              custom_method
+            end
+          end
+        end
+
+        it "inherits from explicit superclass" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
+          expect(axn_class.superclass).to eq(custom_superclass)
+          expect(axn_class.superclass.instance_methods).to include(:custom_method)
+        end
+
+        it "has access to superclass instance methods" do
+          result = client_class.test_axn
+          expect(result).to be_ok
+          expect(result.value).to eq("custom_method_result")
+        end
+
+        it "has access to superclass class methods" do
+          superclass = custom_superclass
+          client_class.axn :test_class_method, superclass:, expose_return_as: :value do
+            self.class.class_method
+          end
+
+          result = client_class.test_class_method
+          expect(result).to be_ok
+          expect(result.value).to eq("class_method_result")
+        end
+      end
+
+      context "with axn strategy and default superclass behavior" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            axn :test_axn, expose_return_as: :value do
+              test_method
+            end
+          end
+        end
+
+        it "inherits from target by default" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
+          expect(axn_class.superclass).to eq(client_class)
+        end
+
+        it "has access to target methods through inheritance" do
+          result = client_class.test_axn
+          expect(result).to be_ok
+          expect(result.value).to eq("test_method_result")
         end
       end
     end

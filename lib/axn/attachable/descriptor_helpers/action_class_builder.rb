@@ -47,8 +47,9 @@ module Axn
             factory_kwargs = kwargs.except(:axn_klass)
 
             # For steps, inherit from Object to avoid duplicate field declarations
+            # unless an explicit superclass was provided
             if mount_strategy.key == :step
-              factory_kwargs[:superclass] = Object
+              factory_kwargs[:superclass] = Object unless factory_kwargs.key?(:superclass)
             else
               # Only use target as superclass if no explicit superclass was provided
               factory_kwargs[:superclass] = target unless factory_kwargs.key?(:superclass)
