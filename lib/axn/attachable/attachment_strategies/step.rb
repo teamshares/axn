@@ -42,14 +42,10 @@ module Axn
               axn = step_descriptor.attached_axn_for(target:)
               step_result = axn.call!(**@__context.__combined_data)
 
-              # Extract exposed fields from step result and merge into context
-              # All step results are Axn::Result objects, so we can use declared_fields consistently
+              # Extract exposed fields from step result and update exposed_data
               step_result.declared_fields.each do |field|
                 @__context.exposed_data[field] = step_result.public_send(field)
               end
-
-              # Update combined data for next step - merge exposed data into combined data
-              @__context.__combined_data.merge!(@__context.exposed_data)
             end
           end
           target.instance_variable_set(:@_axn_call_method_defined_for_steps, true)
