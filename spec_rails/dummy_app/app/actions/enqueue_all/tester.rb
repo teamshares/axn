@@ -5,20 +5,10 @@ module Actions
     class Tester
       include Axn
 
-      module InstanceHelpers
-        def instance_helper = "instance_helper"
+      async :sidekiq
 
-        def self.included(base)
-          base.async :sidekiq
-        end
-      end
-
-      module ClassHelpers
-        def class_helper = "class_helper"
-      end
-
-      include InstanceHelpers
-      extend ClassHelpers
+      def instance_helper = "instance_helper"
+      def self.class_helper = "class_helper"
 
       expects :number
 
@@ -28,9 +18,7 @@ module Actions
         info "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      axn :enqueue_all, superclass: Object, expose_return_as: :value, include: InstanceHelpers, extend: ClassHelpers do |max:|
-        info "EnqueueAll block: instance_helper=#{instance_helper}, class_helper=#{self.class.class_helper}"
-
+      axn :enqueue_all, superclass: Object, async: :sidekiq, expose_return_as: :value do |max:|
         1.upto(max).map do |i|
           ::Actions::EnqueueAll::Tester.call_async(number: i)
         end

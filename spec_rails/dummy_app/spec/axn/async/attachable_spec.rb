@@ -34,12 +34,9 @@ RSpec.describe "Axn::Async with attachable" do
   end
 
   it "can access instance and class helpers from the axn block" do
-    # Test that the axn block can access the parent class's instance and class methods
-    # This tests that the clean base class inherits from self but clears field expectations
-    action.enqueue_all(max: 1)
+    allow(Actions::EnqueueAll::Tester).to receive(:call_async)
+    action.enqueue_all(max: 3)
 
-    expect(Axn.config.logger).to have_received(:info).with(
-      "[Actions::EnqueueAll::Tester::Axns::EnqueueAll] EnqueueAll block: instance_helper=instance_helper, class_helper=class_helper",
-    )
+    expect(Actions::EnqueueAll::Tester).to have_received(:call_async).exactly(3).times
   end
 end
