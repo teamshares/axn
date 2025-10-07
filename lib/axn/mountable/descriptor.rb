@@ -4,7 +4,7 @@ module Axn
   module Mountable
     # Descriptor holds the information needed to mount an action
     class Descriptor
-      attr_reader :name, :options, :mounted_axn, :mount_strategy
+      attr_reader :name, :options, :mounted_axn, :mount_strategy, :existing_axn_klass, :block, :raw_kwargs, :kwargs
 
       def initialize(name:, as:, axn_klass: nil, block: nil, kwargs: {})
         @mount_strategy = MountingStrategies.find(as)
@@ -17,8 +17,7 @@ module Axn
         @kwargs = mount_strategy.preprocess_kwargs(**kwargs.except(*mount_strategy.strategy_specific_kwargs), axn_klass:)
         @options = kwargs.slice(*mount_strategy.strategy_specific_kwargs)
 
-        @validator = DescriptorHelpers::Validator.new(self)
-        @action_class_builder = DescriptorHelpers::ActionClassBuilder.new(self)
+        @validator = Helpers::Validator.new(self)
 
         @validator.validate!
         freeze
@@ -41,8 +40,9 @@ module Axn
         return cache[cache_key] if cache.key?(cache_key)
 
         # Check if constant is already registered
-        namespace = @action_class_builder.get_or_create_namespace(target)
-        constant_name = @action_class_builder.generate_constant_name(@name.to_s)
+        action_class_builder = Helpers::ClassBuilder.new(self)
+        namespace = action_class_builder.get_or_create_namespace(target)
+        constant_name = action_class_builder.generate_constant_name(@name.to_s)
         if namespace.const_defined?(constant_name, false)
           mounted_axn = namespace.const_get(constant_name)
           cache[cache_key] = mounted_axn
@@ -50,7 +50,7 @@ module Axn
         end
 
         # Build and configure action class
-        mounted_axn = @action_class_builder.build_and_configure_action_class(target, @name.to_s, namespace)
+        mounted_axn = action_class_builder.build_and_configure_action_class(target, @name.to_s, namespace)
 
         # Cache on the target
         cache[cache_key] = mounted_axn

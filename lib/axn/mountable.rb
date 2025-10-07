@@ -2,9 +2,9 @@
 
 require "axn/mountable/mounting_strategies"
 require "axn/mountable/descriptor"
-require "axn/mountable/descriptor_helpers/validator"
-require "axn/mountable/descriptor_helpers/action_class_builder"
-require "axn/mountable/descriptor_helpers/namespace_manager"
+require "axn/mountable/helpers/validator"
+require "axn/mountable/helpers/class_builder"
+require "axn/mountable/helpers/namespace_manager"
 
 module Axn
   # Mountable provides functionality for mounting actions to classes

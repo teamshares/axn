@@ -22,7 +22,8 @@ module Axn
 
         # Mount methods to the namespace and register the action class
         def mount_to_namespace(descriptor:, target:)
-          namespace = descriptor.instance_variable_get(:@action_class_builder).get_or_create_namespace(target)
+          action_class_builder = Helpers::ClassBuilder.new(descriptor)
+          namespace = action_class_builder.get_or_create_namespace(target)
           name = descriptor.name
           descriptor_ref = descriptor
 
@@ -43,7 +44,7 @@ module Axn
           end
 
           # Register the action class as a constant in the namespace
-          descriptor.instance_variable_get(:@action_class_builder).mount(target, name.to_s)
+          action_class_builder.mount(target, name.to_s)
         end
 
         def key = name.split("::").last.underscore.to_sym

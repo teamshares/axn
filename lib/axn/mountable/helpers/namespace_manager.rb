@@ -2,8 +2,8 @@
 
 module Axn
   module Mountable
-    module DescriptorHelpers
-      # Handles namespace management for Descriptor
+    module Helpers
+      # Handles namespace management for mounting
       class NamespaceManager
         def self.get_or_create_namespace(target)
           # Check if :Axns is defined directly on this class (not inherited)

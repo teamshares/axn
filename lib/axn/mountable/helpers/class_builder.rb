@@ -2,9 +2,9 @@
 
 module Axn
   module Mountable
-    module DescriptorHelpers
+    module Helpers
       # Handles building and configuring Axn action classes for mounting
-      class ActionClassBuilder
+      class ClassBuilder
         def initialize(descriptor)
           @descriptor = descriptor
         end
@@ -17,7 +17,7 @@ module Axn
         end
 
         def get_or_create_namespace(target)
-          DescriptorHelpers::NamespaceManager.get_or_create_namespace(target)
+          Helpers::NamespaceManager.get_or_create_namespace(target)
         end
 
         def generate_constant_name(name)
