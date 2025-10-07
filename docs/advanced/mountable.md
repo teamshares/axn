@@ -8,7 +8,6 @@ The mountable functionality is an advanced feature that allows you to mount acti
 
 ::: danger ALPHA
 This is in VERY EXPERIMENTAL use at Teamshares, but the API is still definitely in flux.
-In particular we don't current support `inherit: self` (we're hoping to figure this out eventually), so for now in practice using this requires an awkward dance where you wrap up code to want to share in explicit modules. Note you can reference back to the mounting class via `__axn_attached_to__` (name likely to change, hence the underscores).
 :::
 
 ## Overview
