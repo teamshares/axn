@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Async with attachable" do
+RSpec.describe "Axn::Async with mountable" do
   let(:action) { Actions::EnqueueAll::Tester }
 
   before do
     allow(Axn.config.logger).to receive(:info).and_call_original
   end
 
-  it "can run attachable axns via async" do
+  it "can run mountable axns via async" do
     Sidekiq::Testing.inline! do
       action.enqueue_all_async(max: 3)
     end

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../../support/shared_examples/__axn_attached_to__behavior"
+require_relative "../../support/shared_examples/__axn_mounted_to__behavior"
 
 RSpec.describe Axn do
   describe ".axn_method" do
@@ -199,7 +199,7 @@ RSpec.describe Axn do
     describe "inheritance behavior" do
       let(:parent_class) do
         Class.new do
-          include Axn::Attachable
+          include Axn::Mountable
           include Axn::Core::Flow
 
           axn_method :parent_method do |value:|
@@ -323,7 +323,7 @@ RSpec.describe Axn do
           build_axn do
             axn_method :multiple, axn_klass: multiple_exposure_axn
           end
-        end.to raise_error(Axn::Attachable::AttachmentError,
+        end.to raise_error(Axn::Mountable::MountingError,
                            /Cannot determine expose_return_as for existing axn class with multiple exposed fields: value, extra/)
       end
 
@@ -370,7 +370,7 @@ RSpec.describe Axn do
     end
 
     describe "name collision handling" do
-      it "raises AttachmentError when trying to define both axn and axn_method with the same name (axn first)" do
+      it "raises MountingError when trying to define both axn and axn_method with the same name (axn first)" do
         expect do
           Class.new do
             include Axn
@@ -383,10 +383,10 @@ RSpec.describe Axn do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- method 'foo!' is already taken/)
+        end.to raise_error(Axn::Mountable::MountingError, /Method unable to attach -- method 'foo!' is already taken/)
       end
 
-      it "raises AttachmentError when trying to define both axn_method and axn with the same name (axn_method first)" do
+      it "raises MountingError when trying to define both axn_method and axn with the same name (axn_method first)" do
         expect do
           Class.new do
             include Axn
@@ -399,7 +399,7 @@ RSpec.describe Axn do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Axn unable to attach -- method 'foo!' is already taken/)
+        end.to raise_error(Axn::Mountable::MountingError, /Axn unable to attach -- method 'foo!' is already taken/)
       end
 
       it "allows child class to override parent's axn_method with the same name" do
@@ -788,7 +788,7 @@ RSpec.describe Axn do
             expect(result).to eq("helper_result")
           end
 
-          it "provides access to __axn_attached_to__ from included methods" do
+          it "provides access to __axn_mounted_to__ from included methods" do
             client_class_with_attached = Class.new do
               include Axn
 
@@ -1113,7 +1113,7 @@ RSpec.describe Axn do
             end
 
             def build_resource_name
-              __axn_attached_to__.name.demodulize.downcase
+              __axn_mounted_to__.name.demodulize.downcase
             end
           end)
         end
@@ -1140,7 +1140,7 @@ RSpec.describe Axn do
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
         end
 
-        it "shows that __axn_attached_to__ is available in included modules" do
+        it "shows that __axn_mounted_to__ is available in included modules" do
           # This test verifies that the included module can access the attached class
           result = client_class.get_user!(uuid: "456")
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
@@ -1148,8 +1148,8 @@ RSpec.describe Axn do
       end
     end
 
-    describe "__axn_attached_to__" do
-      include_examples "__axn_attached_to__ behavior", :axn_method
+    describe "__axn_mounted_to__" do
+      include_examples "__axn_mounted_to__ behavior", :axn_method
     end
   end
 end

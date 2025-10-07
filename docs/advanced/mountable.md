@@ -2,9 +2,9 @@
 outline: deep
 ---
 
-# Attachable Actions
+# Mountable Actions
 
-The attachable functionality is an advanced feature that allows you to attach actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for API clients to automatically wrap bits of logic in full Axn affordances, and for tacking on `enqueue_all` methods that can then be themselves run in a background job via enqueue_all_async (without requiring creating a separate worker class just to trigger the Axn).
+The mountable functionality is an advanced feature that allows you to mount actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for API clients to automatically wrap bits of logic in full Axn affordances, and for tacking on `enqueue_all` methods that can then be themselves run in a background job via enqueue_all_async (without requiring creating a separate worker class just to trigger the Axn).
 
 ::: danger ALPHA
 This is in VERY EXPERIMENTAL use at Teamshares, but the API is still definitely in flux.
@@ -119,7 +119,7 @@ end
 
 ## Async Execution
 
-Attachable actions automatically support async execution when an async adapter is configured. Each attached action gets a `_async` method that executes the action in the background.
+Mountable actions automatically support async execution when an async adapter is configured. Each mounted action gets a `_async` method that executes the action in the background.
 
 ### Configuring Async Adapters
 

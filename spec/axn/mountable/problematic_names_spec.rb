@@ -45,7 +45,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method!@#name' cannot contain method suffixes/)
         end
 
@@ -380,7 +380,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name cannot be empty/)
+          end.to raise_error(Axn::Mountable::MountingError, /method name cannot be empty/)
         end
 
         it "fails validation for whitespace-only string" do
@@ -394,7 +394,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name '   ' must be convertible to a valid constant name/)
         end
       end
@@ -411,7 +411,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name '123method' must be convertible to a valid constant name/)
+          end.to raise_error(Axn::Mountable::MountingError, /method name '123method' must be convertible to a valid constant name/)
         end
 
         it "works for names starting with special characters" do
@@ -485,7 +485,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method\?' cannot contain method suffixes/)
         end
 
@@ -500,7 +500,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method!' cannot contain method suffixes/)
         end
 
@@ -515,7 +515,7 @@ RSpec.describe Axn do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method=' cannot contain method suffixes/)
         end
       end
@@ -564,7 +564,7 @@ RSpec.describe Axn do
                 456
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- method 'test!' is already taken/)
+          end.to raise_error(Axn::Mountable::MountingError, /Method unable to attach -- method 'test!' is already taken/)
 
           # Only the first one should work
           expect(client_class.test!).to eq(123)

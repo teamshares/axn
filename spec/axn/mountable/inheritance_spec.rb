@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Attachable do
+RSpec.describe Axn::Mountable do
   describe "inheritance" do
     describe "axn_method inheritance" do
       context "with helper methods" do
@@ -47,9 +47,9 @@ RSpec.describe Axn::Attachable do
           expect(child.const_get(:Axns).const_defined?(:Multiply)).to be true
         end
 
-        it "has separate _attached_axn_descriptors configurations" do
-          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:multiply])
-          expect(child._attached_axn_descriptors.map(&:name)).to eq([:multiply])
+        it "has separate _mounted_axn_descriptors configurations" do
+          expect(parent._mounted_axn_descriptors.map(&:name)).to eq([:multiply])
+          expect(child._mounted_axn_descriptors.map(&:name)).to eq([:multiply])
         end
 
         it "can call inherited methods" do
@@ -84,9 +84,9 @@ RSpec.describe Axn::Attachable do
           expect(ChildWithAxnableMethod.const_get(:Axns).const_defined?(:Add)).to be true
         end
 
-        it "has separate _attached_axn_descriptors configurations" do
-          expect(ParentWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
-          expect(ChildWithAxnableMethod._attached_axn_descriptors.map(&:name)).to eq([:add])
+        it "has separate _mounted_axn_descriptors configurations" do
+          expect(ParentWithAxnableMethod._mounted_axn_descriptors.map(&:name)).to eq([:add])
+          expect(ChildWithAxnableMethod._mounted_axn_descriptors.map(&:name)).to eq([:add])
         end
 
         it "can call inherited methods" do
@@ -146,9 +146,9 @@ RSpec.describe Axn::Attachable do
           expect(child).to respond_to(:triple_async)
         end
 
-        it "has separate _attached_axn_descriptors configurations" do
-          expect(parent._attached_axn_descriptors.map(&:name)).to eq([:triple])
-          expect(child._attached_axn_descriptors.map(&:name)).to eq([:triple])
+        it "has separate _mounted_axn_descriptors configurations" do
+          expect(parent._mounted_axn_descriptors.map(&:name)).to eq([:triple])
+          expect(child._mounted_axn_descriptors.map(&:name)).to eq([:triple])
         end
 
         it "can call inherited methods" do
@@ -183,9 +183,9 @@ RSpec.describe Axn::Attachable do
           expect(child_class).to respond_to(:increment_async)
         end
 
-        it "has separate _attached_axn_descriptors configurations" do
-          expect(parent_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
-          expect(child_class._attached_axn_descriptors.map(&:name)).to eq([:increment])
+        it "has separate _mounted_axn_descriptors configurations" do
+          expect(parent_class._mounted_axn_descriptors.map(&:name)).to eq([:increment])
+          expect(child_class._mounted_axn_descriptors.map(&:name)).to eq([:increment])
         end
 
         it "can call inherited methods" do
@@ -264,9 +264,9 @@ RSpec.describe Axn::Attachable do
       end
 
       it "has separate configurations for both types" do
-        expect(ParentWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1])
-        expect(ChildWithMixed._attached_axn_descriptors.map(&:name)).to eq(%i[method1 action1 method2 action2])
-        expect(ParentWithMixed._attached_axn_descriptors.object_id).not_to eq(ChildWithMixed._attached_axn_descriptors.object_id)
+        expect(ParentWithMixed._mounted_axn_descriptors.map(&:name)).to eq(%i[method1 action1])
+        expect(ChildWithMixed._mounted_axn_descriptors.map(&:name)).to eq(%i[method1 action1 method2 action2])
+        expect(ParentWithMixed._mounted_axn_descriptors.object_id).not_to eq(ChildWithMixed._mounted_axn_descriptors.object_id)
       end
 
       it "can call all inherited methods" do

@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
 module Axn
-  module Attachable
-    # Descriptor holds the information needed to attach an action
+  module Mountable
+    # Descriptor holds the information needed to mount an action
     class Descriptor
-      attr_reader :name, :options, :attached_axn, :mount_strategy
+      attr_reader :name, :options, :mounted_axn, :mount_strategy
 
       def initialize(name:, as:, axn_klass: nil, block: nil, kwargs: {})
-        @mount_strategy = AttachmentStrategies.find(as)
+        @mount_strategy = MountingStrategies.find(as)
         @existing_axn_klass = axn_klass
 
         @name = name
@@ -32,7 +32,7 @@ module Axn
         @action_class_builder.mount(target, @name.to_s)
       end
 
-      def attached_axn_for(target:)
+      def mounted_axn_for(target:)
         # Check if the target already has this action class cached
         cache_key = "#{@name}_#{object_id}_#{target.object_id}"
 
@@ -47,20 +47,20 @@ module Axn
         namespace = @action_class_builder.get_or_create_namespace(target)
         constant_name = @action_class_builder.generate_constant_name(@name.to_s)
         if namespace.const_defined?(constant_name, false)
-          attached_axn = namespace.const_get(constant_name)
-          cache[cache_key] = attached_axn
-          return attached_axn
+          mounted_axn = namespace.const_get(constant_name)
+          cache[cache_key] = mounted_axn
+          return mounted_axn
         end
 
         # Build and configure action class
-        attached_axn = @action_class_builder.build_and_configure_action_class(target, @name.to_s, namespace)
+        mounted_axn = @action_class_builder.build_and_configure_action_class(target, @name.to_s, namespace)
 
         # Cache on the target
-        cache[cache_key] = attached_axn
-        attached_axn
+        cache[cache_key] = mounted_axn
+        mounted_axn
       end
 
-      def attached? = @attached_axn.present?
+      def mounted? = @mounted_axn.present?
 
       private
 
@@ -71,17 +71,17 @@ module Axn
 
         # Mount methods that delegate to the cached action
         namespace.define_singleton_method(name) do |**kwargs|
-          axn = descriptor.attached_axn_for(target:)
+          axn = descriptor.mounted_axn_for(target:)
           axn.call(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}!") do |**kwargs|
-          axn = descriptor.attached_axn_for(target:)
+          axn = descriptor.mounted_axn_for(target:)
           axn.call!(**kwargs)
         end
 
         namespace.define_singleton_method("#{name}_async") do |**kwargs|
-          axn = descriptor.attached_axn_for(target:)
+          axn = descriptor.mounted_axn_for(target:)
           axn.call_async(**kwargs)
         end
       end
@@ -89,11 +89,11 @@ module Axn
       def method_name = @name.to_s.underscore
 
       def validate_before_mount!(target:)
-        # Method name collision validation is now handled in attach_axn
+        # Method name collision validation is now handled in mount_axn
         # This method is kept for potential future validation needs
       end
 
-      def attachment_type_name
+      def mounting_type_name
         mount_strategy.name.split("::").last.underscore.to_s.humanize
       end
     end

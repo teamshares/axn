@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
-require "axn/attachable/attachment_strategies"
-require "axn/attachable/descriptor"
-require "axn/attachable/descriptor_helpers/validator"
-require "axn/attachable/descriptor_helpers/action_class_builder"
-require "axn/attachable/descriptor_helpers/namespace_manager"
+require "axn/mountable/mounting_strategies"
+require "axn/mountable/descriptor"
+require "axn/mountable/descriptor_helpers/validator"
+require "axn/mountable/descriptor_helpers/action_class_builder"
+require "axn/mountable/descriptor_helpers/namespace_manager"
 
 module Axn
-  # Attachable provides functionality for attaching actions to classes
+  # Mountable provides functionality for mounting actions to classes
   #
   # ## Inheritance Behavior
   #
-  # By default, attached actions inherit from their target class, allowing them to access
+  # By default, mounted actions inherit from their target class, allowing them to access
   # target methods and share behavior. However, the `step` strategy defaults to inheriting
   # from `Object` to avoid field conflicts with `expects` and `exposes` declarations.
   #
@@ -58,21 +58,21 @@ module Axn
   #   MyClass.axn :my_action, _inherit_from_target: false do
   #     expose :result, "standalone"  # Cannot access target methods
   #   end
-  module Attachable
+  module Mountable
     extend ActiveSupport::Concern
 
     def self.included(base)
       base.class_eval do
-        class_attribute :_attached_axn_descriptors, default: []
+        class_attribute :_mounted_axn_descriptors, default: []
       end
 
-      AttachmentStrategies.all.each do |(_name, klass)|
+      MountingStrategies.all.each do |(_name, klass)|
         base.extend klass::DSL if klass.const_defined?(:DSL)
       end
     end
 
     class_methods do
-      def attach_axn(
+      def mount_axn(
         as: :axn,
         name: nil,
         axn_klass: nil,
@@ -80,7 +80,7 @@ module Axn
         &block
       )
         descriptor = Descriptor.new(name:, axn_klass:, as:, block:, kwargs:)
-        self._attached_axn_descriptors += [descriptor]
+        self._mounted_axn_descriptors += [descriptor]
         descriptor.mount(target: self)
       end
     end

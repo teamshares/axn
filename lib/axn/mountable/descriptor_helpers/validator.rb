@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Attachable
+  module Mountable
     module DescriptorHelpers
       # Handles validation logic for Descriptor
       class Validator
@@ -53,7 +53,7 @@ module Axn
           mount_strategy = @descriptor.instance_variable_get(:@mount_strategy)
 
           invalid!("was given both an existing axn class and also a block - only one is allowed") if block.present?
-          if raw_kwargs.present? && mount_strategy != AttachmentStrategies::Step
+          if raw_kwargs.present? && mount_strategy != MountingStrategies::Step
             invalid!("was given an existing axn class and also keyword arguments - only one is allowed")
           end
 
@@ -75,13 +75,13 @@ module Axn
           invalid!("callable expects keyword arguments with defaults (ruby does not allow introspecting)")
         end
 
-        def attachment_type_name
+        def mounting_type_name
           mount_strategy = @descriptor.instance_variable_get(:@mount_strategy)
           mount_strategy.name.split("::").last.underscore.to_s.humanize
         end
 
         def invalid!(msg)
-          raise AttachmentError, "#{attachment_type_name} #{msg}"
+          raise MountingError, "#{mounting_type_name} #{msg}"
         end
       end
     end

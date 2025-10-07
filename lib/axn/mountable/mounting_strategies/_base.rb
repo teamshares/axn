@@ -3,8 +3,8 @@
 require "axn/exceptions"
 
 module Axn
-  module Attachable
-    class AttachmentStrategies
+  module Mountable
+    class MountingStrategies
       # Base module for all attachment strategies
       module Base
         # Class-level hooks for strategy modules to configure themselves
@@ -22,7 +22,7 @@ module Axn
           # We allow overriding if this is a child class with a parent that has axn methods (inheritance scenario)
           # Otherwise, we raise an error for same-class method collisions
           if _should_raise_method_collision_error?(target, method_name)
-            raise AttachmentError, "#{name.split("::").last} unable to attach -- method '#{method_name}' is already taken"
+            raise MountingError, "#{name.split("::").last} unable to attach -- method '#{method_name}' is already taken"
           end
 
           target.define_singleton_method(method_name, &)

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
+RSpec.shared_examples "__axn_mounted_to__ behavior" do |mounting_method|
   let(:client_class) do
     Class.new do
       include Axn
@@ -13,7 +13,7 @@ RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
 
   context "with axn defined from block" do
     before do
-      client_class.public_send(attachment_method, :test_action) do
+      client_class.public_send(mounting_method, :test_action) do
         "test result"
       end
     end
@@ -43,10 +43,10 @@ RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
     end
 
     before do
-      if attachment_method == :axn_method
-        client_class.public_send(attachment_method, :existing_action, axn_klass: existing_axn)
+      if mounting_method == :axn_method
+        client_class.public_send(mounting_method, :existing_action, axn_klass: existing_axn)
       else
-        client_class.public_send(attachment_method, :existing_action, existing_axn)
+        client_class.public_send(mounting_method, :existing_action, existing_axn)
       end
     end
 

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Axn
-  module Attachable
+  module Mountable
     module DescriptorHelpers
-      # Handles building and configuring Axn action classes for attachment
+      # Handles building and configuring Axn action classes for mounting
       class ActionClassBuilder
         def initialize(descriptor)
           @descriptor = descriptor
@@ -25,10 +25,10 @@ module Axn
         end
 
         def build_and_configure_action_class(target, name, namespace)
-          attached_axn = build_action_class(target)
-          configure_class_name_and_constant(attached_axn, name, namespace)
-          configure_axn_attached_to(attached_axn, target)
-          attached_axn
+          mounted_axn = build_action_class(target)
+          configure_class_name_and_constant(mounted_axn, name, namespace)
+          configure_axn_mounted_to(mounted_axn, target)
+          mounted_axn
         end
 
         private
@@ -63,9 +63,9 @@ module Axn
           register_constant(axn_klass, name, axn_namespace) if should_register_constant?(axn_namespace)
         end
 
-        def configure_axn_attached_to(axn_klass, target)
-          axn_klass.define_singleton_method(:__axn_attached_to__) { target }
-          axn_klass.define_method(:__axn_attached_to__) { target }
+        def configure_axn_mounted_to(axn_klass, target)
+          axn_klass.define_singleton_method(:__axn_mounted_to__) { target }
+          axn_klass.define_method(:__axn_mounted_to__) { target }
         end
 
         def should_register_constant?(axn_namespace)

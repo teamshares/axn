@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 module Axn
-  module Attachable
-    class AttachmentStrategies
+  module Mountable
+    class MountingStrategies
       module Method
         extend Base
 
         module DSL
           def axn_method(name, axn_klass = nil, **, &)
-            attach_axn(as: :method, name:, axn_klass:, **, &)
+            mount_axn(as: :method, name:, axn_klass:, **, &)
           end
         end
 
@@ -21,7 +21,7 @@ module Axn
 
           # Methods aren't capable of returning multiple values
           if processed_kwargs[:exposes].present?
-            raise AttachmentError,
+            raise MountingError,
                   "Methods aren't capable of exposing multiple values (will automatically expose return value instead)"
           end
 
@@ -31,7 +31,7 @@ module Axn
             exposed_fields = axn_klass.external_field_configs.map(&:field)
 
             if exposed_fields.size > 1
-              raise AttachmentError,
+              raise MountingError,
                     "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
                     "Use a fresh block with axn_method or ensure the axn class has exactly one exposed field."
             end
@@ -45,7 +45,7 @@ module Axn
 
           mount_method(target:, method_name: "#{name}!") do |**kwargs|
             # Lazy load the action class for the current target
-            axn_klass = descriptor.attached_axn_for(target: self)
+            axn_klass = descriptor.mounted_axn_for(target: self)
 
             # Determine expose_return_as by introspecting the axn class
             exposed_fields = axn_klass.external_field_configs.map(&:field)
@@ -68,7 +68,7 @@ module Axn
           when 1
             exposed_fields.first # Single field, assume it's expose_return_as
           else
-            raise AttachmentError,
+            raise MountingError,
                   "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
                   "Use a fresh block with axn_method or ensure the axn class has exactly one exposed field."
           end
