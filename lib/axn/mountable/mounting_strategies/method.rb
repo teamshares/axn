@@ -40,7 +40,7 @@ module Axn
           processed_kwargs
         end
 
-        def self.mount(descriptor:, target:)
+        def self.mount_to_target(descriptor:, target:)
           name = descriptor.name
 
           mount_method(target:, method_name: "#{name}!") do |**kwargs|

@@ -24,7 +24,7 @@ module Axn
 
         def self.strategy_specific_kwargs = super + [:error_prefix]
 
-        def self.mount(descriptor:, target:)
+        def self.mount_to_target(descriptor:, target:)
           error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
           axn_klass = descriptor.mounted_axn_for(target:)
 

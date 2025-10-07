@@ -7,12 +7,44 @@ module Axn
     class MountingStrategies
       # Base module for all attachment strategies
       module Base
-        # Class-level hooks for strategy modules to configure themselves
+        # Hooks for strategy modules to configure themselves
         def preprocess_kwargs(**kwargs) = kwargs
         def strategy_specific_kwargs = [:_inherit_from_target]
 
         # The actual per-strategy mounting logic
-        def mount(descriptor:, target:) = raise NotImplementedError, "Strategy modules must implement mount"
+        def mount(descriptor:, target:)
+          mount_to_namespace(descriptor:, target:)
+          mount_to_target(descriptor:, target:)
+        end
+
+        # Mount methods directly to the target class
+        def mount_to_target(descriptor:, target:) = raise NotImplementedError, "Strategy modules must implement mount_to_target"
+
+        # Mount methods to the namespace and register the action class
+        def mount_to_namespace(descriptor:, target:)
+          namespace = descriptor.instance_variable_get(:@action_class_builder).get_or_create_namespace(target)
+          name = descriptor.name
+          descriptor_ref = descriptor
+
+          # Mount methods that delegate to the cached action
+          namespace.define_singleton_method(name) do |**kwargs|
+            axn = descriptor_ref.mounted_axn_for(target:)
+            axn.call(**kwargs)
+          end
+
+          namespace.define_singleton_method("#{name}!") do |**kwargs|
+            axn = descriptor_ref.mounted_axn_for(target:)
+            axn.call!(**kwargs)
+          end
+
+          namespace.define_singleton_method("#{name}_async") do |**kwargs|
+            axn = descriptor_ref.mounted_axn_for(target:)
+            axn.call_async(**kwargs)
+          end
+
+          # Register the action class as a constant in the namespace
+          descriptor.instance_variable_get(:@action_class_builder).mount(target, name.to_s)
+        end
 
         def key = name.split("::").last.underscore.to_sym
 

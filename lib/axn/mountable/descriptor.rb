@@ -27,9 +27,6 @@ module Axn
       def mount(target:)
         validate_before_mount!(target:)
         mount_strategy.mount(descriptor: self, target:)
-        mount_on_namespace(target:)
-
-        @action_class_builder.mount(target, @name.to_s)
       end
 
       def mounted_axn_for(target:)
@@ -63,28 +60,6 @@ module Axn
       def mounted? = @mounted_axn.present?
 
       private
-
-      def mount_on_namespace(target:)
-        namespace = @action_class_builder.get_or_create_namespace(target)
-        name = @name
-        descriptor = self
-
-        # Mount methods that delegate to the cached action
-        namespace.define_singleton_method(name) do |**kwargs|
-          axn = descriptor.mounted_axn_for(target:)
-          axn.call(**kwargs)
-        end
-
-        namespace.define_singleton_method("#{name}!") do |**kwargs|
-          axn = descriptor.mounted_axn_for(target:)
-          axn.call!(**kwargs)
-        end
-
-        namespace.define_singleton_method("#{name}_async") do |**kwargs|
-          axn = descriptor.mounted_axn_for(target:)
-          axn.call_async(**kwargs)
-        end
-      end
 
       def method_name = @name.to_s.underscore
 
