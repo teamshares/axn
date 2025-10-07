@@ -4,8 +4,10 @@ module Axn
   module Mountable
     module Helpers
       # Handles namespace management for mounting
-      class NamespaceManager
-        def self.get_or_create_namespace(target)
+      module NamespaceManager
+        extend self
+
+        def get_or_create_namespace(target)
           # Check if :Axns is defined directly on this class (not inherited)
           if target.const_defined?(:Axns, false)
             axn_class = target.const_get(:Axns)
@@ -23,14 +25,16 @@ module Axn
           target.const_set(:Axns, namespace_class)
         end
 
-        private_class_method def self.find_parent_axns_namespace(client_class)
+        private
+
+        def find_parent_axns_namespace(client_class)
           return nil unless client_class.superclass.respond_to?(:_mounted_axn_descriptors)
           return nil unless client_class.superclass.const_defined?(:Axns, false)
 
           client_class.superclass.const_get(:Axns)
         end
 
-        private_class_method def self.create_namespace_class(client_class, parent_axns)
+        def create_namespace_class(client_class, parent_axns)
           base_class = parent_axns || Class.new
 
           Class.new(base_class) do
@@ -45,7 +49,7 @@ module Axn
           end
         end
 
-        private_class_method def self.update_inherited_action_classes(namespace, client_class)
+        def update_inherited_action_classes(namespace, client_class)
           namespace.constants.each do |const_name|
             const_value = namespace.const_get(const_name)
             next unless const_value.is_a?(Class) && const_value.respond_to?(:__axn_mounted_to__)
