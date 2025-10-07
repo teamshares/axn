@@ -18,7 +18,16 @@ module Axn
           end
 
           def step(name, axn_klass = nil, error_prefix: nil, _inherit_from_target: false, **, &)
-            mount_axn(as: :step, name:, axn_klass:, error_prefix:, _inherit_from_target:, **, &)
+            Helpers::Mounter.mount_via_strategy(
+              target: self,
+              as: :step,
+              name:,
+              axn_klass:,
+              error_prefix:,
+              _inherit_from_target:,
+              **,
+              &
+            )
           end
         end
 

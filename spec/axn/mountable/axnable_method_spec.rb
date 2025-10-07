@@ -175,7 +175,7 @@ RSpec.describe Axn do
     describe "comparison with regular axn" do
       it "shows the difference between axn and mount_axn_method return values" do
         comparison_client = build_axn do
-          axn :regular_axn, expose_return_as: :value do |x:|
+          mount_axn :regular_axn, expose_return_as: :value do |x:|
             x * 2
           end
 
@@ -375,7 +375,7 @@ RSpec.describe Axn do
           Class.new do
             include Axn
 
-            axn(:foo) do
+            mount_axn(:foo) do
               1
             end
 
@@ -395,7 +395,7 @@ RSpec.describe Axn do
               1
             end
 
-            axn(:foo) do
+            mount_axn(:foo) do
               2
             end
           end
@@ -580,7 +580,7 @@ RSpec.describe Axn do
       context "with axn strategy and superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn :test_axn, superclass: Object, expose_return_as: :value do
+            mount_axn :test_axn, superclass: Object, expose_return_as: :value do
               "standalone_axn_result"
             end
           end
@@ -598,7 +598,7 @@ RSpec.describe Axn do
         end
 
         it "does not have access to client methods" do
-          client_class.axn :test_with_client_call, superclass: Object do
+          client_class.mount_axn :test_with_client_call, superclass: Object do
             test_method # This should raise an error
           end
 
@@ -625,7 +625,7 @@ RSpec.describe Axn do
         let(:client_class) do
           superclass = custom_superclass
           Class.new(base_client_class) do
-            axn :test_axn, superclass:, expose_return_as: :value do
+            mount_axn :test_axn, superclass:, expose_return_as: :value do
               custom_method
             end
           end
@@ -645,7 +645,7 @@ RSpec.describe Axn do
 
         it "has access to superclass class methods" do
           superclass = custom_superclass
-          client_class.axn :test_class_method, superclass:, expose_return_as: :value do
+          client_class.mount_axn :test_class_method, superclass:, expose_return_as: :value do
             self.class.class_method
           end
 
@@ -658,7 +658,7 @@ RSpec.describe Axn do
       context "with axn strategy and default superclass behavior" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn :test_axn, expose_return_as: :value do
+            mount_axn :test_axn, expose_return_as: :value do
               test_method
             end
           end
@@ -720,7 +720,7 @@ RSpec.describe Axn do
               Class.new do
                 include Axn
 
-                axn :test_axn, superclass: module_ref, expose_return_as: :value do
+                mount_axn :test_axn, superclass: module_ref, expose_return_as: :value do
                   module_method
                 end
               end

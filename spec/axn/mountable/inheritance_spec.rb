@@ -132,7 +132,7 @@ RSpec.describe Axn::Mountable do
           Class.new do
             include Axn
 
-            axn :triple, expose_return_as: :value do |value:|
+            mount_axn :triple, expose_return_as: :value do |value:|
               value * 3
             end
           end
@@ -169,7 +169,7 @@ RSpec.describe Axn::Mountable do
           Class.new do
             include Axn
 
-            axn :increment, expose_return_as: :value do |value:|
+            mount_axn :increment, expose_return_as: :value do |value:|
               value + 20
             end
           end
@@ -206,7 +206,7 @@ RSpec.describe Axn::Mountable do
           stub_const("ParentWithBlockAxn", Class.new do
             include Axn
 
-            axn :square, expose_return_as: :value do |value:|
+            mount_axn :square, expose_return_as: :value do |value:|
               value**2
             end
           end)
@@ -237,7 +237,7 @@ RSpec.describe Axn::Mountable do
             value + 1
           end
 
-          axn :action1, expose_return_as: :value do |value:|
+          mount_axn :action1, expose_return_as: :value do |value:|
             value * 2
           end
         end)
@@ -247,7 +247,7 @@ RSpec.describe Axn::Mountable do
             value + 2
           end
 
-          axn :action2, expose_return_as: :value do |value:|
+          mount_axn :action2, expose_return_as: :value do |value:|
             value * 3
           end
         end)

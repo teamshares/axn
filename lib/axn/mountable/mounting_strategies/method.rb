@@ -8,7 +8,14 @@ module Axn
 
         module DSL
           def mount_axn_method(name, axn_klass = nil, **, &)
-            mount_axn(as: :method, name:, axn_klass:, **, &)
+            Helpers::Mounter.mount_via_strategy(
+              target: self,
+              as: :method,
+              name:,
+              axn_klass:,
+              **,
+              &
+            )
           end
         end
 

@@ -8,7 +8,14 @@ module Axn
 
         module DSL
           def _enqueue_via(name = "enqueue_all", axn_klass = nil, **, &)
-            mount_axn(as: :enqueuer, name:, axn_klass:, **, &)
+            Helpers::Mounter.mount_via_strategy(
+              target: self,
+              as: :enqueuer,
+              name:,
+              axn_klass:,
+              **,
+              &
+            )
           end
         end
 

@@ -7,8 +7,15 @@ module Axn
         extend Base
 
         module DSL
-          def axn(name, axn_klass = nil, **, &)
-            mount_axn(as: :axn, name:, axn_klass:, **, &)
+          def mount_axn(name, axn_klass = nil, **, &)
+            Helpers::Mounter.mount_via_strategy(
+              target: self,
+              as: :axn,
+              name:,
+              axn_klass:,
+              **,
+              &
+            )
           end
         end
 

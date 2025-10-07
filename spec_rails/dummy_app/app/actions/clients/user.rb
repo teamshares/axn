@@ -5,7 +5,7 @@ module Actions::Clients
     include Axn
 
     mount_axn_method(:get_name) { |id:| user(id:).name }
-    axn(:email, expose_return_as: :value) { |id:| user(id:).email }
+    mount_axn(:email, expose_return_as: :value) { |id:| user(id:).email }
 
     private
 

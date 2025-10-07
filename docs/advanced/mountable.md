@@ -27,7 +27,7 @@ The `axn` strategy attaches an action that returns an `Axn::Result` object.
 class UserService
   include Axn
 
-  axn(:create_user) do |email:, name:|
+  mount_axn(:create_user) do |email:, name:|
     user = User.create!(email: email, name: name)
     expose :user_id, user.id
   end
@@ -129,7 +129,7 @@ class DataProcessor
   # Configure async adapter (e.g., Sidekiq, ActiveJob)
   async :sidekiq
 
-  axn(:process_data, async: :sidekiq) do |data:|
+  mount_axn(:process_data, async: :sidekiq) do |data:|
     # Processing logic
     expose :processed_count, data.count
   end
@@ -241,14 +241,14 @@ Method names must be convertible to valid Ruby constant names:
 
 ```ruby
 # ✅ Valid names
-axn(:create_user)           # Creates CreateUser constant
-axn(:process_payment)       # Creates ProcessPayment constant
-axn(:send-email)            # Creates SendEmail constant (parameterized)
-axn(:step_1)                # Creates Step1 constant
+mount_axn(:create_user)           # Creates CreateUser constant
+mount_axn(:process_payment)       # Creates ProcessPayment constant
+mount_axn(:send-email)            # Creates SendEmail constant (parameterized)
+mount_axn(:step_1)                # Creates Step1 constant
 
 # ❌ Invalid names
-axn(:create_user!)          # Cannot contain method suffixes (!?=)
-axn(:123invalid)            # Cannot start with number
+mount_axn(:create_user!)          # Cannot contain method suffixes (!?=)
+mount_axn(:123invalid)            # Cannot start with number
 ```
 
 ### Special Character Handling
@@ -256,9 +256,9 @@ axn(:123invalid)            # Cannot start with number
 The system automatically handles special characters using `parameterize`:
 
 ```ruby
-axn(:send-email)     # Becomes SendEmail constant
-axn(:step 1)         # Becomes Step1 constant
-axn(:user@domain)    # Becomes UserDomain constant
+mount_axn(:send-email)     # Becomes SendEmail constant
+mount_axn(:step 1)         # Becomes Step1 constant
+mount_axn(:user@domain)    # Becomes UserDomain constant
 ```
 
 ## Best Practices
@@ -273,12 +273,12 @@ axn(:user@domain)    # Becomes UserDomain constant
 
 ```ruby
 # ✅ Good: Focused action
-axn(:send_welcome_email) do |user_id:|
+  mount_axn(:send_welcome_email) do |user_id:|
   WelcomeMailer.send_welcome(user_id).deliver_now
 end
 
 # ❌ Bad: Too many responsibilities - prefer a standalone class
-axn(:process_user) do |user_data:|
+  mount_axn(:process_user) do |user_data:|
   user = User.create!(user_data)
   WelcomeMailer.send_welcome(user.id).deliver_now
   Analytics.track_user_signup(user.id)
@@ -290,12 +290,12 @@ end
 
 ```ruby
 # ✅ Good: Clear intent
-axn(:validate_email_format)
+mount_axn(:validate_email_format)
 mount_axn_method(:calculate_tax)
 step(:send_confirmation_email)
 
 # ❌ Bad: Unclear purpose
-axn(:process)
+mount_axn(:process)
 mount_axn_method(:do_thing)
 step(:step1)
 ```
@@ -310,7 +310,7 @@ step(:step1)
 class UserService
   include Axn
 
-  axn(:create) do |email:, name:|
+  mount_axn(:create) do |email:, name:|
     user = User.create!(email: email, name: name)
     expose :user_id, user.id
   end

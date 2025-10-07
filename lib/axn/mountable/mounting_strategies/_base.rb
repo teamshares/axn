@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/exceptions"
+require "axn/mountable/descriptor"
 
 module Axn
   module Mountable

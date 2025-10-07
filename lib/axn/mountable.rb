@@ -5,6 +5,7 @@ require "axn/mountable/descriptor"
 require "axn/mountable/helpers/validator"
 require "axn/mountable/helpers/class_builder"
 require "axn/mountable/helpers/namespace_manager"
+require "axn/mountable/helpers/mounter"
 
 module Axn
   # Mountable provides functionality for mounting actions to classes
@@ -68,20 +69,6 @@ module Axn
 
       MountingStrategies.all.each do |(_name, klass)|
         base.extend klass::DSL if klass.const_defined?(:DSL)
-      end
-    end
-
-    class_methods do
-      def mount_axn(
-        as: :axn,
-        name: nil,
-        axn_klass: nil,
-        **kwargs,
-        &block
-      )
-        descriptor = Descriptor.new(name:, axn_klass:, as:, block:, kwargs:)
-        self._mounted_axn_descriptors += [descriptor]
-        descriptor.mount(target: self)
       end
     end
   end
