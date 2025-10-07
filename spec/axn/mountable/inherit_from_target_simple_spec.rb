@@ -93,9 +93,9 @@ RSpec.describe "inherit_from_target option - simple verification" do
     end
 
     # Create a method action that inherits from target
-    target_class.axn_method :test_method,
-                            expects: [:method_field],
-                            _inherit_from_target: true do
+    target_class.mount_axn_method :test_method,
+                                  expects: [:method_field],
+                                  _inherit_from_target: true do
       "Method: #{method_field} - #{shared_method}"
     end
 

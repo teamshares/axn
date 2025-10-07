@@ -47,9 +47,9 @@ end
 - `UserService.create_user!(**kwargs)` - Returns `Axn::Result` on success, raises on error
 - `UserService.create_user_async(**kwargs)` - Executes asynchronously (requires async adapter configuration)
 
-### `axn_method` Strategy
+### `mount_axn_method` Strategy
 
-The `axn_method` strategy creates methods that automatically extract the return value from the `Axn::Result`. This is a useful shorthand when you have a snippet that needs to return one or zero values, when you don't want to manually check if the result was ok?.
+The `mount_axn_method` strategy creates methods that automatically extract the return value from the `Axn::Result`. This is a useful shorthand when you have a snippet that needs to return one or zero values, when you don't want to manually check if the result was ok?.
 
 Note we only attach a bang version to be clear that on failure it'll raise an exception.
 
@@ -57,11 +57,11 @@ Note we only attach a bang version to be clear that on failure it'll raise an ex
 class Calculator
   include Axn
 
-  axn_method(:add) do |a:, b:|
+  mount_axn_method(:add) do |a:, b:|
     a + b
   end
 
-  axn_method(:multiply) do |a:, b:|
+  mount_axn_method(:multiply) do |a:, b:|
     a * b
   end
 end
@@ -160,7 +160,7 @@ By default, attached actions inherit from their target class, allowing them to a
 
 #### Default Behavior
 
-- **`axn` and `axn_method` strategies**: Inherit from target class by default
+- **`axn` and `mount_axn_method` strategies**: Inherit from target class by default
 - **`step` strategy**: Inherits from `Object` by default to avoid field conflicts
 
 ```ruby
@@ -266,7 +266,7 @@ axn(:user@domain)    # Becomes UserDomain constant
 ### 1. Choose the Right Strategy
 
 - **Use `axn`** when you need full `Axn::Result` objects and error handling
-- **Use `axn_method`** when you want direct return values for simple operations
+- **Use `mount_axn_method`** when you want direct return values for simple operations
 - **Use `step`** when composing complex workflows with multiple sequential operations
 
 ### 2. Keep Actions Focused
@@ -291,12 +291,12 @@ end
 ```ruby
 # ✅ Good: Clear intent
 axn(:validate_email_format)
-axn_method(:calculate_tax)
+mount_axn_method(:calculate_tax)
 step(:send_confirmation_email)
 
 # ❌ Bad: Unclear purpose
 axn(:process)
-axn_method(:do_thing)
+mount_axn_method(:do_thing)
 step(:step1)
 ```
 
@@ -315,7 +315,7 @@ class UserService
     expose :user_id, user.id
   end
 
-  axn_method(:find_by_email) do |email:|
+  mount_axn_method(:find_by_email) do |email:|
     User.find_by(email: email)
   end
 end

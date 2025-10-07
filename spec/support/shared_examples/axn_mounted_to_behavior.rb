@@ -43,7 +43,7 @@ RSpec.shared_examples "__axn_mounted_to__ behavior" do |mounting_method|
     end
 
     before do
-      if mounting_method == :axn_method
+      if mounting_method == :mount_axn_method
         client_class.public_send(mounting_method, :existing_action, axn_klass: existing_axn)
       else
         client_class.public_send(mounting_method, :existing_action, existing_axn)

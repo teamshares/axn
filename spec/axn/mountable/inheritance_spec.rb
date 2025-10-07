@@ -2,13 +2,13 @@
 
 RSpec.describe Axn::Mountable do
   describe "inheritance" do
-    describe "axn_method inheritance" do
+    describe "mount_axn_method inheritance" do
       context "with helper methods" do
         let(:parent_class) do
           Class.new do
             include Axn
 
-            axn_method :multiply do |value:|
+            mount_axn_method :multiply do |value:|
               value * the_multiple
             end
 
@@ -33,7 +33,7 @@ RSpec.describe Axn::Mountable do
           Class.new do
             include Axn
 
-            axn_method :multiply do |value:|
+            mount_axn_method :multiply do |value:|
               value * 2
             end
           end
@@ -41,7 +41,7 @@ RSpec.describe Axn::Mountable do
 
         let(:child) { Class.new(parent) }
 
-        it "inherits axn_method definitions" do
+        it "inherits mount_axn_method definitions" do
           expect(child).to respond_to(:multiply!)
           expect(child.const_defined?(:Axns)).to be true
           expect(child.const_get(:Axns).const_defined?(:Multiply)).to be true
@@ -70,7 +70,7 @@ RSpec.describe Axn::Mountable do
           stub_const("ParentWithAxnableMethod", Class.new do
             include Axn
 
-            axn_method :add do |value:|
+            mount_axn_method :add do |value:|
               value + 10
             end
           end)
@@ -78,7 +78,7 @@ RSpec.describe Axn::Mountable do
           stub_const("ChildWithAxnableMethod", Class.new(ParentWithAxnableMethod))
         end
 
-        it "inherits axn_method definitions" do
+        it "inherits mount_axn_method definitions" do
           expect(ChildWithAxnableMethod).to respond_to(:add!)
           expect(ChildWithAxnableMethod.const_defined?(:Axns)).to be true
           expect(ChildWithAxnableMethod.const_get(:Axns).const_defined?(:Add)).to be true
@@ -107,13 +107,13 @@ RSpec.describe Axn::Mountable do
           stub_const("ParentWithOverride", Class.new do
             include Axn
 
-            axn_method :calculate do |value:|
+            mount_axn_method :calculate do |value:|
               value * 2
             end
           end)
 
           stub_const("ChildWithOverride", Class.new(ParentWithOverride) do
-            axn_method :calculate do |value:|
+            mount_axn_method :calculate do |value:|
               value * 3
             end
           end)
@@ -233,7 +233,7 @@ RSpec.describe Axn::Mountable do
         stub_const("ParentWithMixed", Class.new do
           include Axn
 
-          axn_method :method1 do |value:|
+          mount_axn_method :method1 do |value:|
             value + 1
           end
 
@@ -243,7 +243,7 @@ RSpec.describe Axn::Mountable do
         end)
 
         stub_const("ChildWithMixed", Class.new(ParentWithMixed) do
-          axn_method :method2 do |value:|
+          mount_axn_method :method2 do |value:|
             value + 2
           end
 
@@ -253,7 +253,7 @@ RSpec.describe Axn::Mountable do
         end)
       end
 
-      it "inherits both axn_method and axn definitions" do
+      it "inherits both mount_axn_method and axn definitions" do
         expect(ChildWithMixed).to respond_to(:method1!)
         expect(ChildWithMixed.const_defined?(:Axns)).to be true
         expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method1)).to be true
@@ -287,7 +287,7 @@ RSpec.describe Axn::Mountable do
           Class.new do
             include Axn
 
-            axn_method :test do |value:|
+            mount_axn_method :test do |value:|
               value * 2
             end
           end
@@ -299,7 +299,7 @@ RSpec.describe Axn::Mountable do
           parent = Class.new do
             include Axn
 
-            axn_method :test do |value:|
+            mount_axn_method :test do |value:|
               value * 2
             end
           end

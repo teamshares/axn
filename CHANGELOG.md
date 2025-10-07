@@ -30,7 +30,7 @@
 * `type` validator is not still applied to the blank value when allow_blank is true (`type: Hash` will no longer accept `false` or `""`)
 * [FEAT] `expects`/`exposes` now prefers new `optional: true` over allow_blank for simplicity
 * [FEAT] `Axn::Result` now supports Ruby 3's pattern matching feature
-* [FEAT] Extended attachable functionality: added `axn_method` for creating class methods that return values directly instead of wrapped in `Axn::Result`
+* [FEAT] Extended attachable functionality: added `mount_axn_method` for creating class methods that return values directly instead of wrapped in `Axn::Result`
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

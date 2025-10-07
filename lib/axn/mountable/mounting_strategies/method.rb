@@ -7,7 +7,7 @@ module Axn
         extend Base
 
         module DSL
-          def axn_method(name, axn_klass = nil, **, &)
+          def mount_axn_method(name, axn_klass = nil, **, &)
             mount_axn(as: :method, name:, axn_klass:, **, &)
           end
         end
@@ -33,7 +33,7 @@ module Axn
             if exposed_fields.size > 1
               raise MountingError,
                     "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
-                    "Use a fresh block with axn_method or ensure the axn class has exactly one exposed field."
+                    "Use a fresh block with mount_axn_method or ensure the axn class has exactly one exposed field."
             end
           end
 
@@ -70,7 +70,7 @@ module Axn
           else
             raise MountingError,
                   "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
-                  "Use a fresh block with axn_method or ensure the axn class has exactly one exposed field."
+                  "Use a fresh block with mount_axn_method or ensure the axn class has exactly one exposed field."
           end
         end
       end
