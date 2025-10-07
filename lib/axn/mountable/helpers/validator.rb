@@ -13,10 +13,12 @@ module Axn
           validate_name!
           validate_axn_class_or_block!
           validate_method_name!(@descriptor.name.to_s)
-          if @descriptor.block.present? && @descriptor.existing_axn_klass.nil?
+
+          if @descriptor.existing_axn_klass
+            validate_existing_axn_class!
+          elsif @descriptor.block.present?
             validate_callable!(@descriptor.block)
           end
-          validate_existing_axn_class! if @descriptor.existing_axn_klass
         end
 
         private
