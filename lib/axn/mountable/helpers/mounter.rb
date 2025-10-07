@@ -10,7 +10,7 @@ module Axn
         # Mount an action using the specified strategy
         #
         # @param target [Class] The target class to mount the action to
-        # @param as [Symbol] The strategy to use (:axn, :method, :step, :enqueuer)
+        # @param as [Symbol] The strategy to use (:axn, :method, :step, :enqueue_all)
         # @param name [Symbol] The name of the action
         # @param axn_klass [Class, nil] Optional existing action class
         # @param kwargs [Hash] Additional strategy-specific options
