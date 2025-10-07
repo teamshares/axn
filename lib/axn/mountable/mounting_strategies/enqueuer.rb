@@ -4,7 +4,8 @@ module Axn
   module Mountable
     class MountingStrategies
       module Enqueuer
-        extend Base
+        include Base
+        extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
         module DSL
           def _enqueue_via(name = "enqueue_all", axn_klass = nil, **, &)
@@ -19,7 +20,7 @@ module Axn
           end
         end
 
-        def self.mount_to_target(descriptor:, target:)
+        def mount_to_target(descriptor:, target:)
           name = descriptor.name
 
           mount_method(target:, method_name: name) do |**kwargs|

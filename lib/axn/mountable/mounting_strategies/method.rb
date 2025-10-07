@@ -4,7 +4,8 @@ module Axn
   module Mountable
     class MountingStrategies
       module Method
-        extend Base
+        include Base
+        extend self
 
         module DSL
           def mount_axn_method(name, axn_klass = nil, **, &)
@@ -19,7 +20,7 @@ module Axn
           end
         end
 
-        def self.preprocess_kwargs(**kwargs)
+        def preprocess_kwargs(**kwargs)
           # Call parent preprocessing first
           processed_kwargs = super
 
@@ -47,7 +48,7 @@ module Axn
           processed_kwargs
         end
 
-        def self.mount_to_target(descriptor:, target:)
+        def mount_to_target(descriptor:, target:)
           name = descriptor.name
 
           mount_method(target:, method_name: "#{name}!") do |**kwargs|
@@ -65,7 +66,9 @@ module Axn
           end
         end
 
-        private_class_method def self._determine_exposure_to_return(axn_klass)
+        private
+
+        def _determine_exposure_to_return(axn_klass)
           # Introspect the axn class to determine expose_return_as
           exposed_fields = axn_klass.external_field_configs.map(&:field)
 

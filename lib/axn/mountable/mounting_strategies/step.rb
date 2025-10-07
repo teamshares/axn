@@ -4,7 +4,8 @@ module Axn
   module Mountable
     class MountingStrategies
       module Step
-        extend Base
+        include Base
+        extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
         module DSL
           def steps(*steps)
@@ -31,9 +32,9 @@ module Axn
           end
         end
 
-        def self.strategy_specific_kwargs = super + [:error_prefix]
+        def strategy_specific_kwargs = super + [:error_prefix]
 
-        def self.mount_to_target(descriptor:, target:)
+        def mount_to_target(descriptor:, target:)
           error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
           axn_klass = descriptor.mounted_axn_for(target:)
 
