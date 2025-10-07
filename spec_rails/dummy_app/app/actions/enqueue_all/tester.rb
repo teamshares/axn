@@ -18,7 +18,7 @@ module Actions
         info "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      mount_axn :enqueue_all, superclass: Object, async: :sidekiq, expose_return_as: :value do |max:|
+      enqueue_all_via async: :sidekiq do |max:|
         1.upto(max).map do |i|
           ::Actions::EnqueueAll::Tester.call_async(number: i)
         end

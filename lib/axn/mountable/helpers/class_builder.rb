@@ -43,8 +43,12 @@ module Axn
             inherit_from_target = @descriptor.options[:_inherit_from_target]
 
             # Determine superclass based on inherit_from_target option
-            factory_kwargs[:superclass] = if inherit_from_target == false
+            factory_kwargs[:superclass] = case inherit_from_target
+                                          when false
                                             Object
+                                          when :without_fields
+                                            # Create a class that inherits from target but strips field declarations
+                                            create_class_without_fields(target)
                                           else
                                             # Handle module targets by creating a base class that includes the module
                                             target.is_a?(Module) && !target.is_a?(Class) ? create_module_base_class(target) : target
@@ -73,6 +77,16 @@ module Axn
           # This allows the action class to inherit from a class while still having access to module methods
           Class.new do
             include target_module
+          end
+        end
+
+        def create_class_without_fields(target)
+          # Create a class that inherits from target but strips field declarations
+          # This allows inheriting async configuration and other settings while avoiding field conflicts
+          Class.new(target) do
+            # Clear field configurations inherited from target
+            self.internal_field_configs = []
+            self.external_field_configs = []
           end
         end
 

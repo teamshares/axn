@@ -8,17 +8,13 @@ module Axn
         extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
         module DSL
-          def enqueue_all(axn_klass = nil, **, &)
-            # Check if enqueue_all has already been called
-            if respond_to?(:enqueue_all) && method(:enqueue_all).owner != self.class
-              raise "enqueue_all can only be called once per class"
-            end
-            
+          def enqueue_all_via(axn_klass = nil, **, &)
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :enqueue_all,
               name: "enqueue_all",
               axn_klass:,
+              _inherit_from_target: :without_fields,
               **,
               &
             )

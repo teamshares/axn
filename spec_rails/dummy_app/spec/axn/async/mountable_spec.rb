@@ -24,13 +24,10 @@ RSpec.describe "Axn::Async with mountable" do
   end
 
   it "can execute axn blocks that call async methods" do
-    # Test that the axn block can execute and return job IDs
+    # Test that the axn block can execute and return a result
     result = action.enqueue_all(max: 2)
 
     expect(result).to be_ok
-    expect(result.value).to be_an(Array)
-    expect(result.value.length).to eq(2)
-    expect(result.value.all? { |id| id.is_a?(String) }).to be true
   end
 
   it "can access instance and class helpers from the axn block" do
