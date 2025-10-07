@@ -10,14 +10,10 @@ module Axn
         end
 
         def mount(target, name)
-          namespace = get_or_create_namespace(target)
+          namespace = Helpers::NamespaceManager.get_or_create_namespace(target)
           return unless should_register_constant?(namespace)
 
           build_and_configure_action_class(target, name, namespace)
-        end
-
-        def get_or_create_namespace(target)
-          Helpers::NamespaceManager.get_or_create_namespace(target)
         end
 
         def generate_constant_name(name)

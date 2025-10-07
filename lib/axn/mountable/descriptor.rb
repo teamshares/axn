@@ -41,7 +41,7 @@ module Axn
 
         # Check if constant is already registered
         action_class_builder = Helpers::ClassBuilder.new(self)
-        namespace = action_class_builder.get_or_create_namespace(target)
+        namespace = Helpers::NamespaceManager.get_or_create_namespace(target)
         constant_name = action_class_builder.generate_constant_name(@name.to_s)
         if namespace.const_defined?(constant_name, false)
           mounted_axn = namespace.const_get(constant_name)

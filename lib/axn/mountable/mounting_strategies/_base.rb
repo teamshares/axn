@@ -23,7 +23,7 @@ module Axn
         # Mount methods to the namespace and register the action class
         def mount_to_namespace(descriptor:, target:)
           action_class_builder = Helpers::ClassBuilder.new(descriptor)
-          namespace = action_class_builder.get_or_create_namespace(target)
+          namespace = Helpers::NamespaceManager.get_or_create_namespace(target)
           name = descriptor.name
           descriptor_ref = descriptor
 
