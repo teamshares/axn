@@ -23,7 +23,7 @@ module Actions
         raise "don't like 4s" if max == 4
 
         1.upto(max).map do |i|
-          call_async(number: i)
+          enqueue(number: i)
         end
       end
     end

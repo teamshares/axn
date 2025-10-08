@@ -138,7 +138,7 @@ class SyncForCompany
     puts "About to enqueue sync jobs for all companies"
 
     Company.find_each.map do |company|
-      call_async(company_id: company.id)
+      enqueue(company_id: company.id)
     end
   end
 end
@@ -158,7 +158,7 @@ SyncForCompany.enqueue_all_async
 #### Key Features
 
 - **Inheritance**: Uses from-target-but-without-fields pattern by default
-- **call_async Shortcut**: Use `call_async` as syntactic sugar for `ClassName.call_async` within the enqueue_all block
+- **enqueue Shortcut**: Use `enqueue` as syntactic sugar for `ClassName.call_async` within the enqueue_all block
 
 
 ## Async Execution
@@ -248,7 +248,7 @@ class UserService
 
   # enqueue_all can access target methods by default (from-target-but-without-fields pattern)
   enqueue_all_via do |user_ids:|
-    user_ids.map { |id| call_async(user_id: id) }
+    user_ids.map { |id| enqueue(user_id: id) }
     # Can access shared_method by default
   end
 
@@ -427,7 +427,7 @@ class EmailProcessor
     puts "Processing #{email_ids.count} emails with priority: #{priority}"
 
     email_ids.map do |email_id|
-      call_async(email_id: email_id)
+      enqueue(email_id: email_id)
     end
   end
 end

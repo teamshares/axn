@@ -37,7 +37,7 @@
   * [NEW] `enqueue_all_via` - Mount batch enqueueing functionality for background job processing
 * [FEAT] Enhanced async execution with job scheduling support
   * [NEW] Support for scheduled async jobs via `_async` parameter with `wait_until:` and `wait:` options
-  * [NEW] `call_async` shortcut methods for all mounted actions
+  * [NEW] `enqueue` shortcut methods for all mounted actions
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues

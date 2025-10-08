@@ -39,10 +39,10 @@ module Axn
         def mount_to_namespace(descriptor:, target:)
           super
 
-          # Add call_async shortcut to enqueue the *attached-to* axn without
+          # Add enqueue shortcut to enqueue the *attached-to* axn without
           # the user having to reference __axn_mounted_to__ in their own code
           mounted_axn = descriptor.mounted_axn_for(target:)
-          mounted_axn.define_method(:call_async) do |**kwargs|
+          mounted_axn.define_method(:enqueue) do |**kwargs|
             __axn_mounted_to__.call_async(**kwargs)
           end
         end
