@@ -89,6 +89,23 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       end.to raise_error(RuntimeError, "don't like 4s")
     end
 
+    it "does not execute enqueue_all_via block immediately when not in inline mode" do
+      Sidekiq::Queues.clear_all
+
+      # This should NOT produce the "About to enqueue_all" output immediately
+      expect do
+        Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
+      end.not_to output(/About to enqueue_all/).to_stdout
+
+      # Should only enqueue the enqueue_all action itself, not individual jobs
+      expect(Sidekiq::Queues["default"].size).to eq(1)
+
+      # Verify the job is the enqueue_all action, not individual Tester jobs
+      job = Sidekiq::Queues["default"].first
+      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
+      expect(job["args"]).to eq([{ "max" => 2 }])
+    end
+
     it "calling enqueue_all directly enqueues individual Tester jobs" do
       Sidekiq::Queues.clear_all
 
