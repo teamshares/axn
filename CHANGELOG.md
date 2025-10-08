@@ -31,6 +31,13 @@
 * [FEAT] `expects`/`exposes` now prefers new `optional: true` over allow_blank for simplicity
 * [FEAT] `Axn::Result` now supports Ruby 3's pattern matching feature
 * [FEAT] Extended attachable functionality: added `mount_axn_method` for creating class methods that return values directly instead of wrapped in `Axn::Result`
+* [Internal] Replaced `Axn::Attachable` with `Axn::Mountable` - complete refactor of action mounting system
+  * [BREAKING] `#axn` → `#mount_axn` for method mounting
+  * [BREAKING] `#axn_method` → `#mount_axn_method` for direct method mounting
+  * [NEW] `enqueue_all_via` - Mount batch enqueueing functionality for background job processing
+* [FEAT] Enhanced async execution with job scheduling support
+  * [NEW] Support for scheduled async jobs via `_async` parameter with `wait_until:` and `wait:` options
+  * [NEW] `call_async` shortcut methods for all mounted actions
 
 ## 0.1.0-alpha.2.8.1
 * [BUGFIX] Fixed symbol callback and message handlers not working in inherited classes due to private method visibility issues
