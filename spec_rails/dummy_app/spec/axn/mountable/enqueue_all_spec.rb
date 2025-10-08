@@ -77,11 +77,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
           Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
         end
       end.to output(
-        /
-          About to enqueue_all: max: 2 \| instance_helper \| class_helper\n
-          .*Action executed: I was called with number: 1
-          .*Action executed: I was called with number: 2
-        /m,
+        /(?:.*Sidekiq.*connecting to Redis.*)?About to enqueue_all: max: 2 \| instance_helper \| class_helper\n.*Action executed: I was called with number: 1 \| instance_helper \| class_helper\n.*Action executed: I was called with number: 2 \| instance_helper \| class_helper/m,
       ).to_stdout
     end
 
