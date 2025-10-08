@@ -5,34 +5,25 @@ module Actions
     class Tester
       include Axn
 
-      module InstanceHelpers
-        def instance_helper = "instance_helper"
+      async :sidekiq
 
-        def self.included(base)
-          base.async :sidekiq
-        end
-      end
-
-      module ClassHelpers
-        def class_helper = "class_helper"
-      end
-
-      include InstanceHelpers
-      extend ClassHelpers
+      def instance_helper = "instance_helper"
+      def self.class_helper = "class_helper"
 
       expects :number
 
       error "bad times"
 
       def call
-        info "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
+        puts "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      axn :enqueue_all, expose_return_as: :value, include: InstanceHelpers, extend: ClassHelpers do |max:|
-        info "EnqueueAll block: instance_helper=#{instance_helper}, class_helper=#{self.class.class_helper}"
+      enqueue_all_via do |max:|
+        puts "About to enqueue_all: max: #{max} | #{instance_helper} | #{self.class.class_helper}"
+        raise "don't like 4s" if max == 4
 
         1.upto(max).map do |i|
-          ::Actions::EnqueueAll::Tester.call_async(number: i)
+          enqueue(number: i)
         end
       end
     end

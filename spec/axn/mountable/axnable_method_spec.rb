@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require_relative "../../support/shared_examples/__axn_attached_to__behavior"
+require_relative "../../support/shared_examples/__axn_mounted_to__behavior"
 
 RSpec.describe Axn do
-  describe ".axn_method" do
+  describe ".mount_axn_method" do
     let(:client) do
       build_axn do
         error "bad"
 
-        axn_method :number, error: "badbadbad" do |arg:|
+        mount_axn_method :number, error: "badbadbad" do |arg:|
           fail! "arg was all 1s" if arg.to_s.chars.uniq == ["1"]
           raise "arg was all 2s" if arg.to_s.chars.uniq == ["2"]
 
@@ -96,7 +96,7 @@ RSpec.describe Axn do
 
       it "returns different types directly" do
         string_client = build_axn do
-          axn_method :greeting do |name:|
+          mount_axn_method :greeting do |name:|
             "Hello, #{name}!"
           end
         end
@@ -109,7 +109,7 @@ RSpec.describe Axn do
 
       it "returns complex objects directly" do
         hash_client = build_axn do
-          axn_method :user_data do |id:|
+          mount_axn_method :user_data do |id:|
             { id:, name: "User #{id}", active: true }
           end
         end
@@ -122,7 +122,7 @@ RSpec.describe Axn do
 
       it "returns nil directly when block returns nil" do
         nil_client = build_axn do
-          axn_method :nothing do
+          mount_axn_method :nothing do
             nil
           end
         end
@@ -134,7 +134,7 @@ RSpec.describe Axn do
 
       it "returns false directly when block returns false" do
         false_client = build_axn do
-          axn_method :is_false do
+          mount_axn_method :is_false do
             false
           end
         end
@@ -146,7 +146,7 @@ RSpec.describe Axn do
 
       it "returns arrays directly" do
         array_client = build_axn do
-          axn_method :list do |items:|
+          mount_axn_method :list do |items:|
             items.map(&:upcase)
           end
         end
@@ -161,7 +161,7 @@ RSpec.describe Axn do
     describe "custom expose_return_as" do
       it "uses custom expose_return_as field" do
         custom_client = build_axn do
-          axn_method :custom, expose_return_as: :data do |value:|
+          mount_axn_method :custom, expose_return_as: :data do |value:|
             "processed: #{value}"
           end
         end
@@ -173,13 +173,13 @@ RSpec.describe Axn do
     end
 
     describe "comparison with regular axn" do
-      it "shows the difference between axn and axn_method return values" do
+      it "shows the difference between axn and mount_axn_method return values" do
         comparison_client = build_axn do
-          axn :regular_axn, expose_return_as: :value do |x:|
+          mount_axn :regular_axn, expose_return_as: :value do |x:|
             x * 2
           end
 
-          axn_method :method_axn do |x:|
+          mount_axn_method :method_axn do |x:|
             x * 2
           end
         end
@@ -189,7 +189,7 @@ RSpec.describe Axn do
         expect(regular_result).to be_a(Axn::Result)
         expect(regular_result.value).to eq(10)
 
-        # axn_method returns the value directly
+        # mount_axn_method returns the value directly
         method_result = comparison_client.method_axn!(x: 5)
         expect(method_result).to eq(10)
         expect(method_result).not_to be_a(Axn::Result)
@@ -199,10 +199,10 @@ RSpec.describe Axn do
     describe "inheritance behavior" do
       let(:parent_class) do
         Class.new do
-          include Axn::Attachable
+          include Axn::Mountable
           include Axn::Core::Flow
 
-          axn_method :parent_method do |value:|
+          mount_axn_method :parent_method do |value:|
             "parent: #{value}"
           end
         end
@@ -210,14 +210,14 @@ RSpec.describe Axn do
 
       let(:child_class) do
         Class.new(parent_class) do
-          axn_method :child_method do |value:|
+          mount_axn_method :child_method do |value:|
             "child: #{value}"
           end
         end
       end
 
-      it "inherits axn_method definitions and returns values directly" do
-        # Both should work and return values directly (axn_method creates class methods)
+      it "inherits mount_axn_method definitions and returns values directly" do
+        # Both should work and return values directly (mount_axn_method creates class methods)
         parent_result = parent_class.parent_method!(value: "test")
         expect(parent_result).to eq("parent: test")
         expect(parent_result).not_to be_a(Axn::Result)
@@ -235,7 +235,7 @@ RSpec.describe Axn do
     describe "error handling with direct returns" do
       it "raises errors immediately when using the ! method" do
         error_client = build_axn do
-          axn_method :error_method do
+          mount_axn_method :error_method do
             fail! "Something went wrong"
           end
         end
@@ -247,7 +247,7 @@ RSpec.describe Axn do
 
       it "raises exceptions immediately when using the ! method" do
         exception_client = build_axn do
-          axn_method :exception_method do
+          mount_axn_method :exception_method do
             raise "Runtime error"
           end
         end
@@ -261,7 +261,7 @@ RSpec.describe Axn do
     describe "edge cases" do
       it "handles empty blocks" do
         empty_client = build_axn do
-          axn_method :empty do
+          mount_axn_method :empty do
             # Empty block
           end
         end
@@ -273,7 +273,7 @@ RSpec.describe Axn do
 
       it "handles blocks that return symbols" do
         symbol_client = build_axn do
-          axn_method :symbol_method do
+          mount_axn_method :symbol_method do
             :success
           end
         end
@@ -291,7 +291,7 @@ RSpec.describe Axn do
         end
 
         client = build_axn do
-          axn_method :single, axn_klass: single_exposure_axn
+          mount_axn_method :single, axn_klass: single_exposure_axn
         end
 
         result = client.single!(value: 5)
@@ -305,7 +305,7 @@ RSpec.describe Axn do
         end
 
         client = build_axn do
-          axn_method :none, axn_klass: no_exposure_axn
+          mount_axn_method :none, axn_klass: no_exposure_axn
         end
 
         result = client.none!(value: 5)
@@ -321,15 +321,15 @@ RSpec.describe Axn do
 
         expect do
           build_axn do
-            axn_method :multiple, axn_klass: multiple_exposure_axn
+            mount_axn_method :multiple, axn_klass: multiple_exposure_axn
           end
-        end.to raise_error(Axn::Attachable::AttachmentError,
+        end.to raise_error(Axn::Mountable::MountingError,
                            /Cannot determine expose_return_as for existing axn class with multiple exposed fields: value, extra/)
       end
 
       it "still works with fresh blocks even when existing axn classes are problematic" do
         client = build_axn do
-          axn_method :fresh, expose_return_as: :data do |value:|
+          mount_axn_method :fresh, expose_return_as: :data do |value:|
             "fresh: #{value * 2}"
           end
         end
@@ -341,12 +341,12 @@ RSpec.describe Axn do
     end
 
     describe "class naming and namespacing" do
-      it "creates SomeClass::Axns::Foo from axn_method(:foo)" do
+      it "creates SomeClass::Axns::Foo from mount_axn_method(:foo)" do
         # Create the class first, then define the constant
         some_class = Class.new do
           include Axn
 
-          axn_method :foo do
+          mount_axn_method :foo do
             123
           end
         end
@@ -354,7 +354,7 @@ RSpec.describe Axn do
         # Set the constant after the class is created
         stub_const("SomeClass", some_class)
 
-        # The axn_method should create a class in the Axns namespace
+        # The mount_axn_method should create a class in the Axns namespace
         expect(SomeClass.const_defined?(:Axns)).to be true
 
         attached_axns = SomeClass.const_get(:Axns)
@@ -370,49 +370,49 @@ RSpec.describe Axn do
     end
 
     describe "name collision handling" do
-      it "raises AttachmentError when trying to define both axn and axn_method with the same name (axn first)" do
+      it "raises MountingError when trying to define both axn and mount_axn_method with the same name (axn first)" do
         expect do
           Class.new do
             include Axn
 
-            axn(:foo) do
+            mount_axn(:foo) do
               1
             end
 
-            axn_method(:foo) do
+            mount_axn_method(:foo) do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- method 'foo!' is already taken/)
+        end.to raise_error(Axn::Mountable::MountingError, /Method unable to attach -- method 'foo!' is already taken/)
       end
 
-      it "raises AttachmentError when trying to define both axn_method and axn with the same name (axn_method first)" do
+      it "raises MountingError when trying to define both mount_axn_method and axn with the same name (mount_axn_method first)" do
         expect do
           Class.new do
             include Axn
 
-            axn_method(:foo) do
+            mount_axn_method(:foo) do
               1
             end
 
-            axn(:foo) do
+            mount_axn(:foo) do
               2
             end
           end
-        end.to raise_error(Axn::Attachable::AttachmentError, /Axn unable to attach -- method 'foo!' is already taken/)
+        end.to raise_error(Axn::Mountable::MountingError, /Axn unable to attach -- method 'foo!' is already taken/)
       end
 
-      it "allows child class to override parent's axn_method with the same name" do
+      it "allows child class to override parent's mount_axn_method with the same name" do
         parent_class = Class.new do
           include Axn
 
-          axn_method :foo do
+          mount_axn_method :foo do
             "parent"
           end
         end
 
         child_class = Class.new(parent_class) do
-          axn_method :foo do
+          mount_axn_method :foo do
             "child"
           end
         end
@@ -454,7 +454,7 @@ RSpec.describe Axn do
               end
             end
 
-            axn_method :test, superclass: test_superclass do
+            mount_axn_method :test, superclass: test_superclass do
               # Now has access to test_method through superclass
               test_method
             end
@@ -476,7 +476,7 @@ RSpec.describe Axn do
       context "with superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn_method :test, superclass: Object do
+            mount_axn_method :test, superclass: Object do
               # This should inherit from Object and NOT have access to client methods
               "standalone_result"
             end
@@ -494,7 +494,7 @@ RSpec.describe Axn do
         end
 
         it "cannot call client methods from within the axn" do
-          client_class.axn_method :test_with_client_call, superclass: Object do
+          client_class.mount_axn_method :test_with_client_call, superclass: Object do
             test_method # This should raise an error
           end
 
@@ -525,10 +525,62 @@ RSpec.describe Axn do
         end
       end
 
+      context "with step strategy and explicit custom superclass" do
+        let(:custom_superclass) do
+          Class.new do
+            def step_helper_method
+              "step_helper_result"
+            end
+          end
+        end
+
+        let(:client_class) do
+          superclass = custom_superclass
+          Class.new(base_client_class) do
+            step(:test_step, superclass:) do
+              step_helper_method
+            end
+          end
+        end
+
+        it "inherits from explicit superclass" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestStep)
+          expect(axn_class.superclass).to eq(custom_superclass)
+          expect(axn_class.superclass.instance_methods).to include(:step_helper_method)
+        end
+
+        it "has access to superclass methods" do
+          client = client_class.new
+          client.call
+          # The step runs without error and has access to superclass methods
+          expect(client.instance_variable_get(:@__context)).to be_present
+        end
+      end
+
+      context "with step strategy and default superclass behavior" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            step :test_step do
+              test_method
+            end
+          end
+        end
+
+        it "inherits from Object by default for steps" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestStep)
+          expect(axn_class.superclass).to eq(Object)
+        end
+
+        it "does not have access to target methods by default" do
+          client = client_class.new
+          expect { client.call }.to raise_error(NameError, /undefined local variable or method `test_method'/)
+        end
+      end
+
       context "with axn strategy and superclass: Object" do
         let(:client_class) do
           Class.new(base_client_class) do
-            axn :test_axn, superclass: Object do
+            mount_axn :test_axn, superclass: Object, expose_return_as: :value do
               "standalone_axn_result"
             end
           end
@@ -542,6 +594,161 @@ RSpec.describe Axn do
         it "works as a standalone axn" do
           result = client_class.test_axn
           expect(result).to be_ok
+          expect(result.value).to eq("standalone_axn_result")
+        end
+
+        it "does not have access to client methods" do
+          client_class.mount_axn :test_with_client_call, superclass: Object do
+            test_method # This should raise an error
+          end
+
+          result = client_class.test_with_client_call
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(NameError)
+          expect(result.exception.message).to match(/undefined local variable or method `test_method'/)
+        end
+      end
+
+      context "with axn strategy and explicit custom superclass" do
+        let(:custom_superclass) do
+          Class.new do
+            def custom_method
+              "custom_method_result"
+            end
+
+            def self.class_method
+              "class_method_result"
+            end
+          end
+        end
+
+        let(:client_class) do
+          superclass = custom_superclass
+          Class.new(base_client_class) do
+            mount_axn :test_axn, superclass:, expose_return_as: :value do
+              custom_method
+            end
+          end
+        end
+
+        it "inherits from explicit superclass" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
+          expect(axn_class.superclass).to eq(custom_superclass)
+          expect(axn_class.superclass.instance_methods).to include(:custom_method)
+        end
+
+        it "has access to superclass instance methods" do
+          result = client_class.test_axn
+          expect(result).to be_ok
+          expect(result.value).to eq("custom_method_result")
+        end
+
+        it "has access to superclass class methods" do
+          superclass = custom_superclass
+          client_class.mount_axn :test_class_method, superclass:, expose_return_as: :value do
+            self.class.class_method
+          end
+
+          result = client_class.test_class_method
+          expect(result).to be_ok
+          expect(result.value).to eq("class_method_result")
+        end
+      end
+
+      context "with axn strategy and default superclass behavior" do
+        let(:client_class) do
+          Class.new(base_client_class) do
+            mount_axn :test_axn, expose_return_as: :value do
+              test_method
+            end
+          end
+        end
+
+        it "inherits from target by default" do
+          axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
+          expect(axn_class.superclass).to eq(client_class)
+        end
+
+        it "has access to target methods through inheritance" do
+          result = client_class.test_axn
+          expect(result).to be_ok
+          expect(result.value).to eq("test_method_result")
+        end
+      end
+    end
+
+    describe "module target behavior" do
+      context "when target is a module" do
+        let(:test_module) do
+          Module.new do
+            def module_method
+              "module_method_result"
+            end
+
+            def self.class_method
+              "class_method_result"
+            end
+          end
+        end
+
+        it "raises an error when trying to use module as superclass directly" do
+          expect do
+            Class.new(test_module)
+          end.to raise_error(TypeError, /superclass must be an instance of Class/)
+        end
+
+        it "raises an error when trying to include Axn in a module" do
+          expect do
+            Module.new do
+              include Axn
+            end
+          end.to raise_error(NoMethodError, /undefined method `class_attribute' for/)
+        end
+
+        context "with explicit module superclass" do
+          let(:test_module) do
+            Module.new do
+              def module_method
+                "module_method_result"
+              end
+            end
+          end
+
+          it "raises an error when explicitly setting module as superclass" do
+            module_ref = test_module
+            expect do
+              Class.new do
+                include Axn
+
+                mount_axn :test_axn, superclass: module_ref, expose_return_as: :value do
+                  module_method
+                end
+              end
+            end.to raise_error(TypeError, /superclass must be an instance of Class/)
+          end
+        end
+
+        context "with explicit module superclass for step strategy" do
+          let(:test_module) do
+            Module.new do
+              def module_method
+                "module_method_result"
+              end
+            end
+          end
+
+          it "raises an error when explicitly setting module as superclass" do
+            module_ref = test_module
+            expect do
+              Class.new do
+                include Axn
+
+                step :test_step, superclass: module_ref do
+                  module_method
+                end
+              end
+            end.to raise_error(TypeError, /superclass must be an instance of Class/)
+          end
         end
       end
     end
@@ -565,7 +772,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, include: HelperModule do
+              mount_axn_method :test_action, include: HelperModule do
                 helper_method
               end
             end
@@ -581,7 +788,7 @@ RSpec.describe Axn do
             expect(result).to eq("helper_result")
           end
 
-          it "provides access to __axn_attached_to__ from included methods" do
+          it "provides access to __axn_mounted_to__ from included methods" do
             client_class_with_attached = Class.new do
               include Axn
 
@@ -589,7 +796,7 @@ RSpec.describe Axn do
                 "TestClient"
               end
 
-              axn_method :test_action, include: HelperModule do
+              mount_axn_method :test_action, include: HelperModule do
                 url_builder(uuid: "123")
               end
             end
@@ -618,7 +825,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, include: [HelperModule1, HelperModule2] do
+              mount_axn_method :test_action, include: [HelperModule1, HelperModule2] do
                 "#{method_1}_#{method_2}"
               end
             end
@@ -641,7 +848,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, include: [] do
+              mount_axn_method :test_action, include: [] do
                 "no_modules"
               end
             end
@@ -668,7 +875,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, extend: ExtenderModule do
+              mount_axn_method :test_action, extend: ExtenderModule do
                 extended_method
               end
             end
@@ -704,7 +911,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, extend: [ExtenderModule1, ExtenderModule2] do
+              mount_axn_method :test_action, extend: [ExtenderModule1, ExtenderModule2] do
                 "#{extended_method_1}_#{extended_method_2}"
               end
             end
@@ -738,7 +945,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, prepend: PrependerModule do
+              mount_axn_method :test_action, prepend: PrependerModule do
                 prepended_method
               end
             end
@@ -776,7 +983,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, prepend: [PrependerModule1, PrependerModule2] do
+              mount_axn_method :test_action, prepend: [PrependerModule1, PrependerModule2] do
                 "#{prepended_method_1}_#{prepended_method_2}"
               end
             end
@@ -822,7 +1029,7 @@ RSpec.describe Axn do
           Class.new do
             include Axn
 
-            axn_method :test_action, include: IncludeModule, extend: ExtendModule, prepend: PrependModule do
+            mount_axn_method :test_action, include: IncludeModule, extend: ExtendModule, prepend: PrependModule do
               "#{prepended_method}_#{included_method}"
             end
           end
@@ -879,7 +1086,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn_method :test_action, include: [BaseModule, IncludeModule], prepend: PrependModule do
+              mount_axn_method :test_action, include: [BaseModule, IncludeModule], prepend: PrependModule do
                 conflicting_method
               end
             end
@@ -906,7 +1113,7 @@ RSpec.describe Axn do
             end
 
             def build_resource_name
-              __axn_attached_to__.name.demodulize.downcase
+              __axn_mounted_to__.name.demodulize.downcase
             end
           end)
         end
@@ -919,7 +1126,7 @@ RSpec.describe Axn do
               "UserService"
             end
 
-            axn_method :get_user, include: ApiHelpers do |uuid:|
+            mount_axn_method :get_user, include: ApiHelpers do |uuid:|
               # Simulate API call (url would be used in real implementation)
               url_builder(resource: build_resource_name, uuid:)
               response = '{"id": 123, "name": "John Doe"}'
@@ -933,7 +1140,7 @@ RSpec.describe Axn do
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
         end
 
-        it "shows that __axn_attached_to__ is available in included modules" do
+        it "shows that __axn_mounted_to__ is available in included modules" do
           # This test verifies that the included module can access the attached class
           result = client_class.get_user!(uuid: "456")
           expect(result).to eq({ "id" => 123, "name" => "John Doe" })
@@ -941,8 +1148,8 @@ RSpec.describe Axn do
       end
     end
 
-    describe "__axn_attached_to__" do
-      include_examples "__axn_attached_to__ behavior", :axn_method
+    describe "__axn_mounted_to__" do
+      include_examples "__axn_mounted_to__ behavior", :mount_axn_method
     end
   end
 end

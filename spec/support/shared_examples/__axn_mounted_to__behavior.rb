@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
+RSpec.shared_examples "__axn_mounted_to__ behavior" do |attachment_method|
   let(:client_class) do
     Class.new do
       include Axn
@@ -18,20 +18,20 @@ RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
       end
     end
 
-    it "sets __axn_attached_to__ on the attached axn class" do
+    it "sets __axn_mounted_to__ on the attached axn class" do
       axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-      expect(axn_class.__axn_attached_to__).to eq(client_class)
+      expect(axn_class.__axn_mounted_to__).to eq(client_class)
     end
 
     it "returns the correct class when called" do
       axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-      expect(axn_class.__axn_attached_to__.name).to eq("TestClient")
+      expect(axn_class.__axn_mounted_to__.name).to eq("TestClient")
     end
 
-    it "provides instance method __axn_attached_to__" do
+    it "provides instance method __axn_mounted_to__" do
       axn_class = client_class.const_get(:Axns).const_get(:TestAction)
       axn_instance = axn_class.new
-      expect(axn_instance.__axn_attached_to__).to eq(client_class)
+      expect(axn_instance.__axn_mounted_to__).to eq(client_class)
     end
   end
 
@@ -43,24 +43,24 @@ RSpec.shared_examples "__axn_attached_to__ behavior" do |attachment_method|
     end
 
     before do
-      if attachment_method == :axn_method
+      if attachment_method == :mount_axn_method
         client_class.public_send(attachment_method, :existing_action, axn_klass: existing_axn)
       else
         client_class.public_send(attachment_method, :existing_action, existing_axn)
       end
     end
 
-    it "sets __axn_attached_to__ on the existing axn class" do
-      expect(existing_axn.__axn_attached_to__).to eq(client_class)
+    it "sets __axn_mounted_to__ on the existing axn class" do
+      expect(existing_axn.__axn_mounted_to__).to eq(client_class)
     end
 
     it "returns the correct class when called" do
-      expect(existing_axn.__axn_attached_to__.name).to eq("TestClient")
+      expect(existing_axn.__axn_mounted_to__.name).to eq("TestClient")
     end
 
-    it "provides instance method __axn_attached_to__" do
+    it "provides instance method __axn_mounted_to__" do
       axn_instance = existing_axn.new
-      expect(axn_instance.__axn_attached_to__).to eq(client_class)
+      expect(axn_instance.__axn_mounted_to__).to eq(client_class)
     end
   end
 end

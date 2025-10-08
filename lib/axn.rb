@@ -16,7 +16,7 @@ require "axn/core"
 require "axn/util/memoization"
 
 # Extensions
-require "axn/attachable"
+require "axn/mountable"
 require "axn/async"
 
 # Rails integration (if in Rails context)
@@ -28,7 +28,7 @@ module Axn
       include Core
 
       # --- Extensions ---
-      include Attachable
+      include Mountable
       include Async
 
       # Allow additional automatic includes to be configured

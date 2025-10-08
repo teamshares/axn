@@ -12,6 +12,7 @@ module Axn
           def initialize(matcher: nil, handler: nil)
             @matcher = matcher
             @handler = handler
+            freeze
           end
 
           attr_reader :handler, :matcher

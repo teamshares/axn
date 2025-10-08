@@ -111,7 +111,20 @@ if defined?(Sidekiq)
   puts "Sidekiq action (kwargs): #{SidekiqAction.call(name: "World")}"
   puts "Sidekiq action (block): #{SidekiqActionWithBlock.call(name: "World")}"
   puts "SimpleSidekiq action: #{SimpleSidekiqAction.call(name: "World")}"
-  # SidekiqAction.call_async(name: 'World') # Would enqueue the job
+
+  # Async execution examples
+  puts "\n=== Async Execution Examples ==="
+  puts "Immediate execution:"
+  # SidekiqAction.call_async(name: 'World') # Would enqueue the job immediately
+
+  puts "Delayed execution (wait 1 hour):"
+  # SidekiqAction.call_async(name: 'World', _async: { wait: 1.hour }) # Would enqueue for 1 hour from now
+
+  puts "Scheduled execution (wait until specific time):"
+  # SidekiqAction.call_async(name: 'World', _async: { wait_until: 1.hour.from_now }) # Would enqueue for specific time
+
+  puts "User parameter named _async (treated as regular parameter):"
+  # SidekiqAction.call_async(name: 'World', _async: 'user_value') # Would pass _async as regular parameter
 else
   puts "Sidekiq not available - would raise LoadError"
 end
@@ -119,7 +132,17 @@ end
 # ActiveJob actions (when ActiveJob is available)
 if defined?(ActiveJob)
   puts "ActiveJob action: #{ActiveJobAction.call(name: "World")}"
-  # ActiveJobAction.call_async(name: 'World') # Would enqueue the job
+
+  # Async execution examples
+  puts "\n=== ActiveJob Async Execution Examples ==="
+  puts "Immediate execution:"
+  # ActiveJobAction.call_async(name: 'World') # Would enqueue the job immediately
+
+  puts "Delayed execution (wait 1 hour):"
+  # ActiveJobAction.call_async(name: 'World', _async: { wait: 1.hour }) # Would enqueue for 1 hour from now
+
+  puts "Scheduled execution (wait until specific time):"
+  # ActiveJobAction.call_async(name: 'World', _async: { wait_until: 1.hour.from_now }) # Would enqueue for specific time
 else
   puts "ActiveJob not available - would raise LoadError"
 end

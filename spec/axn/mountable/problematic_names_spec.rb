@@ -10,7 +10,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method with spaces") do
+            mount_axn_method("method with spaces") do
               123
             end
           end
@@ -26,7 +26,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method$%@name") do
+            mount_axn_method("method$%@name") do
               123
             end
           end
@@ -41,11 +41,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("method!@#name") do
+              mount_axn_method("method!@#name") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method!@#name' cannot contain method suffixes/)
         end
 
@@ -55,7 +55,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method[]{}name") do
+            mount_axn_method("method[]{}name") do
               123
             end
           end
@@ -69,7 +69,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method|\\name") do
+            mount_axn_method("method|\\name") do
               123
             end
           end
@@ -83,7 +83,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method<>name") do
+            mount_axn_method("method<>name") do
               123
             end
           end
@@ -97,7 +97,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method:;name") do
+            mount_axn_method("method:;name") do
               123
             end
           end
@@ -111,7 +111,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method,.name") do
+            mount_axn_method("method,.name") do
               123
             end
           end
@@ -125,7 +125,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method&*name") do
+            mount_axn_method("method&*name") do
               123
             end
           end
@@ -139,7 +139,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method~`name") do
+            mount_axn_method("method~`name") do
               123
             end
           end
@@ -153,7 +153,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method^$name") do
+            mount_axn_method("method^$name") do
               123
             end
           end
@@ -167,7 +167,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method%#name") do
+            mount_axn_method("method%#name") do
               123
             end
           end
@@ -183,7 +183,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method\nname") do
+            mount_axn_method("method\nname") do
               123
             end
           end
@@ -197,7 +197,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method\tname") do
+            mount_axn_method("method\tname") do
               123
             end
           end
@@ -213,7 +213,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method('method"name') do
+            mount_axn_method('method"name') do
               123
             end
           end
@@ -227,7 +227,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method'name") do
+            mount_axn_method("method'name") do
               123
             end
           end
@@ -246,7 +246,7 @@ RSpec.describe Axn do
           end
 
           client_class1.class_eval do
-            axn_method("a name") do
+            mount_axn_method("a name") do
               123
             end
           end
@@ -256,7 +256,7 @@ RSpec.describe Axn do
           end
 
           client_class2.class_eval do
-            axn_method("a\tname") do
+            mount_axn_method("a\tname") do
               456
             end
           end
@@ -272,7 +272,7 @@ RSpec.describe Axn do
           end
 
           client_class1.class_eval do
-            axn_method("method name") do
+            mount_axn_method("method name") do
               123
             end
           end
@@ -282,7 +282,7 @@ RSpec.describe Axn do
           end
 
           client_class2.class_eval do
-            axn_method("method\tname") do
+            mount_axn_method("method\tname") do
               456
             end
           end
@@ -300,7 +300,7 @@ RSpec.describe Axn do
           end
 
           client_class1.class_eval do
-            axn_method("method name") do
+            mount_axn_method("method name") do
               123
             end
           end
@@ -310,7 +310,7 @@ RSpec.describe Axn do
           end
 
           client_class2.class_eval do
-            axn_method("method  name") do
+            mount_axn_method("method  name") do
               456
             end
           end
@@ -329,7 +329,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method with spaces") do
+            mount_axn_method("method with spaces") do
               123
             end
           end
@@ -343,7 +343,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method$%@name") do
+            mount_axn_method("method$%@name") do
               123
             end
           end
@@ -357,7 +357,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method[]name") do
+            mount_axn_method("method[]name") do
               123
             end
           end
@@ -376,11 +376,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("") do
+              mount_axn_method("") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name cannot be empty/)
+          end.to raise_error(Axn::Mountable::MountingError, /method name cannot be empty/)
         end
 
         it "fails validation for whitespace-only string" do
@@ -390,11 +390,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("   ") do
+              mount_axn_method("   ") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name '   ' must be convertible to a valid constant name/)
         end
       end
@@ -407,11 +407,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("123method") do
+              mount_axn_method("123method") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /method name '123method' must be convertible to a valid constant name/)
+          end.to raise_error(Axn::Mountable::MountingError, /method name '123method' must be convertible to a valid constant name/)
         end
 
         it "works for names starting with special characters" do
@@ -420,7 +420,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("@method") do
+            mount_axn_method("@method") do
               123
             end
           end
@@ -438,7 +438,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("simple_method") do
+            mount_axn_method("simple_method") do
               123
             end
           end
@@ -452,7 +452,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method_with_underscores") do
+            mount_axn_method("method_with_underscores") do
               123
             end
           end
@@ -466,7 +466,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method123") do
+            mount_axn_method("method123") do
               123
             end
           end
@@ -481,11 +481,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("method?") do
+              mount_axn_method("method?") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method\?' cannot contain method suffixes/)
         end
 
@@ -496,11 +496,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("method!") do
+              mount_axn_method("method!") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method!' cannot contain method suffixes/)
         end
 
@@ -511,11 +511,11 @@ RSpec.describe Axn do
 
           expect do
             client_class.class_eval do
-              axn_method("method=") do
+              mount_axn_method("method=") do
                 123
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError,
+          end.to raise_error(Axn::Mountable::MountingError,
                              /method name 'method=' cannot contain method suffixes/)
         end
       end
@@ -530,13 +530,13 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("method_name") do
+            mount_axn_method("method_name") do
               123
             end
           end
 
           client_class.class_eval do
-            axn_method("methodname") do
+            mount_axn_method("methodname") do
               456
             end
           end
@@ -552,7 +552,7 @@ RSpec.describe Axn do
           end
 
           client_class.class_eval do
-            axn_method("test") do
+            mount_axn_method("test") do
               123
             end
           end
@@ -560,11 +560,11 @@ RSpec.describe Axn do
           # The second one should fail due to method name collision
           expect do
             client_class.class_eval do
-              axn_method("test") do
+              mount_axn_method("test") do
                 456
               end
             end
-          end.to raise_error(Axn::Attachable::AttachmentError, /Method unable to attach -- method 'test!' is already taken/)
+          end.to raise_error(Axn::Mountable::MountingError, /Method unable to attach -- method 'test!' is already taken/)
 
           # Only the first one should work
           expect(client_class.test!).to eq(123)

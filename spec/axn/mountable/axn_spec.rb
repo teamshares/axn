@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../../support/shared_examples/__axn_attached_to__behavior"
+require_relative "../../support/shared_examples/__axn_mounted_to__behavior"
 
 RSpec.describe Axn do
   describe ".axn" do
@@ -15,7 +15,7 @@ RSpec.describe Axn do
 
       it "attaches subaction" do
         expect(client).not_to respond_to(:foo)
-        client.axn :foo, subaction
+        client.mount_axn :foo, subaction
         expect(client).to respond_to(:foo)
 
         expect_any_instance_of(subaction).to receive(:call).and_call_original
@@ -30,7 +30,7 @@ RSpec.describe Axn do
 
       it "attaches subaction" do
         expect(client).not_to respond_to(:foo)
-        client.axn :foo, &subaction
+        client.mount_axn :foo, &subaction
         expect(client).to respond_to(:foo)
 
         expect(client.foo).not_to be_ok
@@ -49,14 +49,14 @@ RSpec.describe Axn do
 
         it "fails to attach" do
           expect(client).not_to respond_to(:foo)
-          expect { client.axn(:foo, &subaction) }.to raise_error(ArgumentError, /callable expects keyword arguments with defaults/)
+          expect { client.mount_axn(:foo, &subaction) }.to raise_error(ArgumentError, /callable expects keyword arguments with defaults/)
         end
       end
     end
 
     describe "defined from block with default return" do
       before do
-        client.axn(:foo, expose_return_as: :barfoo, &subaction)
+        client.mount_axn(:foo, expose_return_as: :barfoo, &subaction)
       end
 
       context "can handle default exposure" do
@@ -90,7 +90,7 @@ RSpec.describe Axn do
 
     describe "defined from block with custom exposures" do
       before do
-        client.axn(:foo, exposes: [:msg], &subaction)
+        client.mount_axn(:foo, exposes: [:msg], &subaction)
       end
 
       let(:subaction) do
@@ -109,7 +109,7 @@ RSpec.describe Axn do
 
     describe "handles custom expectations" do
       before do
-        client.axn(:foo, expects:, &subaction)
+        client.mount_axn(:foo, expects:, &subaction)
       end
 
       let(:expects) { [:name] }
@@ -144,7 +144,7 @@ RSpec.describe Axn do
           def self.awesome_thing = 123
         end
 
-        client.axn(:foo, exposes: :resp, superclass: awesome_class, &subaction)
+        client.mount_axn(:foo, exposes: :resp, superclass: awesome_class, &subaction)
       end
 
       let(:client) do
@@ -181,7 +181,7 @@ RSpec.describe Axn do
       context "with existing action class" do
         let(:subaction) { build_axn { log "in subaction" } }
 
-        before { client.axn :foo, subaction }
+        before { client.mount_axn :foo, subaction }
 
         include_examples "creates _async method"
 
@@ -195,21 +195,21 @@ RSpec.describe Axn do
       context "with callable blocks" do
         context "bare callable" do
           let(:subaction) { ->(expected:, arg:) { log "got expected=#{expected}, arg=#{arg}" } }
-          before { client.axn :foo, &subaction }
+          before { client.mount_axn :foo, &subaction }
           include_examples "creates _async method"
           include_examples "raises NotImplementedError by default", { expected: true, arg: 123 }
         end
 
         context "with custom exposures" do
           let(:subaction) { ->(char:, length:) { expose :msg, char * length } }
-          before { client.axn(:foo, exposes: [:msg], &subaction) }
+          before { client.mount_axn(:foo, exposes: [:msg], &subaction) }
           include_examples "creates _async method"
           include_examples "raises NotImplementedError by default", { char: "a", length: 5 }
         end
 
         context "with custom expectations" do
           let(:subaction) { ->(name:) { log "Hello #{name}" } }
-          before { client.axn(:foo, expects: [:name], &subaction) }
+          before { client.mount_axn(:foo, expects: [:name], &subaction) }
           include_examples "creates _async method"
           include_examples "raises NotImplementedError by default", { name: "World" }
         end
@@ -217,7 +217,7 @@ RSpec.describe Axn do
 
       context "async method behavior" do
         let(:subaction) { build_axn { log "in subaction" } }
-        before { client.axn :foo, subaction }
+        before { client.mount_axn :foo, subaction }
 
         it "passes all keyword arguments to call_async and handles empty arguments" do
           allow(subaction).to receive(:call_async)
@@ -261,7 +261,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, include: HelperModule, exposes: [:value] do
+              mount_axn :test_action, include: HelperModule, exposes: [:value] do
                 expose :value, helper_method
               end
             end
@@ -278,7 +278,7 @@ RSpec.describe Axn do
             expect(result.value).to eq("helper_result")
           end
 
-          it "provides access to __axn_attached_to__ from included methods" do
+          it "provides access to __axn_mounted_to__ from included methods" do
             client_class_with_attached = Class.new do
               include Axn
 
@@ -286,7 +286,7 @@ RSpec.describe Axn do
                 "TestClient"
               end
 
-              axn :test_action, include: HelperModule, exposes: [:value] do
+              mount_axn :test_action, include: HelperModule, exposes: [:value] do
                 expose :value, url_builder(uuid: "123")
               end
             end
@@ -316,7 +316,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, include: [HelperModule1, HelperModule2], exposes: [:value] do
+              mount_axn :test_action, include: [HelperModule1, HelperModule2], exposes: [:value] do
                 expose :value, "#{method_1}_#{method_2}"
               end
             end
@@ -340,7 +340,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, include: [], exposes: [:value] do
+              mount_axn :test_action, include: [], exposes: [:value] do
                 expose :value, "no_modules"
               end
             end
@@ -368,7 +368,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, extend: ExtenderModule, exposes: [:value] do
+              mount_axn :test_action, extend: ExtenderModule, exposes: [:value] do
                 expose :value, extended_method
               end
             end
@@ -404,7 +404,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, extend: [ExtenderModule1, ExtenderModule2], exposes: [:value] do
+              mount_axn :test_action, extend: [ExtenderModule1, ExtenderModule2], exposes: [:value] do
                 expose :value, "#{extended_method_1}_#{extended_method_2}"
               end
             end
@@ -438,7 +438,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, prepend: PrependerModule, exposes: [:value] do
+              mount_axn :test_action, prepend: PrependerModule, exposes: [:value] do
                 expose :value, prepended_method
               end
             end
@@ -477,7 +477,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, prepend: [PrependerModule1, PrependerModule2], exposes: [:value] do
+              mount_axn :test_action, prepend: [PrependerModule1, PrependerModule2], exposes: [:value] do
                 expose :value, "#{prepended_method_1}_#{prepended_method_2}"
               end
             end
@@ -524,7 +524,7 @@ RSpec.describe Axn do
           Class.new do
             include Axn
 
-            axn :test_action, include: IncludeModule, extend: ExtendModule, prepend: PrependModule, exposes: [:value] do
+            mount_axn :test_action, include: IncludeModule, extend: ExtendModule, prepend: PrependModule, exposes: [:value] do
               expose :value, "#{prepended_method}_#{included_method}"
             end
           end
@@ -582,7 +582,7 @@ RSpec.describe Axn do
             Class.new do
               include Axn
 
-              axn :test_action, include: [BaseModule, IncludeModule], prepend: PrependModule, exposes: [:value] do
+              mount_axn :test_action, include: [BaseModule, IncludeModule], prepend: PrependModule, exposes: [:value] do
                 expose :value, conflicting_method
               end
             end
@@ -597,8 +597,8 @@ RSpec.describe Axn do
       end
     end
 
-    describe "__axn_attached_to__" do
-      include_examples "__axn_attached_to__ behavior", :axn
+    describe "__axn_mounted_to__" do
+      include_examples "__axn_mounted_to__ behavior", :mount_axn
 
       context "with inheritance" do
         let(:parent_class) do
@@ -609,7 +609,7 @@ RSpec.describe Axn do
               "ParentClient"
             end
 
-            axn(:parent_action) do
+            mount_axn(:parent_action) do
               "parent result"
             end
           end
@@ -621,25 +621,25 @@ RSpec.describe Axn do
               "ChildClient"
             end
 
-            axn(:child_action) do
+            mount_axn(:child_action) do
               "child result"
             end
           end
         end
 
-        it "sets __axn_attached_to__ correctly for parent actions" do
+        it "sets __axn_mounted_to__ correctly for parent actions" do
           parent_axn = parent_class.const_get(:Axns).const_get(:ParentAction)
-          expect(parent_axn.__axn_attached_to__).to eq(parent_class)
+          expect(parent_axn.__axn_mounted_to__).to eq(parent_class)
         end
 
-        it "sets __axn_attached_to__ correctly for child actions" do
+        it "sets __axn_mounted_to__ correctly for child actions" do
           child_axn = child_class.const_get(:Axns).const_get(:ChildAction)
-          expect(child_axn.__axn_attached_to__).to eq(child_class)
+          expect(child_axn.__axn_mounted_to__).to eq(child_class)
         end
 
         it "inherited actions get re-attached to the child class" do
           inherited_axn = child_class.const_get(:Axns).const_get(:ParentAction)
-          expect(inherited_axn.__axn_attached_to__).to eq(child_class)
+          expect(inherited_axn.__axn_mounted_to__).to eq(child_class)
         end
       end
     end

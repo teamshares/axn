@@ -26,7 +26,7 @@ features:
   - title: Exception swallowing
     details: Automatic error handling with user-safe error messages and internal logging
   - title: Advanced Patterns
-    details: Attachable actions, workflow composition, and background processing capabilities
+    details: Mountable actions, workflow composition, and background processing capabilities
   - title: Default Observability
     details: Built-in logging, timing, and error tracking out of the box
 ---

@@ -15,7 +15,7 @@ module Axn
             dir_name = name.split("::").last.underscore
 
             # Load all files from the directory
-            files = Dir[File.join(registry_directory, dir_name, "*.rb")]
+            files = ::Dir[File.join(registry_directory, dir_name, "*.rb")]
             files.each { |file| require file }
 
             # Get all modules defined within this class
