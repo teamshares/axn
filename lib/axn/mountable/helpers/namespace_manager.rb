@@ -28,6 +28,7 @@ module Axn
         private
 
         def find_parent_axns_namespace(client_class)
+          return nil unless client_class.is_a?(Class)
           return nil unless client_class.superclass.respond_to?(:_mounted_axn_descriptors)
           return nil unless client_class.superclass.const_defined?(:Axns, false)
 
