@@ -4,7 +4,7 @@ outline: deep
 
 # Mountable Actions
 
-The mountable functionality is an advanced feature that allows you to mount actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for API clients to automatically wrap bits of logic in full Axn affordances, and for tacking on `enqueue_all` methods that can then be themselves run in a background job via enqueue_all_async (without requiring creating a separate worker class just to trigger the Axn).
+The mountable functionality is an advanced feature that allows you to mount actions directly to classes, providing convenient access patterns and reducing boilerplate. This is particularly useful for API clients to automatically wrap bits of logic in full Axn affordances, and for creating batch enqueueing methods that can process multiple items and enqueue them as individual background jobs.
 
 ::: danger ALPHA
 This is in VERY EXPERIMENTAL use at Teamshares, but the API is still definitely in flux.
@@ -116,6 +116,51 @@ end
 **Available methods:**
 - `OrderProcessor.call(**kwargs)` - Executes all steps in sequence
 
+### `enqueue_all_via`
+
+The `enqueue_all_via` method is designed for batch processing scenarios where you need to enqueue multiple instances of an action. It creates methods that can process a collection of items and enqueue each as a separate background job.
+
+```ruby
+class SyncForCompany
+  include Axn
+
+  async :sidekiq
+
+  expects :company_id
+
+  def call
+    company = Company.find(company_id)
+    puts "Syncing data for company: #{company.name}"
+    # Sync individual company data
+  end
+
+  enqueue_all_via do
+    puts "About to enqueue sync jobs for all companies"
+
+    Company.find_each.map do |company|
+      call_async(company_id: company.id)
+    end
+  end
+end
+
+# Usage
+# Enqueue all companies immediately
+SyncForCompany.enqueue_all
+
+# Enqueue the enqueue_all action itself as a background job
+SyncForCompany.enqueue_all_async
+```
+
+**Mounted methods:**
+- `SyncForCompany.enqueue_all` - Executes the block immediately and enqueues individual jobs
+- `SyncForCompany.enqueue_all_async` - Enqueues the enqueue_all action itself as a background job
+
+#### Key Features
+
+- **Inheritance**: Uses from-target-but-without-fields pattern by default
+- **call_async Shortcut**: Use `call_async` as syntactic sugar for `ClassName.call_async` within the enqueue_all block
+
+
 ## Async Execution
 
 Mountable actions automatically support async execution when an async adapter is configured. Each mounted action gets a `_async` method that executes the action in the background.
@@ -160,8 +205,9 @@ By default, attached actions inherit from their target class, allowing them to a
 
 #### Default Behavior
 
-- **`axn` and `mount_axn_method` strategies**: Inherit from target class by default
+- **`mount_axn` and `mount_axn_method` strategies**: Inherit from target class by default
 - **`step` strategy**: Inherits from `Object` by default to avoid field conflicts
+- **`enqueue_all_via` strategy**: Uses from-target-but-without-fields pattern by default
 
 ```ruby
 class UserService
@@ -198,6 +244,12 @@ class UserService
   # Force step to inherit from target
   step :validate_user, _inherit_from_target: true do
     expose :valid, shared_method  # Can now access target methods
+  end
+
+  # enqueue_all can access target methods by default (from-target-but-without-fields pattern)
+  enqueue_all_via do |user_ids:|
+    user_ids.map { |id| call_async(user_id: id) }
+    # Can access shared_method by default
   end
 
   # Force axn to inherit from Object
@@ -265,9 +317,10 @@ mount_axn(:user@domain)    # Becomes UserDomain constant
 
 ### 1. Choose the Right Strategy
 
-- **Use `axn`** when you need full `Axn::Result` objects and error handling
+- **Use `mount_axn`** when you need full `Axn::Result` objects and error handling
 - **Use `mount_axn_method`** when you want direct return values for simple operations
 - **Use `step`** when composing complex workflows with multiple sequential operations
+- **Use `enqueue_all_via`** when you need to process multiple items and enqueue each as a separate background job
 
 ### 2. Keep Actions Focused
 
@@ -353,4 +406,41 @@ class OrderWorkflow
     # Steps execute automatically
   end
 end
+```
+
+### Batch Processing
+
+```ruby
+class EmailProcessor
+  include Axn
+
+  async :sidekiq
+
+  expects :email_id
+
+  def call
+    email = Email.find(email_id)
+    email.deliver!
+  end
+
+  enqueue_all_via do |email_ids:, priority: :normal|
+    puts "Processing #{email_ids.count} emails with priority: #{priority}"
+
+    email_ids.map do |email_id|
+      call_async(email_id: email_id)
+    end
+  end
+end
+
+# Process all pending emails immediately
+EmailProcessor.enqueue_all(
+  email_ids: Email.pending.pluck(:id),
+  priority: :high
+)
+
+# Or enqueue the batch processing as a background job
+EmailProcessor.enqueue_all_async(
+  email_ids: Email.pending.pluck(:id),
+  priority: :normal
+)
 ```
