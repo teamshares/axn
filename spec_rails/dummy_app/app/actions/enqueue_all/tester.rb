@@ -15,10 +15,12 @@ module Actions
       error "bad times"
 
       def call
-        info "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
+        puts "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      enqueue_all_via async: :sidekiq do |max:|
+      enqueue_all_via do |max:|
+        raise "don't like 4s" if max == 4
+
         1.upto(max).map do |i|
           ::Actions::EnqueueAll::Tester.call_async(number: i)
         end
