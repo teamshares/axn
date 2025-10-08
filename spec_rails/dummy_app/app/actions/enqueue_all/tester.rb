@@ -19,10 +19,11 @@ module Actions
       end
 
       enqueue_all_via do |max:|
+        puts "About to enqueue_all: max: #{max} | #{instance_helper} | #{self.class.class_helper}"
         raise "don't like 4s" if max == 4
 
         1.upto(max).map do |i|
-          ::Actions::EnqueueAll::Tester.call_async(number: i)
+          -> { ::Actions::EnqueueAll::Tester.call_async(number: i) }
         end
       end
     end
