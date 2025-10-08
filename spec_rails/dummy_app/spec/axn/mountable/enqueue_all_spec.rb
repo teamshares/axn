@@ -47,16 +47,26 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       end.to raise_error(RuntimeError, "don't like 4s")
     end
 
-    it "on error" do
-      pending "TODO: eventually we should support raising error message from parent's mapping?"
-      result = Actions::EnqueueAll::Tester.enqueue_all(max: 4)
-      expect(result).to raise_error(Axn::Failure, "bad times")
-    end
+    # it "on error" do
+    #   pending "TODO: eventually we should support raising error message from parent's mapping?"
+    #   result = Actions::EnqueueAll::Tester.enqueue_all(max: 4)
+    #   expect(result).to raise_error(Axn::Failure, "bad times")
+    # end
   end
 
-  # it ".enqueue_all_async" do
-  #   result = Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
+  describe ".enqueue_all_async" do
+    it ".enqueue_all_async enqueues the enqueue_all action itself" do
+      Sidekiq::Queues.clear_all
 
-  #   expect(result).to be_a(String) # Job ID
-  # end
+      result = Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
+
+      expect(result).to be_a(String) # Job ID
+      expect(Sidekiq::Queues["default"].size).to eq(1) # Should enqueue 1 job (the enqueue_all action itself)
+
+      # Verify the job is the enqueue_all action, not individual Tester jobs
+      job = Sidekiq::Queues["default"].first
+      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
+      expect(job["args"]).to eq([{ "max" => 2 }])
+    end
+  end
 end
