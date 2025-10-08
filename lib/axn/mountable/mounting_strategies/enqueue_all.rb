@@ -26,7 +26,8 @@ module Axn
 
           mount_method(target:, method_name: name) do |**kwargs|
             axn = descriptor.mounted_axn_for(target: self)
-            axn.call(**kwargs)
+            axn.call!(**kwargs)
+            true # Raise or return true
           end
 
           mount_method(target:, method_name: "#{name}_async") do |**kwargs|

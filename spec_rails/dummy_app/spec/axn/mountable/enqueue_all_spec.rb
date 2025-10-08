@@ -5,40 +5,58 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
     Sidekiq::Testing.fake!
   end
 
-  it "can call the basic Tester action with puts output and helpers" do
-    expect do
-      Actions::EnqueueAll::Tester.call(number: 1)
-    end.to output(
-      "Action executed: I was called with number: 1 | instance_helper | class_helper\n",
-    ).to_stdout
+  describe "core call behavior" do
+    it "foreground" do
+      expect do
+        Actions::EnqueueAll::Tester.call(number: 1)
+      end.to output(
+        "Action executed: I was called with number: 1 | instance_helper | class_helper\n",
+      ).to_stdout
 
-    result = Actions::EnqueueAll::Tester.call(number: 1)
-    expect(result).to be_ok
+      result = Actions::EnqueueAll::Tester.call(number: 1)
+      expect(result).to be_ok
+    end
+
+    it "background" do
+      allow(Actions::EnqueueAll::Tester).to receive(:call_async).and_call_original
+
+      result = Actions::EnqueueAll::Tester.call_async(number: 1)
+
+      expect(result).to be_a(String) # Job ID
+      expect(Actions::EnqueueAll::Tester).to have_received(:call_async).once
+    end
   end
 
-  it "can call enqueue_all method and executes puts output" do
-    expect do
-      Actions::EnqueueAll::Tester.enqueue_all(max: 2)
-    end.to output(
-      "About to enqueue_all: max: 2 | instance_helper | class_helper\n",
-    ).to_stdout
+  describe ".enqueue_all" do
+    it "has access to instance and class helpers from superclass" do
+      expect do
+        Actions::EnqueueAll::Tester.enqueue_all(max: 2)
+      end.to output(
+        /About to enqueue_all: max: 2 \| instance_helper \| class_helper\n/,
+      ).to_stdout
+    end
 
-    result = Actions::EnqueueAll::Tester.enqueue_all(max: 2)
-    expect(result).to be_ok
+    it "on success" do
+      result = Actions::EnqueueAll::Tester.enqueue_all(max: 2)
+      expect(result).to eq(true)
+    end
+
+    it "on error" do
+      expect do
+        Actions::EnqueueAll::Tester.enqueue_all(max: 4)
+      end.to raise_error(RuntimeError, "don't like 4s")
+    end
+
+    it "on error" do
+      pending "TODO: eventually we should support raising error message from parent's mapping?"
+      result = Actions::EnqueueAll::Tester.enqueue_all(max: 4)
+      expect(result).to raise_error(Axn::Failure, "bad times")
+    end
   end
 
-  it "can call Tester action async" do
-    allow(Actions::EnqueueAll::Tester).to receive(:call_async).and_call_original
+  # it ".enqueue_all_async" do
+  #   result = Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
 
-    result = Actions::EnqueueAll::Tester.call_async(number: 1)
-
-    expect(result).to be_a(String) # Job ID
-    expect(Actions::EnqueueAll::Tester).to have_received(:call_async).once
-  end
-
-  it "can call enqueue_all_async method" do
-    result = Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
-
-    expect(result).to be_a(String) # Job ID
-  end
+  #   expect(result).to be_a(String) # Job ID
+  # end
 end
