@@ -702,7 +702,7 @@ RSpec.describe Axn do
             Module.new do
               include Axn
             end
-          end.to raise_error(NoMethodError, /undefined method `class_attribute' for module/)
+          end.to raise_error(NoMethodError, /undefined method `class_attribute' for module #<Module:/)
         end
 
         context "with explicit module superclass" do
