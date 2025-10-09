@@ -173,9 +173,9 @@ module Benchmark
       exposes :action_result
 
       success "Action completed successfully"
-      error "User not found", if: -> { user_id == 0 }
+      error "User not found", if: -> { user_id.zero? }
       error "Invalid action: %<action_type>s", if: -> { !%w[create update delete].include?(action_type) }
-      error "Permission denied for user %<user_id>s", if: -> { user_id < 0 }
+      error "Permission denied for user %<user_id>s", if: -> { user_id.negative? }
 
       def call
         action_result = {
@@ -374,7 +374,7 @@ module Benchmark
         {
           count: data.length,
           total_value: data.sum { |item| item[:value] },
-          average_value: data.length > 0 ? data.sum { |item| item[:value] } / data.length : 0,
+          average_value: data.length.positive? ? data.sum { |item| item[:value] } / data.length : 0,
           processed_at: Time.now,
         }
       end

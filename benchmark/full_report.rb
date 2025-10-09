@@ -38,7 +38,7 @@ module Benchmark
       all_results["Baseline Performance"] = baseline_results
 
       # 2. Memory Analysis
-      puts "\n" + Colors.bold(Colors.highlight("2️⃣ MEMORY USAGE ANALYSIS"))
+      puts "\n#{Colors.bold(Colors.highlight("2️⃣ MEMORY USAGE ANALYSIS"))}"
       puts Colors.dim("-" * 40)
 
       memory_results = {}
@@ -54,7 +54,7 @@ module Benchmark
       all_results["Memory Analysis"] = memory_results
 
       # 3. Feature Impact Analysis
-      puts "\n" + Colors.bold(Colors.highlight("3️⃣ FEATURE IMPACT ANALYSIS"))
+      puts "\n#{Colors.bold(Colors.highlight("3️⃣ FEATURE IMPACT ANALYSIS"))}"
       puts Colors.dim("-" * 40)
 
       feature_impact = analyze_feature_impact(memory_results)
@@ -66,14 +66,12 @@ module Benchmark
         puts Colors.warning("Markdown report generation not yet implemented")
       end
 
-      puts "\n" + Colors.dim("=" * 80)
+      puts "\n#{Colors.dim("=" * 80)}"
       puts Colors.success("🏁 Comprehensive analysis complete!")
       puts Colors.dim("=" * 80)
 
       all_results
     end
-
-    private
 
     def self.benchmark_scenario(scenario_name)
       require "benchmark/ips"
@@ -109,8 +107,9 @@ module Benchmark
           overhead:,
           percentage: calculate_percentage(overhead, bare_memory.total_allocated_memsize),
         }
-        puts Colors.info("Input/Output overhead: ") + Colors.highlight("#{format_bytes(overhead)} (#{calculate_percentage(overhead,
-                                                                                                                          bare_memory.total_allocated_memsize)}%)")
+        percentage = calculate_percentage(overhead, bare_memory.total_allocated_memsize)
+        puts Colors.info("Input/Output overhead: ") +
+             Colors.highlight("#{format_bytes(overhead)} (#{percentage}%)")
       end
 
       # Compare basic vs type validation
@@ -123,8 +122,9 @@ module Benchmark
           overhead:,
           percentage: calculate_percentage(overhead, basic_memory.total_allocated_memsize),
         }
-        puts Colors.info("Type validation overhead: ") + Colors.highlight("#{format_bytes(overhead)} (#{calculate_percentage(overhead,
-                                                                                                                             basic_memory.total_allocated_memsize)}%)")
+        percentage = calculate_percentage(overhead, basic_memory.total_allocated_memsize)
+        puts Colors.info("Type validation overhead: ") +
+             Colors.highlight("#{format_bytes(overhead)} (#{percentage}%)")
       end
 
       # Compare basic vs hooks
@@ -149,8 +149,9 @@ module Benchmark
           overhead:,
           percentage: calculate_percentage(overhead, basic_memory.total_allocated_memsize),
         }
-        puts Colors.info("Error handling overhead: ") + Colors.highlight("#{format_bytes(overhead)} (#{calculate_percentage(overhead,
-                                                                                                                            basic_memory.total_allocated_memsize)}%)")
+        percentage = calculate_percentage(overhead, basic_memory.total_allocated_memsize)
+        puts Colors.info("Error handling overhead: ") +
+             Colors.highlight("#{format_bytes(overhead)} (#{percentage}%)")
       end
 
       # Compare basic vs composition
@@ -162,8 +163,9 @@ module Benchmark
           overhead:,
           percentage: calculate_percentage(overhead, basic_memory.total_allocated_memsize),
         }
-        puts Colors.info("Composition overhead: ") + Colors.highlight("#{format_bytes(overhead)} (#{calculate_percentage(overhead,
-                                                                                                                         basic_memory.total_allocated_memsize)}%)")
+        percentage = calculate_percentage(overhead, basic_memory.total_allocated_memsize)
+        puts Colors.info("Composition overhead: ") +
+             Colors.highlight("#{format_bytes(overhead)} (#{percentage}%)")
       end
 
       impact
@@ -177,7 +179,7 @@ module Benchmark
     end
 
     def self.calculate_percentage(overhead, baseline)
-      return 0 if baseline == 0
+      return 0 if baseline.zero?
 
       (overhead.to_f / baseline * 100).round(1)
     end
@@ -194,22 +196,18 @@ module Benchmark
         { name: "John Doe", email: "john@example.com", age: 30, admin: true, tags: %w[user premium] }
       when :nested_validation
         { user: { name: "John Doe", email: "john@example.com", profile: { bio: "Software developer", avatar_url: "https://example.com/avatar.jpg" } } }
-      when :hooks
+      when :hooks, :composition
         { name: "John Doe", email: "john@example.com" }
-      when :error_handling
+      when :error_handling, :complex
         { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :conditional_error
         { user_id: 123, action_type: "update" }
-      when :composition
-        { name: "John Doe", email: "john@example.com" }
       when :database
         { name: "John Doe", email: "john@example.com", simulate_delay: false }
       when :service_orchestration
         { user_id: 123, order_data: { amount: 99.99, items: %w[item1 item2] } }
       when :data_transformation
         { raw_data: [{ id: 1, name: "item1", value: 10 }, { id: 2, name: "item2", value: 20 }], transform_options: { multiplier: 1.5 } }
-      when :complex
-        { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :nested
         { name: "John Doe", email: "john@example.com", nested_should_fail: false }
       else
@@ -220,7 +218,7 @@ module Benchmark
 end
 
 # Run if called directly
-if __FILE__ == $0
+if __FILE__ == $PROGRAM_NAME
   markdown = ARGV.include?("--markdown")
   Benchmark::FullReport.run(markdown:)
 end

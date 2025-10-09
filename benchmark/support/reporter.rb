@@ -13,7 +13,8 @@ module Benchmark
         iterations = result.iterations
         time = result.measurement.secs
 
-        format("%-20s %10.1f i/s (±%.1f%%) i=%d in %.3fs", name, ips, stddev, iterations, time)
+        format("%<name>-20s %<ips>10.1f i/s (±%<stddev>.1f%%) i=%<iterations>d in %<time>.3fs",
+               name:, ips:, stddev:, iterations:, time:)
       end
 
       def format_memory_result(name, report)
@@ -22,12 +23,12 @@ module Benchmark
         total_objects = report.total_allocated
         retained_objects = report.total_retained
 
-        format("%-20s %10s allocated, %10s retained (%d objects, %d retained)",
-               name,
-               format_bytes(total_allocated),
-               format_bytes(total_retained),
-               total_objects,
-               retained_objects)
+        format("%<name>-20s %<allocated>10s allocated, %<retained>10s retained (%<total_objects>d objects, %<retained_objects>d retained)",
+               name:,
+               allocated: format_bytes(total_allocated),
+               retained: format_bytes(total_retained),
+               total_objects:,
+               retained_objects:)
       end
 
       def format_bytes(bytes)
@@ -42,7 +43,7 @@ module Benchmark
           unit_index += 1
         end
 
-        format("%.1f %s", size, units[unit_index])
+        format("%<size>.1f %<unit>s", size:, unit: units[unit_index])
       end
 
       def generate_markdown_report(results, output_dir = "tmp/benchmark_reports")
@@ -71,10 +72,9 @@ module Benchmark
               file.puts "|--------|-----|---------|------------|------|"
 
               section_results[:ips_results].each do |result|
-                file.puts "| #{result.name} | #{format("%.1f",
-                                                       result.ips)} | #{format("%.1f%%",
-                                                                               result.stddev_percentage)} | #{result.iterations} | #{format("%.3fs",
-                                                                                                                                            result.measurement.secs)} |"
+                file.puts "| #{result.name} | #{format("%.1f", result.ips)} | " \
+                          "#{format("%.1f%%", result.stddev_percentage)} | " \
+                          "#{result.iterations} | #{format("%.3fs", result.measurement.secs)} |"
               end
               file.puts
             end
@@ -86,7 +86,9 @@ module Benchmark
               file.puts "|--------|-----------|----------|---------|------------------|"
 
               section_results[:memory_results].each do |name, report|
-                file.puts "| #{name} | #{format_bytes(report.total_allocated_memsize)} | #{format_bytes(report.total_retained_memsize)} | #{report.total_allocated} | #{report.total_retained} |"
+                file.puts "| #{name} | #{format_bytes(report.total_allocated_memsize)} | " \
+                          "#{format_bytes(report.total_retained_memsize)} | " \
+                          "#{report.total_allocated} | #{report.total_retained} |"
               end
               file.puts
             end
@@ -111,7 +113,7 @@ module Benchmark
       end
 
       def print_terminal_results(results)
-        puts "\n" + ("=" * 80)
+        puts "\n#{"=" * 80}"
         puts "PERFORMANCE BENCHMARK RESULTS"
         puts "=" * 80
 
@@ -136,7 +138,7 @@ module Benchmark
           puts "\n#{section_results[:comparison]}" if section_results[:comparison]
         end
 
-        puts "\n" + ("=" * 80)
+        puts "\n#{"=" * 80}"
       end
 
       def calculate_comparison_ratio(axn_result, interactor_result)

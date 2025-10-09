@@ -23,7 +23,7 @@ module Benchmark
       # Reporter is a module with class methods
 
       # Run all basic scenarios
-      puts "\n" + Colors.bold(Colors.highlight("📊 Basic Scenarios Performance"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Basic Scenarios Performance"))}"
       puts Colors.dim("-" * 30)
 
       basic_results = {}
@@ -35,7 +35,7 @@ module Benchmark
       end
 
       # Run validation scenarios
-      puts "\n" + Colors.bold(Colors.highlight("📊 Validation Scenarios Performance"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Validation Scenarios Performance"))}"
       puts Colors.dim("-" * 30)
 
       AxnScenarios.validation_scenarios.each do |scenario_name|
@@ -45,7 +45,7 @@ module Benchmark
       end
 
       # Run feature scenarios
-      puts "\n" + Colors.bold(Colors.highlight("📊 Feature Scenarios Performance"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Feature Scenarios Performance"))}"
       puts Colors.dim("-" * 30)
 
       AxnScenarios.feature_scenarios.each do |scenario_name|
@@ -55,7 +55,7 @@ module Benchmark
       end
 
       # Run business scenarios
-      puts "\n" + Colors.bold(Colors.highlight("📊 Business Scenarios Performance"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Business Scenarios Performance"))}"
       puts Colors.dim("-" * 30)
 
       AxnScenarios.business_scenarios.each do |scenario_name|
@@ -65,7 +65,7 @@ module Benchmark
       end
 
       # Run complex scenarios
-      puts "\n" + Colors.bold(Colors.highlight("📊 Complex Scenarios Performance"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Complex Scenarios Performance"))}"
       puts Colors.dim("-" * 30)
 
       AxnScenarios.complex_scenarios.each do |scenario_name|
@@ -75,7 +75,7 @@ module Benchmark
       end
 
       # Memory analysis for key scenarios
-      puts "\n" + Colors.bold(Colors.highlight("💾 Memory Usage Analysis"))
+      puts "\n#{Colors.bold(Colors.highlight("💾 Memory Usage Analysis"))}"
       puts Colors.dim("-" * 30)
 
       memory_results = {}
@@ -96,10 +96,8 @@ module Benchmark
         puts Colors.warning("Markdown report generation not yet implemented")
       end
 
-      puts "\n" + Colors.success("✅ Axn baseline complete!")
+      puts "\n#{Colors.success("✅ Axn baseline complete!")}"
     end
-
-    private
 
     def self.benchmark_scenario(scenario_name)
       require "benchmark/ips"
@@ -134,22 +132,18 @@ module Benchmark
         { name: "John Doe", email: "john@example.com", age: 30, admin: true, tags: %w[user premium] }
       when :nested_validation
         { user: { name: "John Doe", email: "john@example.com", profile: { bio: "Software developer", avatar_url: "https://example.com/avatar.jpg" } } }
-      when :hooks
+      when :hooks, :composition
         { name: "John Doe", email: "john@example.com" }
-      when :error_handling
+      when :error_handling, :complex
         { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :conditional_error
         { user_id: 123, action_type: "update" }
-      when :composition
-        { name: "John Doe", email: "john@example.com" }
       when :database
         { name: "John Doe", email: "john@example.com", simulate_delay: false }
       when :service_orchestration
         { user_id: 123, order_data: { amount: 99.99, items: %w[item1 item2] } }
       when :data_transformation
         { raw_data: [{ id: 1, name: "item1", value: 10 }, { id: 2, name: "item2", value: 20 }], transform_options: { multiplier: 1.5 } }
-      when :complex
-        { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :nested
         { name: "John Doe", email: "john@example.com", nested_should_fail: false }
       else
@@ -167,7 +161,7 @@ module Benchmark
 end
 
 # Run if called directly
-if __FILE__ == $0
+if __FILE__ == $PROGRAM_NAME
   markdown = ARGV.include?("--markdown")
   Benchmark::AxnBaseline.run(markdown:)
 end

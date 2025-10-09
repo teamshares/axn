@@ -34,8 +34,6 @@ class BenchmarkRunner
     end
   end
 
-  private
-
   def self.parse_options
     options = { mode: :all, markdown: false }
 
@@ -99,4 +97,4 @@ class BenchmarkRunner
 end
 
 # Run if called directly
-BenchmarkRunner.run if __FILE__ == $0
+BenchmarkRunner.run if __FILE__ == $PROGRAM_NAME

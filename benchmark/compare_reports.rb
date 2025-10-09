@@ -44,8 +44,8 @@ class BenchmarkReportComparator
       next unless latest_ips
 
       change_percent = ((latest_ips - baseline_ips) / baseline_ips * 100).round(1)
-      change_icon = change_percent > 0 ? "📈" : "📉"
-      change_color = change_percent > 0 ? "faster" : "slower"
+      change_icon = change_percent.positive? ? "📈" : "📉"
+      change_color = change_percent.positive? ? "faster" : "slower"
 
       puts "#{change_icon} #{action}: #{baseline_ips.round(0)} → #{latest_ips.round(0)} i/s (#{change_percent.abs}% #{change_color})"
     end
@@ -58,8 +58,8 @@ class BenchmarkReportComparator
       next unless latest_mem
 
       change_percent = ((latest_mem - baseline_mem) / baseline_mem * 100).round(1)
-      change_icon = change_percent > 0 ? "📈" : "📉"
-      change_color = change_percent > 0 ? "more" : "less"
+      change_icon = change_percent.positive? ? "📈" : "📉"
+      change_color = change_percent.positive? ? "more" : "less"
 
       puts "#{change_icon} #{action}: #{format_bytes(baseline_mem)} → #{format_bytes(latest_mem)} (#{change_percent.abs}% #{change_color})"
     end
@@ -71,10 +71,8 @@ class BenchmarkReportComparator
     puts "• Look for significant changes (>10%) that might need investigation"
   end
 
-  private
-
   def self.parse_report(file_path)
-    content = File.read(file_path)
+    File.read(file_path)
 
     # This is a simplified parser - you might want to make it more robust
     speed_data = {}
@@ -98,9 +96,9 @@ class BenchmarkReportComparator
       unit_index += 1
     end
 
-    format("%.1f %s", size, units[unit_index])
+    format("%<size>.1f %<unit>s", size:, unit: units[unit_index])
   end
 end
 
 # Run if called directly
-BenchmarkReportComparator.compare_latest_with_baseline if __FILE__ == $0
+BenchmarkReportComparator.compare_latest_with_baseline if __FILE__ == $PROGRAM_NAME

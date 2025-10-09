@@ -23,7 +23,7 @@ module Benchmark
       # Reporter is a module with class methods
 
       # Run all scenarios with detailed analysis
-      puts "\n" + Colors.bold(Colors.highlight("📊 Complete Performance Analysis"))
+      puts "\n#{Colors.bold(Colors.highlight("📊 Complete Performance Analysis"))}"
       puts Colors.dim("-" * 40)
 
       all_results = {}
@@ -35,7 +35,7 @@ module Benchmark
       end
 
       # Memory analysis for all scenarios
-      puts "\n" + Colors.bold(Colors.highlight("💾 Memory Usage Analysis"))
+      puts "\n#{Colors.bold(Colors.highlight("💾 Memory Usage Analysis"))}"
       puts Colors.dim("-" * 30)
 
       memory_results = {}
@@ -49,13 +49,13 @@ module Benchmark
       end
 
       # Feature impact analysis
-      puts "\n" + Colors.bold(Colors.highlight("🔍 Feature Impact Analysis"))
+      puts "\n#{Colors.bold(Colors.highlight("🔍 Feature Impact Analysis"))}"
       puts Colors.dim("-" * 30)
 
       analyze_feature_impact(memory_results)
 
       # Performance insights
-      puts "\n" + Colors.bold(Colors.highlight("💡 Performance Insights"))
+      puts "\n#{Colors.bold(Colors.highlight("💡 Performance Insights"))}"
       puts Colors.dim("-" * 30)
       puts Colors.success("• Bare actions show minimal framework overhead")
       puts Colors.success("• Type validation adds safety with reasonable cost")
@@ -70,10 +70,8 @@ module Benchmark
         puts Colors.warning("Markdown report generation not yet implemented")
       end
 
-      puts "\n" + Colors.success("✅ Feature analysis complete!")
+      puts "\n#{Colors.success("✅ Feature analysis complete!")}"
     end
-
-    private
 
     def self.benchmark_scenario(scenario_name)
       require "benchmark/ips"
@@ -154,22 +152,18 @@ module Benchmark
         { name: "John Doe", email: "john@example.com", age: 30, admin: true, tags: %w[user premium] }
       when :nested_validation
         { user: { name: "John Doe", email: "john@example.com", profile: { bio: "Software developer", avatar_url: "https://example.com/avatar.jpg" } } }
-      when :hooks
+      when :hooks, :composition
         { name: "John Doe", email: "john@example.com" }
-      when :error_handling
+      when :error_handling, :complex
         { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :conditional_error
         { user_id: 123, action_type: "update" }
-      when :composition
-        { name: "John Doe", email: "john@example.com" }
       when :database
         { name: "John Doe", email: "john@example.com", simulate_delay: false }
       when :service_orchestration
         { user_id: 123, order_data: { amount: 99.99, items: %w[item1 item2] } }
       when :data_transformation
         { raw_data: [{ id: 1, name: "item1", value: 10 }, { id: 2, name: "item2", value: 20 }], transform_options: { multiplier: 1.5 } }
-      when :complex
-        { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :nested
         { name: "John Doe", email: "john@example.com", nested_should_fail: false }
       else
@@ -180,7 +174,7 @@ module Benchmark
 end
 
 # Run if called directly
-if __FILE__ == $0
+if __FILE__ == $PROGRAM_NAME
   markdown = ARGV.include?("--markdown")
   Benchmark::AxnFeatureAnalysis.run(markdown:)
 end
