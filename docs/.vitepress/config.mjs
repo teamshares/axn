@@ -28,6 +28,7 @@ export default defineConfig({
           { text: 'Getting Started', link: '/usage/setup' },
           { text: 'Writing Actions', link: '/usage/writing' },
           { text: 'Using Actions', link: '/usage/using' },
+          { text: 'Steps', link: '/usage/steps' },
         ]
       },
       {
@@ -37,6 +38,7 @@ export default defineConfig({
           { text: 'Class Interface', link: '/reference/class' },
           { text: 'Instance Interface', link: '/reference/instance' },
           { text: 'Result Interface', link: '/reference/axn-result' },
+          { text: 'Async', link: '/reference/async' },
         ]
       },
       {
@@ -45,6 +47,7 @@ export default defineConfig({
           { text: 'Memoization', link: '/recipes/memoization' },
           { text: 'Validating User Input', link: '/recipes/validating-user-input' },
           { text: 'Testing Actions', link: '/recipes/testing' },
+          { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
         ]
       },
       {
@@ -59,6 +62,7 @@ export default defineConfig({
         items: [
           { text: 'Profiling', link: '/advanced/profiling' },
           { text: 'Conventions', link: '/advanced/conventions' },
+          { text: 'Mountable', link: '/advanced/mountable' },
           { text: 'ROUGH NOTES', link: '/advanced/rough' },
         ]
       },
