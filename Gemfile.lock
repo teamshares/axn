@@ -82,6 +82,7 @@ GEM
     ast (2.4.2)
     base64 (0.2.0)
     benchmark (0.4.0)
+    benchmark-ips (2.14.0)
     bigdecimal (3.1.9)
     builder (3.3.0)
     byebug (12.0.0)
@@ -98,6 +99,8 @@ GEM
       activesupport (>= 6.1)
     i18n (1.14.7)
       concurrent-ruby (~> 1.0)
+    interactor (3.2.0)
+      ostruct
     io-console (0.8.1)
     irb (1.15.2)
       pp (>= 0.6.0)
@@ -115,6 +118,7 @@ GEM
       net-pop
       net-smtp
     marcel (1.0.4)
+    memory_profiler (1.1.0)
     method_source (1.1.0)
     mini_mime (1.1.5)
     mini_portile2 (2.8.9)
@@ -134,6 +138,7 @@ GEM
       racc (~> 1.4)
     nokogiri (1.18.9-arm64-darwin)
       racc (~> 1.4)
+    ostruct (0.6.3)
     parallel (1.26.3)
     parser (3.3.7.1)
       ast (~> 2.4.1)
@@ -248,6 +253,9 @@ PLATFORMS
 
 DEPENDENCIES
   axn!
+  benchmark-ips (~> 2.10)
+  interactor (~> 3.0)
+  memory_profiler (~> 1.0)
   pry-byebug (= 3.11.0)
   rails (> 7.0)
   rake (~> 13.0)

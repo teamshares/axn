@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "bundler/setup"
+require "optparse"
+
+# Add benchmark directory to load path
+$LOAD_PATH.unshift(File.expand_path("../benchmark", __dir__))
+
+# Load benchmark scripts
+require_relative "../benchmark/simple_comparison"
+require_relative "../benchmark/complex_scenarios"
+require_relative "../benchmark/full_report"
+require_relative "../benchmark/support/colors"
+
+class BenchmarkRunner
+  def self.run
+    options = parse_options
+
+    puts Colors.bold(Colors.info("🔬 Axn Performance Benchmark Suite"))
+    puts Colors.dim("=" * 50)
+    puts
+
+    case options[:mode]
+    when :baseline
+      run_baseline_analysis(options[:markdown])
+    when :features
+      run_feature_analysis(options[:markdown])
+    when :all
+      run_comprehensive_analysis(options[:markdown])
+    else
+      puts Colors.error("❌ Unknown mode: #{options[:mode]}")
+      exit 1
+    end
+  end
+
+  private
+
+  def self.parse_options
+    options = { mode: :all, markdown: false }
+
+    OptionParser.new do |opts|
+      opts.banner = "Usage: bin/benchmark [options] [mode]"
+      opts.separator ""
+      opts.separator "Modes:"
+      opts.separator "  baseline   Run Axn baseline performance analysis"
+      opts.separator "  features   Run Axn feature impact analysis"
+      opts.separator "  all        Run comprehensive analysis (default)"
+      opts.separator ""
+      opts.separator "Options:"
+
+      opts.on("-m", "--markdown", "Generate markdown report") do
+        options[:markdown] = true
+      end
+
+      opts.on("-h", "--help", "Show this help message") do
+        puts opts
+        exit
+      end
+
+      opts.separator ""
+      opts.separator "Examples:"
+      opts.separator "  bin/benchmark                    # Run comprehensive analysis"
+      opts.separator "  bin/benchmark baseline           # Run baseline analysis"
+      opts.separator "  bin/benchmark features --markdown # Test features + generate report"
+      opts.separator "  bin/benchmark all -m             # Full suite with markdown report"
+    end.parse!
+
+    # Parse mode from remaining arguments
+    if ARGV.any?
+      mode = ARGV.first.to_sym
+      unless %i[baseline features all].include?(mode)
+        puts Colors.error("❌ Invalid mode: #{mode}. Use: baseline, features, or all")
+        exit 1
+      end
+      options[:mode] = mode
+    end
+
+    options
+  end
+
+  def self.run_baseline_analysis(markdown)
+    puts Colors.bold(Colors.info("🎯 Running Axn baseline performance analysis..."))
+    puts
+    Benchmark::AxnBaseline.run(markdown:)
+  end
+
+  def self.run_feature_analysis(markdown)
+    puts Colors.bold(Colors.info("🔧 Running Axn feature impact analysis..."))
+    puts
+    Benchmark::AxnFeatureAnalysis.run(markdown:)
+  end
+
+  def self.run_comprehensive_analysis(markdown)
+    puts Colors.bold(Colors.info("🚀 Running comprehensive Axn analysis..."))
+    puts
+    Benchmark::FullReport.run(markdown:)
+  end
+end
+
+# Run if called directly
+BenchmarkRunner.run if __FILE__ == $0
