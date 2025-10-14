@@ -157,7 +157,7 @@ SyncForCompany.enqueue_all_async
 
 #### Key Features
 
-- **Inheritance**: Uses from-target-but-without-fields pattern by default
+- **Inheritance**: Uses `:async_only` mode by default (only inherits async config, nothing else)
 - **enqueue Shortcut**: Use `enqueue` as syntactic sugar for `ClassName.call_async` within the enqueue_all block
 
 
@@ -201,67 +201,183 @@ The `_async` methods require an async adapter to be configured. See the [Async E
 
 ### Inheritance Behavior
 
-By default, attached actions inherit from their target class, allowing them to access target methods and share behavior. However, the `step` strategy defaults to inheriting from `Object` to avoid field conflicts with `expects` and `exposes` declarations.
+Mounted actions inherit features from their target class in different ways depending on the mounting strategy. Each strategy has sensible defaults, but you can customize inheritance behavior using the `inherit` parameter.
 
 #### Default Behavior
 
-- **`mount_axn` and `mount_axn_method` strategies**: Inherit from target class by default
-- **`step` strategy**: Inherits from `Object` by default to avoid field conflicts
-- **`enqueue_all_via` strategy**: Uses from-target-but-without-fields pattern by default
+Each mounting strategy has a default inheritance mode that fits its typical use case:
+
+- **`mount_axn` and `mount_axn_method`**: Use `:lifecycle` mode (inherits hooks, callbacks, messages, and async config, but not fields)
+- **`step`**: Uses `:none` mode (completely independent to avoid conflicts)
+- **`enqueue_all_via`**: Uses `:async_only` mode (only inherits async configuration for enqueueing)
 
 ```ruby
 class UserService
   include Axn
 
-  def shared_method
-    "from target"
+  before :log_start
+  on_success :track_success
+  error "Parent error occurred"
+  async :sidekiq
+
+  def log_start
+    puts "Starting..."
   end
 
-  # Inherits from UserService - can access shared_method
-  axn :create_user do
-    expose :user_id, shared_method
+  def track_success
+    puts "Success!"
   end
 
-  # Inherits from Object - cannot access shared_method
+  # Inherits lifecycle (hooks, callbacks, messages, async) but not fields
+  mount_axn :create_user do
+    # Will run log_start before and track_success after
+    expose :user_id, 123
+  end
+
+  # Completely independent - no inheritance
   step :validate_user do
+    # Will NOT run log_start or track_success
     expose :valid, true
   end
+
+  # Only inherits async config for enqueueing
+  enqueue_all_via do
+    # Can call enqueue (uses inherited async config)
+    # Does NOT inherit hooks, callbacks, or messages
+    User.find_each { |u| enqueue(user_id: u.id) }
+  end
 end
 ```
 
-#### Controlling Inheritance
+#### Inheritance Profiles
 
-You can control inheritance behavior using the `_inherit_from_target` parameter:
+You can control what gets inherited using predefined profiles:
+
+##### `:lifecycle` Profile
+
+Inherits everything except fields. Use this when the mounted action should fully participate in the parent's execution lifecycle:
 
 ```ruby
-class UserService
+mount_axn :process, inherit: :lifecycle do
+  # Inherits: hooks, callbacks, messages, async config
+  # Does NOT inherit: fields
+end
+```
+
+**What's inherited:**
+- ✅ Hooks (`before`, `after`, `around`)
+- ✅ Callbacks (`on_success`, `on_failure`, `on_error`, `on_exception`)
+- ✅ Messages (`success`, `error`)
+- ✅ Async configuration (`async :sidekiq`, etc.)
+- ❌ Fields (`expects`, `exposes`)
+
+##### `:async_only` Profile
+
+Only inherits async configuration. Use this for utility methods that need async capability but nothing else:
+
+```ruby
+enqueue_all_via inherit: :async_only do
+  # Only inherits async config for enqueueing
+  # Completely independent otherwise
+end
+```
+
+**What's inherited:**
+- ✅ Async configuration
+- ❌ Everything else
+
+##### `:none` Profile
+
+Completely standalone with no inheritance. Use this when the mounted action should be fully independent:
+
+```ruby
+step :independent_step, inherit: :none do
+  # Completely isolated from parent
+end
+```
+
+**What's inherited:**
+- ❌ Nothing - completely independent
+
+#### Granular Control
+
+For advanced use cases, you can use a hash to specify exactly what should be inherited:
+
+```ruby
+mount_axn :custom, inherit: {
+  fields: false,
+  hooks: true,
+  callbacks: false,
+  messages: true,
+  async: true
+} do
+  # Custom inheritance: only hooks, messages, and async
+end
+```
+
+**Available options:**
+- `fields` - Field declarations (`expects`, `exposes`)
+- `hooks` - Execution hooks (`before`, `after`, `around`)
+- `callbacks` - Result callbacks (`on_success`, `on_failure`, `on_error`, `on_exception`)
+- `messages` - Success and error messages
+- `async` - Async adapter configuration
+
+::: info Strategies Always Inherit
+Strategies (like `use :transaction`) are always inherited as they're part of the class ancestry chain. This cannot be controlled via the `inherit` parameter.
+:::
+
+#### Practical Examples
+
+**Example 1: Step that needs parent's error messages**
+
+```ruby
+class DataProcessor
   include Axn
-
-  def shared_method
-    "from target"
-  end
-
-  # Force step to inherit from target
-  step :validate_user, _inherit_from_target: true do
-    expose :valid, shared_method  # Can now access target methods
-  end
-
-  # enqueue_all can access target methods by default (from-target-but-without-fields pattern)
-  enqueue_all_via do |user_ids:|
-    user_ids.map { |id| enqueue(user_id: id) }
-    # Can access shared_method by default
-  end
-
-  # Force axn to inherit from Object
-  axn :standalone_action, _inherit_from_target: false do
-    expose :result, "standalone"  # Cannot access target methods
+  
+  error "Data processing failed"
+  
+  # Inherit only error messages, nothing else
+  step :validate, inherit: { fields: false, messages: true } do
+    fail! "Invalid data"  # Will use parent's error message format
   end
 end
 ```
 
-::: danger Experimental Feature
-The `_inherit_from_target` parameter is experimental and likely to change in future versions. This is why the parameter name is underscore-prefixed. Use with caution and be prepared to update your code when this feature stabilizes.
-:::
+**Example 2: Mounted action with custom hooks but no callbacks**
+
+```ruby
+class ApiClient
+  include Axn
+  
+  before :authenticate
+  on_success :log_success
+  
+  def authenticate
+    # Auth logic
+  end
+  
+  # Inherit hooks but not callbacks
+  mount_axn :fetch_data, inherit: { hooks: true, callbacks: false } do
+    # Will run authenticate before
+    # Will NOT run log_success callback
+  end
+end
+```
+
+**Example 3: Override default for a step**
+
+```ruby
+class Workflow
+  include Axn
+  
+  before :setup
+  
+  # Steps default to :none, but we can override to inherit lifecycle
+  step :special_step, inherit: :lifecycle do
+    # Will run setup hook (unusual for a step)
+  end
+end
+```
 
 ### Error Prefixing for Steps
 
