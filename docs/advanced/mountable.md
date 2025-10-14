@@ -333,9 +333,9 @@ Strategies (like `use :transaction`) are always inherited as they're part of the
 ```ruby
 class DataProcessor
   include Axn
-  
+
   error "Data processing failed"
-  
+
   # Inherit only error messages, nothing else
   step :validate, inherit: { fields: false, messages: true } do
     fail! "Invalid data"  # Will use parent's error message format
@@ -348,14 +348,14 @@ end
 ```ruby
 class ApiClient
   include Axn
-  
+
   before :authenticate
   on_success :log_success
-  
+
   def authenticate
     # Auth logic
   end
-  
+
   # Inherit hooks but not callbacks
   mount_axn :fetch_data, inherit: { hooks: true, callbacks: false } do
     # Will run authenticate before
@@ -369,9 +369,9 @@ end
 ```ruby
 class Workflow
   include Axn
-  
+
   before :setup
-  
+
   # Steps default to :none, but we can override to inherit lifecycle
   step :special_step, inherit: :lifecycle do
     # Will run setup hook (unusual for a step)

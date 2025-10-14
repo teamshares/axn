@@ -13,52 +13,61 @@ module Axn
   #
   # ## Inheritance Behavior
   #
-  # By default, mounted actions inherit from their target class, allowing them to access
-  # target methods and share behavior. However, the `step` strategy defaults to inheriting
-  # from `Object` to avoid field conflicts with `expects` and `exposes` declarations.
+  # Mounted actions inherit features from their target class in different ways depending on the
+  # mounting strategy. Each strategy has sensible defaults, but you can customize inheritance
+  # behavior using the `inherit` parameter.
   #
-  # ### Controlling Inheritance
+  # ### Default Inheritance Modes
   #
-  # You can control inheritance behavior using the `_inherit_from_target` parameter:
+  # - `mount_axn` and `mount_axn_method`: `:lifecycle` - Inherits hooks, callbacks, messages, and async config (but not fields)
+  # - `step`: `:none` - Completely independent to avoid conflicts
+  # - `enqueue_all_via`: `:async_only` - Only inherits async configuration
   #
-  # - `_inherit_from_target: true` - Always inherit from target class
-  # - `_inherit_from_target: false` - Always inherit from Object
-  # - `_inherit_from_target: nil` - Use strategy-specific defaults
+  # ### Inheritance Profiles
   #
-  # ::: danger Experimental Feature
-  # The `_inherit_from_target` parameter is experimental and likely to change in future
-  # versions. This is why the parameter name is underscore-prefixed. Use with caution
-  # and be prepared to update your code when this feature stabilizes.
-  # :::
+  # - `:lifecycle` - Inherits everything except fields (hooks, callbacks, messages, async config)
+  # - `:async_only` - Only inherits async configuration
+  # - `:none` - Completely standalone with no inheritance
+  #
+  # You can also use a hash for granular control:
+  #   `inherit: { fields: false, hooks: true, callbacks: false, messages: true, async: true }`
+  #
+  # Available hash keys: `:fields`, `:hooks`, `:callbacks`, `:messages`, `:async`
   #
   # @example Default inheritance behavior
   #   class MyClass
   #     include Axn
   #
-  #     def shared_method
-  #       "from target"
-  #     end
+  #     before :log_start
+  #     on_success :track_success
+  #     async :sidekiq
   #   end
   #
-  #   # axn and method strategies inherit from target by default
-  #   MyClass.axn :my_action do
-  #     expose :result, shared_method  # Can access target methods
+  #   # mount_axn uses :lifecycle (inherits hooks, callbacks, messages, async)
+  #   MyClass.mount_axn :my_action do
+  #     # Will run log_start before and track_success after
   #   end
   #
-  #   # step strategy inherits from Object by default
+  #   # step uses :none (completely independent)
   #   MyClass.step :my_step do
-  #     expose :result, "step result"  # Cannot access target methods
+  #     # Will NOT run log_start or track_success
   #   end
   #
-  # @example Explicit inheritance control
-  #   # Force step to inherit from target
-  #   MyClass.step :my_step, _inherit_from_target: true do
-  #     expose :result, shared_method  # Can now access target methods
+  #   # enqueue_all_via uses :async_only (only inherits async config)
+  #   MyClass.enqueue_all_via do
+  #     # Can call enqueue (uses inherited async config)
+  #     # Does NOT inherit hooks, callbacks, or messages
   #   end
   #
-  #   # Force axn to inherit from Object
-  #   MyClass.axn :my_action, _inherit_from_target: false do
-  #     expose :result, "standalone"  # Cannot access target methods
+  # @example Custom inheritance control
+  #   # Override step default to inherit lifecycle
+  #   MyClass.step :my_step, inherit: :lifecycle do
+  #     # Will now run hooks and callbacks
+  #   end
+  #
+  #   # Use granular control
+  #   MyClass.mount_axn :my_action, inherit: { hooks: true, callbacks: false } do
+  #     # Will run hooks but not callbacks
   #   end
   module Mountable
     extend ActiveSupport::Concern
