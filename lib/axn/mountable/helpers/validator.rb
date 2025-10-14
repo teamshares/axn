@@ -13,6 +13,7 @@ module Axn
           validate_name!
           validate_axn_class_or_block!
           validate_method_name!(@descriptor.name.to_s)
+          validate_superclass_and_inherit_conflict!
 
           if @descriptor.existing_axn_klass
             validate_existing_axn_class!
@@ -61,15 +62,34 @@ module Axn
           invalid!("block must be callable (respond to :call)")
         end
 
+        def validate_superclass_and_inherit_conflict!
+          # Check if user explicitly provided superclass in kwargs
+          return unless @descriptor.kwargs.key?(:superclass)
+
+          # Get the inherit option value
+          inherit_option = @descriptor.options[:inherit]
+
+          # Get the default inherit value for this strategy
+          default_inherit = mount_strategy.default_inherit_mode
+
+          # If inherit was explicitly provided and differs from default, raise error
+          return if inherit_option == default_inherit
+
+          invalid!("cannot specify both 'superclass:' and 'inherit:' options - use one or the other")
+        end
+
         def validate_existing_axn_class!
           existing_axn_klass = @descriptor.existing_axn_klass
-          raw_kwargs = @descriptor.raw_kwargs
 
           invalid!("axn class must be a Class") unless existing_axn_klass.is_a?(Class)
 
           invalid!("axn class must include Axn module") unless existing_axn_klass.included_modules.include?(::Axn) || existing_axn_klass < ::Axn
 
-          return unless raw_kwargs.present? && mount_strategy != MountingStrategies::Step
+          # Check raw_kwargs (before preprocessing) to see if user provided any factory kwargs
+          # Exclude axn_klass and all strategy-specific kwargs
+          user_provided_kwargs = @descriptor.raw_kwargs.except(:axn_klass, *mount_strategy.strategy_specific_kwargs)
+
+          return unless user_provided_kwargs.present? && mount_strategy != MountingStrategies::Step
 
           invalid!("was given an existing axn class and also keyword arguments - only one is allowed")
         end

@@ -7,13 +7,17 @@ module Axn
         include Base
         extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
+        def default_inherit_mode = :lifecycle
+
         module DSL
-          def mount_axn(name, axn_klass = nil, **, &)
+          def mount_axn(name, axn_klass = nil, inherit: MountingStrategies::Axn.default_inherit_mode, **, &)
+            # mount_axn defaults to :lifecycle - participates in parent's execution lifecycle
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :axn,
               name:,
               axn_klass:,
+              inherit:,
               **,
               &
             )

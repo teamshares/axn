@@ -664,9 +664,11 @@ RSpec.describe Axn do
           end
         end
 
-        it "inherits from target by default" do
+        it "inherits from target by default (via :lifecycle wrapper)" do
           axn_class = client_class.const_get(:Axns).const_get(:TestAxn)
-          expect(axn_class.superclass).to eq(client_class)
+          # With inherit: :lifecycle (default), creates a wrapper that inherits from target
+          # The wrapper clears fields but keeps hooks, callbacks, messages, async
+          expect(axn_class.superclass.superclass).to eq(client_class)
         end
 
         it "has access to target methods through inheritance" do

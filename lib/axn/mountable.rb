@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/mountable/inherit_profiles"
 require "axn/mountable/mounting_strategies"
 require "axn/mountable/descriptor"
 require "axn/mountable/helpers/validator"

@@ -7,18 +7,24 @@ module Axn
         include Base
         extend self
 
+        def default_inherit_mode = :lifecycle
+
         module DSL
-          def mount_axn_method(name, axn_klass = nil, **, &)
+          def mount_axn_method(name, axn_klass = nil, inherit: MountingStrategies::Method.default_inherit_mode, **, &)
+            # mount_axn_method defaults to :lifecycle - participates in parent's execution lifecycle
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :method,
               name:,
               axn_klass:,
+              inherit:,
               **,
               &
             )
           end
         end
+
+        def strategy_specific_kwargs = super + [:expose_return_as]
 
         def preprocess_kwargs(**kwargs)
           # Call parent preprocessing first

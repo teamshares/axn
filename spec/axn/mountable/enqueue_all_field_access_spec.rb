@@ -2,7 +2,7 @@
 
 RSpec.describe "Axn::Mountable enqueue_all field access issue" do
   # This spec reproduces the issue where enqueue_all_via blocks can't access
-  # fields from the target class when _inherit_from_target: :without_fields is used
+  # fields from the target class when inherit: :async_only is used (fields are not inherited)
 
   let!(:company_class) do
     Class.new do
