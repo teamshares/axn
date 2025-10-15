@@ -40,6 +40,22 @@ module Axn
         # This will be overridden by the included adapter module
         raise NotImplementedError, "No async adapter configured. Use e.g. `async :sidekiq` or `async :active_job` to enable background processing."
       end
+
+      # Ensure default async is applied when the class is first instantiated
+      # This is important for Sidekiq workers which load the class in a separate process
+      def new(*args, **kwargs)
+        _ensure_default_async_configured
+        super
+      end
+
+      private
+
+      def _ensure_default_async_configured
+        return if _async_adapter.present?
+        return unless Axn.config._default_async_adapter.present?
+
+        async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+      end
     end
   end
 end

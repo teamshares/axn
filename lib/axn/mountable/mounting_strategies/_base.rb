@@ -10,7 +10,9 @@ module Axn
       module Base
         # Hooks for strategy modules to configure themselves
         def preprocess_kwargs(**kwargs) = kwargs
-        def strategy_specific_kwargs = [:_inherit_from_target]
+        def strategy_specific_kwargs = [:inherit]
+
+        def default_inherit_mode = raise ArgumentError, "Strategy modules must implement default_inherit_mode"
 
         # The actual per-strategy mounting logic
         def mount(descriptor:, target:)

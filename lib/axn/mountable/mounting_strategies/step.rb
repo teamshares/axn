@@ -7,6 +7,8 @@ module Axn
         include Base
         extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
+        def default_inherit_mode = :none
+
         module DSL
           def steps(*steps)
             Array(steps).compact.each do |step_class|
@@ -18,14 +20,15 @@ module Axn
             end
           end
 
-          def step(name, axn_klass = nil, error_prefix: nil, _inherit_from_target: false, **, &)
+          def step(name, axn_klass = nil, error_prefix: nil, inherit: MountingStrategies::Step.default_inherit_mode, **, &)
+            # Steps default to :none - they are isolated units of work
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :step,
               name:,
               axn_klass:,
               error_prefix:,
-              _inherit_from_target:,
+              inherit:,
               **,
               &
             )

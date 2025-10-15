@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    axn (0.1.0.pre.alpha.2.8.1)
+    axn (0.1.0.pre.alpha.3)
       activemodel (>= 7.2)
       activesupport (>= 7.2)
 
@@ -82,6 +82,7 @@ GEM
     ast (2.4.2)
     base64 (0.2.0)
     benchmark (0.4.0)
+    benchmark-ips (2.14.0)
     bigdecimal (3.1.9)
     builder (3.3.0)
     byebug (12.0.0)
@@ -115,6 +116,7 @@ GEM
       net-pop
       net-smtp
     marcel (1.0.4)
+    memory_profiler (1.1.0)
     method_source (1.1.0)
     mini_mime (1.1.5)
     mini_portile2 (2.8.9)
@@ -248,6 +250,8 @@ PLATFORMS
 
 DEPENDENCIES
   axn!
+  benchmark-ips (~> 2.10)
+  memory_profiler (~> 1.0)
   pry-byebug (= 3.11.0)
   rails (> 7.0)
   rake (~> 13.0)

@@ -9,6 +9,9 @@ module Axn
         included do
           raise LoadError, "Sidekiq is not available. Please add 'sidekiq' to your Gemfile." unless defined?(::Sidekiq)
 
+          # Use Sidekiq::Job if available (Sidekiq 7+), otherwise error
+          raise LoadError, "Sidekiq::Job is not available. Please check your Sidekiq version." unless defined?(::Sidekiq::Job)
+
           include ::Sidekiq::Job
 
           # Apply configuration block if present

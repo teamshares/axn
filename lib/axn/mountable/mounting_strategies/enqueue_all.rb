@@ -7,14 +7,17 @@ module Axn
         include Base
         extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
 
+        def default_inherit_mode = :async_only
+
         module DSL
-          def enqueue_all_via(axn_klass = nil, **, &)
+          def enqueue_all_via(axn_klass = nil, inherit: MountingStrategies::EnqueueAll.default_inherit_mode, **, &)
+            # enqueue_all_via defaults to :async_only - only needs async config for batch enqueuing
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :enqueue_all,
               name: "enqueue_all",
               axn_klass:,
-              _inherit_from_target: :without_fields,
+              inherit:,
               **,
               &
             )

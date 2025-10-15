@@ -1,174 +1,165 @@
 # frozen_string_literal: true
 
 RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
+  let(:test_action) { Actions::Async::TestActionSidekiq }
+  let(:failing_action) { Actions::Async::FailingActionSidekiq }
+  let(:expected_log_message) { /Action executed: Hello, World! You are 25 years old\./ }
+
   before do
     Sidekiq::Testing.inline!
-    Sidekiq.strict_args!(false) # Allow symbols and other non-JSON types for testing
+    Sidekiq.strict_args!(false)
     allow(Axn.config.logger).to receive(:info).and_call_original
+    Sidekiq::Job.jobs.clear
   end
 
   after do
     Sidekiq::Testing.fake!
-    Sidekiq.strict_args!(true) # Restore strict args
+    Sidekiq.strict_args!(true)
+    Sidekiq::Job.jobs.clear
   end
 
   describe ".call_async" do
-    it "executes the action with the provided context" do
-      job_id = Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
-      expect(job_id).to be_a(String)
-      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
-    end
-
-    it "handles complex context" do
-      job_id = Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25, active: true, tags: ["test"])
-      expect(job_id).to be_a(String)
-      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
-    end
+    it { expect(test_action.call_async(name: "World", age: 25)).to match(/\A[0-9a-f]{24}\z/) }
+    it { expect(test_action.call_async(name: "World", age: 25, active: true, tags: ["test"])).to match(/\A[0-9a-f]{24}\z/) }
   end
 
   describe "GlobalID integration" do
     let(:user) { double("User", to_global_id: double("GlobalID", to_s: "gid://test/User/123")) }
+    let(:global_id_action) { Actions::Async::TestActionSidekiqGlobalId }
 
     before do
-      # Mock GlobalID::Locator to return our mock user
       allow(GlobalID::Locator).to receive(:locate).with("gid://test/User/123").and_return(user)
     end
 
-    it "converts GlobalID objects to strings in call_async" do
-      job_id = Actions::Async::TestActionSidekiqGlobalId.call_async(name: "World", user:)
-      expect(job_id).to be_a(String)
-      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
-    end
+    it { expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/) }
 
-    it "converts GlobalID objects to strings and back during execution" do
-      # Expect perform to be called with the GlobalID string (proving conversion happened)
-      expect_any_instance_of(Actions::Async::TestActionSidekiqGlobalId).to receive(:perform).with(
+    it "converts GlobalID objects during execution" do
+      expect_any_instance_of(global_id_action).to receive(:perform).with(
         hash_including("name" => "World", "user_as_global_id" => "gid://test/User/123"),
       ).and_call_original
 
-      # Call call_async with the actual user object - the adapter should handle conversion
-      job_id = Actions::Async::TestActionSidekiqGlobalId.call_async(name: "World", user:)
-      expect(job_id).to be_a(String)
-      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
+      expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/)
     end
   end
 
   describe "Sidekiq options configuration" do
     it "applies sidekiq_options from async config" do
-      # Verify the sidekiq_options were applied
       expect(Actions::Async::TestActionSidekiqWithOptions.sidekiq_options).to include(
         "queue" => "high_priority",
         "retry" => 3,
       )
-
-      # Test that the job can be enqueued with the options
-      job_id = Actions::Async::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)
-      expect(job_id).to be_a(String)
-      expect(job_id).to match(/\A[0-9a-f]{24}\z/) # Sidekiq job ID format
+      expect(Actions::Async::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)).to match(/\A[0-9a-f]{24}\z/)
     end
 
-    it "works without sidekiq_options" do
-      # Verify that default sidekiq_options are present
-      expect(Actions::Async::TestActionSidekiq.sidekiq_options).to be_a(Hash)
-    end
+    it { expect(test_action.sidekiq_options).to be_a(Hash) }
   end
 
   describe "Sidekiq job execution" do
-    it "executes the action successfully" do
+    it { expect { test_action.call_async(name: "World", age: 25) }.not_to raise_error }
+    it { expect { Actions::Async::TestActionSidekiqNoArgs.call_async }.not_to raise_error }
+    it { expect { test_action.call_async(name: "Rails", age: 30, active: true, tags: ["test"]) }.not_to raise_error }
+    it {
       expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+        test_action.call_async(name: "World", age: 25)
+        test_action.call_async(name: "Rails", age: 30)
       end.not_to raise_error
-    end
-
-    it "executes action with no arguments successfully" do
-      expect do
-        Actions::Async::TestActionSidekiqNoArgs.call_async
-      end.not_to raise_error
-    end
-
-    it "handles complex context during execution" do
-      expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
-      end.not_to raise_error
-    end
-
-    it "verifies that jobs can be executed multiple times" do
-      expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
-        Actions::Async::TestActionSidekiq.call_async(name: "Rails", age: 30)
-      end.not_to raise_error
-    end
-
-    it "executes action successfully" do
-      expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
-      end.not_to raise_error
-    end
+    }
 
     it "logs action execution details" do
-      Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
-
-      # Verify that info was called with the expected message
-      expect(Axn.config.logger).to have_received(:info).with(/Action executed: Hello, World! You are 25 years old\./)
+      test_action.call_async(name: "World", age: 25)
+      expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
     end
 
     it "logs before failing" do
-      expect { Actions::Async::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
-
-      # Verify that info was called before the error
+      expect { failing_action.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
       expect(Axn.config.logger).to have_received(:info).with(/About to fail with name: Test/)
     end
   end
 
+  describe "Sidekiq testing modes" do
+    context "when Sidekiq::Testing.inline! is enabled" do
+      before { Sidekiq::Testing.inline! }
+
+      it "executes call_async immediately and synchronously" do
+        executed = false
+        allow_any_instance_of(test_action).to receive(:call) {
+          executed = true
+          "Hello, World!"
+        }
+
+        expect(test_action.call_async(name: "World", age: 25)).to match(/\A[0-9a-f]{24}\z/)
+        expect(executed).to be true
+      end
+
+      it "logs action execution immediately" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
+      end
+    end
+
+    context "when Sidekiq::Testing.fake! is enabled" do
+      before do
+        Sidekiq::Testing.fake!
+        Sidekiq::Job.jobs.clear
+      end
+
+      after do
+        Sidekiq::Testing.inline!
+        Sidekiq::Job.jobs.clear
+      end
+
+      it "enqueues job in Sidekiq jobs array" do
+        Sidekiq::Job.jobs.clear
+        expect { test_action.call_async(name: "World", age: 25) }.to change { Sidekiq::Job.jobs.size }.by(1)
+      end
+
+      it "enqueues call_async without executing immediately" do
+        executed = false
+        allow_any_instance_of(test_action).to receive(:call) {
+          executed = true
+          "Hello, World!"
+        }
+
+        expect(test_action.call_async(name: "World", age: 25)).to match(/\A[0-9a-f]{24}\z/)
+        expect(executed).to be false
+      end
+
+      it "does not log action execution immediately when fake" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
+      end
+
+      it "can execute enqueued jobs manually" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
+
+        job_data = Sidekiq::Job.jobs.first
+        job_data["class"].constantize.new.perform(job_data["args"].first)
+
+        expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
+      end
+    end
+  end
+
   describe "Sidekiq error handling" do
-    it "handles job failures" do
-      expect { Actions::Async::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
-    end
+    it { expect { failing_action.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure") }
 
-    it "executes failing action and raises error" do
-      expect { Actions::Async::FailingActionSidekiq.call_async(name: "Test") }.to raise_error(StandardError, "Intentional failure")
-    end
-
-    it "catches unserializable objects immediately during call_async" do
-      # Create a truly unserializable object
-      unserializable_object = Object.new
-      def unserializable_object.to_s
-        raise "Cannot serialize"
+    context "with unserializable objects" do
+      let(:unserializable_object) do
+        obj = Object.new
+        obj.define_singleton_method(:to_s) { raise "Cannot serialize" }
+        obj
       end
 
-      # Test that the object is actually unserializable
-      expect { JSON.generate(unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize")
-
-      # Enable strict args for this test to catch unserializable objects
-      Sidekiq.strict_args!(true)
-
-      expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "Test", age: 25, unserializable: unserializable_object)
-      end.to raise_error(RuntimeError, "Cannot serialize")
-    ensure
-      # Restore strict args setting
-      Sidekiq.strict_args!(false)
-    end
-
-    it "catches complex unserializable objects immediately" do
-      # Create a truly unserializable object
-      complex_object = Object.new
-      def complex_object.to_s
-        raise "Cannot serialize"
+      before do
+        expect { JSON.generate(unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize")
+        Sidekiq.strict_args!(true)
       end
 
-      # Test that the object is actually unserializable
-      expect { JSON.generate(complex_object) }.to raise_error(RuntimeError, "Cannot serialize")
+      after { Sidekiq.strict_args!(false) }
 
-      # Enable strict args for this test to catch unserializable objects
-      Sidekiq.strict_args!(true)
-
-      expect do
-        Actions::Async::TestActionSidekiq.call_async(name: "Test", age: 25, complex: complex_object)
-      end.to raise_error(RuntimeError, "Cannot serialize")
-    ensure
-      # Restore strict args setting
-      Sidekiq.strict_args!(false)
+      it { expect { test_action.call_async(name: "Test", age: 25, unserializable: unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize") }
+      it { expect { test_action.call_async(name: "Test", age: 25, complex: unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize") }
     end
   end
 end

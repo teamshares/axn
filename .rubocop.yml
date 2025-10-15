@@ -7,6 +7,11 @@ AllCops:
   TargetRubyVersion: 3.2
   SuggestExtensions: false
   NewCops: enable
+  Exclude:
+    - 'benchmark/**/*'
+    - 'bin/benchmark'
+    - 'node_modules/**/*'
+    - 'vendor/**/*'
 
 Style/MultilineBlockChain:
   Enabled: false

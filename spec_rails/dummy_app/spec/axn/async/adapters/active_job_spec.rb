@@ -3,12 +3,15 @@
 RSpec.describe "Axn::Async with ActiveJob adapter" do
   include ActiveJob::TestHelper
 
+  let(:test_action) { Actions::Async::TestActionActiveJob }
+  let(:failing_action) { Actions::Async::FailingActionActiveJob }
+  let(:expected_log_message) { /Action executed: Hello, World! You are 25 years old\./ }
+
   before do
     allow(Axn.config.logger).to receive(:info).and_call_original
   end
 
   around do |example|
-    # Use test adapter for testing job enqueueing and execution
     original_adapter = ActiveJob::Base.queue_adapter
     ActiveJob::Base.queue_adapter = :test
     example.run
@@ -17,115 +20,130 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
   end
 
   describe ".call_async" do
-    it "executes the action with the provided context" do
-      job = Actions::Async::TestActionActiveJob.call_async(name: "World", age: 25)
-
-      expect(job).to be_a(ActiveJob::Base)
-      expect(job.arguments).to eq([{ name: "World", age: 25 }])
-    end
-
-    it "handles complex context" do
-      job = Actions::Async::TestActionActiveJob.call_async(name: "World", age: 25, active: true, tags: ["test"])
-
-      expect(job).to be_a(ActiveJob::Base)
-      expect(job.arguments).to eq([{ name: "World", age: 25, active: true, tags: ["test"] }])
-    end
+    it { expect(test_action.call_async(name: "World", age: 25)).to be_a(ActiveJob::Base) }
+    it { expect(test_action.call_async(name: "World", age: 25).arguments).to eq([{ name: "World", age: 25 }]) }
+    it {
+      expect(test_action.call_async(name: "World", age: 25, active: true,
+                                    tags: ["test"]).arguments).to eq([{ name: "World", age: 25, active: true, tags: ["test"] }])
+    }
   end
 
   describe "ActiveJob options configuration" do
     it "applies ActiveJob options from async config" do
-      # Test that the job is enqueued with the options
       job = Actions::Async::TestActionActiveJobWithOptions.call_async(name: "Test", age: 25)
       expect(job).to be_a(ActiveJob::Base)
       expect(job.arguments).to eq([{ name: "Test", age: 25 }])
-
-      # Verify the ActiveJob options were applied to the proxy class
-      proxy_class = Actions::Async::TestActionActiveJobWithOptions.const_get(:ActiveJobProxy)
-      expect(proxy_class.new.queue_name).to eq("high_priority")
+      expect(Actions::Async::TestActionActiveJobWithOptions.const_get(:ActiveJobProxy).new.queue_name).to eq("high_priority")
     end
 
     it "works without custom ActiveJob options" do
-      # Test that the job is enqueued
-      job = Actions::Async::TestActionActiveJob.call_async(name: "Test", age: 25)
+      job = test_action.call_async(name: "Test", age: 25)
       expect(job).to be_a(ActiveJob::Base)
-
-      # Verify that default queue is used
-      proxy_class = Actions::Async::TestActionActiveJob.const_get(:ActiveJobProxy)
-      expect(proxy_class.new.queue_name).to eq("default")
+      expect(test_action.const_get(:ActiveJobProxy).new.queue_name).to eq("default")
     end
   end
 
   describe "ActiveJob job execution" do
-    it "executes the action successfully" do
-      Actions::Async::TestActionActiveJob.call_async(name: "World", age: 25)
-
-      expect do
-        perform_enqueued_jobs
-      end.not_to raise_error
-    end
-
-    it "executes action with no arguments successfully" do
+    it {
+      test_action.call_async(name: "World", age: 25)
+      expect { perform_enqueued_jobs }.not_to raise_error
+    }
+    it {
       Actions::Async::TestActionActiveJobNoArgs.call_async
-
-      expect do
-        perform_enqueued_jobs
-      end.not_to raise_error
-    end
-
-    it "handles complex context during execution" do
-      Actions::Async::TestActionActiveJob.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
-
-      expect do
-        perform_enqueued_jobs
-      end.not_to raise_error
-    end
-
-    it "verifies that jobs can be executed multiple times" do
-      Actions::Async::TestActionActiveJob.call_async(name: "World", age: 25)
-      Actions::Async::TestActionActiveJob.call_async(name: "Rails", age: 30)
-
-      expect do
-        perform_enqueued_jobs
-      end.not_to raise_error
-    end
+      expect { perform_enqueued_jobs }.not_to raise_error
+    }
+    it {
+      test_action.call_async(name: "Rails", age: 30, active: true, tags: ["test"])
+      expect { perform_enqueued_jobs }.not_to raise_error
+    }
+    it {
+      test_action.call_async(name: "World", age: 25)
+      test_action.call_async(name: "Rails", age: 30)
+      expect { perform_enqueued_jobs }.not_to raise_error
+    }
 
     it "logs action execution details" do
-      Actions::Async::TestActionActiveJob.call_async(name: "World", age: 25)
-
-      expect do
-        perform_enqueued_jobs
-      end.not_to raise_error
-
-      # Verify that info was called with the expected message
-      expect(Axn.config.logger).to have_received(:info).with(/Action executed: Hello, World! You are 25 years old\./)
+      test_action.call_async(name: "World", age: 25)
+      expect { perform_enqueued_jobs }.not_to raise_error
+      expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
     end
 
     it "logs before failing" do
-      Actions::Async::FailingActionActiveJob.call_async(name: "Test")
-
-      expect do
-        perform_enqueued_jobs
-      end.to raise_error(StandardError, "Intentional failure")
-
-      # Verify that info was called before the error
+      failing_action.call_async(name: "Test")
+      expect { perform_enqueued_jobs }.to raise_error(StandardError, "Intentional failure")
       expect(Axn.config.logger).to have_received(:info).with(/About to fail with name: Test/)
+    end
+  end
+
+  describe "ActiveJob testing modes" do
+    context "when using test adapter (default behavior)" do
+      it "enqueues call_async without executing immediately" do
+        executed = false
+        allow_any_instance_of(test_action).to receive(:call) {
+          executed = true
+          "Hello, World!"
+        }
+
+        expect(test_action.call_async(name: "World", age: 25)).to be_a(ActiveJob::Base)
+        expect(executed).to be false
+      end
+
+      it "does not log action execution immediately when using test adapter" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
+      end
+
+      it "enqueues job in ActiveJob queue" do
+        expect { test_action.call_async(name: "World", age: 25) }.to change(enqueued_jobs, :size).by(1)
+        expect(enqueued_jobs.first[:job]).to eq(test_action::ActiveJobProxy)
+      end
+
+      it "can execute enqueued jobs manually with perform_enqueued_jobs" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
+
+        perform_enqueued_jobs
+        expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
+      end
+    end
+
+    context "when using inline adapter" do
+      around do |example|
+        original_adapter = ActiveJob::Base.queue_adapter
+        ActiveJob::Base.queue_adapter = :inline
+        example.run
+      ensure
+        ActiveJob::Base.queue_adapter = original_adapter
+      end
+
+      it "executes call_async immediately and synchronously" do
+        executed = false
+        allow_any_instance_of(test_action).to receive(:call) {
+          executed = true
+          "Hello, World!"
+        }
+
+        expect(test_action.call_async(name: "World", age: 25)).to be_a(ActiveJob::Base)
+        expect(executed).to be true
+      end
+
+      it "logs action execution immediately with inline adapter" do
+        test_action.call_async(name: "World", age: 25)
+        expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
+      end
     end
   end
 
   describe "ActiveJob error handling" do
     it "enqueues failing jobs" do
-      job = Actions::Async::FailingActionActiveJob.call_async(name: "Test")
-
+      job = failing_action.call_async(name: "Test")
       expect(job).to be_a(ActiveJob::Base)
       expect(job.arguments).to eq([{ name: "Test" }])
     end
 
     it "executes failing jobs and raises the error" do
-      Actions::Async::FailingActionActiveJob.call_async(name: "Test")
-
-      expect do
-        perform_enqueued_jobs
-      end.to raise_error(StandardError, "Intentional failure")
+      failing_action.call_async(name: "Test")
+      expect { perform_enqueued_jobs }.to raise_error(StandardError, "Intentional failure")
     end
   end
 end
