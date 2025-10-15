@@ -11,6 +11,7 @@ AllCops:
     - 'benchmark/**/*'
     - 'bin/benchmark'
     - 'node_modules/**/*'
+    - 'vendor/**/*'
 
 Style/MultilineBlockChain:
   Enabled: false
