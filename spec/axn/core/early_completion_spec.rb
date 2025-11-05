@@ -402,7 +402,7 @@ RSpec.describe Axn do
         end
 
         # This should be caught internally, but we can test the exception is raised
-        expect { action.new.done!("test") }.to raise_error(Axn::Internal::EarlyCompletion, "test")
+        expect { action.send(:new).done!("test") }.to raise_error(Axn::Internal::EarlyCompletion, "test")
       end
 
       it "raises Axn::Internal::EarlyCompletion with nil message" do
@@ -412,7 +412,7 @@ RSpec.describe Axn do
           end
         end
 
-        expect { action.new.done!(nil) }.to raise_error(Axn::Internal::EarlyCompletion, nil)
+        expect { action.send(:new).done!(nil) }.to raise_error(Axn::Internal::EarlyCompletion, nil)
       end
     end
   end

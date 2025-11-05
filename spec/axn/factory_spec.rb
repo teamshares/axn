@@ -299,8 +299,8 @@ RSpec.shared_examples "can build Axns from callables" do
       it "includes the strategy" do
         expect(axn.call).to be_ok
         # Verify the strategy was used
-        expect(axn.new).to respond_to(:test_method)
-        expect(axn.new.test_method).to eq("strategy loaded")
+        expect(axn.send(:new)).to respond_to(:test_method)
+        expect(axn.send(:new).test_method).to eq("strategy loaded")
       end
     end
 
@@ -309,7 +309,7 @@ RSpec.shared_examples "can build Axns from callables" do
 
       it "includes all strategies" do
         expect(axn.call).to be_ok
-        expect(axn.new).to respond_to(:test_method)
+        expect(axn.send(:new)).to respond_to(:test_method)
       end
     end
 
@@ -318,7 +318,7 @@ RSpec.shared_examples "can build Axns from callables" do
 
       it "includes the strategy without configuration" do
         expect(axn.call).to be_ok
-        expect(axn.new).to respond_to(:test_method)
+        expect(axn.send(:new)).to respond_to(:test_method)
       end
     end
   end

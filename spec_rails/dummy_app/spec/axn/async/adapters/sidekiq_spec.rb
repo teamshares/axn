@@ -134,7 +134,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
         expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
 
         job_data = Sidekiq::Job.jobs.first
-        job_data["class"].constantize.new.perform(job_data["args"].first)
+        job_data["class"].constantize.send(:new).perform(job_data["args"].first)
 
         expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
       end

@@ -28,6 +28,23 @@ require "axn/core/contract_for_subfields"
 
 module Axn
   module Core
+    module ClassMethods
+      def call(**)
+        new(**).tap(&:_run).result
+      end
+
+      def call!(**)
+        result = call(**)
+        return result if result.ok?
+
+        # When we're nested, we want to raise a failure that includes the source action to support
+        # the error message generation's `from` filter
+        raise Axn::Failure.new(result.error, source: result.__action__), cause: result.exception if _nested_in_another_axn?
+
+        raise result.exception
+      end
+    end
+
     def self.included(base)
       base.class_eval do
         extend ClassMethods
@@ -47,28 +64,9 @@ module Axn
         include Core::NestingTracking
 
         include Core::UseStrategy
+
+        private_class_method :new
       end
-    end
-
-    module ClassMethods
-      def call(**)
-        new(**).tap(&:_run).result
-      end
-
-      def call!(**)
-        result = call(**)
-        return result if result.ok?
-
-        # When we're nested, we want to raise a failure that includes the source action to support
-        # the error message generation's `from` filter
-        raise Axn::Failure.new(result.error, source: result.__action__), cause: result.exception if _nested_in_another_axn?
-
-        raise result.exception
-      end
-    end
-
-    def initialize(**)
-      @__context = Axn::Context.new(**)
     end
 
     # Main entry point for action execution
@@ -108,6 +106,10 @@ module Axn
     end
 
     private
+
+    def initialize(**)
+      @__context = Axn::Context.new(**)
+    end
 
     def _emit_metrics
       return unless Axn.config.emit_metrics

@@ -60,7 +60,7 @@ RSpec.describe Axn::Core::Profiling do
   end
 
   describe "#_should_profile?" do
-    let(:action) { action_class.new(name: "World") }
+    let(:action) { action_class.send(:new, name: "World") }
 
     context "when profiling is disabled for the action" do
       it "returns false" do
@@ -96,14 +96,14 @@ RSpec.describe Axn::Core::Profiling do
 
       it "returns true when condition evaluates to true" do
         action_class._profiling_condition = -> { debug_mode }
-        action = action_class.new(name: "World", debug_mode: true)
+        action = action_class.send(:new, name: "World", debug_mode: true)
 
         expect(action.send(:_should_profile?)).to be true
       end
 
       it "returns false when condition evaluates to false" do
         action_class._profiling_condition = -> { debug_mode }
-        action = action_class.new(name: "World", debug_mode: false)
+        action = action_class.send(:new, name: "World", debug_mode: false)
 
         expect(action.send(:_should_profile?)).to be false
       end
@@ -137,7 +137,7 @@ RSpec.describe Axn::Core::Profiling do
   end
 
   describe "#_ensure_vernier_available!" do
-    let(:action) { action_class.new(name: "World") }
+    let(:action) { action_class.send(:new, name: "World") }
 
     context "when Vernier is available" do
       before do
@@ -151,7 +151,7 @@ RSpec.describe Axn::Core::Profiling do
   end
 
   describe "#_with_profiling" do
-    let(:action) { action_class.new(name: "World") }
+    let(:action) { action_class.send(:new, name: "World") }
 
     context "when profiling should not run" do
       before do
@@ -205,7 +205,7 @@ RSpec.describe Axn::Core::Profiling do
   end
 
   describe "integration with action execution" do
-    let(:action) { action_class.new(name: "World") }
+    let(:action) { action_class.send(:new, name: "World") }
 
     before do
       action_class.profile

@@ -79,7 +79,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     end
 
     it "provides perform method on instances" do
-      action = action_class.new(name: "Test", age: 30)
+      action = action_class.send(:new, name: "Test", age: 30)
       expect(action).to respond_to(:perform)
     end
 
