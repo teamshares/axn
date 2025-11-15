@@ -5,6 +5,7 @@ require "axn/internal/logging"
 require "axn/context"
 
 require "axn/strategies"
+require "axn/extras"
 require "axn/core/hooks"
 require "axn/core/logging"
 require "axn/core/flow"
