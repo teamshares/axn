@@ -22,7 +22,7 @@ RSpec.describe Axn do
       it { is_expected.to be_ok }
       it "sets the default channel value" do
         # Create an action instance to access its internal context for verification
-        action_instance = action.new
+        action_instance = action.send(:new)
         action_instance._run
         expect(action_instance.instance_variable_get("@__context").provided_data[:channel]).to eq("web")
       end

@@ -31,7 +31,7 @@ RSpec.describe "Axn::Async inheritance" do
   shared_examples "child proxy calls child method" do |adapter_type|
     it "child proxy calls child's call method, not parent's" do
       # Create a spy to track which call method gets executed
-      child_instance = child_class.new(name: "World")
+      child_instance = child_class.send(:new, name: "World")
       allow(child_class).to receive(:call!).and_call_original
 
       # Mock the call! method to verify it's called on the child class
@@ -55,7 +55,7 @@ RSpec.describe "Axn::Async inheritance" do
   shared_examples "parent proxy calls parent method" do |adapter_type|
     it "parent proxy calls parent's call method" do
       # Create a spy to track which call method gets executed
-      parent_instance = parent_class.new(name: "World")
+      parent_instance = parent_class.send(:new, name: "World")
       allow(parent_class).to receive(:call!).and_call_original
 
       # Mock the call! method to verify it's called on the parent class

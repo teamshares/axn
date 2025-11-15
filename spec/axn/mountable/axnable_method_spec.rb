@@ -518,7 +518,7 @@ RSpec.describe Axn do
         end
 
         it "works as a standalone step" do
-          client = client_class.new
+          client = client_class.send(:new)
           client.call
           # The step runs without error (we can't easily test the result without exposing)
           expect(client.instance_variable_get(:@__context)).to be_present
@@ -550,7 +550,7 @@ RSpec.describe Axn do
         end
 
         it "has access to superclass methods" do
-          client = client_class.new
+          client = client_class.send(:new)
           client.call
           # The step runs without error and has access to superclass methods
           expect(client.instance_variable_get(:@__context)).to be_present
@@ -572,7 +572,7 @@ RSpec.describe Axn do
         end
 
         it "does not have access to target methods by default" do
-          client = client_class.new
+          client = client_class.send(:new)
           expect { client.call }.to raise_error(NameError, /undefined local variable or method `test_method'/)
         end
       end

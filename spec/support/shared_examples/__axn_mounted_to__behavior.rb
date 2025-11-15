@@ -30,7 +30,7 @@ RSpec.shared_examples "__axn_mounted_to__ behavior" do |attachment_method|
 
     it "provides instance method __axn_mounted_to__" do
       axn_class = client_class.const_get(:Axns).const_get(:TestAction)
-      axn_instance = axn_class.new
+      axn_instance = axn_class.send(:new)
       expect(axn_instance.__axn_mounted_to__).to eq(client_class)
     end
   end
@@ -59,7 +59,7 @@ RSpec.shared_examples "__axn_mounted_to__ behavior" do |attachment_method|
     end
 
     it "provides instance method __axn_mounted_to__" do
-      axn_instance = existing_axn.new
+      axn_instance = existing_axn.send(:new)
       expect(axn_instance.__axn_mounted_to__).to eq(client_class)
     end
   end

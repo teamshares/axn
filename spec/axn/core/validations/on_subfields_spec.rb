@@ -272,7 +272,7 @@ RSpec.describe Axn do
 
         it "filters sensitive subfield in context_for_logging" do
           # Test that context_for_logging filters sensitive subfields
-          instance = action.new(user_data:)
+          instance = action.send(:new, user_data:)
           filtered_context = instance.send(:context_for_logging)
 
           expect(filtered_context[:user_data]).to include(password: "[FILTERED]")
@@ -308,7 +308,7 @@ RSpec.describe Axn do
 
         it "filters sensitive subfield in error context" do
           # Test that sensitive data is filtered in error logging by checking context_for_logging
-          instance = action.new(user_data:)
+          instance = action.send(:new, user_data:)
           filtered_context = instance.send(:context_for_logging)
 
           expect(filtered_context[:user_data]).to include(password: "[FILTERED]")
@@ -366,7 +366,7 @@ RSpec.describe Axn do
         it "filters sensitive subfield in logging context" do
           # Test that the logging context filters sensitive subfields
           # by checking that the context_for_logging method works correctly
-          instance = action.new(user_data:)
+          instance = action.send(:new, user_data:)
           filtered_context = instance.send(:context_for_logging)
 
           expect(filtered_context[:user_data]).to include(password: "[FILTERED]")

@@ -60,7 +60,7 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
     end
 
     it "does not provide perform method on action instances" do
-      action = action_class.new(name: "Test", age: 30)
+      action = action_class.send(:new, name: "Test", age: 30)
       expect(action).not_to respond_to(:perform)
     end
 

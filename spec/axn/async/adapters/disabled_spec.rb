@@ -35,7 +35,7 @@ RSpec.describe "Axn::Async with Disabled adapter" do
     end
 
     it "does not provide perform method on instances" do
-      action = action_class.new(name: "Test", age: 30)
+      action = action_class.send(:new, name: "Test", age: 30)
       expect(action).not_to respond_to(:perform)
     end
   end
