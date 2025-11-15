@@ -14,6 +14,7 @@ require "axn/core/timing"
 require "axn/core/tracing"
 require "axn/core/profiling"
 require "axn/core/nesting_tracking"
+require "axn/core/memoization"
 
 # CONSIDER: make class names match file paths?
 require "axn/core/validation/validators/model_validator"
@@ -64,6 +65,7 @@ module Axn
         include Core::NestingTracking
 
         include Core::UseStrategy
+        include Core::Memoization
 
         private_class_method :new
       end
