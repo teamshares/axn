@@ -6,10 +6,10 @@ source "https://rubygems.org"
 gemspec
 
 # These are only needed for development of Axn itself
+gem "faraday", "~> 2.0" # For client strategy testing
 gem "pry-byebug", "3.11.0"
 gem "rails", "> 7.0" # For Rails Engine testing
 gem "rspec", "~> 3.2"
-gem "faraday", "~> 2.0" # For client strategy testing
 gem "sqlite3", "~> 2.0" # For Rails Engine testing database
 gem "vernier", "~> 1.0" # For profiling support
 

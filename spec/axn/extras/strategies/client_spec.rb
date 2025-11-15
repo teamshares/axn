@@ -33,7 +33,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
         instance.send(:initialize)
 
         expect(instance.client.headers["Content-Type"]).to eq("application/json")
-        expect(instance.client.headers["User-Agent"]).to match(/client \/ Axn Client Strategy \/ v/)
+        expect(instance.client.headers["User-Agent"]).to match(%r{client / Axn Client Strategy / v})
       end
     end
 
@@ -53,7 +53,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
         instance = test_action.allocate
         instance.send(:initialize)
 
-        expect(instance.api_client.headers["User-Agent"]).to match(/api_client \/ Axn Client Strategy \/ v/)
+        expect(instance.api_client.headers["User-Agent"]).to match(%r{api_client / Axn Client Strategy / v})
       end
     end
 
@@ -75,7 +75,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
           conn.headers["X-Custom"] = "value"
         end
 
-        test_action.use(:client, url: "https://api.example.com", prepend_config: prepend_config)
+        test_action.use(:client, url: "https://api.example.com", prepend_config:)
         instance = test_action.allocate
         instance.send(:initialize)
 
@@ -96,7 +96,11 @@ RSpec.describe Axn::Extras::Strategies::Client do
         # Check that logger middleware is in the stack
         # Faraday stores middleware in reverse order
         client = instance.client
-        middleware_klasses = client.builder.handlers.map { |h| h.klass rescue h.class }
+        middleware_klasses = client.builder.handlers.map do |h|
+          h.klass
+        rescue StandardError
+          h.class
+        end
         expect(middleware_klasses).to include(Faraday::Response::Logger)
       end
 
@@ -192,4 +196,3 @@ RSpec.describe Axn::Extras::Strategies::Client do
     end
   end
 end
-
