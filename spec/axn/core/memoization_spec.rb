@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+# rubocop:disable Naming/MethodParameterName, Lint/ConstantDefinitionInBlock
 RSpec.describe Axn::Core::Memoization do
   let(:test_action) { build_axn }
 
@@ -47,7 +48,7 @@ RSpec.describe Axn::Core::Memoization do
             end
           end.to raise_error(
             ArgumentError,
-            /Memoization of methods with arguments requires the 'memo_wise' gem/
+            /Memoization of methods with arguments requires the 'memo_wise' gem/,
           )
         end
 
@@ -60,7 +61,7 @@ RSpec.describe Axn::Core::Memoization do
             end
           end.to raise_error(
             ArgumentError,
-            /Memoization of methods with arguments requires the 'memo_wise' gem/
+            /Memoization of methods with arguments requires the 'memo_wise' gem/,
           )
         end
       end
@@ -206,4 +207,4 @@ RSpec.describe Axn::Core::Memoization do
     end
   end
 end
-
+# rubocop:enable Naming/MethodParameterName, Lint/ConstantDefinitionInBlock

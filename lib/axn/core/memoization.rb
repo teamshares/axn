@@ -38,8 +38,8 @@ module Axn
 
           if has_args
             raise ArgumentError,
-              "Memoization of methods with arguments requires the 'memo_wise' gem. " \
-              "Please add 'memo_wise' to your Gemfile or use a method without arguments."
+                  "Memoization of methods with arguments requires the 'memo_wise' gem. " \
+                  "Please add 'memo_wise' to your Gemfile or use a method without arguments."
           end
 
           # Wrap the method with memoization
@@ -51,4 +51,3 @@ module Axn
     end
   end
 end
-
