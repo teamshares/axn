@@ -1,18 +1,6 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn do
-  before(:all) do
-    # Run migrations to set up the database
-    ActiveRecord::Base.connection.execute(
-      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL, created_at DATETIME, updated_at DATETIME)",
-    )
-  end
-
-  after(:all) do
-    # Clean up the database
-    ActiveRecord::Base.connection.execute("DROP TABLE IF EXISTS users")
-  end
-
   describe "#done! with transaction strategy" do
     context "when done! is called" do
       let(:action) do
