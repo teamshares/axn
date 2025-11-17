@@ -8,7 +8,7 @@ module Axn
       # @param type [Class] the form class to use
       # @param inject [Array<Symbol>] optional additional attributes to include in the form (e.g. [:user, :company])
       def self.configure(expect: :params, expose: :form, type: nil, inject: nil)
-        expect ||= "#{expose.to_s.delete_suffix('_form')}_params".to_sym
+        expect ||= :"#{expose.to_s.delete_suffix("_form")}_params"
 
         # Aliasing to avoid shadowing/any confusion
         expect_attr = expect
@@ -25,7 +25,7 @@ module Axn
             raise ArgumentError, "form strategy: #{type} must implement `valid?`" unless type.method_defined?(:valid?)
 
             expects expect_attr, type: :params
-            exposes expose_attr, type: type
+            exposes(expose_attr, type:)
 
             define_method expose_attr do
               attrs_for_form = public_send(expect_attr)&.dup || {}
@@ -48,4 +48,3 @@ module Axn
     end
   end
 end
-

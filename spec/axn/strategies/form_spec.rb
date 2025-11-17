@@ -66,7 +66,7 @@ RSpec.describe Axn::Strategies::Form do
       end
 
       it "injects additional context attributes into form" do
-        action_with_inject.use(:form, type: form_class, inject: [:user, :company])
+        action_with_inject.use(:form, type: form_class, inject: %i[user company])
         instance = action_with_inject.allocate
         instance.send(:initialize, params: { foo: "bar" }, user: "Alice", company: "Acme")
 
@@ -84,6 +84,7 @@ RSpec.describe Axn::Strategies::Form do
 
     context "with auto-detected form class" do
       # Create a named class with nested Form class to test auto-detection
+      # rubocop:disable Lint/ConstantDefinitionInBlock
       module FormStrategyTest
         class TestAction
           include Axn
@@ -108,6 +109,7 @@ RSpec.describe Axn::Strategies::Form do
           end
         end
       end
+      # rubocop:enable Lint/ConstantDefinitionInBlock
 
       it "auto-detects form class from action namespace" do
         instance = FormStrategyTest::TestAction.allocate
@@ -148,9 +150,8 @@ RSpec.describe Axn::Strategies::Form do
 
     context "memoization" do
       it "memoizes the form instance" do
-        call_count = 0
         memoized_form_class = Class.new do
-          attr_reader :attributes
+          attr_reader :attributes, :call_count
 
           def initialize(attributes = {})
             @attributes = attributes
@@ -160,10 +161,6 @@ RSpec.describe Axn::Strategies::Form do
           def valid?
             @call_count += 1
             true
-          end
-
-          def call_count
-            @call_count
           end
         end
 
@@ -226,4 +223,3 @@ RSpec.describe Axn::Strategies::Form do
     end
   end
 end
-

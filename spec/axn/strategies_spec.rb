@@ -7,7 +7,7 @@ RSpec.describe Axn::Strategies do
 
   # Registry behavior shared examples
   it_behaves_like "a registry" do
-    let(:expected_built_in_keys) { [:form, :transaction] }
+    let(:expected_built_in_keys) { %i[form transaction] }
     let(:expected_find_key) { :transaction }
     let(:expected_item_type) { "Strategy" }
     let(:expected_not_found_error_class) { Axn::StrategyNotFound }

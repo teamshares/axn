@@ -81,6 +81,7 @@ RSpec.describe Axn::FormObject do
         end
 
         attr_accessor :child_field
+
         validates :child_field, presence: true
       end
     end
@@ -160,14 +161,15 @@ RSpec.describe Axn::FormObject do
 
       parent = Class.new(described_class) do
         attr_accessor :parent_field
+
         nested_forms child_form: child
       end
 
       form = parent.new(parent_field: "parent", child_form: { child_field: "child" })
       expect(form.to_h).to eq({
-        parent_field: "parent",
-        child_form: { child_field: "child" },
-      })
+                                parent_field: "parent",
+                                child_form: { child_field: "child" },
+                              })
     end
 
     it "returns empty hash when field_names is nil" do
@@ -183,7 +185,7 @@ RSpec.describe Axn::FormObject do
 
       form = form_class.new(name: "John")
       # Add a field_name that doesn't have an accessor
-      form_class.field_names = [:name, :nonexistent]
+      form_class.field_names = %i[name nonexistent]
       expect(form.to_h).to eq({ name: "John" })
     end
   end
@@ -192,6 +194,7 @@ RSpec.describe Axn::FormObject do
     let(:form_class) do
       Class.new(described_class) do
         attr_accessor :name
+
         validates :name, presence: true
       end
     end
@@ -218,4 +221,3 @@ RSpec.describe Axn::FormObject do
     end
   end
 end
-
