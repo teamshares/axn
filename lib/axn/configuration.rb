@@ -48,7 +48,12 @@ module Axn
 
     def logger
       @logger ||= begin
-        Rails.logger
+        # Use sidekiq logger if in background
+        if defined?(Sidekiq) && Sidekiq.server?
+          Sidekiq.logger
+        else
+          Rails.logger
+        end
       rescue NameError
         Logger.new($stdout).tap do |l|
           l.level = Logger::INFO
