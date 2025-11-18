@@ -12,6 +12,9 @@ require "axn/testing/spec_helpers"
 # Load sidekiq testing helpers
 require "sidekiq/testing"
 
+# Load support files
+Dir[File.expand_path("support/**/*.rb", __dir__)].each { |f| require f }
+
 $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 RSpec.configure do |config|
