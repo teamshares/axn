@@ -15,13 +15,13 @@ RSpec.configure do |config|
     end
 
     # Load and run all migrations
-    migration_files = Dir[Rails.root.join("db/migrate/*.rb")].sort
+    migration_files = Dir[Rails.root.join("db/migrate/*.rb")]
     migration_files.each do |file|
       version = File.basename(file).split("_").first
 
       # Skip if already migrated
       result = ActiveRecord::Base.connection.select_values(
-        "SELECT version FROM schema_migrations WHERE version = '#{version}'"
+        "SELECT version FROM schema_migrations WHERE version = '#{version}'",
       )
       next if result.include?(version)
 
@@ -33,11 +33,10 @@ RSpec.configure do |config|
 
       # Record migration
       ActiveRecord::Base.connection.execute(
-        "INSERT INTO schema_migrations (version) VALUES ('#{version}')"
+        "INSERT INTO schema_migrations (version) VALUES ('#{version}')",
       )
     end
 
     ActiveRecord::Base.connection.execute("PRAGMA foreign_keys = ON")
   end
 end
-
