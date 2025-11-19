@@ -50,13 +50,22 @@ namespace :benchmark do
     puts Colors.info("Version: #{version}")
     puts ""
 
+    # Check if benchmark already exists for this version
+    filename = Benchmark::Storage.benchmark_filename(version)
+    if File.exist?(filename)
+      puts Colors.error("❌ Benchmark file already exists for version #{version}")
+      puts Colors.info("   File: #{filename}")
+      puts Colors.info("   Delete the file if you want to regenerate benchmarks for this version.")
+      abort
+    end
+
     # Run benchmarks with verbose output
     data = Benchmark::BenchmarkRunner.run_all_scenarios(verbose: true)
 
-    # Save benchmark data
-    filename = Benchmark::Storage.save_benchmark(data, version)
+    # Save benchmark data (filename already determined above)
+    saved_filename = Benchmark::Storage.save_benchmark(data, version)
     puts ""
-    puts Colors.success("✅ Benchmark data saved to: #{filename}")
+    puts Colors.success("✅ Benchmark data saved to: #{saved_filename}")
 
     # Update last release version
     Benchmark::Storage.set_last_release_version(version)
