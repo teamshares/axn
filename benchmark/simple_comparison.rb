@@ -138,7 +138,13 @@ module Benchmark
         { name: "John Doe", email: "john@example.com", should_fail: false, error_type: nil }
       when :conditional_error
         { user_id: 123, action_type: "update" }
-      when :database
+      when :preprocessing
+        { amount: "100.50", date_string: "2024-01-15", tags: "user,premium,admin" }
+      when :memoization
+        { data: [1, 2, 3, 4, 5], multiplier: 3 }
+      when :callbacks
+        { name: "John Doe", email: "john@example.com", should_fail: false }
+      when :simulated_database
         { name: "John Doe", email: "john@example.com", simulate_delay: false }
       when :service_orchestration
         { user_id: 123, order_data: { amount: 99.99, items: %w[item1 item2] } }
