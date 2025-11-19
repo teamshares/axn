@@ -54,6 +54,21 @@ A couple notes:
   * If your handler raises, the failure will _also_ be swallowed and logged
   * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
 
+## `raise_piping_errors_outside_production`
+
+By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development and test environments, you can opt-in to have these errors raised instead of logged:
+
+```ruby
+Axn.configure do |c|
+  c.raise_piping_errors_outside_production = true
+end
+```
+
+**Important notes:**
+- This setting only applies in development and test environments—errors are always swallowed in production for safety
+- When enabled, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged
+- This is useful for debugging issues in user-provided callbacks or framework instrumentation code
+
 ## `wrap_with_trace` and `emit_metrics`
 
 If you're using an APM provider, observability can be greatly enhanced by adding automatic _tracing_ of Axn calls and/or emitting count metrics after each call completes.

@@ -6,7 +6,7 @@ module Axn
   end
 
   class Configuration
-    attr_accessor :wrap_with_trace, :emit_metrics
+    attr_accessor :wrap_with_trace, :emit_metrics, :raise_piping_errors_outside_production
     attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
 
     def log_level = @log_level ||= :info

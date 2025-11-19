@@ -3,6 +3,7 @@
 ## Unreleased
 * [BREAKING] Rename `auto_log` -> `log_calls`
 * [FEAT] Add `log_errors`
+* [FEAT] Add `raise_piping_errors_outside_production` config option to raise framework errors in dev/test
 
 ## 0.1.0-alpha.3
 * [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration
