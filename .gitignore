@@ -6,6 +6,8 @@
 /pkg/
 /spec/reports/
 /tmp/
+# Track last release version for benchmarks
+!/tmp/benchmark_reports/.last_release
 .DS_Store
 
 # rspec failure tracking

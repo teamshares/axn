@@ -214,8 +214,8 @@ module Benchmark
       end
     end
 
-    # With simulated database operations
-    class DatabaseAction
+    # With simulated database operations (no actual DB)
+    class SimulatedDatabaseAction
       include Axn
 
       expects :name, :email
@@ -227,6 +227,77 @@ module Benchmark
         greeting = "Hello, #{name}! Your email is #{email}. User ID: #{user_id}"
         expose :greeting, greeting
         expose :user_id, user_id
+      end
+    end
+
+    # With preprocessing for type coercion
+    class PreprocessingAction
+      include Axn
+
+      expects :amount, preprocess: ->(val) { val.is_a?(Numeric) ? val : val.to_f }
+      expects :date_string, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d) }
+      expects :tags, preprocess: ->(t) { t.is_a?(Array) ? t : t.to_s.split(",") }
+      exposes :processed_amount, :processed_date, :processed_tags
+
+      def call
+        expose :processed_amount, amount * 1.1
+        expose :processed_date, date_string
+        expose :processed_tags, tags.map(&:strip)
+      end
+    end
+
+    # With memoization for expensive calculations
+    class MemoizationAction
+      include Axn
+
+      expects :data, type: Array
+      expects :multiplier, type: Integer, default: 2
+      exposes :computation_result, :expensive_calculation, :cached_result
+
+      def call
+        # First call - should compute
+        result1 = expensive_calculation
+        # Second call - should use memoized value
+        result2 = expensive_calculation
+
+        expose :computation_result, result1
+        expose :expensive_calculation, result1
+        expose :cached_result, result2
+      end
+
+      private
+
+      memo def expensive_calculation
+        # Simulate expensive computation
+        data.map { |item| item * multiplier }.sum
+      end
+    end
+
+    # With callbacks (on_success, on_error)
+    class CallbacksAction
+      include Axn
+
+      expects :name, :email
+      expects :should_fail, type: :boolean, default: false
+      exposes :greeting
+
+      success "User processed successfully"
+      error "Failed to process user"
+
+      on_success do
+        # Callback executed - just test overhead, don't need to expose result
+        # Callbacks run after call completes, so we can't expose from here
+      end
+
+      on_error do
+        # Callback executed on error
+      end
+
+      def call
+        fail!("Simulated error") if should_fail
+
+        greeting = "Hello, #{name}! Your email is #{email}."
+        expose :greeting, greeting
       end
     end
 
@@ -391,7 +462,10 @@ module Benchmark
       error_handling: ErrorHandlingAction,
       conditional_error: ConditionalErrorAction,
       composition: CompositionAction,
-      database: DatabaseAction,
+      preprocessing: PreprocessingAction,
+      memoization: MemoizationAction,
+      callbacks: CallbacksAction,
+      simulated_database: SimulatedDatabaseAction,
       service_orchestration: ServiceOrchestrationAction,
       data_transformation: DataTransformationAction,
       complex: ComplexAction,
@@ -414,11 +488,11 @@ module Benchmark
     end
 
     def self.feature_scenarios
-      %i[hooks error_handling conditional_error composition]
+      %i[hooks error_handling conditional_error composition preprocessing memoization callbacks]
     end
 
     def self.business_scenarios
-      %i[database service_orchestration data_transformation]
+      %i[simulated_database service_orchestration data_transformation]
     end
 
     def self.complex_scenarios
