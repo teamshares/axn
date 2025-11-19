@@ -167,6 +167,198 @@ RSpec.describe Axn::Core::AutomaticLogging do
     end
   end
 
+  describe "log_errors" do
+    let(:log_messages) { [] }
+
+    context "when action succeeds" do
+      let(:action) do
+        build_axn do
+          log_calls false
+          log_errors :warn
+        end
+      end
+
+      before do
+        allow(action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+      end
+
+      it "does not log anything" do
+        action.call
+
+        expect(log_messages).to be_empty
+      end
+    end
+
+    context "when action fails" do
+      let(:action) do
+        build_axn do
+          log_calls false
+          log_errors :warn
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      before do
+        allow(action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+      end
+
+      it "logs after failed execution but not before" do
+        action.call
+
+        expect(log_messages.length).to eq(1)
+
+        before_log = log_messages.find { |log| log[:message].include?("About to execute") }
+        after_log = log_messages.find { |log| log[:message].include?("Execution completed") }
+
+        expect(before_log).to be_nil
+        expect(after_log).to be_present
+        expect(after_log[:message]).to include("failure")
+      end
+    end
+
+    context "when action raises exception" do
+      let(:action) do
+        build_axn do
+          log_calls false
+          log_errors :warn
+
+          def call = raise("Unexpected error")
+        end
+      end
+
+      before do
+        allow(action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+      end
+
+      it "logs after exception but not before" do
+        expect { action.call! }.to raise_error("Unexpected error")
+
+        expect(log_messages.length).to eq(1)
+
+        before_log = log_messages.find { |log| log[:message].include?("About to execute") }
+        after_log = log_messages.find { |log| log[:message].include?("Execution completed") }
+
+        expect(before_log).to be_nil
+        expect(after_log).to be_present
+        expect(after_log[:message]).to include("exception")
+      end
+    end
+
+    context "when action uses log_errors with specific level" do
+      let(:action) do
+        build_axn do
+          log_calls false
+          log_errors :error
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      before do
+        allow(action).to receive(:error) do |message, **options|
+          log_messages << { level: :error, message:, options: }
+        end
+      end
+
+      it "uses the specified level" do
+        action.call
+
+        expect(log_messages.length).to eq(1)
+        expect(log_messages.first[:level]).to eq(:error)
+      end
+    end
+
+    context "when action disables log_errors with false" do
+      let(:action) do
+        build_axn do
+          log_errors false
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      it "does not log anything" do
+        action.call
+
+        expect(log_messages).to be_empty
+      end
+    end
+
+    context "when action disables log_errors with nil" do
+      let(:action) do
+        build_axn do
+          log_errors nil
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      it "does not log anything" do
+        action.call
+
+        expect(log_messages).to be_empty
+      end
+    end
+
+    context "when action uses default log_errors level" do
+      let(:action) do
+        build_axn do
+          log_calls false
+          log_errors Axn.config.log_level
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      before do
+        allow(action).to receive(:info) do |message, **options|
+          log_messages << { level: :info, message:, options: }
+        end
+      end
+
+      it "uses the default level" do
+        action.call
+
+        expect(log_messages.length).to eq(1)
+        expect(log_messages.first[:level]).to eq(:info)
+      end
+    end
+
+    context "when both log_calls and log_errors are set" do
+      let(:action) do
+        build_axn do
+          log_calls :debug
+          log_errors :warn
+
+          def call = fail!("Something went wrong")
+        end
+      end
+
+      before do
+        allow(action).to receive(:debug) do |message, **options|
+          log_messages << { level: :debug, message:, options: }
+        end
+        allow(action).to receive(:warn) do |message, **options|
+          log_messages << { level: :warn, message:, options: }
+        end
+      end
+
+      it "uses log_calls (logs before and after)" do
+        action.call
+
+        expect(log_messages.length).to eq(2)
+        log_messages.each { |log| expect(log[:level]).to eq(:debug) }
+      end
+    end
+  end
+
   describe "inheritance" do
     let(:log_messages) { [] }
 
@@ -209,6 +401,55 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
         expect(log_messages.length).to eq(2)
         log_messages.each { |log| expect(log[:level]).to eq(:warn) }
+      end
+    end
+
+    describe "log_errors inheritance" do
+      let(:log_messages) { [] }
+
+      let(:parent_action_class) do
+        build_axn do
+          log_calls false
+          log_errors :error
+
+          def call = fail!("Parent error")
+        end
+      end
+
+      before do
+        allow(parent_action_class).to receive(:error) do |message, **options|
+          log_messages << { level: :error, message:, options: }
+        end
+      end
+
+      it "inherits the log_errors setting" do
+        parent_action_class.call
+
+        expect(log_messages.length).to eq(1)
+        expect(log_messages.first[:level]).to eq(:error)
+      end
+
+      context "when child overrides log_errors" do
+        let(:child_action) do
+          Class.new(parent_action_class) do
+            log_errors :warn
+
+            def call = fail!("Child error")
+          end
+        end
+
+        before do
+          allow(child_action).to receive(:warn) do |message, **options|
+            log_messages << { level: :warn, message:, options: }
+          end
+        end
+
+        it "uses the overridden level" do
+          child_action.call
+
+          expect(log_messages.length).to eq(1)
+          expect(log_messages.first[:level]).to eq(:warn)
+        end
       end
     end
   end

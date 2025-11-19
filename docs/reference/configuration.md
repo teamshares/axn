@@ -262,6 +262,32 @@ end
 
 The `log_calls` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
 
+### Error-Only Logging
+
+For actions where you only want to log when something goes wrong, use `log_errors` instead of `log_calls`. This will:
+- **Not** log before execution
+- **Only** log after execution if `result.ok?` is false (i.e., on failures or exceptions)
+
+```ruby
+class MyAction
+  log_calls false   # Disable full logging
+  log_errors :warn  # Only log failures/exceptions at warn level
+end
+
+class SilentOnErrorsAction
+  log_calls false
+  log_errors false  # Disable error logging for this action
+end
+
+# Use default level
+class DefaultErrorLoggingAction
+  log_calls false
+  log_errors Axn.config.log_level  # Uses default log level
+end
+```
+
+The `log_errors` method supports inheritance, just like `log_calls`. If both `log_calls` and `log_errors` are set, `log_calls` takes precedence (it will log before and after for all outcomes). To use `log_errors` exclusively, you must first disable `log_calls` with `log_calls false`.
+
 ## Profiling
 
 Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling is enabled per-action by calling the `profile` method.
