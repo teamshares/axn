@@ -303,65 +303,6 @@ end
 
 The `log_errors` method supports inheritance, just like `log_calls`. If both `log_calls` and `log_errors` are set, `log_calls` takes precedence (it will log before and after for all outcomes). To use `log_errors` exclusively, you must first disable `log_calls` with `log_calls false`.
 
-## Profiling
-
-Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling is enabled per-action by calling the `profile` method.
-
-### Usage
-
-Enable profiling on specific actions using the `profile` method:
-
-```ruby
-class MyAction
-  include Axn
-
-  # Profile conditionally (only one profile call per action)
-  profile if: -> { debug_mode }
-
-  expects :name, :debug_mode
-
-  def call
-    "Hello, #{name}!"
-  end
-end
-```
-
-### Configuration Options
-
-The `profile` method accepts several options:
-
-```ruby
-class MyAction
-  include Axn
-
-  # Profile with custom options
-  profile(
-    if: -> { debug_mode },
-    sample_rate: 0.1,  # Sampling rate (0.0 to 1.0, default: 0.1)
-    output_dir: "tmp/profiles"  # Output directory (default: Rails.root/tmp/profiles or tmp/profiles)
-  )
-
-  def call
-    # Action logic
-  end
-end
-```
-
-**Important**:
-- You can only call `profile` **once per action** - subsequent calls will override the previous one
-- This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze
-
-### Viewing Profiles
-
-Profiles are saved as JSON files that can be viewed in the [Firefox Profiler](https://profiler.firefox.com/):
-
-1. Run your action with profiling enabled
-2. Find the generated profile file in your `profiling_output_dir`
-3. Upload the JSON file to [profiler.firefox.com](https://profiler.firefox.com/)
-4. Analyze the performance data
-
-For more detailed information, see the [Profiling guide](/advanced/profiling).
-
 ## Complete Configuration Example
 
 Here's a complete example showing all available configuration options:
