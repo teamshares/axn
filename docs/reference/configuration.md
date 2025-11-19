@@ -237,7 +237,7 @@ By default, every `action.call` will emit log lines when it is called and after 
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `auto_log` method:
+Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `log_calls` method:
 
 ```ruby
 # Set default for all actions (affects both explicit logging and automatic logging)
@@ -247,20 +247,20 @@ end
 
 # Override for specific actions
 class MyAction
-  auto_log :warn  # Use warn level for this action
+  log_calls :warn  # Use warn level for this action
 end
 
 class SilentAction
-  auto_log false  # Disable automatic logging for this action
+  log_calls false  # Disable automatic logging for this action
 end
 
-# Use default level (no auto_log call needed)
+# Use default level (no log_calls call needed)
 class DefaultAction
   # Uses Axn.config.log_level
 end
 ```
 
-The `auto_log` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
+The `log_calls` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
 
 ## Profiling
 

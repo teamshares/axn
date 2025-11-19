@@ -359,7 +359,7 @@ RSpec.describe Axn do
             expects :password, on: :user_data, sensitive: true
             expects :email, on: :user_data
 
-            auto_log :info
+            log_calls :info
           end
         end
 

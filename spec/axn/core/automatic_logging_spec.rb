@@ -80,10 +80,10 @@ RSpec.describe Axn::Core::AutomaticLogging do
       end
     end
 
-    context "when action uses auto_log with specific level" do
+    context "when action uses log_calls with specific level" do
       let(:action) do
         build_axn do
-          auto_log :warn
+          log_calls :warn
         end
       end
 
@@ -111,10 +111,10 @@ RSpec.describe Axn::Core::AutomaticLogging do
       end
     end
 
-    context "when action disables logging with auto_log false" do
+    context "when action disables logging with log_calls false" do
       let(:action) do
         build_axn do
-          auto_log false
+          log_calls false
         end
       end
 
@@ -125,10 +125,10 @@ RSpec.describe Axn::Core::AutomaticLogging do
       end
     end
 
-    context "when action disables logging with auto_log nil" do
+    context "when action disables logging with log_calls nil" do
       let(:action) do
         build_axn do
-          auto_log nil
+          log_calls nil
         end
       end
 
@@ -139,7 +139,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
       end
     end
 
-    context "when action uses default auto_log level" do
+    context "when action uses default log_calls level" do
       let(:action) { build_axn }
 
       before do
@@ -148,7 +148,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         end
       end
 
-      it "uses the default autolog level" do
+      it "uses the default log_calls level" do
         action.call
 
         expect(log_messages.length).to eq(2)
@@ -172,11 +172,11 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     let(:parent_action_class) do
       build_axn do
-        auto_log :debug
+        log_calls :debug
       end
     end
 
-    it "inherits the auto_log setting" do
+    it "inherits the log_calls setting" do
       # Set up logging mocks for the parent action class
       allow(parent_action_class).to receive(:debug) do |message, **options|
         log_messages << { level: :debug, message:, options: }
@@ -188,10 +188,10 @@ RSpec.describe Axn::Core::AutomaticLogging do
       log_messages.each { |log| expect(log[:level]).to eq(:debug) }
     end
 
-    context "when child overrides auto_log" do
+    context "when child overrides log_calls" do
       let(:child_action) do
         Class.new(parent_action_class) do
-          auto_log :warn
+          log_calls :warn
 
           def call
             # child implementation
