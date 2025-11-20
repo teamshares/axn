@@ -26,6 +26,7 @@ require "axn/core/contract_validation"
 require "axn/core/contract_validation_for_subfields"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
+require "axn/core/default_call"
 
 module Axn
   module Core
@@ -65,6 +66,7 @@ module Axn
 
         include Core::UseStrategy
         include Core::Memoization
+        include Core::DefaultCall
 
         private_class_method :new
       end
@@ -90,9 +92,6 @@ module Axn
     ensure
       _emit_metrics
     end
-
-    # User-defined action logic - override this method in your action classes
-    def call; end
 
     def fail!(message = nil, **exposures)
       expose(**exposures) if exposures.any?

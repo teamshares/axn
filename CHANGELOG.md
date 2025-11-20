@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] Default `call` method automatically exposes declared exposures by calling methods with matching names - you can now omit `call` entirely when you only need to expose values from private methods
 * [BREAKING] Rename `auto_log` -> `log_calls`
 * [FEAT] Add `log_errors`
 * [FEAT] Add `raise_piping_errors_outside_production` config option to raise framework errors in dev/test

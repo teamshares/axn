@@ -49,6 +49,49 @@ To complete execution early with a success result, call `done!` with an optional
 
 If you declare that your action `exposes` anything, you need to actually `expose` it.
 
+### Default call behavior
+
+If you don't define a `call` method, Axn provides a default implementation that automatically exposes all declared exposures by calling methods with matching names. This allows you to simplify actions that only need to compute and expose values:
+
+```ruby
+class CertificatesByDestination
+  include Axn
+  exposes :certs_by_destination, type: Hash
+
+  private
+
+  def certs_by_destination
+    # Your logic here - automatically exposed
+    { "dest1" => "cert1", "dest2" => "cert2" }
+  end
+end
+```
+
+This is equivalent to:
+
+```ruby
+class CertificatesByDestination
+  include Axn
+  exposes :certs_by_destination, type: Hash
+
+  def call
+    expose certs_by_destination: certs_by_destination
+  end
+
+  private
+
+  def certs_by_destination
+    { "dest1" => "cert1", "dest2" => "cert2" }
+  end
+end
+```
+
+**Important notes:**
+- The default `call` requires a method matching each declared exposure (unless a `default` is provided)
+- If a method is missing and no default is provided, the action will fail with a helpful error message
+- You can still override `call` to implement custom logic when needed
+- If a method returns `nil` for an exposed-only field with no default, it's treated as missing (user-defined methods that legitimately return `nil` should use `expose` explicitly or provide a default)
+
 ```ruby
 class Foo
   include Axn
