@@ -53,6 +53,7 @@ A couple notes:
   * `context` will contain the arguments passed to the `action`, _but_ any marked as sensitive (e.g. `expects :foo, sensitive: true`) will be filtered out in the logs.
   * If your handler raises, the failure will _also_ be swallowed and logged
   * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
+  * The `context` hash may contain complex objects (like ActiveRecord models, `ActionController::Parameters`, or `Axn::FormObject` instances) that aren't easily serialized by error tracking systems. See [Formatting Context for Error Tracking Systems](/recipes/formatting-context-for-error-tracking) for a recipe to convert these to readable formats.
 
 ### Adding Additional Context to Exception Logging
 
