@@ -6,6 +6,7 @@
 * [FEAT] Add `log_errors`
 * [FEAT] Add `raise_piping_errors_outside_production` config option to raise framework errors in dev/test
 * [BREAKING] Convert profiling from `profile` method to `use :vernier` strategy - profiling now only captures hooks and user code (excludes framework overhead like tracing, logging, timing)
+* [FEAT] Add `set_logging_context` and `additional_logging_context` hook to inject additional context into exception logging
 
 ## 0.1.0-alpha.3
 * [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration

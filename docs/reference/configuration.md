@@ -54,6 +54,66 @@ A couple notes:
   * If your handler raises, the failure will _also_ be swallowed and logged
   * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
 
+### Adding Additional Context to Exception Logging
+
+When processing records in a loop or performing batch operations, you may want to include additional context (like which record is being processed) in exception logs. You can do this in two ways:
+
+**Option 1: Explicit setter** - Call `set_logging_context` during execution:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  def call
+    pending_records.each do |record|
+      set_logging_context(current_record_id: record.id, batch_index: @index)
+      # ... process record ...
+    end
+  end
+end
+```
+
+**Option 2: Hook method** - Define a private `additional_logging_context` method that returns a hash:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  def call
+    pending_records.each do |record|
+      @current_record = record
+      # ... process record ...
+    end
+  end
+
+  private
+
+  def additional_logging_context
+    return {} unless @current_record
+
+    {
+      current_record_id: @current_record.id,
+      record_type: @current_record.class.name
+    }
+  end
+end
+```
+
+Both approaches can be used together - they will be merged. The additional context is **only** included in exception logging (not in normal pre/post execution logs), and is evaluated lazily (the hook method is only called when an exception occurs).
+
+Action-specific `on_exception` handlers can also access this context by calling `context_for_logging` directly:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  on_exception do |exception:|
+    log "Failed with this extra context: #{context_for_logging}"
+    # ... handle exception with context ...
+  end
+end
+```
+
 ## `raise_piping_errors_outside_production`
 
 By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development and test environments, you can opt-in to have these errors raised instead of logged:
