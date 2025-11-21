@@ -9,13 +9,18 @@ module Axn
           include InstanceMethods
 
           # Single class_attribute - nil means disabled, any level means enabled
-          class_attribute :auto_log_level, default: Axn.config.log_level
+          class_attribute :log_calls_level, default: Axn.config.log_level
+          class_attribute :log_errors_level, default: nil
         end
       end
 
       module ClassMethods
-        def auto_log(level)
-          self.auto_log_level = level.presence
+        def log_calls(level)
+          self.log_calls_level = level.presence
+        end
+
+        def log_errors(level)
+          self.log_errors_level = level.presence
         end
       end
 
@@ -23,14 +28,14 @@ module Axn
         private
 
         def _with_logging
-          _log_before if self.class.auto_log_level
+          _log_before if self.class.log_calls_level
           yield
         ensure
-          _log_after if self.class.auto_log_level
+          _log_after if self.class.log_calls_level || self.class.log_errors_level
         end
 
         def _log_before
-          level = self.class.auto_log_level
+          level = self.class.log_calls_level
           return unless level
 
           self.class.public_send(
@@ -46,7 +51,19 @@ module Axn
         end
 
         def _log_after
-          level = self.class.auto_log_level
+          # Check log_calls_level first (logs all outcomes)
+          if self.class.log_calls_level
+            _log_after_at_level(self.class.log_calls_level)
+            return
+          end
+
+          # Check log_errors_level (only logs when result.ok? is false)
+          return unless self.class.log_errors_level && !result.ok?
+
+          _log_after_at_level(self.class.log_errors_level)
+        end
+
+        def _log_after_at_level(level)
           return unless level
 
           self.class.public_send(

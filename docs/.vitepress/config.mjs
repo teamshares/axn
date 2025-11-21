@@ -48,6 +48,7 @@ export default defineConfig({
           { text: 'Validating User Input', link: '/recipes/validating-user-input' },
           { text: 'Testing Actions', link: '/recipes/testing' },
           { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
+          { text: 'Formatting Context for Error Tracking', link: '/recipes/formatting-context-for-error-tracking' },
         ]
       },
       {

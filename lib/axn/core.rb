@@ -13,7 +13,6 @@ require "axn/core/automatic_logging"
 require "axn/core/use_strategy"
 require "axn/core/timing"
 require "axn/core/tracing"
-require "axn/core/profiling"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
 
@@ -27,6 +26,7 @@ require "axn/core/contract_validation"
 require "axn/core/contract_validation_for_subfields"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
+require "axn/core/default_call"
 
 module Axn
   module Core
@@ -55,7 +55,6 @@ module Axn
         include Core::AutomaticLogging
         include Core::Tracing
         include Core::Timing
-        include Core::Profiling
 
         include Core::Flow
 
@@ -67,6 +66,7 @@ module Axn
 
         include Core::UseStrategy
         include Core::Memoization
+        include Core::DefaultCall
 
         private_class_method :new
       end
@@ -75,15 +75,13 @@ module Axn
     # Main entry point for action execution
     def _run
       _tracking_nesting(self) do
-        _with_profiling do
-          _with_tracing do
-            _with_logging do
-              _with_timing do
-                _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-                  _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-                    _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                      call
-                    end
+        _with_tracing do
+          _with_logging do
+            _with_timing do
+              _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
+                _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
+                  _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
+                    call
                   end
                 end
               end
@@ -94,9 +92,6 @@ module Axn
     ensure
       _emit_metrics
     end
-
-    # User-defined action logic - override this method in your action classes
-    def call; end
 
     def fail!(message = nil, **exposures)
       expose(**exposures) if exposures.any?

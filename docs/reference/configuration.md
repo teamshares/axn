@@ -53,6 +53,82 @@ A couple notes:
   * `context` will contain the arguments passed to the `action`, _but_ any marked as sensitive (e.g. `expects :foo, sensitive: true`) will be filtered out in the logs.
   * If your handler raises, the failure will _also_ be swallowed and logged
   * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
+  * The `context` hash may contain complex objects (like ActiveRecord models, `ActionController::Parameters`, or `Axn::FormObject` instances) that aren't easily serialized by error tracking systems. See [Formatting Context for Error Tracking Systems](/recipes/formatting-context-for-error-tracking) for a recipe to convert these to readable formats.
+
+### Adding Additional Context to Exception Logging
+
+When processing records in a loop or performing batch operations, you may want to include additional context (like which record is being processed) in exception logs. You can do this in two ways:
+
+**Option 1: Explicit setter** - Call `set_logging_context` during execution:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  def call
+    pending_records.each do |record|
+      set_logging_context(current_record_id: record.id, batch_index: @index)
+      # ... process record ...
+    end
+  end
+end
+```
+
+**Option 2: Hook method** - Define a private `additional_logging_context` method that returns a hash:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  def call
+    pending_records.each do |record|
+      @current_record = record
+      # ... process record ...
+    end
+  end
+
+  private
+
+  def additional_logging_context
+    return {} unless @current_record
+
+    {
+      current_record_id: @current_record.id,
+      record_type: @current_record.class.name
+    }
+  end
+end
+```
+
+Both approaches can be used together - they will be merged. The additional context is **only** included in exception logging (not in normal pre/post execution logs), and is evaluated lazily (the hook method is only called when an exception occurs).
+
+Action-specific `on_exception` handlers can also access this context by calling `context_for_logging` directly:
+
+```ruby
+class ProcessPendingRecords
+  include Axn
+
+  on_exception do |exception:|
+    log "Failed with this extra context: #{context_for_logging}"
+    # ... handle exception with context ...
+  end
+end
+```
+
+## `raise_piping_errors_outside_production`
+
+By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development and test environments, you can opt-in to have these errors raised instead of logged:
+
+```ruby
+Axn.configure do |c|
+  c.raise_piping_errors_outside_production = true
+end
+```
+
+**Important notes:**
+- This setting only applies in development and test environments—errors are always swallowed in production for safety
+- When enabled, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged
+- This is useful for debugging issues in user-provided callbacks or framework instrumentation code
 
 ## `wrap_with_trace` and `emit_metrics`
 
@@ -237,7 +313,7 @@ By default, every `action.call` will emit log lines when it is called and after 
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `auto_log` method:
+Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `log_calls` method:
 
 ```ruby
 # Set default for all actions (affects both explicit logging and automatic logging)
@@ -247,79 +323,46 @@ end
 
 # Override for specific actions
 class MyAction
-  auto_log :warn  # Use warn level for this action
+  log_calls :warn  # Use warn level for this action
 end
 
 class SilentAction
-  auto_log false  # Disable automatic logging for this action
+  log_calls false  # Disable automatic logging for this action
 end
 
-# Use default level (no auto_log call needed)
+# Use default level (no log_calls call needed)
 class DefaultAction
   # Uses Axn.config.log_level
 end
 ```
 
-The `auto_log` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
+The `log_calls` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
 
-## Profiling
+### Error-Only Logging
 
-Axn supports performance profiling using [Vernier](https://github.com/Shopify/vernier), a Ruby sampling profiler. Profiling is enabled per-action by calling the `profile` method.
-
-### Usage
-
-Enable profiling on specific actions using the `profile` method:
+For actions where you only want to log when something goes wrong, use `log_errors` instead of `log_calls`. This will:
+- **Not** log before execution
+- **Only** log after execution if `result.ok?` is false (i.e., on failures or exceptions)
 
 ```ruby
 class MyAction
-  include Axn
+  log_calls false   # Disable full logging
+  log_errors :warn  # Only log failures/exceptions at warn level
+end
 
-  # Profile conditionally (only one profile call per action)
-  profile if: -> { debug_mode }
+class SilentOnErrorsAction
+  log_calls false
+  log_errors false  # Disable error logging for this action
+end
 
-  expects :name, :debug_mode
-
-  def call
-    "Hello, #{name}!"
-  end
+# Use default level
+class DefaultErrorLoggingAction
+  log_calls false
+  log_errors Axn.config.log_level  # Uses default log level
 end
 ```
 
-### Configuration Options
-
-The `profile` method accepts several options:
-
-```ruby
-class MyAction
-  include Axn
-
-  # Profile with custom options
-  profile(
-    if: -> { debug_mode },
-    sample_rate: 0.1,  # Sampling rate (0.0 to 1.0, default: 0.1)
-    output_dir: "tmp/profiles"  # Output directory (default: Rails.root/tmp/profiles or tmp/profiles)
-  )
-
-  def call
-    # Action logic
-  end
-end
-```
-
-**Important**:
-- You can only call `profile` **once per action** - subsequent calls will override the previous one
-- This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze
-
-### Viewing Profiles
-
-Profiles are saved as JSON files that can be viewed in the [Firefox Profiler](https://profiler.firefox.com/):
-
-1. Run your action with profiling enabled
-2. Find the generated profile file in your `profiling_output_dir`
-3. Upload the JSON file to [profiler.firefox.com](https://profiler.firefox.com/)
-4. Analyze the performance data
-
-For more detailed information, see the [Profiling guide](/advanced/profiling).
+The `log_errors` method supports inheritance, just like `log_calls`. If both `log_calls` and `log_errors` are set, `log_calls` takes precedence (it will log before and after for all outcomes). To use `log_errors` exclusively, you must first disable `log_calls` with `log_calls false`.
 
 ## Complete Configuration Example
 

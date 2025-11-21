@@ -32,11 +32,11 @@ bundle install
 
 ### 2. Enable Profiling
 
-No global configuration is needed! Simply call `profile` on the actions you want to profile.
+No global configuration is needed! Simply use the `:vernier` strategy on the actions you want to profile.
 
 ## Basic Usage
 
-Profiling is enabled per-action by calling the `profile` method. You can only call `profile` **once per action** - subsequent calls will override the previous one. This prevents accidental profiling of all actions and ensures you only profile what you intend to analyze.
+Profiling is enabled per-action by using the `:vernier` strategy. This follows the same pattern as other Axn strategies like `:transaction` and `:form`.
 
 ### Simple Profiling
 
@@ -47,7 +47,7 @@ class UserCreation
   include Axn
 
   # Always profile this action
-  profile
+  use :vernier
 
   expects :user_params
 
@@ -72,8 +72,8 @@ Profile only under specific conditions:
 class DataProcessing
   include Axn
 
-  # Profile only when processing large datasets (only one profile call per action)
-  profile if: -> { record_count > 1000 }
+  # Profile only when processing large datasets
+  use :vernier, if: -> { record_count > 1000 }
 
   expects :records, :record_count
 
@@ -89,8 +89,8 @@ end
 class DataProcessing
   include Axn
 
-  # Profile using a method (only one profile call per action)
-  profile if: :should_profile?
+  # Profile using a method
+  use :vernier, if: :should_profile?
 
   expects :records, :record_count, :debug_mode, type: :boolean, default: false
 
@@ -116,7 +116,7 @@ class DevelopmentAction
   include Axn
 
   # High sampling rate for development (more detailed data)
-  profile(sample_rate: 0.5) if Rails.env.development?
+  use :vernier, sample_rate: 0.5 if Rails.env.development?
 
   def call
     # Action logic
@@ -127,7 +127,7 @@ class ProductionAction
   include Axn
 
   # Low sampling rate for production (minimal overhead)
-  profile(sample_rate: 0.01) if Rails.env.production?
+  use :vernier, sample_rate: 0.01 if Rails.env.production?
 
   def call
     # Action logic
@@ -144,7 +144,7 @@ class MyAction
   include Axn
 
   # Custom output directory
-  profile(output_dir: Rails.root.join("tmp", "profiles", Rails.env))
+  use :vernier, output_dir: Rails.root.join("tmp", "profiles", Rails.env)
 
   def call
     # Action logic
@@ -161,7 +161,7 @@ class ComplexAction
   include Axn
 
   # Profile when debug mode is enabled OR when processing admin users
-  profile if: -> { debug_mode || user.admin? }
+  use :vernier, if: -> { debug_mode || user.admin? }
 
   expects :user, :debug_mode, type: :boolean, default: false
 
@@ -219,10 +219,10 @@ Avoid profiling all actions in production:
 
 ```ruby
 # Good: Conditional profiling
-profile if: -> { Rails.env.development? || debug_mode }
+use :vernier, if: -> { Rails.env.development? || debug_mode }
 
 # Avoid: Always profiling in production
-profile  # This can impact performance
+use :vernier  # This can impact performance
 ```
 
 ### 2. Appropriate Sampling Rates
@@ -234,13 +234,13 @@ class MyAction
   include Axn
 
   # High detail for debugging
-  profile(sample_rate: 0.5) if Rails.env.development?
+  use :vernier, sample_rate: 0.5 if Rails.env.development?
 
   # Moderate sampling for staging
-  profile(sample_rate: 0.1) if Rails.env.staging?
+  use :vernier, sample_rate: 0.1 if Rails.env.staging?
 
   # Minimal overhead for production
-  profile(sample_rate: 0.01) if Rails.env.production?
+  use :vernier, sample_rate: 0.01 if Rails.env.production?
 
   def call
     # Action logic
@@ -257,7 +257,7 @@ class OrderProcessing
   include Axn
 
   # Profile only expensive operations
-  profile if: -> { order.total > 1000 }
+  use :vernier, if: -> { order.total > 1000 }
 
   expects :order
 
@@ -305,7 +305,7 @@ Make sure to:
 
 If profile files aren't being generated:
 
-1. Verify your action has `profile` enabled
+1. Verify your action has `use :vernier` enabled
 2. Ensure profiling conditions are met
 3. Check the output directory exists and is writable
 
@@ -339,7 +339,7 @@ class MyAction
   include Axn
 
   # Profiling with custom options
-  profile(sample_rate: 0.1)
+  use :vernier, sample_rate: 0.1
 
   def call
     # Action logic

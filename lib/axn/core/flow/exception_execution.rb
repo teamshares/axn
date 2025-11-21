@@ -10,6 +10,7 @@ module Axn
 
             def _trigger_on_exception(exception)
               # Call any handlers registered on *this specific action* class
+              # (handlers can call context_for_logging themselves if needed)
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
               # Call any global handlers

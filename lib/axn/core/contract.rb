@@ -169,8 +169,29 @@ module Axn
           end
         end
 
+        # Set additional context to be included in exception logging
+        # This context is only used when exceptions occur, not in normal pre/post logging
+        def set_logging_context(**kwargs)
+          @__additional_logging_context ||= {}
+          @__additional_logging_context.merge!(kwargs)
+        end
+
+        # Clear any previously set additional logging context
+        def clear_logging_context
+          @__additional_logging_context = nil
+        end
+
         def context_for_logging(direction = nil)
-          inspection_filter.filter(@__context.__combined_data.slice(*_declared_fields(direction)))
+          base_context = inspection_filter.filter(@__context.__combined_data.slice(*_declared_fields(direction)))
+
+          # Only merge additional context for exception logging (direction is nil)
+          # Pre/post logging don't need additional context since they only log inputs/outputs
+          return base_context if direction
+
+          # Merge both explicit setter context and hook method context (if both exist)
+          explicit_context = @__additional_logging_context || {}
+          hook_context = respond_to?(:additional_logging_context, true) ? additional_logging_context : {}
+          base_context.merge(explicit_context).merge(hook_context)
         end
 
         private

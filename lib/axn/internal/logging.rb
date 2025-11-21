@@ -4,6 +4,9 @@ module Axn
   module Internal
     module Logging
       def self.piping_error(desc, exception:, action: nil)
+        # If raise_piping_errors_outside_production is enabled and we're in development or test, raise instead of log
+        raise exception if Axn.config.raise_piping_errors_outside_production && (Axn.config.env.development? || Axn.config.env.test?)
+
         # Extract just filename/line number from backtrace
         src = exception.backtrace.first.split.first.split("/").last.split(":")[0, 2].join(":")
 

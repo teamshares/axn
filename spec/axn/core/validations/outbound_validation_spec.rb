@@ -202,5 +202,95 @@ RSpec.describe Axn do
         expect(subject.qux).to eq 99
       end
     end
+
+    describe "default call method" do
+      context "with methods matching exposed fields" do
+        let(:action) do
+          build_axn do
+            exposes :certs_by_destination, type: Hash
+
+            private
+
+            def certs_by_destination
+              { "dest1" => "cert1", "dest2" => "cert2" }
+            end
+          end
+        end
+
+        subject { action.call }
+
+        it "automatically exposes declared exposures by calling matching methods" do
+          is_expected.to be_ok
+          expect(subject.certs_by_destination).to eq({ "dest1" => "cert1", "dest2" => "cert2" })
+        end
+      end
+
+      context "with multiple exposed fields" do
+        let(:action) do
+          build_axn do
+            exposes :foo, type: String
+            exposes :bar, type: Numeric
+
+            private
+
+            def foo = "hello"
+            def bar = 42
+          end
+        end
+
+        subject { action.call }
+
+        it "exposes all declared fields" do
+          is_expected.to be_ok
+          expect(subject.foo).to eq "hello"
+          expect(subject.bar).to eq 42
+        end
+      end
+
+      context "with missing method and no default" do
+        let(:action) do
+          build_axn do
+            exposes :missing_field
+          end
+        end
+
+        subject { action.call }
+
+        it "fails with outbound validation error" do
+          is_expected.not_to be_ok
+          expect(subject.exception).to be_a(Axn::OutboundValidationError)
+          # The default call doesn't expose the field, so outbound validation catches it
+        end
+      end
+
+      context "with missing method but with default" do
+        let(:action) do
+          build_axn do
+            exposes :foo, default: "default_value"
+          end
+        end
+
+        subject { action.call }
+
+        it "allows default to be applied" do
+          is_expected.to be_ok
+          expect(subject.foo).to eq "default_value"
+        end
+      end
+
+      context "with no exposed fields" do
+        let(:action) do
+          build_axn do
+            expects :input
+          end
+        end
+
+        subject { action.call(input: "test") }
+
+        it "does nothing" do
+          is_expected.to be_ok
+        end
+      end
+    end
   end
 end
