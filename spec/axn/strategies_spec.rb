@@ -7,7 +7,7 @@ RSpec.describe Axn::Strategies do
 
   # Registry behavior shared examples
   it_behaves_like "a registry" do
-    let(:expected_built_in_keys) { %i[form transaction vernier] }
+    let(:expected_built_in_keys) { %i[form transaction] }
     let(:expected_find_key) { :transaction }
     let(:expected_item_type) { "Strategy" }
     let(:expected_not_found_error_class) { Axn::StrategyNotFound }
@@ -19,7 +19,6 @@ RSpec.describe Axn::Strategies do
     it "loads all strategy files from the strategies directory" do
       expect(described_class.built_in[:transaction]).to be(Axn::Strategies::Transaction)
       expect(described_class.built_in[:form]).to be(Axn::Strategies::Form)
-      expect(described_class.built_in[:vernier]).to be(Axn::Strategies::Vernier)
     end
   end
 

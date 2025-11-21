@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
-Axn::Strategies.built_in
+RSpec.describe Axn::Extras::Strategies::Vernier do
+  before do
+    Axn::Strategies.clear!
+    Axn::Strategies.register(:vernier, described_class)
+  end
 
-RSpec.describe Axn::Strategies::Vernier do
   let(:action_class) do
     build_axn do
       use :vernier
@@ -17,13 +20,13 @@ RSpec.describe Axn::Strategies::Vernier do
 
   describe ".configure" do
     it "returns a module" do
-      strategy = Axn::Strategies::Vernier.configure
+      strategy = Axn::Extras::Strategies::Vernier.configure
       expect(strategy).to be_a(Module)
     end
 
     it "accepts if condition" do
       condition = -> { debug_mode }
-      strategy = Axn::Strategies::Vernier.configure(if: condition)
+      strategy = Axn::Extras::Strategies::Vernier.configure(if: condition)
 
       action_class = build_axn do
         include strategy
@@ -39,7 +42,7 @@ RSpec.describe Axn::Strategies::Vernier do
     end
 
     it "accepts sample_rate" do
-      strategy = Axn::Strategies::Vernier.configure(sample_rate: 0.5)
+      strategy = Axn::Extras::Strategies::Vernier.configure(sample_rate: 0.5)
 
       action_class = build_axn do
         include strategy
@@ -55,7 +58,7 @@ RSpec.describe Axn::Strategies::Vernier do
     end
 
     it "accepts output_dir" do
-      strategy = Axn::Strategies::Vernier.configure(output_dir: "custom/profiles")
+      strategy = Axn::Extras::Strategies::Vernier.configure(output_dir: "custom/profiles")
 
       action_class = build_axn do
         include strategy
@@ -71,7 +74,7 @@ RSpec.describe Axn::Strategies::Vernier do
     end
 
     it "uses default sample_rate when not provided" do
-      strategy = Axn::Strategies::Vernier.configure
+      strategy = Axn::Extras::Strategies::Vernier.configure
 
       action_class = build_axn do
         include strategy
@@ -87,7 +90,7 @@ RSpec.describe Axn::Strategies::Vernier do
     end
 
     it "uses default output_dir when not provided" do
-      strategy = Axn::Strategies::Vernier.configure
+      strategy = Axn::Extras::Strategies::Vernier.configure
 
       action_class = build_axn do
         include strategy
