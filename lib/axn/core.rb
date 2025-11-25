@@ -89,8 +89,6 @@ module Axn
           end
         end
       end
-    ensure
-      _emit_metrics
     end
 
     def fail!(message = nil, **exposures)
@@ -107,17 +105,6 @@ module Axn
 
     def initialize(**)
       @__context = Axn::Context.new(**)
-    end
-
-    def _emit_metrics
-      return unless Axn.config.emit_metrics
-
-      Axn.config.emit_metrics.call(
-        self.class.name || "AnonymousClass",
-        result,
-      )
-    rescue StandardError => e
-      Axn::Internal::Logging.piping_error("running metrics hook", action: self, exception: e)
     end
   end
 end
