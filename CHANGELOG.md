@@ -8,6 +8,8 @@
 * [FEAT] Add `raise_piping_errors_outside_production` config option to raise framework errors in dev/test
 * [BREAKING] Convert profiling from `profile` method to `use :vernier` strategy - profiling now only captures hooks and user code (excludes framework overhead like tracing, logging, timing)
 * [FEAT] Add `set_logging_context` and `additional_logging_context` hook to inject additional context into exception logging
+* [FEAT] Added ActiveSupport::Notification emission for `axn.call_async` (separate from `axn.call`) - emits notification when async jobs are enqueued with payload including resource, action_class, kwargs, and adapter name
+* [INTERNAL] Refactored async adapters to use template method pattern - adapters now implement `_enqueue_async_job` hook instead of overriding `call_async`, eliminating duplication of notification and logging logic
 
 ## 0.1.0-alpha.3
 * [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration
