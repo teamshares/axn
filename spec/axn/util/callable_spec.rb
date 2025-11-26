@@ -11,9 +11,9 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with only the expected keyword arguments" do
         result = double("result")
-        kwargs = { resource: "Action", result: result, extra: "ignored" }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
-        expect(returned).to eq({ resource: "Action", result: result })
+        kwargs = { resource: "Action", result:, extra: "ignored" }
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
+        expect(returned).to eq({ resource: "Action", result: })
         expect(returned).not_to have_key(:extra)
       end
     end
@@ -27,7 +27,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with only resource:" do
         kwargs = { resource: "Action", result: double("result") }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
         expect(returned).to eq({ resource: "Action" })
         expect(returned).not_to have_key(:result)
       end
@@ -42,9 +42,9 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with only result:" do
         result = double("result")
-        kwargs = { resource: "Action", result: result }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
-        expect(returned).to eq({ result: result })
+        kwargs = { resource: "Action", result: }
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
+        expect(returned).to eq({ result: })
         expect(returned).not_to have_key(:resource)
       end
     end
@@ -58,7 +58,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with all provided keyword arguments" do
         kwargs = { resource: "Action", result: double("result"), extra: "value" }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
         expect(returned).to eq(kwargs)
       end
     end
@@ -72,9 +72,9 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with both required and optional keyword arguments" do
         result = double("result")
-        kwargs = { resource: "Action", result: result, extra: "ignored" }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
-        expect(returned).to eq({ resource: "Action", result: result })
+        kwargs = { resource: "Action", result:, extra: "ignored" }
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
+        expect(returned).to eq({ resource: "Action", result: })
         expect(returned).not_to have_key(:extra)
       end
     end
@@ -88,7 +88,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with all provided keyword arguments" do
         kwargs = { resource: "Action", result: double("result") }
-        described_class.call_with_desired_shape(callable, kwargs: kwargs)
+        described_class.call_with_desired_shape(callable, kwargs:)
         expect(callable).to have_received(:call).with(**kwargs)
       end
     end
@@ -102,7 +102,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls without keyword arguments" do
         kwargs = { resource: "Action", result: double("result") }
-        returned = described_class.call_with_desired_shape(callable, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, kwargs:)
         expect(returned).to eq({ called: true })
       end
     end
@@ -117,7 +117,7 @@ RSpec.describe Axn::Util::Callable do
       it "calls with only the expected number of positional args" do
         args = [1, 2, 3, 4]
         kwargs = { c: 5, d: 6 }
-        returned = described_class.call_with_desired_shape(callable, args: args, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, args:, kwargs:)
         expect(returned).to eq({ a: 1, b: 2, c: 5 })
       end
     end
@@ -132,7 +132,7 @@ RSpec.describe Axn::Util::Callable do
       it "calls with up to required + optional positional args" do
         args = [1, 2, 3, 4]
         kwargs = { c: 5 }
-        returned = described_class.call_with_desired_shape(callable, args: args, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, args:, kwargs:)
         expect(returned).to eq({ a: 1, b: 2, c: 5 })
       end
     end
@@ -147,7 +147,7 @@ RSpec.describe Axn::Util::Callable do
       it "calls with all provided positional args" do
         args = [1, 2, 3, 4]
         kwargs = { c: 5 }
-        returned = described_class.call_with_desired_shape(callable, args: args, kwargs: kwargs)
+        returned = described_class.call_with_desired_shape(callable, args:, kwargs:)
         expect(returned).to eq({ args: [1, 2, 3, 4], c: 5 })
       end
     end
@@ -161,7 +161,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "calls with only positional args, ignoring extra" do
         args = [1, 2, 3, 4]
-        returned = described_class.call_with_desired_shape(callable, args: args)
+        returned = described_class.call_with_desired_shape(callable, args:)
         expect(returned).to eq({ a: 1, b: 2 })
       end
     end
@@ -173,9 +173,9 @@ RSpec.describe Axn::Util::Callable do
 
       it "returns filtered args and kwargs without calling" do
         kwargs = { resource: "Action", result: double("result"), extra: "ignored" }
-        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, kwargs: kwargs)
+        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, kwargs:)
         expect(filtered_args).to eq([])
-        expect(filtered_kwargs.keys).to eq([:resource, :result])
+        expect(filtered_kwargs.keys).to eq(%i[resource result])
         expect(filtered_kwargs).not_to have_key(:extra)
       end
     end
@@ -186,7 +186,7 @@ RSpec.describe Axn::Util::Callable do
       it "returns filtered args and kwargs" do
         args = [1, 2, 3, 4]
         kwargs = { c: 5, d: 6 }
-        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, args: args, kwargs: kwargs)
+        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, args:, kwargs:)
         expect(filtered_args).to eq([1, 2])
         expect(filtered_kwargs).to eq({ c: 5 })
       end
@@ -197,7 +197,7 @@ RSpec.describe Axn::Util::Callable do
 
       it "returns all provided kwargs" do
         kwargs = { resource: "Action", result: double("result"), extra: "value" }
-        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, kwargs: kwargs)
+        _, filtered_kwargs = described_class.only_requested_params(callable, kwargs:)
         expect(filtered_kwargs).to eq(kwargs)
       end
     end
@@ -221,7 +221,7 @@ RSpec.describe Axn::Util::Callable do
       it "returns exception as keyword argument" do
         filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
         expect(filtered_args).to eq([])
-        expect(filtered_kwargs).to eq({ exception: exception })
+        expect(filtered_kwargs).to eq({ exception: })
       end
     end
 
@@ -243,7 +243,7 @@ RSpec.describe Axn::Util::Callable do
       it "returns exception as keyword argument only (no positional args accepted)" do
         filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
         expect(filtered_args).to eq([])
-        expect(filtered_kwargs).to eq({ exception: exception })
+        expect(filtered_kwargs).to eq({ exception: })
       end
     end
 
@@ -254,12 +254,12 @@ RSpec.describe Axn::Util::Callable do
       it "returns exception as both positional and keyword" do
         filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
         expect(filtered_args).to eq([exception])
-        expect(filtered_kwargs).to eq({ exception: exception })
+        expect(filtered_kwargs).to eq({ exception: })
       end
     end
 
     context "when callable accepts no exception argument" do
-      let(:callable) { proc { } }
+      let(:callable) { proc {} }
       let(:exception) { RuntimeError.new("test error") }
 
       it "returns empty args and kwargs" do
@@ -270,4 +270,3 @@ RSpec.describe Axn::Util::Callable do
     end
   end
 end
-

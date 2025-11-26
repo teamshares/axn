@@ -30,7 +30,7 @@ module Axn
       #   # Calls proc with all kwargs
       # Calls a callable with only the positional and keyword arguments it expects.
       def call_with_desired_shape(callable, args: [], kwargs: {})
-        filtered_args, filtered_kwargs = only_requested_params(callable, args: args, kwargs: kwargs)
+        filtered_args, filtered_kwargs = only_requested_params(callable, args:, kwargs:)
         callable.call(*filtered_args, **filtered_kwargs)
       end
 
@@ -84,8 +84,8 @@ module Axn
         return [[], {}] unless exception
 
         args = [exception]
-        kwargs = { exception: exception }
-        only_requested_params(callable, args: args, kwargs: kwargs)
+        kwargs = { exception: }
+        only_requested_params(callable, args:, kwargs:)
       end
 
       private
@@ -118,4 +118,3 @@ module Axn
     end
   end
 end
-

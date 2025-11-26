@@ -164,7 +164,7 @@ RSpec.describe "Axn::Core::Tracing emit_metrics" do
     it "receives both resource: and result: keyword arguments" do
       result = action.call
       expect(received_args.length).to eq(1)
-      expect(received_args.first.keys.sort).to eq([:resource, :result])
+      expect(received_args.first.keys.sort).to eq(%i[resource result])
       expect(received_args.first[:resource]).to eq("AnonymousClass")
       expect(received_args.first[:result]).to eq(result)
     end
