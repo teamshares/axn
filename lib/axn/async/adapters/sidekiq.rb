@@ -22,7 +22,24 @@ module Axn
         end
 
         class_methods do
-          def call_async(**kwargs)
+          # Public method called from instance method perform to convert GlobalID params back to objects
+          def _params_from_global_id(params)
+            return {} if params.nil?
+
+            params.each_with_object({}) do |(key, value), hash|
+              if key.end_with?("_as_global_id")
+                hash[key.delete_suffix("_as_global_id")] = GlobalID::Locator.locate(value)
+              else
+                hash[key] = value
+              end
+            end.symbolize_keys
+          end
+
+          private
+
+          # Implements adapter-specific enqueueing logic for Sidekiq.
+          # Note: Adapters must implement _enqueue_async_job and must NOT override call_async.
+          def _enqueue_async_job(kwargs)
             job_kwargs = _params_to_global_id(kwargs)
 
             if kwargs[:_async].is_a?(Hash)
@@ -47,18 +64,6 @@ module Axn
                 hash[key] = value
               end
             end
-          end
-
-          def _params_from_global_id(params)
-            return {} if params.nil?
-
-            params.each_with_object({}) do |(key, value), hash|
-              if key.end_with?("_as_global_id")
-                hash[key.delete_suffix("_as_global_id")] = GlobalID::Locator.locate(value)
-              else
-                hash[key] = value
-              end
-            end.symbolize_keys
           end
         end
 

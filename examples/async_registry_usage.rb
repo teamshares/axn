@@ -18,6 +18,8 @@ class BuiltInAction
 end
 
 # Example 2: Registering a custom async adapter
+# Note: Adapters must implement _enqueue_async_job and must NOT override call_async.
+# The base call_async handles notifications, logging, and delegates to _enqueue_async_job.
 module CustomAsyncAdapter
   extend ActiveSupport::Concern
 
@@ -26,12 +28,16 @@ module CustomAsyncAdapter
   end
 
   class_methods do
-    def call_async(context = {})
-      puts "Custom async execution: #{context.inspect}"
+    private
+
+    # Implement adapter-specific enqueueing logic here.
+    # The base call_async will handle notifications and logging before calling this.
+    def _enqueue_async_job(kwargs)
+      puts "Custom async execution: #{kwargs.inspect}"
       # Simulate async execution
       Thread.new do
         sleep(0.1) # Simulate background processing
-        puts "Background task completed: #{call(**context)}"
+        puts "Background task completed: #{call(**kwargs)}"
       end
     end
   end

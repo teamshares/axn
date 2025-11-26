@@ -17,22 +17,6 @@ module Axn
             Axn::Internal::Logging.piping_error(operation, action:, exception: e)
           end
 
-          # Shared introspection helpers
-          def accepts_exception_keyword?(callable_or_method)
-            return false unless callable_or_method.respond_to?(:parameters)
-
-            params = callable_or_method.parameters
-            params.any? { |type, name| %i[keyreq key].include?(type) && name == :exception } ||
-              params.any? { |type, _| type == :keyrest }
-          end
-
-          def accepts_positional_exception?(callable_or_method)
-            return false unless callable_or_method.respond_to?(:arity)
-
-            arity = callable_or_method.arity
-            arity == 1 || arity.negative?
-          end
-
           private
 
           def symbol?(value) = value.is_a?(Symbol)
@@ -46,23 +30,13 @@ module Axn
             end
 
             method = action.method(symbol)
-            if exception && accepts_exception_keyword?(method)
-              action.send(symbol, exception:)
-            elsif exception && accepts_positional_exception?(method)
-              action.send(symbol, exception)
-            else
-              action.send(symbol)
-            end
+            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(method, exception)
+            action.send(symbol, *filtered_args, **filtered_kwargs)
           end
 
           def call_callable_handler(action:, callable:, exception: nil)
-            if exception && accepts_exception_keyword?(callable)
-              action.instance_exec(exception:, &callable)
-            elsif exception && accepts_positional_exception?(callable)
-              action.instance_exec(exception, &callable)
-            else
-              action.instance_exec(&callable)
-            end
+            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(callable, exception)
+            action.instance_exec(*filtered_args, **filtered_kwargs, &callable)
           end
 
           def literal_value(value) = value

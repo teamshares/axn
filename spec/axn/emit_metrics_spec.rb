@@ -1,35 +1,30 @@
 # frozen_string_literal: true
 
-RSpec.describe "Action emit_metrics hook" do
-  let(:last_metrics_call) { nil }
-  let(:emit_metrics) do
-    proc do |resource, result|
-      @last_metrics_call = { resource:, result: }
-    end
-  end
+RSpec.describe "Action axn.call notification metrics" do
+  let(:notifications) { [] }
 
   before do
-    Axn.configure do |c|
-      c.emit_metrics = emit_metrics
+    ActiveSupport::Notifications.subscribe("axn.call") do |name, start, finish, id, payload|
+      notifications << { name:, start:, finish:, id:, payload: }
     end
   end
 
   after do
-    Axn.configure do |c|
-      c.emit_metrics = nil
-    end
+    ActiveSupport::Notifications.unsubscribe("axn.call")
   end
 
-  describe "emit_metrics hook execution" do
+  describe "axn.call notification emission for metrics" do
     context "when action succeeds" do
       let(:action) { build_axn }
 
-      it "calls emit_metrics hook with success outcome and correct resource" do
-        action.call
-        expect(@last_metrics_call[:result].outcome.success?).to be true
-        expect(@last_metrics_call[:resource]).to eq("AnonymousClass")
-        expect(@last_metrics_call[:result].elapsed_time).to be_a(Float)
-        expect(@last_metrics_call[:result].elapsed_time).to be >= 0
+      it "emits notification with success outcome and correct resource" do
+        result = action.call
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.success?).to be true
+        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:action].result.elapsed_time).to be_a(Float)
+        expect(notifications.first[:payload][:action].result.elapsed_time).to be >= 0
+        expect(notifications.first[:payload][:action].result).to eq(result)
       end
     end
 
@@ -42,14 +37,16 @@ RSpec.describe "Action emit_metrics hook" do
         end
       end
 
-      it "calls emit_metrics hook with failure outcome" do
+      it "emits notification with failure outcome" do
         action.call
-        expect(@last_metrics_call[:result].outcome.failure?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.failure?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("failure")
       end
 
-      it "calls emit_metrics hook with failure outcome when using call!" do
+      it "emits notification with failure outcome when using call!" do
         expect { action.call! }.to raise_error(Axn::Failure)
-        expect(@last_metrics_call[:result].outcome.failure?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.failure?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("failure")
       end
     end
 
@@ -62,14 +59,16 @@ RSpec.describe "Action emit_metrics hook" do
         end
       end
 
-      it "calls emit_metrics hook with exception outcome" do
+      it "emits notification with exception outcome" do
         action.call
-        expect(@last_metrics_call[:result].outcome.exception?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.exception?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
       end
 
-      it "calls emit_metrics hook with exception outcome when using call!" do
+      it "emits notification with exception outcome when using call!" do
         expect { action.call! }.to raise_error(RuntimeError)
-        expect(@last_metrics_call[:result].outcome.exception?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.exception?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
       end
     end
 
@@ -84,10 +83,11 @@ RSpec.describe "Action emit_metrics hook" do
         end
       end
 
-      it "calls emit_metrics hook with success outcome" do
+      it "emits notification with success outcome" do
         result = action.call!(required_field: "test")
         expect(result).to be_ok
-        expect(@last_metrics_call[:result].outcome.success?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.success?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("success")
       end
     end
 
@@ -102,23 +102,10 @@ RSpec.describe "Action emit_metrics hook" do
         end
       end
 
-      it "calls emit_metrics hook with exception outcome" do
+      it "emits notification with exception outcome" do
         expect { action.call! }.to raise_error(Axn::InboundValidationError)
-        expect(@last_metrics_call[:result].outcome.exception?).to be true
-      end
-    end
-
-    context "when no metrics hook is configured" do
-      before do
-        Axn.configure do |c|
-          c.emit_metrics = nil
-        end
-      end
-
-      it "does not call emit_metrics hook" do
-        action = build_axn
-        action.call
-        expect(@last_metrics_call).to be_nil
+        expect(notifications.first[:payload][:action].result.outcome.exception?).to be true
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
       end
     end
   end

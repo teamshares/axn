@@ -130,37 +130,58 @@ end
 - When enabled, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged
 - This is useful for debugging issues in user-provided callbacks or framework instrumentation code
 
-## `wrap_with_trace` and `emit_metrics`
+## OpenTelemetry Tracing
 
-If you're using an APM provider, observability can be greatly enhanced by adding automatic _tracing_ of Axn calls and/or emitting count metrics after each call completes.
+Axn automatically creates OpenTelemetry spans for all action executions when OpenTelemetry is available. The framework creates a span named `"axn.call"` with the following attributes:
 
-The framework provides two distinct hooks for observability:
+- `axn.resource`: The action class name (e.g., `"UserManagement::CreateUser"`)
+- `axn.outcome`: The execution outcome (`"success"`, `"failure"`, or `"exception"`)
 
-- **`wrap_with_trace`**: An around hook that wraps the entire action execution. You MUST call the provided block to execute the action.
-- **`emit_metrics`**: A post-execution hook that receives the action result. Do NOT call any blocks.
+When an action fails or raises an exception, the span is marked as an error with the exception details recorded.
 
-For example, to wire up Datadog:
+No configuration is required—if OpenTelemetry is loaded in your application, Axn will automatically instrument all actions. To send traces to an APM provider like Datadog, configure OpenTelemetry with the appropriate exporter.
+
+## `emit_metrics`
+
+If you're using a metrics provider, you can emit custom metrics after each action completes using the `emit_metrics` hook. This is a post-execution hook that receives the action result—do NOT call any blocks.
+
+The hook only receives the keyword arguments it explicitly expects (e.g., if you only define `resource:`, you won't receive `result:`).
+
+For example, to wire up Datadog metrics:
 
 ```ruby
   Axn.configure do |c|
-    c.wrap_with_trace = proc do |resource, &action|
-      Datadog::Tracing.trace("Action", resource:) do
-        action.call
-      end
-    end
-
-    c.emit_metrics = proc do |resource, result|
+    c.emit_metrics = proc do |resource:, result:|
       TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s, resource: })
       TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
     end
   end
 ```
 
+You can also define `emit_metrics` to only receive the arguments you need:
+
+```ruby
+  # Only receive resource (if you don't need the result)
+  c.emit_metrics = proc do |resource:|
+    TS::Metrics.increment("action.#{resource.underscore}")
+  end
+
+  # Only receive result (if you don't need the resource)
+  c.emit_metrics = proc do |result:|
+    TS::Metrics.increment("action.call", tags: { outcome: result.outcome.to_s })
+  end
+
+  # Accept any keyword arguments (receives both)
+  c.emit_metrics = proc do |**kwargs|
+    # kwargs will contain both :resource and :result
+  end
+```
+
+**Important:** When using `result:` in your `emit_metrics` hook, be careful about cardinality. Avoid creating metrics with unbounded tag values from the result (e.g., user IDs, email addresses, or other high-cardinality data). Instead, use bounded values like `result.outcome.to_s` or aggregate data. High-cardinality metrics can cause performance issues and increased costs with metrics providers.
+
 A couple notes:
 
-  * `Datadog::Tracing` is provided by [the datadog gem](https://rubygems.org/gems/datadog)
   * `TS::Metrics` is a custom implementation to set a Datadog count metric, but the relevant part to note is that the result object provides access to the outcome (`result.outcome.success?`, `result.outcome.failure?`, `result.outcome.exception?`) and elapsed time of the action.
-  * The `wrap_with_trace` hook is an around hook - you must call the provided block to execute the action
   * The `emit_metrics` hook is called after execution with the result - do not call any blocks
 
 ## `logger`
@@ -382,13 +403,9 @@ Axn.configure do |c|
   end
 
   # Observability
-  c.wrap_with_trace = proc do |resource, &action|
-    Datadog::Tracing.trace("Action", resource:) do
-      action.call
-    end
-  end
+  # OpenTelemetry tracing is automatic when OpenTelemetry is available
 
-  c.emit_metrics = proc do |resource, result|
+  c.emit_metrics = proc do |resource:, result:|
     Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
   end

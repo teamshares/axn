@@ -70,6 +70,30 @@ module Axn
           end
         end
 
+        def inspection_filter
+          @inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
+        end
+
+        def sensitive_fields
+          (internal_field_configs + external_field_configs + subfield_configs).select(&:sensitive).map(&:field)
+        end
+
+        def _declared_fields(direction)
+          raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
+
+          configs = case direction
+                    when :inbound then internal_field_configs
+                    when :outbound then external_field_configs
+                    else (internal_field_configs + external_field_configs)
+                    end
+
+          configs.map(&:field)
+        end
+
+        def context_for_logging(data:, direction: nil)
+          inspection_filter.filter(data.slice(*_declared_fields(direction)))
+        end
+
         private
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -182,7 +206,10 @@ module Axn
         end
 
         def context_for_logging(direction = nil)
-          base_context = inspection_filter.filter(@__context.__combined_data.slice(*_declared_fields(direction)))
+          base_context = self.class.context_for_logging(
+            data: @__context.__combined_data,
+            direction:,
+          )
 
           # Only merge additional context for exception logging (direction is nil)
           # Pre/post logging don't need additional context since they only log inputs/outputs
@@ -215,29 +242,9 @@ module Axn
           raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
           klass = direction == :inbound ? Axn::InternalContext : Axn::Result
-          implicitly_allowed_fields = direction == :inbound ? _declared_fields(:outbound) : []
+          implicitly_allowed_fields = direction == :inbound ? self.class._declared_fields(:outbound) : []
 
-          klass.new(action: self, context: @__context, declared_fields: _declared_fields(direction), implicitly_allowed_fields:)
-        end
-
-        def inspection_filter
-          @inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
-        end
-
-        def sensitive_fields
-          (internal_field_configs + external_field_configs + subfield_configs).select(&:sensitive).map(&:field)
-        end
-
-        def _declared_fields(direction)
-          raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
-
-          configs = case direction
-                    when :inbound then internal_field_configs
-                    when :outbound then external_field_configs
-                    else (internal_field_configs + external_field_configs)
-                    end
-
-          configs.map(&:field)
+          klass.new(action: self, context: @__context, declared_fields: self.class._declared_fields(direction), implicitly_allowed_fields:)
         end
       end
     end

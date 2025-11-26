@@ -36,25 +36,15 @@ module Axn
           def exception_class? = @rule.is_a?(Class) && @rule <= Exception
 
           def apply_callable(action:, exception:)
-            if exception && Invoker.accepts_exception_keyword?(@rule)
-              !!action.instance_exec(exception:, &@rule)
-            elsif exception && Invoker.accepts_positional_exception?(@rule)
-              !!action.instance_exec(exception, &@rule)
-            else
-              !!action.instance_exec(&@rule)
-            end
+            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(@rule, exception)
+            !!action.instance_exec(*filtered_args, **filtered_kwargs, &@rule)
           end
 
           def apply_symbol(action:, exception:)
             if action.respond_to?(@rule)
               method = action.method(@rule)
-              if exception && Invoker.accepts_exception_keyword?(method)
-                !!action.public_send(@rule, exception:)
-              elsif exception && Invoker.accepts_positional_exception?(method)
-                !!action.public_send(@rule, exception)
-              else
-                !!action.public_send(@rule)
-              end
+              filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(method, exception)
+              !!action.public_send(@rule, *filtered_args, **filtered_kwargs)
             else
               begin
                 klass = Object.const_get(@rule.to_s)

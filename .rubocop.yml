@@ -16,6 +16,9 @@ AllCops:
 Style/MultilineBlockChain:
   Enabled: false
 
+Style/SingleLineMethods:
+  Enabled: false
+
 Style/StringLiterals:
   Enabled: true
   EnforcedStyle: double_quotes

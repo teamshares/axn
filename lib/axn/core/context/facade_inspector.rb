@@ -65,7 +65,7 @@ module Axn
       inspection_filter.filter_param(field, inspected_value)
     end
 
-    def inspection_filter = action.send(:inspection_filter)
+    def inspection_filter = action.class.inspection_filter
 
     def sensitive_subfields?(field)
       action.subfield_configs.any? { |config| config.on == field && config.sensitive }

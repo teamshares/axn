@@ -1,35 +1,29 @@
 # frozen_string_literal: true
 
-RSpec.describe "Action wrap_with_trace hook" do
-  let(:last_trace_call) { nil }
-  let(:wrap_with_trace) do
-    proc do |resource, &action|
-      @last_trace_call = { resource:, action_called: false }
-      action.call
-      @last_trace_call[:action_called] = true
-    end
-  end
+RSpec.describe "Action axn.call notification" do
+  let(:notifications) { [] }
 
   before do
-    Axn.configure do |c|
-      c.wrap_with_trace = wrap_with_trace
+    ActiveSupport::Notifications.subscribe("axn.call") do |name, start, finish, id, payload|
+      notifications << { name:, start:, finish:, id:, payload: }
     end
   end
 
   after do
-    Axn.configure do |c|
-      c.wrap_with_trace = nil
-    end
+    ActiveSupport::Notifications.unsubscribe("axn.call")
   end
 
-  describe "wrap_with_trace hook execution" do
+  describe "axn.call notification emission" do
     context "when action succeeds" do
       let(:action) { build_axn }
 
-      it "calls wrap_with_trace hook with correct resource and executes action" do
-        action.call
-        expect(@last_trace_call[:resource]).to eq("AnonymousClass")
-        expect(@last_trace_call[:action_called]).to eq(true)
+      it "emits axn.call notification with correct resource and outcome" do
+        result = action.call
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("success")
+        expect(notifications.first[:payload][:action].result).to eq(result)
+        expect(notifications.first[:payload][:action].result.elapsed_time).to be_a(Float)
       end
     end
 
@@ -42,15 +36,18 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      it "calls wrap_with_trace hook and executes action" do
+      it "emits axn.call notification with failure outcome" do
         result = action.call
         expect(result).not_to be_ok
-        expect(@last_trace_call[:action_called]).to eq(true)
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("failure")
+        expect(notifications.first[:payload][:action].result).to eq(result)
       end
 
-      it "calls wrap_with_trace hook and executes action when using call!" do
+      it "emits axn.call notification with failure outcome when using call!" do
         expect { action.call! }.to raise_error(Axn::Failure)
-        expect(@last_trace_call[:action_called]).to eq(true)
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("failure")
       end
     end
 
@@ -63,15 +60,18 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      it "calls wrap_with_trace hook and executes action" do
+      it "emits axn.call notification with exception outcome" do
         result = action.call
         expect(result).not_to be_ok
-        expect(@last_trace_call[:action_called]).to eq(true)
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
+        expect(notifications.first[:payload][:action].result).to eq(result)
       end
 
-      it "calls wrap_with_trace hook and executes action when using call!" do
+      it "emits axn.call notification with exception outcome when using call!" do
         expect { action.call! }.to raise_error(RuntimeError)
-        expect(@last_trace_call[:action_called]).to eq(true)
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
       end
     end
 
@@ -86,10 +86,11 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      it "calls wrap_with_trace hook and executes action" do
+      it "emits axn.call notification with success outcome" do
         result = action.call!(required_field: "test")
         expect(result).to be_ok
-        expect(@last_trace_call[:action_called]).to eq(true)
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("success")
       end
     end
 
@@ -104,76 +105,10 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      it "calls wrap_with_trace hook and executes action" do
+      it "emits axn.call notification with exception outcome" do
         expect { action.call! }.to raise_error(Axn::InboundValidationError)
-        expect(@last_trace_call[:action_called]).to eq(true)
-      end
-    end
-
-    context "when no wrap_with_trace hook is configured" do
-      before do
-        Axn.configure do |c|
-          c.wrap_with_trace = nil
-        end
-      end
-
-      it "does not call wrap_with_trace hook" do
-        action = build_axn
-        action.call
-        expect(@last_trace_call).to be_nil
-      end
-    end
-
-    context "when wrap_with_trace hook raises an exception" do
-      let(:wrap_with_trace) do
-        proc do |_resource, &_action|
-          raise "trace hook error"
-        end
-      end
-
-      let(:action) { build_axn }
-
-      before do
-        allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
-      end
-
-      it "calls Axn::Internal::Logging.piping_error when wrap_with_trace hook raises" do
-        action.call
-        expect(Axn::Internal::Logging).to have_received(:piping_error).with(
-          "running trace hook",
-          hash_including(
-            action:,
-            exception: an_object_satisfying { |e| e.is_a?(RuntimeError) && e.message == "trace hook error" },
-          ),
-        )
-      end
-
-      it "still executes the action despite trace hook error" do
-        result = action.call
-        expect(result).to be_ok
-      end
-    end
-
-    context "when wrap_with_trace hook does not call the action block" do
-      let(:wrap_with_trace) do
-        proc do |resource, &_action|
-          @last_trace_call = { resource:, action_called: false }
-          # Intentionally not calling action.call
-        end
-      end
-
-      let(:action) do
-        build_axn do
-          def call
-            @called = true
-          end
-        end
-      end
-
-      it "does not execute the action" do
-        action.call
-        expect(@last_trace_call[:action_called]).to eq(false)
-        expect(action.instance_variable_get(:@called)).to be_nil
+        expect(notifications.length).to eq(1)
+        expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("exception")
       end
     end
 
@@ -186,18 +121,18 @@ RSpec.describe "Action wrap_with_trace hook" do
         end
       end
 
-      it "passes the correct class name to wrap_with_trace" do
+      it "includes the correct class name in notification payload" do
         action.call
-        expect(@last_trace_call[:resource]).to eq("TestAction")
+        expect(notifications.first[:payload][:resource]).to eq("TestAction")
       end
     end
 
     context "with anonymous class" do
       let(:action) { build_axn }
 
-      it "passes AnonymousClass as resource name" do
+      it "includes AnonymousClass as resource name" do
         action.call
-        expect(@last_trace_call[:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
       end
     end
   end
