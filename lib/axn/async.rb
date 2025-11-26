@@ -51,22 +51,16 @@ module Axn
       private
 
       def _log_async_invocation(kwargs, adapter_name:)
-        level = log_calls_level
-        return unless level
-
-        context_data = Axn::Util::Logging.prepare_context_for_logging(self, data: kwargs, direction: :inbound)
-        context_str = Axn::Util::Logging.format_context(context_data)
-
-        public_send(
-          level,
-          [
-            "Enqueueing async execution via #{adapter_name}",
-            context_str,
-          ].compact.join(" with: "),
+        Axn::Util::Logging.log_at_level(
+          self,
+          level: log_calls_level,
+          message_parts: ["Enqueueing async execution via #{adapter_name}"],
+          join_string: " with: ",
           before: Axn.config.env.production? ? nil : "\n------\n",
+          error_context: "logging async invocation",
+          context_direction: :inbound,
+          context_data: kwargs,
         )
-      rescue StandardError => e
-        Axn::Internal::Logging.piping_error("logging async invocation", action: self, exception: e)
       end
 
       def _ensure_default_async_configured

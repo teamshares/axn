@@ -35,19 +35,16 @@ module Axn
         end
 
         def _log_before
-          level = self.class.log_calls_level
-          return unless level
-
-          self.class.public_send(
-            level,
-            [
-              "About to execute",
-              _log_context(:inbound),
-            ].compact.join(" with: "),
+          Axn::Util::Logging.log_at_level(
+            self.class,
+            level: self.class.log_calls_level,
+            message_parts: ["About to execute"],
+            join_string: " with: ",
             before: Axn.config.env.production? ? nil : "\n------\n",
+            error_context: "logging before hook",
+            context_direction: :inbound,
+            context_instance: self,
           )
-        rescue StandardError => e
-          Axn::Internal::Logging.piping_error("logging before hook", action: self, exception: e)
         end
 
         def _log_after
@@ -64,23 +61,18 @@ module Axn
         end
 
         def _log_after_at_level(level)
-          return unless level
-
-          self.class.public_send(
-            level,
-            [
+          Axn::Util::Logging.log_at_level(
+            self.class,
+            level:,
+            message_parts: [
               "Execution completed (with outcome: #{result.outcome}) in #{result.elapsed_time} milliseconds",
-              _log_context(:outbound),
-            ].compact.join(". Set: "),
+            ],
+            join_string: ". Set: ",
             after: Axn.config.env.production? ? nil : "\n------\n",
+            error_context: "logging after hook",
+            context_direction: :outbound,
+            context_instance: self,
           )
-        rescue StandardError => e
-          Axn::Internal::Logging.piping_error("logging after hook", action: self, exception: e)
-        end
-
-        def _log_context(direction)
-          data = context_for_logging(direction)
-          Axn::Util::Logging.format_context(data)
         end
       end
     end
