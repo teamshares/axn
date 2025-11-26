@@ -75,8 +75,25 @@ module Axn
         end
       ensure
         begin
-          result = self.result
-          Axn.config.emit_metrics&.call(resource, result)
+          emit_metrics_proc = Axn.config.emit_metrics
+          if emit_metrics_proc
+            # Only pass the keyword arguments that the proc explicitly expects
+            result = self.result
+            kwargs = {}
+            params = emit_metrics_proc.parameters
+            accepts_keyrest = params.any? { |type, _name| type == :keyrest }
+            if accepts_keyrest
+              # If proc accepts **kwargs, pass everything
+              kwargs[:resource] = resource
+              kwargs[:result] = result
+            else
+              # Only pass explicitly expected keyword arguments
+              expected_keywords = params.select { |type, _name| %i[key keyreq].include?(type) }.map { |_type, name| name }
+              kwargs[:resource] = resource if expected_keywords.include?(:resource)
+              kwargs[:result] = result if expected_keywords.include?(:result)
+            end
+            emit_metrics_proc.call(**kwargs)
+          end
         rescue StandardError => e
           # Don't raise in ensure block to avoid interfering with existing exceptions
           Axn::Internal::Logging.piping_error("calling emit_metrics while tracing axn.call", action: self, exception: e)

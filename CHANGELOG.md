@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [BREAKING] `emit_metrics` hook now receives keyword arguments (`resource:`, `result:`) instead of positional arguments
 * [FEAT] Default `call` method automatically exposes declared exposures by calling methods with matching names - you can now omit `call` entirely when you only need to expose values from private methods
 * [BREAKING] Rename `auto_log` -> `log_calls`
 * [FEAT] Add `log_errors`

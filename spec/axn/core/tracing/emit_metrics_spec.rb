@@ -5,7 +5,7 @@ RSpec.describe "Axn::Core::Tracing emit_metrics" do
 
   before do
     Axn.configure do |c|
-      c.emit_metrics = proc do |resource, result|
+      c.emit_metrics = proc do |resource:, result:|
         metrics_calls << { resource:, result: }
       end
     end
@@ -82,7 +82,7 @@ RSpec.describe "Axn::Core::Tracing emit_metrics" do
   context "when emit_metrics raises an exception" do
     before do
       Axn.configure do |c|
-        c.emit_metrics = proc { |_resource, _result| raise "metrics error" }
+        c.emit_metrics = proc { |resource:, result:| raise "metrics error" }
       end
     end
 
@@ -91,6 +91,82 @@ RSpec.describe "Axn::Core::Tracing emit_metrics" do
     it "does not interfere with action execution" do
       result = action.call
       expect(result).to be_ok
+    end
+  end
+
+  context "when emit_metrics only expects resource:" do
+    let(:received_args) { [] }
+
+    before do
+      Axn.configure do |c|
+        c.emit_metrics = proc do |resource:|
+          received_args << { resource: }
+        end
+      end
+    end
+
+    after do
+      Axn.configure { |c| c.emit_metrics = nil }
+    end
+
+    let(:action) { build_axn }
+
+    it "only passes resource: keyword argument" do
+      action.call
+      expect(received_args.length).to eq(1)
+      expect(received_args.first.keys).to eq([:resource])
+      expect(received_args.first[:resource]).to eq("AnonymousClass")
+    end
+  end
+
+  context "when emit_metrics only expects result:" do
+    let(:received_args) { [] }
+
+    before do
+      Axn.configure do |c|
+        c.emit_metrics = proc do |result:|
+          received_args << { result: }
+        end
+      end
+    end
+
+    after do
+      Axn.configure { |c| c.emit_metrics = nil }
+    end
+
+    let(:action) { build_axn }
+
+    it "only passes result: keyword argument" do
+      result = action.call
+      expect(received_args.length).to eq(1)
+      expect(received_args.first.keys).to eq([:result])
+      expect(received_args.first[:result]).to eq(result)
+    end
+  end
+
+  context "when emit_metrics accepts **kwargs" do
+    let(:received_args) { [] }
+
+    before do
+      Axn.configure do |c|
+        c.emit_metrics = proc do |**kwargs|
+          received_args << kwargs
+        end
+      end
+    end
+
+    after do
+      Axn.configure { |c| c.emit_metrics = nil }
+    end
+
+    let(:action) { build_axn }
+
+    it "receives both resource: and result: keyword arguments" do
+      result = action.call
+      expect(received_args.length).to eq(1)
+      expect(received_args.first.keys.sort).to eq([:resource, :result])
+      expect(received_args.first[:resource]).to eq("AnonymousClass")
+      expect(received_args.first[:result]).to eq(result)
     end
   end
 end

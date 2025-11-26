@@ -137,7 +137,7 @@ If you're using an APM provider, observability can be greatly enhanced by adding
 The framework provides two distinct hooks for observability:
 
 - **`wrap_with_trace`**: An around hook that wraps the entire action execution. You MUST call the provided block to execute the action.
-- **`emit_metrics`**: A post-execution hook that receives the action result. Do NOT call any blocks.
+- **`emit_metrics`**: A post-execution hook that receives the action result. Do NOT call any blocks. The hook only receives the keyword arguments it explicitly expects (e.g., if you only define `resource:`, you won't receive `result:`).
 
 For example, to wire up Datadog:
 
@@ -149,10 +149,29 @@ For example, to wire up Datadog:
       end
     end
 
-    c.emit_metrics = proc do |resource, result|
+    c.emit_metrics = proc do |resource:, result:|
       TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s, resource: })
       TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
     end
+  end
+```
+
+You can also define `emit_metrics` to only receive the arguments you need:
+
+```ruby
+  # Only receive resource (if you don't need the result)
+  c.emit_metrics = proc do |resource:|
+    TS::Metrics.increment("action.#{resource.underscore}")
+  end
+
+  # Only receive result (if you don't need the resource)
+  c.emit_metrics = proc do |result:|
+    TS::Metrics.increment("action.call", tags: { outcome: result.outcome.to_s })
+  end
+
+  # Accept any keyword arguments (receives both)
+  c.emit_metrics = proc do |**kwargs|
+    # kwargs will contain both :resource and :result
   end
 ```
 
@@ -388,7 +407,7 @@ Axn.configure do |c|
     end
   end
 
-  c.emit_metrics = proc do |resource, result|
+  c.emit_metrics = proc do |resource:, result:|
     Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
     Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
   end
