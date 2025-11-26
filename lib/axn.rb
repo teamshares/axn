@@ -14,6 +14,7 @@ require "axn/core"
 
 # Utilities
 require "axn/util/memoization"
+require "axn/util/callable"
 require "axn/form_object"
 
 # Extensions

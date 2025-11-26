@@ -34,16 +34,8 @@ module Axn
 
       return unless @on_exception
 
-      # Only pass the kwargs that the given block expects
-      kwargs = @on_exception.parameters.select { |type, _name| %i[key keyreq].include?(type) }.map(&:last)
-      kwarg_hash = {}
-      kwarg_hash[:action] = action if kwargs.include?(:action)
-      kwarg_hash[:context] = context if kwargs.include?(:context)
-      if kwarg_hash.any?
-        @on_exception.call(e, **kwarg_hash)
-      else
-        @on_exception.call(e)
-      end
+      # Only pass the args and kwargs that the given block expects
+      Axn::Util::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
     end
 
     def logger
