@@ -16,10 +16,11 @@ module Axn
         end
 
         class_methods do
-          def call_async(**kwargs)
-            # Log async invocation if logging is enabled
-            _log_async_invocation(kwargs, adapter_name: "active_job") if log_calls_level
+          private
 
+          # Implements adapter-specific enqueueing logic for ActiveJob.
+          # Note: Adapters must implement _enqueue_async_job and must NOT override call_async.
+          def _enqueue_async_job(kwargs)
             job = active_job_proxy_class
 
             if kwargs[:_async].is_a?(Hash)
@@ -33,8 +34,6 @@ module Axn
 
             job.perform_later(**kwargs)
           end
-
-          private
 
           def active_job_proxy_class
             @active_job_proxy_class ||= create_active_job_proxy_class
