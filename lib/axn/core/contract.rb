@@ -90,6 +90,10 @@ module Axn
           configs.map(&:field)
         end
 
+        def context_for_logging(data:, direction: nil)
+          inspection_filter.filter(data.slice(*_declared_fields(direction)))
+        end
+
         private
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -202,7 +206,10 @@ module Axn
         end
 
         def context_for_logging(direction = nil)
-          base_context = self.class.inspection_filter.filter(@__context.__combined_data.slice(*self.class._declared_fields(direction)))
+          base_context = self.class.context_for_logging(
+            data: @__context.__combined_data,
+            direction:,
+          )
 
           # Only merge additional context for exception logging (direction is nil)
           # Pre/post logging don't need additional context since they only log inputs/outputs
