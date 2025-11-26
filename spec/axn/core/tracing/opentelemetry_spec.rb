@@ -30,6 +30,10 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
   end
 
   after do
+    # Clear the cached tracer so it's recreated with the restored OpenTelemetry
+    Axn::Core::Tracing.instance_variable_set(:@tracer, nil)
+    Axn::Core::Tracing.instance_variable_set(:@tracer_provider, nil)
+
     # Restore original if it existed, but don't conflict with stub_const cleanup
     if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
       RSpec::Mocks.space.proxy_for(OpenTelemetry).reset

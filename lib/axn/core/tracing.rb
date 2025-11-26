@@ -5,6 +5,22 @@ require "securerandom"
 module Axn
   module Core
     module Tracing
+      class << self
+        # Cache the tracer instance to avoid repeated lookups
+        # The tracer provider may cache internally, but we avoid the method call overhead
+        # We check defined?(OpenTelemetry) each time to handle cases where it's loaded lazily
+        def tracer
+          return nil unless defined?(OpenTelemetry)
+
+          # Re-fetch if the tracer provider has changed (e.g., in tests with mocks)
+          current_provider = OpenTelemetry.tracer_provider
+          return @tracer if defined?(@tracer) && defined?(@tracer_provider) && @tracer_provider == current_provider
+
+          @tracer_provider = current_provider
+          @tracer = current_provider.tracer("axn", Axn::VERSION)
+        end
+      end
+
       private
 
       def _with_tracing(&)
@@ -34,8 +50,7 @@ module Axn
         # which means it's not suitable for wrapping execution with a span and tracking child spans.
         # We use OpenTelemetry for that, if available.
         if defined?(OpenTelemetry)
-          tracer = OpenTelemetry.tracer_provider.tracer("axn", Axn::VERSION)
-          tracer.in_span("axn.call", attributes: { "axn.resource" => resource }) do |span|
+          Tracing.tracer.in_span("axn.call", attributes: { "axn.resource" => resource }) do |span|
             instrument_block.call
           ensure
             # Update span with outcome and error status after execution
