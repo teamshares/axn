@@ -321,20 +321,13 @@ Use appropriate sampling rates and conditional profiling to minimize impact.
 
 ## Integration with Other Tools
 
-### Datadog Integration
+### OpenTelemetry and Datadog Integration
 
-Combine profiling with Datadog tracing:
+Axn automatically creates OpenTelemetry spans for all actions when OpenTelemetry is available. To send traces to Datadog, configure OpenTelemetry with the Datadog exporter.
+
+You can combine profiling with OpenTelemetry tracing:
 
 ```ruby
-Axn.configure do |c|
-  # Datadog tracing
-  c.wrap_with_trace = proc do |resource, &action|
-    Datadog::Tracing.trace("Action", resource:) do
-      action.call
-    end
-  end
-end
-
 class MyAction
   include Axn
 
@@ -343,6 +336,7 @@ class MyAction
 
   def call
     # Action logic
+    # OpenTelemetry spans are automatically created
   end
 end
 ```
