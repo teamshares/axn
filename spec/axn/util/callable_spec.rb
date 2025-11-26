@@ -166,5 +166,108 @@ RSpec.describe Axn::Util::Callable do
       end
     end
   end
+
+  describe ".only_requested_params" do
+    context "when callable accepts specific keyword arguments" do
+      let(:callable) { proc { |resource:, result:| } }
+
+      it "returns filtered args and kwargs without calling" do
+        kwargs = { resource: "Action", result: double("result"), extra: "ignored" }
+        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, kwargs: kwargs)
+        expect(filtered_args).to eq([])
+        expect(filtered_kwargs.keys).to eq([:resource, :result])
+        expect(filtered_kwargs).not_to have_key(:extra)
+      end
+    end
+
+    context "when callable accepts positional and keyword arguments" do
+      let(:callable) { proc { |a, b, c:| } }
+
+      it "returns filtered args and kwargs" do
+        args = [1, 2, 3, 4]
+        kwargs = { c: 5, d: 6 }
+        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, args: args, kwargs: kwargs)
+        expect(filtered_args).to eq([1, 2])
+        expect(filtered_kwargs).to eq({ c: 5 })
+      end
+    end
+
+    context "when callable accepts **kwargs" do
+      let(:callable) { proc { |**kwargs| } }
+
+      it "returns all provided kwargs" do
+        kwargs = { resource: "Action", result: double("result"), extra: "value" }
+        filtered_args, filtered_kwargs = described_class.only_requested_params(callable, kwargs: kwargs)
+        expect(filtered_kwargs).to eq(kwargs)
+      end
+    end
+  end
+
+  describe ".only_requested_params_for_exception" do
+    context "when exception is nil" do
+      let(:callable) { proc { |exception:| } }
+
+      it "returns empty args and kwargs" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, nil)
+        expect(filtered_args).to eq([])
+        expect(filtered_kwargs).to eq({})
+      end
+    end
+
+    context "when callable accepts exception as keyword argument" do
+      let(:callable) { proc { |exception:| } }
+      let(:exception) { RuntimeError.new("test error") }
+
+      it "returns exception as keyword argument" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
+        expect(filtered_args).to eq([])
+        expect(filtered_kwargs).to eq({ exception: exception })
+      end
+    end
+
+    context "when callable accepts exception as positional argument" do
+      let(:callable) { proc { |exception| } }
+      let(:exception) { RuntimeError.new("test error") }
+
+      it "returns exception as positional argument" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
+        expect(filtered_args).to eq([exception])
+        expect(filtered_kwargs).to eq({})
+      end
+    end
+
+    context "when callable accepts **kwargs" do
+      let(:callable) { proc { |**kwargs| } }
+      let(:exception) { RuntimeError.new("test error") }
+
+      it "returns exception as keyword argument only (no positional args accepted)" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
+        expect(filtered_args).to eq([])
+        expect(filtered_kwargs).to eq({ exception: exception })
+      end
+    end
+
+    context "when callable accepts *args and **kwargs" do
+      let(:callable) { proc { |*args, **kwargs| } }
+      let(:exception) { RuntimeError.new("test error") }
+
+      it "returns exception as both positional and keyword" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
+        expect(filtered_args).to eq([exception])
+        expect(filtered_kwargs).to eq({ exception: exception })
+      end
+    end
+
+    context "when callable accepts no exception argument" do
+      let(:callable) { proc { } }
+      let(:exception) { RuntimeError.new("test error") }
+
+      it "returns empty args and kwargs" do
+        filtered_args, filtered_kwargs = described_class.only_requested_params_for_exception(callable, exception)
+        expect(filtered_args).to eq([])
+        expect(filtered_kwargs).to eq({})
+      end
+    end
+  end
 end
 

@@ -28,8 +28,27 @@ module Axn
       #   proc = ->(**kwargs) { }
       #   Callable.call_with_desired_shape(proc, kwargs: { resource: "Action", result: result })
       #   # Calls proc with all kwargs
+      # Calls a callable with only the positional and keyword arguments it expects.
       def call_with_desired_shape(callable, args: [], kwargs: {})
-        return callable.call(*args, **kwargs) unless callable.respond_to?(:parameters)
+        filtered_args, filtered_kwargs = only_requested_params(callable, args: args, kwargs: kwargs)
+        callable.call(*filtered_args, **filtered_kwargs)
+      end
+
+      # Returns filtered args and kwargs for a callable without calling it.
+      # Useful when you need to execute the callable in a specific context (e.g., via instance_exec).
+      #
+      # @param callable [Proc, Method, #parameters] A callable object
+      # @param args [Array] An array of positional arguments to potentially pass
+      # @param kwargs [Hash] A hash of keyword arguments to potentially pass
+      # @return [Array<Array, Hash>] A tuple of [filtered_args, filtered_kwargs]
+      #
+      # @example
+      #   proc = ->(resource:, result:) { }
+      #   args, kwargs = Callable.only_requested_params(proc, kwargs: { resource: "Action", result: result, extra: "ignored" })
+      #   # => [[], { resource: "Action", result: result }]
+      #   action.instance_exec(*args, **kwargs, &proc)
+      def only_requested_params(callable, args: [], kwargs: {})
+        return [args, kwargs] unless callable.respond_to?(:parameters)
 
         params = callable.parameters
 
@@ -39,7 +58,34 @@ module Axn
         # Determine which keyword arguments to pass
         filtered_kwargs = filter_kwargs(params, kwargs)
 
-        callable.call(*filtered_args, **filtered_kwargs)
+        [filtered_args, filtered_kwargs]
+      end
+
+      # Returns filtered args and kwargs for a callable when passing an exception.
+      # The exception will be passed as either a positional argument or keyword argument,
+      # depending on what the callable expects.
+      #
+      # @param callable [Proc, Method, #parameters] A callable object
+      # @param exception [Exception, nil] The exception to potentially pass
+      # @return [Array<Array, Hash>] A tuple of [filtered_args, filtered_kwargs]
+      #
+      # @example
+      #   proc = ->(exception:) { }
+      #   args, kwargs = Callable.only_requested_params_for_exception(proc, exception)
+      #   # => [[], { exception: exception }]
+      #   action.instance_exec(*args, **kwargs, &proc)
+      #
+      # @example
+      #   proc = ->(exception) { }
+      #   args, kwargs = Callable.only_requested_params_for_exception(proc, exception)
+      #   # => [[exception], {}]
+      #   action.instance_exec(*args, **kwargs, &proc)
+      def only_requested_params_for_exception(callable, exception)
+        return [[], {}] unless exception
+
+        args = [exception]
+        kwargs = { exception: exception }
+        only_requested_params(callable, args: args, kwargs: kwargs)
       end
 
       private
