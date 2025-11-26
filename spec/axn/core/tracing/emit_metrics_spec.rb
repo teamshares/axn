@@ -82,7 +82,7 @@ RSpec.describe "Axn::Core::Tracing emit_metrics" do
   context "when emit_metrics raises an exception" do
     before do
       Axn.configure do |c|
-        c.emit_metrics = proc { |resource:, result:| raise "metrics error" }
+        c.emit_metrics = proc { raise "metrics error" }
       end
     end
 
