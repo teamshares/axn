@@ -453,4 +453,88 @@ RSpec.describe Axn::Core::AutomaticLogging do
       end
     end
   end
+
+  describe "async invocation logging" do
+    let(:log_messages) { [] }
+    let(:logger) { instance_double(Logger) }
+
+    let(:sidekiq_job_module) do
+      Module.new do
+        def self.included(base)
+          base.class_eval do
+            def self.perform_async(*args)
+              # Mock implementation
+            end
+          end
+        end
+      end
+    end
+
+    before do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job_module)
+      stub_const("Sidekiq::Client", Class.new { def send(*); false; end })
+
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      allow(logger).to receive(:info) do |message|
+        log_messages << { level: :info, message: }
+      end
+      allow(logger).to receive(:warn) do |message|
+        log_messages << { level: :warn, message: }
+      end
+    end
+
+    context "when call_async is invoked" do
+      let(:action_class) do
+        build_axn do
+          expects :name
+
+          def call
+            "Hello, #{name}!"
+          end
+        end.tap { |klass| klass.async :sidekiq }
+      end
+
+      it "logs once when call_async is invoked" do
+        action_class.call_async(name: "World")
+
+        expect(log_messages.length).to eq(1)
+
+        async_log = log_messages.find { |log| log[:message].include?("Enqueueing async execution via sidekiq") }
+        expect(async_log).to be_present
+        expect(async_log[:message]).to include('name: "World"')
+        expect(async_log[:level]).to eq(:info)
+      end
+
+      it "uses the log_calls_level setting" do
+        action_class.log_calls :warn
+
+        action_class.call_async(name: "World")
+
+        expect(log_messages.length).to eq(1)
+        expect(log_messages.first[:level]).to eq(:warn)
+      end
+
+      it "does not log when log_calls is disabled" do
+        action_class.log_calls false
+
+        action_class.call_async(name: "World")
+
+        expect(log_messages).to be_empty
+      end
+
+      it "filters sensitive fields from context" do
+        action_class = build_axn do
+          expects :name, sensitive: true
+          expects :age
+        end.tap { |klass| klass.async :sidekiq }
+
+        action_class.call_async(name: "Secret", age: 25)
+
+        expect(log_messages.length).to eq(1)
+        expect(log_messages.first[:message]).not_to include("Secret")
+        expect(log_messages.first[:message]).to include("age: 25")
+      end
+    end
+  end
 end

@@ -29,12 +29,12 @@ module Axn
         end
       end
 
-      def call_async(**)
+      def call_async(**kwargs)
         # Set up default async configuration if none is set
         if _async_adapter.nil?
           async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
           # Call ourselves again now that the adapter is included
-          return call_async(**)
+          return call_async(**kwargs)
         end
 
         # This will be overridden by the included adapter module
@@ -49,6 +49,25 @@ module Axn
       end
 
       private
+
+      def _log_async_invocation(kwargs, adapter_name:)
+        level = log_calls_level
+        return unless level
+
+        context_data = Axn::Util::Logging.prepare_context_for_logging(self, data: kwargs, direction: :inbound)
+        context_str = Axn::Util::Logging.format_context(context_data)
+
+        public_send(
+          level,
+          [
+            "Enqueueing async execution via #{adapter_name}",
+            context_str,
+          ].compact.join(" with: "),
+          before: Axn.config.env.production? ? nil : "\n------\n",
+        )
+      rescue StandardError => e
+        Axn::Internal::Logging.piping_error("logging async invocation", action: self, exception: e)
+      end
 
       def _ensure_default_async_configured
         return if _async_adapter.present?

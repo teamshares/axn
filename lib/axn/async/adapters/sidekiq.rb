@@ -23,6 +23,9 @@ module Axn
 
         class_methods do
           def call_async(**kwargs)
+            # Log async invocation if logging is enabled
+            _log_async_invocation(kwargs, adapter_name: "sidekiq") if log_calls_level
+
             job_kwargs = _params_to_global_id(kwargs)
 
             if kwargs[:_async].is_a?(Hash)

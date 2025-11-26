@@ -80,29 +80,7 @@ module Axn
 
         def _log_context(direction)
           data = context_for_logging(direction)
-          return unless data.present?
-
-          max_length = 150
-          suffix = "…<truncated>…"
-
-          _log_object(data).tap do |str|
-            return str[0, max_length - suffix.length] + suffix if str.length > max_length
-          end
-        end
-
-        def _log_object(data)
-          case data
-          when Hash
-            # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
-            "{#{data.map { |k, v| "#{k}: #{_log_object(v)}" }.join(", ")}}"
-          when Array
-            data.map { |v| _log_object(v) }
-          else
-            return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
-            return "<#{data.class.name}##{data.to_param.presence || "unpersisted"}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
-
-            data.inspect
-          end
+          Axn::Util::Logging.format_context(data)
         end
       end
     end

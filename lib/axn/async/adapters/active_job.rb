@@ -17,6 +17,9 @@ module Axn
 
         class_methods do
           def call_async(**kwargs)
+            # Log async invocation if logging is enabled
+            _log_async_invocation(kwargs, adapter_name: "active_job") if log_calls_level
+
             job = active_job_proxy_class
 
             if kwargs[:_async].is_a?(Hash)
