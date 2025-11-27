@@ -15,12 +15,25 @@ RSpec.describe Axn::Extras::Strategies::Client do
     Axn::Strategies.register(:client, described_class)
   end
 
+  def create_client_instance(action, **options, &block)
+    action.use(:client, url: "https://api.example.com", **options, &block)
+    instance = action.allocate
+    instance.send(:initialize)
+    instance
+  end
+
+  def middleware_klasses(client)
+    client.builder.handlers.map do |h|
+      h.klass
+    rescue StandardError
+      h.class
+    end
+  end
+
   describe ".configure" do
     context "with default configuration" do
       it "creates a client method with default name" do
-        test_action.use(:client, url: "https://api.example.com")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action)
 
         expect(instance).to respond_to(:client)
         expect(instance.client).to be_a(Faraday::Connection)
@@ -28,9 +41,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
       end
 
       it "sets default headers" do
-        test_action.use(:client, url: "https://api.example.com")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action)
 
         expect(instance.client.headers["Content-Type"]).to eq("application/json")
         expect(instance.client.headers["User-Agent"]).to match(%r{client / Axn Client Strategy / v})
@@ -39,9 +50,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
     context "with custom name" do
       it "creates a client method with custom name" do
-        test_action.use(:client, name: :api_client, url: "https://api.example.com")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, name: :api_client)
 
         expect(instance).to respond_to(:api_client)
         expect(instance).not_to respond_to(:client)
@@ -49,9 +58,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
       end
 
       it "uses custom name in user agent" do
-        test_action.use(:client, name: :api_client, url: "https://api.example.com")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, name: :api_client)
 
         expect(instance.api_client.headers["User-Agent"]).to match(%r{api_client / Axn Client Strategy / v})
       end
@@ -59,9 +66,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
     context "with custom user_agent" do
       it "uses provided user agent" do
-        test_action.use(:client, url: "https://api.example.com", user_agent: "MyApp/1.0")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, user_agent: "MyApp/1.0")
 
         expect(instance.client.headers["User-Agent"]).to eq("MyApp/1.0")
       end
@@ -75,11 +80,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
           conn.headers["X-Custom"] = "value"
         end
 
-        test_action.use(:client, url: "https://api.example.com", prepend_config:)
-        instance = test_action.allocate
-        instance.send(:initialize)
-
-        # Call the client method to trigger its creation
+        instance = create_client_instance(test_action, prepend_config:)
         client = instance.client
 
         expect(prepend_called).to be true
@@ -89,42 +90,25 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
     context "with debug option" do
       it "enables logger middleware when debug is true" do
-        test_action.use(:client, url: "https://api.example.com", debug: true)
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, debug: true)
 
-        # Check that logger middleware is in the stack
-        # Faraday stores middleware in reverse order
-        client = instance.client
-        middleware_klasses = client.builder.handlers.map do |h|
-          h.klass
-        rescue StandardError
-          h.class
-        end
-        expect(middleware_klasses).to include(Faraday::Response::Logger)
+        expect(middleware_klasses(instance.client)).to include(Faraday::Response::Logger)
       end
 
       it "does not enable logger middleware when debug is false" do
-        test_action.use(:client, url: "https://api.example.com", debug: false)
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, debug: false)
 
-        middleware_classes = instance.client.builder.handlers.map(&:class)
-        expect(middleware_classes).not_to include(Faraday::Response::Logger)
+        expect(middleware_klasses(instance.client)).not_to include(Faraday::Response::Logger)
       end
     end
 
     context "with configuration block" do
       it "calls the block with the connection" do
         block_called = false
-        test_action.use(:client, url: "https://api.example.com") do |conn|
+        instance = create_client_instance(test_action) do |conn|
           block_called = true
           conn.headers["X-From-Block"] = "block-value"
         end
-        instance = test_action.allocate
-        instance.send(:initialize)
-
-        # Call the client method to trigger its creation
         client = instance.client
 
         expect(block_called).to be true
@@ -135,9 +119,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
     context "with callable options" do
       it "hydrates callable options" do
         dynamic_url = proc { "https://dynamic.example.com" }
-        test_action.use(:client, url: dynamic_url)
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, url: dynamic_url)
 
         expect(instance.client.url_prefix.to_s).to eq("https://dynamic.example.com/")
       end
@@ -145,9 +127,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
     context "with Faraday connection options" do
       it "passes options to Faraday.new" do
-        test_action.use(:client, url: "https://api.example.com", request: { timeout: 5 })
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action, request: { timeout: 5 })
 
         expect(instance.client.options.timeout).to eq(5)
       end
@@ -155,9 +135,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
     context "memoization" do
       it "memoizes the client instance" do
-        test_action.use(:client, url: "https://api.example.com")
-        instance = test_action.allocate
-        instance.send(:initialize)
+        instance = create_client_instance(test_action)
 
         first_call = instance.client
         second_call = instance.client
@@ -180,6 +158,26 @@ RSpec.describe Axn::Extras::Strategies::Client do
         end.to raise_error(ArgumentError, "client strategy: desired client name 'existing_method' is already taken")
       end
     end
+
+    context "with error_handler" do
+      it "injects ErrorHandlerMiddleware when error_handler is provided" do
+        instance = create_client_instance(test_action, error_handler: { error_key: "error" })
+
+        expect(middleware_klasses(instance.client)).to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
+      end
+
+      it "does not inject ErrorHandlerMiddleware when error_handler is nil" do
+        instance = create_client_instance(test_action, error_handler: nil)
+
+        expect(middleware_klasses(instance.client)).not_to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
+      end
+
+      it "does not inject ErrorHandlerMiddleware when error_handler is not provided" do
+        instance = create_client_instance(test_action)
+
+        expect(middleware_klasses(instance.client)).not_to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
+      end
+    end
   end
 
   describe "strategy registration" do
@@ -188,9 +186,7 @@ RSpec.describe Axn::Extras::Strategies::Client do
     end
 
     it "can be used via use method" do
-      test_action.use(:client, url: "https://api.example.com")
-      instance = test_action.allocate
-      instance.send(:initialize)
+      instance = create_client_instance(test_action)
 
       expect(instance).to respond_to(:client)
     end
