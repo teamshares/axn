@@ -191,20 +191,6 @@ RSpec.describe "Action spec helpers" do
           expect(log_messages).to be_empty
         end
       end
-
-      context "when global on_exception handler is set" do
-        before do
-          Axn.config.on_exception = proc do |_e, action:, context:|
-            log_messages << { type: :global_handler, action: action.class.name, context: }
-          end
-        end
-
-        it "does not trigger global on_exception handler" do
-          result = Axn::Result.ok
-          expect(result).to be_ok
-          expect(log_messages).to be_empty
-        end
-      end
     end
 
     describe "Axn::Result.error" do
@@ -232,23 +218,21 @@ RSpec.describe "Action spec helpers" do
       end
 
       context "when global on_exception handler is set" do
-        before do
-          Axn.config.on_exception = proc do |_e, action:, context:|
-            log_messages << { type: :global_handler, action: action.class.name, context: }
-          end
-        end
-
-        it "does not trigger global on_exception handler for fail!" do
+        it "does not trigger global on_exception handler for fail! (fail! doesn't trigger on_exception anyway)" do
+          # NOTE: fail! raises Axn::Failure which triggers on_error/on_failure, not on_exception
+          expect(Axn.config).not_to receive(:on_exception)
           result = Axn::Result.error("test error")
           expect(result).not_to be_ok
-          expect(log_messages).to be_empty
+          expect(result.exception).to be_a(Axn::Failure)
         end
 
         it "does not trigger global on_exception handler for exception in block" do
+          # NOTE: The block case catches exceptions directly and bypasses _with_exception_handling,
+          # so on_exception is never called regardless
+          expect(Axn.config).not_to receive(:on_exception)
           result = Axn::Result.error { raise StandardError, "test error" }
           expect(result).not_to be_ok
           expect(result.exception).to be_a(StandardError)
-          expect(log_messages).to be_empty
         end
       end
 

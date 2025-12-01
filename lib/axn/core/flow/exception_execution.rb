@@ -13,8 +13,8 @@ module Axn
               # (handlers can call context_for_logging themselves if needed)
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
-              # Call any global handlers (unless skipped -- e.g. Axn::Result.error)
-              Axn.config.on_exception(exception, action: self, context: context_for_logging) unless @__axn_internal__skip_global_error_handler
+              # Call any global handlers
+              Axn.config.on_exception(exception, action: self, context: context_for_logging)
             rescue StandardError => e
               # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
               # we don't want exception *handling* failures to cascade and overwrite the original exception.
