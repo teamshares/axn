@@ -661,7 +661,7 @@ RSpec.describe Axn do
 
           expects :child_type
 
-          error from: ["FirstChildAction", "SecondChildAction"]
+          error from: %w[FirstChildAction SecondChildAction]
 
           def call
             case child_type
