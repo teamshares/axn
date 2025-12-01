@@ -562,4 +562,205 @@ RSpec.describe Axn do
       )
     end
   end
+
+  context "error from: [Child1, Child2, ...] with array of children" do
+    let(:first_child_class) do
+      stub_const("FirstChildAction", Class.new do
+        include Axn
+
+        expects :type
+
+        error "first child error"
+
+        def call
+          raise StandardError, "first failed"
+        end
+      end)
+    end
+
+    let(:second_child_class) do
+      stub_const("SecondChildAction", Class.new do
+        include Axn
+
+        expects :type
+
+        error "second child error"
+
+        def call
+          raise StandardError, "second failed"
+        end
+      end)
+    end
+
+    let(:third_child_class) do
+      stub_const("ThirdChildAction", Class.new do
+        include Axn
+
+        expects :type
+
+        error "third child error"
+
+        def call
+          raise StandardError, "third failed"
+        end
+      end)
+    end
+
+    let(:parent_with_array_from_class) do
+      # Ensure child classes are defined first
+      first_child_class
+      second_child_class
+      third_child_class
+
+      stub_const("ParentWithArrayFrom", Class.new do
+        include Axn
+
+        expects :child_type
+
+        error from: [FirstChildAction, SecondChildAction]
+
+        def call
+          case child_type
+          when :first
+            FirstChildAction.call!
+          when :second
+            SecondChildAction.call!
+          when :third
+            ThirdChildAction.call!
+          end
+        end
+      end)
+    end
+
+    it "inherits error from first child in array" do
+      expect(parent_with_array_from_class.call(child_type: :first).error).to eq(
+        "first child error",
+      )
+    end
+
+    it "inherits error from second child in array" do
+      expect(parent_with_array_from_class.call(child_type: :second).error).to eq(
+        "second child error",
+      )
+    end
+
+    it "falls back to default when child is not in array" do
+      expect(parent_with_array_from_class.call(child_type: :third).error).to eq(
+        "Something went wrong",
+      )
+    end
+
+    context "with array of string class names" do
+      let(:parent_with_string_array_class) do
+        # Ensure child classes are defined first
+        first_child_class
+        second_child_class
+
+        stub_const("ParentWithStringArray", Class.new do
+          include Axn
+
+          expects :child_type
+
+          error from: ["FirstChildAction", "SecondChildAction"]
+
+          def call
+            case child_type
+            when :first
+              FirstChildAction.call!
+            when :second
+              SecondChildAction.call!
+            end
+          end
+        end)
+      end
+
+      it "inherits error from first child using string name" do
+        expect(parent_with_string_array_class.call(child_type: :first).error).to eq(
+          "first child error",
+        )
+      end
+
+      it "inherits error from second child using string name" do
+        expect(parent_with_string_array_class.call(child_type: :second).error).to eq(
+          "second child error",
+        )
+      end
+    end
+
+    context "with mixed array of classes and strings" do
+      let(:parent_with_mixed_array_class) do
+        # Ensure child classes are defined first
+        first_child_class
+        second_child_class
+
+        stub_const("ParentWithMixedArray", Class.new do
+          include Axn
+
+          expects :child_type
+
+          error from: [FirstChildAction, "SecondChildAction"]
+
+          def call
+            case child_type
+            when :first
+              FirstChildAction.call!
+            when :second
+              SecondChildAction.call!
+            end
+          end
+        end)
+      end
+
+      it "inherits error from child specified as class" do
+        expect(parent_with_mixed_array_class.call(child_type: :first).error).to eq(
+          "first child error",
+        )
+      end
+
+      it "inherits error from child specified as string" do
+        expect(parent_with_mixed_array_class.call(child_type: :second).error).to eq(
+          "second child error",
+        )
+      end
+    end
+
+    context "with array and custom handler" do
+      let(:parent_with_array_and_handler_class) do
+        # Ensure child classes are defined first
+        first_child_class
+        second_child_class
+
+        stub_const("ParentWithArrayAndHandler", Class.new do
+          include Axn
+
+          expects :child_type
+
+          error from: [FirstChildAction, SecondChildAction] do |e|
+            "Parent caught: #{e.message}"
+          end
+
+          def call
+            case child_type
+            when :first
+              FirstChildAction.call!
+            when :second
+              SecondChildAction.call!
+            end
+          end
+        end)
+      end
+
+      it "uses custom handler for first child" do
+        expect(parent_with_array_and_handler_class.call(child_type: :first).error).to eq(
+          "Parent caught: first child error",
+        )
+      end
+
+      it "uses custom handler for second child" do
+        expect(parent_with_array_and_handler_class.call(child_type: :second).error).to eq(
+          "Parent caught: second child error",
+        )
+      end
+    end
+  end
 end

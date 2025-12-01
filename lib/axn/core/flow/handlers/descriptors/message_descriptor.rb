@@ -37,7 +37,20 @@ module Axn
             def self._build_rule_for_from_condition(from_class)
               return nil unless from_class
 
-              if from_class.is_a?(String)
+              if from_class.is_a?(Array)
+                from_classes = from_class
+                lambda { |exception:, **|
+                  return false unless exception.is_a?(Axn::Failure) && exception.source
+
+                  from_classes.any? do |cls|
+                    if cls.is_a?(String)
+                      exception.source.class.name == cls
+                    else
+                      exception.source.is_a?(cls)
+                    end
+                  end
+                }
+              elsif from_class.is_a?(String)
                 lambda { |exception:, **|
                   exception.is_a?(Axn::Failure) && exception.source&.class&.name == from_class
                 }
