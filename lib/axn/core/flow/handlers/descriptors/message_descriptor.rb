@@ -37,6 +37,9 @@ module Axn
             def self._build_rule_for_from_condition(from_class)
               return nil unless from_class
 
+              # Special case: `from: true` means "from any child action"
+              return ->(exception:, **) { exception.is_a?(Axn::Failure) && exception.source } if from_class == true
+
               from_classes = Array(from_class)
               lambda { |exception:, **|
                 return false unless exception.is_a?(Axn::Failure) && exception.source

@@ -763,4 +763,133 @@ RSpec.describe Axn do
       end
     end
   end
+
+  context "error from: true to match any child action" do
+    let(:any_child_action_class) do
+      stub_const("AnyChildAction", Class.new do
+        include Axn
+
+        expects :type
+
+        error "any child error"
+
+        def call
+          raise StandardError, "any failed"
+        end
+      end)
+    end
+
+    let(:another_child_action_class) do
+      stub_const("AnotherChildAction", Class.new do
+        include Axn
+
+        expects :type
+
+        error "another child error"
+
+        def call
+          raise StandardError, "another failed"
+        end
+      end)
+    end
+
+    let(:parent_with_from_true_class) do
+      # Ensure child classes are defined first
+      any_child_action_class
+      another_child_action_class
+
+      stub_const("ParentWithFromTrue", Class.new do
+        include Axn
+
+        expects :child_type
+
+        # Match any child action
+        error from: true
+
+        def call
+          case child_type
+          when :any
+            AnyChildAction.call!
+          when :another
+            AnotherChildAction.call!
+          end
+        end
+      end)
+    end
+
+    it "inherits error from any child action" do
+      expect(parent_with_from_true_class.call(child_type: :any).error).to eq(
+        "any child error",
+      )
+    end
+
+    it "inherits error from another child action" do
+      expect(parent_with_from_true_class.call(child_type: :another).error).to eq(
+        "another child error",
+      )
+    end
+
+    context "with custom handler" do
+      let(:parent_with_from_true_and_handler_class) do
+        # Ensure child classes are defined first
+        any_child_action_class
+        another_child_action_class
+
+        stub_const("ParentWithFromTrueAndHandler", Class.new do
+          include Axn
+
+          expects :child_type
+
+          # Match any child action with custom handler
+          error from: true do |e|
+            "Parent caught any child: #{e.message}"
+          end
+
+          def call
+            case child_type
+            when :any
+              AnyChildAction.call!
+            when :another
+              AnotherChildAction.call!
+            end
+          end
+        end)
+      end
+
+      it "uses custom handler for any child" do
+        expect(parent_with_from_true_and_handler_class.call(child_type: :any).error).to eq(
+          "Parent caught any child: any child error",
+        )
+      end
+
+      it "uses custom handler for another child" do
+        expect(parent_with_from_true_and_handler_class.call(child_type: :another).error).to eq(
+          "Parent caught any child: another child error",
+        )
+      end
+    end
+
+    context "does not match non-child exceptions" do
+      let(:parent_with_from_true_no_child_class) do
+        stub_const("ParentWithFromTrueNoChild", Class.new do
+          include Axn
+
+          expects :type
+
+          # Match any child action
+          error from: true
+
+          def call
+            raise StandardError, "direct exception" if type == :direct
+          end
+        end)
+      end
+
+      it "falls back to default when exception is not from a child" do
+        expect(parent_with_from_true_no_child_class.call(type: :direct).error).to eq(
+          "Something went wrong",
+        )
+      end
+    end
+  end
 end
