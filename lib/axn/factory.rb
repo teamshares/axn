@@ -2,6 +2,8 @@
 
 module Axn
   class Factory
+    NOT_PROVIDED = :__not_provided__
+
     class << self
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
@@ -37,6 +39,10 @@ module Axn
 
         # Async configuration
         async: nil,
+
+        # Logging configuration
+        log_calls: NOT_PROVIDED,
+        log_errors: NOT_PROVIDED,
 
         &block
       )
@@ -74,6 +80,10 @@ module Axn
           exposes.each do |field, opts|
             axn.exposes(field, **opts)
           end
+
+          # Apply logging configuration (always apply if provided to override defaults)
+          axn.log_calls(log_calls) unless log_calls == NOT_PROVIDED
+          axn.log_errors(log_errors) unless log_errors == NOT_PROVIDED
 
           # Apply success and error handlers
           _apply_handlers(axn, :success, success, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)

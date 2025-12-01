@@ -164,4 +164,86 @@ RSpec.describe "Action spec helpers" do
       end
     end
   end
+
+  describe "Axn::Result.ok and Axn::Result.error skip logging and error handlers" do
+    let(:log_messages) { [] }
+    let(:original_handler) { Axn.config.instance_variable_get(:@on_exception) }
+
+    before do
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
+
+    after do
+      Axn.config.instance_variable_set(:@on_exception, original_handler)
+    end
+
+    describe "Axn::Result.ok" do
+      context "when logging is enabled by default" do
+        before do
+          allow_any_instance_of(Axn::Result).to receive(:info) do |_instance, message, **options|
+            log_messages << { level: :info, message:, options: }
+          end
+        end
+
+        it "does not log when using Result.ok" do
+          result = Axn::Result.ok
+          expect(result).to be_ok
+          expect(log_messages).to be_empty
+        end
+      end
+    end
+
+    describe "Axn::Result.error" do
+      context "when logging is enabled by default" do
+        before do
+          allow_any_instance_of(Axn::Result).to receive(:info) do |_instance, message, **options|
+            log_messages << { level: :info, message:, options: }
+          end
+          allow_any_instance_of(Axn::Result).to receive(:warn) do |_instance, message, **options|
+            log_messages << { level: :warn, message:, options: }
+          end
+        end
+
+        it "does not log when using Result.error" do
+          result = Axn::Result.error
+          expect(result).not_to be_ok
+          expect(log_messages).to be_empty
+        end
+
+        it "does not log when using Result.error with exception block" do
+          result = Axn::Result.error { raise StandardError, "test error" }
+          expect(result).not_to be_ok
+          expect(log_messages).to be_empty
+        end
+      end
+
+      context "when global on_exception handler is set" do
+        it "does not trigger global on_exception handler for fail! (fail! doesn't trigger on_exception anyway)" do
+          # NOTE: fail! raises Axn::Failure which triggers on_error/on_failure, not on_exception
+          expect(Axn.config).not_to receive(:on_exception)
+          result = Axn::Result.error("test error")
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::Failure)
+        end
+
+        it "does not trigger global on_exception handler for exception in block" do
+          # NOTE: The block case catches exceptions directly and bypasses _with_exception_handling,
+          # so on_exception is never called regardless
+          expect(Axn.config).not_to receive(:on_exception)
+          result = Axn::Result.error { raise StandardError, "test error" }
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(StandardError)
+        end
+      end
+
+      context "when action has on_error callback" do
+        it "triggers on_error callback" do
+          result = Axn::Result.error("test error")
+          expect(result).not_to be_ok
+          # Error handlers are still triggered for Result.error
+          expect(result.error).to eq("test error")
+        end
+      end
+    end
+  end
 end
