@@ -499,4 +499,67 @@ RSpec.describe Axn do
       expect(result.error).to eq("Exception StandardError: test exception")
     end
   end
+
+  context "error from: Child without prefix or block" do
+    let(:from_without_handler_action_class) do
+      # Ensure InnerAction is defined first
+      inner_action_class
+
+      stub_const("FromWithoutHandlerAction", Class.new do
+        include Axn
+
+        expects :type
+
+        # Just inherit child's error message without modification
+        error from: InnerAction
+
+        def call
+          InnerAction.call!(type:)
+        end
+      end)
+    end
+
+    it "inherits child's error message when child has error mapping" do
+      expect(from_without_handler_action_class.call(type: :handled).error).to eq(
+        "that wasn't a nice arg (handled)",
+      )
+    end
+
+    it "inherits child's default error message" do
+      expect(from_without_handler_action_class.call(type: :unhandled).error).to eq(
+        "default inner error",
+      )
+    end
+  end
+
+  context "parent without error mapping does not inherit child error by default" do
+    let(:parent_with_no_mapping_class) do
+      # Ensure InnerAction is defined first
+      inner_action_class
+
+      stub_const("ParentWithNoMapping", Class.new do
+        include Axn
+
+        expects :type
+
+        # No error mapping at all
+
+        def call
+          InnerAction.call!(type:)
+        end
+      end)
+    end
+
+    it "falls back to default error message when parent has no error mapping" do
+      expect(parent_with_no_mapping_class.call(type: :handled).error).to eq(
+        "Something went wrong",
+      )
+    end
+
+    it "falls back to default error message even when child has error mapping" do
+      expect(parent_with_no_mapping_class.call(type: :unhandled).error).to eq(
+        "Something went wrong",
+      )
+    end
+  end
 end

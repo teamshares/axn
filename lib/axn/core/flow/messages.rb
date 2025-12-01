@@ -24,7 +24,7 @@ module Axn
             raise Axn::UnsupportedArgument, "calling #{kind} with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
             raise Axn::UnsupportedArgument, "Combining from: with if: or unless:" if kwargs.key?(:from) && (kwargs.key?(:if) || kwargs.key?(:unless))
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix]
+            raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix] || kwargs[:from]
             raise ArgumentError, "from: only applies to error messages" if kwargs.key?(:from) && kind != :error
 
             # If message is already a descriptor, use it directly
