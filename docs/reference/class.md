@@ -251,6 +251,10 @@ The `from:` parameter allows you to customize error messages when an action call
 
 When using `from:`, the error handler receives the exception from the child action, and you can access the child's error message via `e.message` (which contains the `result.error` from the child action).
 
+### Basic usage
+
+You can use `from:` with a single child action class. The prefix and custom handler are optional:
+
 ```ruby
 class InnerAction
   include Axn
@@ -265,7 +269,10 @@ end
 class OuterAction
   include Axn
 
-  # Customize error messages from InnerAction
+  # Simply inherit child's error message (no prefix or custom handler needed)
+  error from: InnerAction
+
+  # Or customize the message
   error from: InnerAction do |e|
     "Outer action failed: #{e.message}"
   end
@@ -279,7 +286,58 @@ end
 In this example:
 - When `InnerAction` fails, `OuterAction` will catch the exception
 - The `e.message` contains the error message from `InnerAction`'s result
-- The final error message will be "Outer action failed: Something went wrong in the inner action"
+- With no handler: the error message will be "Something went wrong in the inner action" (inherited directly)
+- With custom handler: the error message will be "Outer action failed: Something went wrong in the inner action"
+
+### Matching multiple child actions
+
+You can pass an array of child action classes to match multiple children:
+
+```ruby
+class OuterAction
+  include Axn
+
+  # Match errors from multiple child actions
+  error from: [FirstChildAction, SecondChildAction]
+
+  # Or with custom handler
+  error from: [FirstChildAction, SecondChildAction] do |e|
+    "Parent caught: #{e.message}"
+  end
+
+  def call
+    # Calls one of the child actions
+  end
+end
+```
+
+You can also mix class references and string class names:
+
+```ruby
+error from: [FirstChildAction, "SecondChildAction"]
+```
+
+### Matching any child action
+
+Use `from: true` to match errors from any child action without listing them explicitly:
+
+```ruby
+class OuterAction
+  include Axn
+
+  # Match errors from any child action
+  error from: true
+
+  # Or with custom handler
+  error from: true do |e|
+    "Any child failed: #{e.message}"
+  end
+
+  def call
+    # Can call any child action
+  end
+end
+```
 
 This pattern is especially useful for:
 - Adding context to error messages from sub-actions

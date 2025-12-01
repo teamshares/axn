@@ -251,13 +251,22 @@ class ApiAction
 
   expects :data
 
-  # Combine prefix with from for consistent error formatting
+  # Simply inherit child's error (prefix and handler are optional)
+  error from: ValidationAction
+
+  # Or combine prefix with from for consistent error formatting
   error from: ValidationAction, prefix: "API Error: " do |e|
     "Request validation failed: #{e.message}"
   end
 
   # Or use prefix only (falls back to exception message)
   error from: ValidationAction, prefix: "API Error: "
+
+  # Match multiple child actions
+  error from: [ValidationAction, AnotherAction]
+
+  # Match any child action
+  error from: true
 
   def call
     ValidationAction.call!(input: data)
@@ -266,9 +275,11 @@ end
 ```
 
 This configuration provides:
+- Simple error message inheritance without requiring prefix or handler
 - Consistent error message formatting with prefixes
 - Automatic fallback to exception messages when no custom message is provided
 - Proper error message inheritance from nested actions
+- Support for matching multiple child actions or any child action
 
 ::: warning Message Ordering
 **Important**: When using conditional messages, always define your static fallback messages **first** in your class, before any conditional messages. This ensures proper fallback behavior.
