@@ -12,6 +12,7 @@ module Axn
         exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
         Axn::Factory.build(exposes:, success: msg, log_calls: false, log_errors: false) do
+          @__axn_internal__skip_global_error_handler = true
           exposures.each do |key, value|
             expose(key, value)
           end
@@ -22,6 +23,7 @@ module Axn
         exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
         Axn::Factory.build(exposes:, error: msg, log_calls: false, log_errors: false) do
+          @__axn_internal__skip_global_error_handler = true
           exposures.each do |key, value|
             expose(key, value)
           end
