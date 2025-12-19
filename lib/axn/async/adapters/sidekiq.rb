@@ -6,6 +6,10 @@ module Axn
       module Sidekiq
         extend ActiveSupport::Concern
 
+        def self._running_in_background?
+          defined?(Sidekiq) && Sidekiq.server?
+        end
+
         included do
           raise LoadError, "Sidekiq is not available. Please add 'sidekiq' to your Gemfile." unless defined?(::Sidekiq)
 

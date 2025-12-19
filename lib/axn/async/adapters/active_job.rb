@@ -6,6 +6,10 @@ module Axn
       module ActiveJob
         extend ActiveSupport::Concern
 
+        def self._running_in_background?
+          defined?(ActiveJob) && ActiveJob::Base.current_job.present?
+        end
+
         included do
           raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob::Base)
 

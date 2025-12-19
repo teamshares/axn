@@ -16,6 +16,7 @@ require "axn/core"
 require "axn/util/memoization"
 require "axn/util/callable"
 require "axn/util/logging"
+require "axn/util/background_job"
 require "axn/form_object"
 
 # Extensions
