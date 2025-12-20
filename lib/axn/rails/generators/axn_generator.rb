@@ -44,7 +44,7 @@ module Axn
           return nil unless defined?(Axn) && Axn.config.rails.app_actions_autoload_namespace
 
           namespace = Axn.config.rails.app_actions_autoload_namespace
-          namespace.to_s if namespace
+          namespace&.to_s
         end
 
         def expectations_with_types

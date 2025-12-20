@@ -8,7 +8,7 @@ RSpec.describe Axn::RailsIntegration::Generators::AxnGenerator do
     describe ".source_root" do
       it "returns the correct source root" do
         expect(described_class.source_root).to eq(
-          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../../../lib/axn/rails/generators")),
+          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../../../../../lib/axn/rails/generators")),
         )
       end
     end
