@@ -128,6 +128,7 @@ module Axn
         yield
       rescue Axn::Internal::EarlyCompletion => e
         @__context.__record_early_completion(e.message)
+        raise e
       end
     end
   end

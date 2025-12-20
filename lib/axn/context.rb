@@ -40,6 +40,7 @@ module Axn
     def __record_early_completion(message)
       @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
       @early_completion = true
+      @finalized = true
     end
 
     def __early_completion_message = @early_completion_message.presence

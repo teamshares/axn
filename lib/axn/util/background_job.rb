@@ -3,7 +3,7 @@
 module Axn
   module Util
     module BackgroundJob
-      extend self
+      module_function
 
       # Determines if code is currently running within a background job context.
       # Checks all registered async adapters to see if any report running in background.
@@ -24,4 +24,3 @@ module Axn
     end
   end
 end
-
