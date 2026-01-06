@@ -4,6 +4,10 @@ module Axn
   module Async
     class Adapters
       module Disabled
+        def self._running_in_background?
+          false
+        end
+
         def self.included(base)
           base.class_eval do
             # Validate that kwargs are not provided for Disabled adapter

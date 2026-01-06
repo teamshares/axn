@@ -10,10 +10,13 @@ module Axn
           next unless config.preprocess
 
           initial_value = @__context.provided_data[config.field]
-          new_value = config.preprocess.call(initial_value)
-          @__context.provided_data[config.field] = new_value
-        rescue StandardError => e
-          raise Axn::ContractViolation::PreprocessingError, "Error preprocessing field '#{config.field}': #{e.message}", cause: e
+          @__context.provided_data[config.field] = Axn::Util::ContractErrorHandling.with_contract_error_handling(
+            exception_class: Axn::ContractViolation::PreprocessingError,
+            message: ->(field, error) { "Error preprocessing field '#{field}': #{error.message}" },
+            field_identifier: config.field,
+          ) do
+            instance_exec(initial_value, &config.preprocess)
+          end
         end
 
         _apply_inbound_preprocessing_for_subfields!
@@ -57,11 +60,13 @@ module Axn
           data_hash = direction == :inbound ? @__context.provided_data : @__context.exposed_data
           next if data_hash.key?(field) && !data_hash[field].nil?
 
-          default_value = default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
-
-          data_hash[field] = default_value
-        rescue StandardError => e
-          raise Axn::ContractViolation::DefaultAssignmentError, "Error applying default for field '#{field}': #{e.message}", cause: e
+          data_hash[field] = Axn::Util::ContractErrorHandling.with_contract_error_handling(
+            exception_class: Axn::ContractViolation::DefaultAssignmentError,
+            message: ->(field_name, error) { "Error applying default for field '#{field_name}': #{error.message}" },
+            field_identifier: field,
+          ) do
+            default_value_getter.respond_to?(:call) ? instance_exec(&default_value_getter) : default_value_getter
+          end
         end
 
         # Apply subfield defaults for inbound direction

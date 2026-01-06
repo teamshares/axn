@@ -33,6 +33,10 @@ module Axn
 
           def _with_exception_handling
             yield
+          rescue Axn::Internal::EarlyCompletion
+            # Early completion is not an error - it's a control flow mechanism
+            # It should propagate through to be handled by the result builder
+            raise
           rescue StandardError => e
             @__context.__record_exception(e)
 

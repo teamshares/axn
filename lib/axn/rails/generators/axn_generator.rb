@@ -26,7 +26,25 @@ module Axn
         end
 
         def file_path
-          @file_path ||= name.underscore
+          @file_path ||= begin
+            path = name.underscore
+            # Strip the configured autoload namespace prefix if present
+            # e.g., if namespace is "Actions" and name is "Actions::Slack",
+            # strip "Actions::" to get "slack" instead of "actions/slack"
+            autoload_namespace = configured_autoload_namespace
+            if autoload_namespace && path.start_with?("#{autoload_namespace.underscore}/")
+              path.sub(%r{\A#{Regexp.escape(autoload_namespace.underscore)}/}, "")
+            else
+              path
+            end
+          end
+        end
+
+        def configured_autoload_namespace
+          return nil unless defined?(Axn) && Axn.config.rails.app_actions_autoload_namespace
+
+          namespace = Axn.config.rails.app_actions_autoload_namespace
+          namespace&.to_s
         end
 
         def expectations_with_types

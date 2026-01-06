@@ -8,7 +8,7 @@ RSpec.describe Axn::RailsIntegration::Generators::AxnGenerator do
     describe ".source_root" do
       it "returns the correct source root" do
         expect(described_class.source_root).to eq(
-          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../../../lib/axn/rails/generators")),
+          File.expand_path("templates", File.join(File.dirname(__FILE__), "../../../../../../lib/axn/rails/generators")),
         )
       end
     end
@@ -175,6 +175,58 @@ RSpec.describe Axn::RailsIntegration::Generators::AxnGenerator do
       generator = described_class.new(["Module::Class"])
       expect(generator.send(:class_name)).to eq("Module::Class")
       expect(generator.send(:file_path)).to eq("module/class")
+    end
+  end
+
+  describe "with app_actions_autoload_namespace configured" do
+    before do
+      allow(Axn).to receive(:config).and_return(double("config", rails: double("rails", app_actions_autoload_namespace: :Actions)))
+    end
+
+    context "when class name starts with configured namespace" do
+      it "strips the namespace prefix from file path" do
+        generator = described_class.new(["Actions::Slack"])
+        expect(generator.send(:class_name)).to eq("Actions::Slack")
+        expect(generator.send(:file_path)).to eq("slack")
+      end
+
+      it "strips only the first namespace segment for nested namespaces" do
+        generator = described_class.new(["Actions::UserManagement::CreateUser"])
+        expect(generator.send(:class_name)).to eq("Actions::UserManagement::CreateUser")
+        expect(generator.send(:file_path)).to eq("user_management/create_user")
+      end
+    end
+
+    context "when class name does not start with configured namespace" do
+      it "does not strip anything" do
+        generator = described_class.new(["OtherNamespace::Slack"])
+        expect(generator.send(:class_name)).to eq("OtherNamespace::Slack")
+        expect(generator.send(:file_path)).to eq("other_namespace/slack")
+      end
+    end
+
+    context "when namespace is not configured" do
+      before do
+        allow(Axn).to receive(:config).and_return(double("config", rails: double("rails", app_actions_autoload_namespace: nil)))
+      end
+
+      it "does not strip anything" do
+        generator = described_class.new(["Actions::Slack"])
+        expect(generator.send(:class_name)).to eq("Actions::Slack")
+        expect(generator.send(:file_path)).to eq("actions/slack")
+      end
+    end
+
+    context "when namespace is configured as string" do
+      before do
+        allow(Axn).to receive(:config).and_return(double("config", rails: double("rails", app_actions_autoload_namespace: "Actions")))
+      end
+
+      it "strips the namespace prefix from file path" do
+        generator = described_class.new(["Actions::Slack"])
+        expect(generator.send(:class_name)).to eq("Actions::Slack")
+        expect(generator.send(:file_path)).to eq("slack")
+      end
     end
   end
 

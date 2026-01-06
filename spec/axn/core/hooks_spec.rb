@@ -1,22 +1,23 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Core::Hooks do
+RSpec.describe Axn do
   describe "#_with_hooks" do
     def build_hooked(&block)
-      hooked = Class.new.send(:include, Axn::Core::Hooks)
+      hooked = build_axn do
+        attr_reader :steps
+      end
 
       hooked.class_eval do
-        attr_reader :steps
-
         def self.process
-          new.tap(&:process).steps
+          new.tap(&:call).steps
         end
 
-        def initialize
+        def initialize(**)
+          super
           @steps = []
         end
 
-        def process
+        def call
           _with_hooks { steps << :process }
         end
       end

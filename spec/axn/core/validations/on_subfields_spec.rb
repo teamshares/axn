@@ -451,6 +451,78 @@ RSpec.describe Axn do
       end
     end
 
+    context "when fail! is called in subfield preprocess block" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(_email) { fail!("Invalid email") }
+        end
+      end
+
+      it "fails with Axn::Failure" do
+        result = action.call(user_data:)
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::Failure)
+        expect(result.exception).not_to be_a(Axn::ContractViolation::PreprocessingError)
+      end
+
+      it "sets the error message" do
+        result = action.call(user_data:)
+        expect(result.error).to eq("Invalid email")
+      end
+
+      it "triggers on_failure handlers, not on_exception" do
+        failure_called = false
+        exception_called = false
+
+        action = build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(_email) { fail!("Invalid email") }
+
+          on_failure { failure_called = true }
+          on_exception { exception_called = true }
+        end
+
+        action.call(user_data:)
+        expect(failure_called).to be true
+        expect(exception_called).to be false
+      end
+    end
+
+    context "when done! is called in subfield preprocess block" do
+      let(:action) do
+        build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(_email) { done!("Early completion") }
+        end
+      end
+
+      it "returns a successful result" do
+        result = action.call(user_data:)
+        expect(result).to be_ok
+      end
+
+      it "sets the success message" do
+        result = action.call(user_data:)
+        expect(result.success).to eq("Early completion")
+      end
+
+      it "triggers on_success handlers" do
+        success_called = false
+
+        action = build_axn do
+          expects :user_data
+          expects :email, on: :user_data, preprocess: ->(_email) { done!("Early completion") }
+
+          on_success { success_called = true }
+        end
+
+        result = action.call(user_data:)
+        expect(result).to be_ok
+        expect(success_called).to be true
+      end
+    end
+
     context "with object-based parent fields" do
       let(:user_object) do
         Struct.new(:name, :email).new("John Doe", "JOHN@EXAMPLE.COM")

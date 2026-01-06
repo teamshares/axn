@@ -6,8 +6,9 @@ require "rspec/core/rake_task"
 RSpec::Core::RakeTask.new(:spec)
 
 # RuboCop specs (separate from main specs to avoid loading RuboCop unnecessarily)
-RSpec::Core::RakeTask.new(:spec_rubocop) do |task|
-  task.pattern = "spec_rubocop/**/*_spec.rb"
+task :spec_rubocop do
+  files = Dir.glob("spec_rubocop/**/*_spec.rb")
+  sh "bundle exec rspec #{files.join(" ")}"
 end
 
 # Rails specs (separate from main specs to avoid loading Rails unnecessarily)

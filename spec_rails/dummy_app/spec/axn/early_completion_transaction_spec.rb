@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn do
+  before(:all) do
+    if defined?(Rails)
+      Rails.application.initialize! unless Rails.application.initialized?
+      expect(Rails.env).to eq("test")
+    end
+  end
+
   describe "#done! with transaction strategy" do
     context "when done! is called" do
       let(:action) do
@@ -62,6 +69,65 @@ RSpec.describe Axn do
         expect { action.call }.to change(User, :count).by(2)
         expect(User.where(name: "Call Method User")).to exist
         expect(User.where(name: "After Hook User")).to exist
+      end
+    end
+
+    context "when done! is called - explicit transaction commit verification" do
+      let(:action) do
+        build_axn do
+          use :transaction
+
+          def call
+            User.create!(name: "Transaction Test User")
+            done!("Early completion")
+            # This should not execute, but if it did, the transaction should still commit
+            User.create!(name: "After Done User")
+          end
+        end
+      end
+
+      it "does NOT rollback the transaction when done! is called" do
+        initial_count = User.count
+        result = action.call
+
+        # Transaction should have committed, not rolled back
+        expect(result).to be_ok
+        expect(User.count).to eq(initial_count + 1)
+        expect(User.find_by(name: "Transaction Test User")).to be_present
+        # Verify the code after done! did not execute
+        expect(User.find_by(name: "After Done User")).to be_nil
+      end
+
+      it "persists changes across transaction boundaries" do
+        result = action.call
+        expect(result).to be_ok
+
+        # Verify the record persists and can be queried in a new transaction context
+        user = nil
+        ActiveRecord::Base.transaction do
+          user = User.find_by(name: "Transaction Test User")
+          expect(user).to be_present
+        end
+
+        # Verify outside any transaction
+        expect(user).to be_present
+        expect(user.name).to eq("Transaction Test User")
+      end
+
+      it "commits the transaction successfully even with early completion" do
+        # Use a nested transaction to verify the outer transaction commits
+        outer_user = nil
+        ActiveRecord::Base.transaction do
+          result = action.call
+          expect(result).to be_ok
+
+          # The user created inside the action's transaction should be visible
+          outer_user = User.find_by(name: "Transaction Test User")
+        end
+
+        # After the outer transaction commits, the user should still exist
+        expect(outer_user).to be_present
+        expect(User.find_by(name: "Transaction Test User")).to be_present
       end
     end
 

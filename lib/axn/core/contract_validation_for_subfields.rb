@@ -9,10 +9,14 @@ module Axn
       def _apply_inbound_preprocessing_for_subfields!
         _for_each_relevant_subfield_config(:preprocess) do |config, parent_field, subfield, parent_value|
           current_subfield_value = Axn::Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
-          preprocessed_value = config.preprocess.call(current_subfield_value)
+          preprocessed_value = Axn::Util::ContractErrorHandling.with_contract_error_handling(
+            exception_class: Axn::ContractViolation::PreprocessingError,
+            message: ->(_field, error) { "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{error.message}" },
+            field_identifier: "#{config.field} on #{config.on}",
+          ) do
+            instance_exec(current_subfield_value, &config.preprocess)
+          end
           _update_subfield_value(parent_field, subfield, preprocessed_value)
-        rescue StandardError => e
-          raise Axn::ContractViolation::PreprocessingError, "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{e.message}", cause: e
         end
       end
 
@@ -23,11 +27,14 @@ module Axn
 
           @__context.provided_data[parent_field] = {} if parent_value.nil?
 
-          default_value = config.default.respond_to?(:call) ? instance_exec(&config.default) : config.default
+          default_value = Axn::Util::ContractErrorHandling.with_contract_error_handling(
+            exception_class: Axn::ContractViolation::DefaultAssignmentError,
+            message: ->(_field, error) { "Error applying default for subfield '#{config.field}' on '#{config.on}': #{error.message}" },
+            field_identifier: "#{config.field} on #{config.on}",
+          ) do
+            config.default.respond_to?(:call) ? instance_exec(&config.default) : config.default
+          end
           _update_subfield_value(parent_field, subfield, default_value)
-        rescue StandardError => e
-          raise Axn::ContractViolation::DefaultAssignmentError, "Error applying default for subfield '#{config.field}' on '#{config.on}': #{e.message}",
-                cause: e
         end
       end
 
