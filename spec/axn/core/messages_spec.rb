@@ -737,6 +737,7 @@ RSpec.describe Axn do
             message_substring: "determining message callable",
             error_class: ArgumentError,
             error_message: "fail message",
+            times: 2,
           )
         end
       end

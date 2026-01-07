@@ -28,7 +28,16 @@ module Axn
     def rails = @rails ||= RailsConfiguration.new
 
     def on_exception(e, action:, context: {})
-      msg = "Handled exception (#{e.class.name}): #{e.message}"
+      if action.respond_to?(:result) && action.result.respond_to?(:error)
+        resolved_error = action.result.error
+        # Compare with the default fallback message instead of calling default_error
+        # to avoid triggering error message resolution multiple times
+        detail = resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR ? e.message : resolved_error
+      else
+        detail = e.message
+      end
+
+      msg = "Handled exception (#{e.class.name}): #{detail}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       action.log(msg)
 
