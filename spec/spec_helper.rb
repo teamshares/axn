@@ -27,7 +27,7 @@ RSpec.configure do |config|
   end
 end
 
-def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil)
+def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil, times: 1)
   matcher = {
     exception: an_object_satisfying { |e| e.is_a?(error_class) && e.message == error_message },
   }
@@ -35,5 +35,5 @@ def expect_piping_error_called(message_substring:, error_class:, error_message:,
   expect(Axn::Internal::Logging).to have_received(:piping_error).with(
     a_string_including(message_substring),
     hash_including(matcher),
-  )
+  ).exactly(times).times
 end
