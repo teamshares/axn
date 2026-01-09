@@ -638,6 +638,8 @@ RSpec.describe Axn do
         end
 
         it "inherited actions get re-attached to the child class" do
+          # Constants are created lazily when methods are called, so trigger creation
+          child_class.parent_action!
           inherited_axn = child_class.const_get(:Axns).const_get(:ParentAction)
           expect(inherited_axn.__axn_mounted_to__).to eq(child_class)
         end
