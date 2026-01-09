@@ -170,7 +170,7 @@ module Axn
             # Only allow overwriting if this is an inheritance scenario (child overriding parent)
             # Check if the target's parent has the same method mounted (inheritance override)
             parent = target.superclass
-            is_inheritance_override = parent && parent.respond_to?(:_mounted_axn_descriptors) &&
+            is_inheritance_override = parent.respond_to?(:_mounted_axn_descriptors) &&
                                       parent._mounted_axn_descriptors.any? { |d| d.name.to_s == name.to_s }
 
             # If it's not an inheritance override, this is a same-class collision

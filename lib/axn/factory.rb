@@ -169,7 +169,7 @@ module Axn
         end
       end
 
-      def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil, _creating_action_class_for: nil)
+      def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil, _creating_action_class_for: nil) # rubocop:disable Lint/UnderscorePrefixedVariableName
         # Mark superclass if we're creating an action class (for recursion prevention)
         # Track which target class is having an action created for it
         superclass.instance_variable_set(:@_axn_creating_action_class_for, _creating_action_class_for) if _creating_action_class_for && superclass

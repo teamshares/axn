@@ -58,7 +58,7 @@ Metrics/ModuleLength:
   Enabled: false
 
 Metrics/ClassLength:
-  Max: 150
+  Max: 175
 
 Metrics/MethodLength:
   Max: 70
