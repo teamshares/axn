@@ -24,12 +24,20 @@ module Axn
         end
 
         def build_and_configure_action_class(target, name, namespace)
-          # Pass target through to Factory.build so it can mark the superclass
-          # The superclass flag is checked by the inherited callback in mountable.rb
-          mounted_axn = build_action_class(target, _creating_action_class_for: target)
-          configure_class_name_and_constant(mounted_axn, name, namespace, target)
-          configure_axn_mounted_to(mounted_axn, target)
-          mounted_axn
+          # Mark target as having an action class being created to prevent recursion
+          # This is necessary because create_superclass_for_inherit_mode may create
+          # classes that inherit from target, triggering the inherited callback
+          target.instance_variable_set(:@_axn_creating_action_class_for, target)
+          begin
+            # Pass target through to Factory.build so it can mark the superclass
+            # The superclass flag is checked by the inherited callback in mountable.rb
+            mounted_axn = build_action_class(target, _creating_action_class_for: target)
+            configure_class_name_and_constant(mounted_axn, name, namespace, target)
+            configure_axn_mounted_to(mounted_axn, target)
+            mounted_axn
+          ensure
+            target.instance_variable_set(:@_axn_creating_action_class_for, nil)
+          end
         end
 
         private
