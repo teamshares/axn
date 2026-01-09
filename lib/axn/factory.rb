@@ -44,6 +44,10 @@ module Axn
         log_calls: NOT_PROVIDED,
         log_errors: NOT_PROVIDED,
 
+        # Internal flag to prevent recursion during action class creation
+        # Tracks which target class is having an action class created for it
+        _creating_action_class_for: nil,
+
         &block
       )
         raise ArgumentError, "[Axn::Factory] Cannot receive both a callable and a block" if callable.present? && block_given?
@@ -72,7 +76,7 @@ module Axn
         end
 
         # NOTE: inheriting from wrapping class, so we can set default values (e.g. for HTTP headers)
-        _build_axn_class(superclass:, args:, executable:, expose_return_as:, include:, extend:, prepend:).tap do |axn|
+        _build_axn_class(superclass:, args:, executable:, expose_return_as:, include:, extend:, prepend:, _creating_action_class_for:).tap do |axn|
           expects.each do |field, opts|
             axn.expects(field, **opts)
           end
@@ -165,7 +169,11 @@ module Axn
         end
       end
 
-      def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil)
+      def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil, _creating_action_class_for: nil)
+        # Mark superclass if we're creating an action class (for recursion prevention)
+        # Track which target class is having an action created for it
+        superclass.instance_variable_set(:@_axn_creating_action_class_for, _creating_action_class_for) if _creating_action_class_for && superclass
+
         Class.new(superclass || Object) do
           include Axn unless self < Axn
 
@@ -187,6 +195,8 @@ module Axn
             expose(expose_return_as => retval) if expose_return_as.present?
           end
         end
+      ensure
+        superclass.instance_variable_set(:@_axn_creating_action_class_for, nil) if _creating_action_class_for && superclass
       end
 
       def _apply_async_config(axn, async)

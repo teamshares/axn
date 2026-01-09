@@ -256,8 +256,6 @@ RSpec.describe Axn::Mountable do
       it "inherits both mount_axn_method and axn definitions" do
         expect(ChildWithMixed).to respond_to(:method1!)
         expect(ChildWithMixed.const_defined?(:Axns)).to be true
-        # Constants are created lazily when methods are called, so trigger creation
-        ChildWithMixed.method1!(value: 0)
         expect(ChildWithMixed.const_get(:Axns).const_defined?(:Method1)).to be true
         expect(ChildWithMixed).to respond_to(:action1, :action1!, :action1_async)
         expect(ChildWithMixed).to respond_to(:method2!)

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] Action class constants are now created eagerly when child classes inherit from parents with mounted actions, allowing direct constant access (e.g., `TeamsharesAPI::Company::Axns::Get.call`)
 * [FEAT] Add ability to determine if currently running in background
 * [FEAT] Handle done! and fail! while executing user blocks
 * [BREAKING] `emit_metrics` hook now receives keyword arguments (`resource:`, `result:`) instead of positional arguments

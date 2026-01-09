@@ -75,6 +75,41 @@ module Axn
     def self.included(base)
       base.class_eval do
         class_attribute :_mounted_axn_descriptors, default: []
+
+        # Eagerly create action class constants for inherited descriptors
+        # (e.g. allow TeamsharesAPI::Company::Axns::Get.call to work *without* having to
+        # call TeamsharesAPI::Company.get! first)
+        def self.inherited(subclass)
+          super
+
+          # Only process if we have inherited descriptors from parent
+          return unless _mounted_axn_descriptors.any?
+
+          # Skip if subclass doesn't respond to _mounted_axn_descriptors
+          # This prevents recursion when creating action classes that inherit from target
+          return unless subclass.respond_to?(:_mounted_axn_descriptors)
+
+          # Skip if we're currently creating an action class (prevent infinite recursion)
+          # This is necessary because Axn::Factory.build creates classes that inherit from
+          # Axn (which includes Axn::Mountable), triggering inherited callbacks during
+          # action class creation.
+          superclass = subclass.superclass
+          creating_for = superclass&.instance_variable_get(:@_axn_creating_action_class_for)
+          return if creating_for
+
+          # Skip if this is an action class being created (they're in the Axns namespace)
+          # Action classes have names like "ParentClass::Axns::ActionName"
+          subclass_name = subclass.name
+          return if subclass_name&.include?("::Axns::")
+
+          # Eagerly create constants for all inherited descriptors
+          # mounted_axn_for will ensure namespace exists and create the constant
+          # If a child overrides, the new descriptor will replace the constant
+          _mounted_axn_descriptors.each do |descriptor|
+            # This will create the constant if it doesn't exist
+            descriptor.mounted_axn_for(target: subclass)
+          end
+        end
       end
 
       MountingStrategies.all.each do |(_name, klass)|
