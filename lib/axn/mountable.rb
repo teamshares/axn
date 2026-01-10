@@ -108,6 +108,12 @@ module Axn
           _mounted_axn_descriptors.each do |descriptor|
             # This will create the constant if it doesn't exist
             descriptor.mounted_axn_for(target: subclass)
+            # Also define namespace methods on the child's namespace
+            # This ensures TeamsharesAPI::Company::Axns.get works even though
+            # the descriptor was originally mounted on TeamsharesAPI::Base
+            # We use define_namespace_methods instead of mount_to_namespace to
+            # avoid re-registering the constant (which is already created above)
+            descriptor.mount_strategy.define_namespace_methods(descriptor:, target: subclass)
           end
         end
       end

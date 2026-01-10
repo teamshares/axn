@@ -15,13 +15,9 @@ module Axn
           end
 
           # Create a fresh namespace class for this target
-          client_class = target
-          namespace_class = create_namespace_class(client_class)
-
-          # Only set the constant if it doesn't exist
-          return if target.const_defined?(:Axns, false)
-
-          target.const_set(:Axns, namespace_class)
+          create_namespace_class(target).tap do |namespace_class|
+            target.const_set(:Axns, namespace_class) unless target.const_defined?(:Axns, false)
+          end
         end
 
         private

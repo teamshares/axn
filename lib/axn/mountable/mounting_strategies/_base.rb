@@ -37,11 +37,18 @@ module Axn
           target.define_singleton_method(method_name, &)
         end
 
-        private
-
         # Mount methods to the namespace and register the action class
         def mount_to_namespace(descriptor:, target:)
+          define_namespace_methods(descriptor:, target:)
+          # Register the action class as a constant in the namespace
           action_class_builder = Helpers::ClassBuilder.new(descriptor)
+          action_class_builder.mount(target, descriptor.name.to_s)
+        end
+
+        # Define namespace methods on the target's Axns namespace
+        # This is public so it can be called from the inherited callback
+        # without re-registering the constant (which is already created by mounted_axn_for)
+        def define_namespace_methods(descriptor:, target:)
           namespace = Helpers::NamespaceManager.get_or_create_namespace(target)
           name = descriptor.name
           descriptor_ref = descriptor
@@ -61,9 +68,6 @@ module Axn
             axn = descriptor_ref.mounted_axn_for(target:)
             axn.call_async(**kwargs)
           end
-
-          # Register the action class as a constant in the namespace
-          action_class_builder.mount(target, name.to_s)
         end
 
         # Check if we should raise an error for method collision
