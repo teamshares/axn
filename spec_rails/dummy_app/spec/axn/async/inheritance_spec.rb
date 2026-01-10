@@ -45,7 +45,7 @@ RSpec.describe "Axn::Async inheritance" do
         child_class.call_async(name: "World")
         proxy_class = child_class.const_get("ActiveJobProxy")
         proxy_instance = proxy_class.new
-        result = proxy_instance.perform(name: "World")
+        result = proxy_instance.perform({ name: "World" })
       end
 
       expect(result).to eq("Child: Hello, World!")
@@ -69,7 +69,7 @@ RSpec.describe "Axn::Async inheritance" do
         parent_class.call_async(name: "World")
         proxy_class = parent_class.const_get("ActiveJobProxy")
         proxy_instance = proxy_class.new
-        result = proxy_instance.perform(name: "World")
+        result = proxy_instance.perform({ name: "World" })
       end
 
       expect(result).to eq("Parent: Hello, World!")
