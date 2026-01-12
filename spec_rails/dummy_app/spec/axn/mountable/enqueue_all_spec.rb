@@ -41,7 +41,13 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       expect(result).to eq(true)
     end
 
-    it "on error" do
+    it "on failure" do
+      expect do
+        Actions::EnqueueAll::Tester.enqueue_all(max: 5)
+      end.to raise_error(Axn::Failure, "don't like 5s")
+    end
+
+    it "on exception" do
       expect do
         Actions::EnqueueAll::Tester.enqueue_all(max: 4)
       end.to raise_error(RuntimeError, "don't like 4s")

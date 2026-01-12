@@ -22,6 +22,8 @@ module Actions
         puts "About to enqueue_all: max: #{max} | #{instance_helper} | #{self.class.class_helper}"
         raise "don't like 4s" if max == 4
 
+        fail! "don't like 5s" if max == 5
+
         1.upto(max).map do |i|
           enqueue(number: i)
         end
