@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/mountable/inherit_profiles"
+require "axn/exceptions"
 
 module Axn
   module Mountable
@@ -23,15 +24,25 @@ module Axn
         end
 
         def build_and_configure_action_class(target, name, namespace)
-          mounted_axn = build_action_class(target)
-          configure_class_name_and_constant(mounted_axn, name, namespace)
-          configure_axn_mounted_to(mounted_axn, target)
-          mounted_axn
+          # Mark target as having an action class being created to prevent recursion
+          # This is necessary because create_superclass_for_inherit_mode may create
+          # classes that inherit from target, triggering the inherited callback
+          target.instance_variable_set(:@_axn_creating_action_class_for, target)
+          begin
+            # Pass target through to Factory.build so it can mark the superclass
+            # The superclass flag is checked by the inherited callback in mountable.rb
+            mounted_axn = build_action_class(target, _creating_action_class_for: target)
+            configure_class_name_and_constant(mounted_axn, name, namespace, target)
+            configure_axn_mounted_to(mounted_axn, target)
+            mounted_axn
+          ensure
+            target.instance_variable_set(:@_axn_creating_action_class_for, nil)
+          end
         end
 
         private
 
-        def build_action_class(target)
+        def build_action_class(target, _creating_action_class_for: nil) # rubocop:disable Lint/UnderscorePrefixedVariableName
           existing_axn_klass = @descriptor.instance_variable_get(:@existing_axn_klass)
           return existing_axn_klass if existing_axn_klass
 
@@ -49,12 +60,15 @@ module Axn
             factory_kwargs[:superclass] = create_superclass_for_inherit_mode(target, inherit_config)
           end
 
+          # Pass the target class through to Factory.build so it can mark the superclass
+          factory_kwargs[:_creating_action_class_for] = _creating_action_class_for
+
           Axn::Factory.build(**factory_kwargs, &block)
         end
 
-        def configure_class_name_and_constant(axn_klass, name, axn_namespace)
+        def configure_class_name_and_constant(axn_klass, name, axn_namespace, target)
           configure_class_name(axn_klass, name, axn_namespace) if name.present?
-          register_constant(axn_klass, name, axn_namespace) if should_register_constant?(axn_namespace)
+          register_constant(axn_klass, name, axn_namespace, target) if should_register_constant?(axn_namespace)
         end
 
         def configure_axn_mounted_to(axn_klass, target)
@@ -148,12 +162,29 @@ module Axn
           end
         end
 
-        def register_constant(axn_klass, name, axn_namespace)
+        def register_constant(axn_klass, name, axn_namespace, target)
           constant_name = generate_constant_name(name)
 
-          # Only set the constant if it doesn't exist
-          return if axn_namespace.const_defined?(constant_name, false)
+          # Check if constant already exists - if so, only allow overwriting in inheritance scenarios
+          if axn_namespace.const_defined?(constant_name, false)
+            # Only allow overwriting if this is an inheritance scenario (child overriding parent)
+            # Check if the target's parent has the same method mounted (inheritance override)
+            parent = target.superclass
+            is_inheritance_override = parent.respond_to?(:_mounted_axn_descriptors) &&
+                                      parent._mounted_axn_descriptors.any? { |d| d.name.to_s == name.to_s }
 
+            # If it's not an inheritance override, this is a same-class collision
+            # Raise an error here for clarity, rather than silently skipping and failing later
+            # Use the same error message format as mount_method for consistency
+            unless is_inheritance_override
+              method_name = "#{name}!"
+              strategy_name = @descriptor.mount_strategy.name.split("::").last
+              raise Axn::Mountable::MountingError,
+                    "#{strategy_name} unable to attach -- method '#{method_name}' is already taken"
+            end
+          end
+
+          # Set the constant (either it doesn't exist, or it's an inheritance override)
           axn_namespace.const_set(constant_name, axn_klass)
         end
       end

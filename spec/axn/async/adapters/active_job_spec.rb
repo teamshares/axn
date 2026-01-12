@@ -18,7 +18,7 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
 
   describe ".call_async" do
     it "calls perform_later on the proxy class with context" do
-      expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
+      expect_any_instance_of(Class).to receive(:perform_later).with({ name: "World", age: 25 })
       action_class.call_async(name: "World", age: 25)
     end
 
@@ -28,7 +28,7 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
         allow(action_class).to receive(:active_job_proxy_class).and_return(proxy_instance)
         allow(proxy_instance).to receive(:set).with(wait: 3600).and_return(proxy_instance)
 
-        expect(proxy_instance).to receive(:perform_later).with(name: "World", age: 25)
+        expect(proxy_instance).to receive(:perform_later).with({ name: "World", age: 25 })
         action_class.call_async(name: "World", age: 25, _async: { wait: 3600 })
       end
 
@@ -38,17 +38,17 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
         allow(action_class).to receive(:active_job_proxy_class).and_return(proxy_instance)
         allow(proxy_instance).to receive(:set).with(wait_until: future_time).and_return(proxy_instance)
 
-        expect(proxy_instance).to receive(:perform_later).with(name: "World", age: 25)
+        expect(proxy_instance).to receive(:perform_later).with({ name: "World", age: 25 })
         action_class.call_async(name: "World", age: 25, _async: { wait_until: future_time })
       end
 
       it "calls perform_later when _async is not a hash" do
-        expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25, _async: "user_value")
+        expect_any_instance_of(Class).to receive(:perform_later).with({ name: "World", age: 25, _async: "user_value" })
         action_class.call_async(name: "World", age: 25, _async: "user_value")
       end
 
       it "calls perform_later when _async is an empty hash" do
-        expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
+        expect_any_instance_of(Class).to receive(:perform_later).with({ name: "World", age: 25 })
         action_class.call_async(name: "World", age: 25, _async: {})
       end
     end
@@ -65,7 +65,7 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
     end
 
     it "calls perform_later on the proxy class with context" do
-      expect_any_instance_of(Class).to receive(:perform_later).with(name: "World", age: 25)
+      expect_any_instance_of(Class).to receive(:perform_later).with({ name: "World", age: 25 })
       action_class.call_async(name: "World", age: 25)
     end
 

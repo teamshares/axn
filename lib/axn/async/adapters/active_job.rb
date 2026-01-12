@@ -36,7 +36,7 @@ module Axn
               end
             end
 
-            job.perform_later(**kwargs)
+            job.perform_later(kwargs)
           end
 
           def active_job_proxy_class
