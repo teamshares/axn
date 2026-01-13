@@ -44,14 +44,18 @@ module Axn
           # Implements adapter-specific enqueueing logic for Sidekiq.
           # Note: Adapters must implement _enqueue_async_job and must NOT override call_async.
           def _enqueue_async_job(kwargs)
+            # Extract and normalize _async options (removes _async from kwargs)
+            normalized_options = _extract_and_normalize_async_options(kwargs)
+
+            # Convert kwargs to string keys and handle GlobalID conversion
             job_kwargs = _params_to_global_id(kwargs)
 
-            if kwargs[:_async].is_a?(Hash)
-              options = kwargs.delete(:_async)
-              if options[:wait_until]
-                return perform_at(options[:wait_until], job_kwargs)
-              elsif options[:wait]
-                return perform_in(options[:wait], job_kwargs)
+            # Process normalized async options if present
+            if normalized_options
+              if normalized_options["wait_until"]
+                return perform_at(normalized_options["wait_until"], job_kwargs)
+              elsif normalized_options["wait"]
+                return perform_in(normalized_options["wait"], job_kwargs)
               end
             end
 

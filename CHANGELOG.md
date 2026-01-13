@@ -14,6 +14,7 @@
 * [FEAT] Added ActiveSupport::Notification emission for `axn.call_async` (separate from `axn.call`) - emits notification when async jobs are enqueued with payload including resource, action_class, kwargs, and adapter name
 * [INTERNAL] Refactored async adapters to use template method pattern - adapters now implement `_enqueue_async_job` hook instead of overriding `call_async`, eliminating duplication of notification and logging logic
 * [FEAT] Enhanced `error from:` to support arrays of child classes and `from: true` to match any child action - prefix is now optional when using `from:`
+* Improve handling of _async options to call_async (bugfix + serialization improvements)
 
 ## 0.1.0-alpha.3
 * [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration

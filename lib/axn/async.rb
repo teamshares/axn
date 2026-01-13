@@ -122,6 +122,43 @@ module Axn
 
         async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
       end
+
+      # Extracts and normalizes _async options from kwargs.
+      # Returns normalized options hash (with string keys and converted durations) and removes _async from kwargs.
+      #
+      # @param kwargs [Hash] The keyword arguments (modified in place)
+      # @return [Hash, nil] Normalized async options hash, or nil if no _async options present
+      def _extract_and_normalize_async_options(kwargs)
+        async_options = kwargs.delete(:_async) if kwargs[:_async].is_a?(Hash)
+        _normalize_async_options(async_options) if async_options
+      end
+
+      # Normalizes _async options hash:
+      # - Converts symbol keys to string keys
+      # - Converts ActiveSupport::Duration values to integer seconds (for wait)
+      # - Preserves Time objects (for wait_until)
+      #
+      # @param async_hash [Hash, nil] The async options hash
+      # @return [Hash, nil] Normalized hash with string keys, or nil if input is not a hash
+      def _normalize_async_options(async_hash)
+        return nil unless async_hash.is_a?(Hash)
+
+        normalized = {}
+        async_hash.each do |key, value|
+          string_key = key.to_s
+
+          normalized[string_key] = case string_key
+                                   when "wait"
+                                     # Convert ActiveSupport::Duration to integer seconds
+                                     value.respond_to?(:to_i) ? value.to_i : value
+                                   else
+                                     # Preserve wait_until and other keys/values as-is
+                                     value
+                                   end
+        end
+
+        normalized
+      end
     end
   end
 end
