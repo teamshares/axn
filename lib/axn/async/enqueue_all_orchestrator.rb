@@ -36,10 +36,13 @@ module Axn
           on_progress: method(:set_logging_context),
         )
 
+        message_parts = ["Batch enqueued #{count} jobs for #{target.name}"]
+        message_parts << "with explicit args: #{static_args.inspect}" if static_args.any?
+
         Axn::Util::Logging.log_at_level(
           self.class,
           level: :info,
-          message_parts: ["Batch enqueued #{count} jobs for #{target.name}"],
+          message_parts:,
           error_context: "logging batch enqueue completion",
         )
       end
@@ -69,7 +72,9 @@ module Axn
 
           if has_kwarg_iteration
             # Execute iteration synchronously - kwargs with iterables can't be serialized
-            execute_iteration(target, **static_args)
+            kwarg_fields = configs.select { |c| c.from.is_a?(Proc) && static_args.key?(c.field) }.map(&:field)
+            info "[enqueue_all] Running in foreground: kwargs #{kwarg_fields.join(", ")} cannot be serialized for background execution"
+            execute_iteration_without_logging(target, **static_args)
           else
             # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
             serialized_static_args = Axn::Util::GlobalIdSerialization.serialize(resolved_static)
@@ -90,6 +95,15 @@ module Axn
           count = { value: 0 }
           iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:, on_progress:)
           count[:value]
+        end
+
+        # Execute iteration with per-job async logging suppressed (for foreground execution)
+        def execute_iteration_without_logging(target, **static_args)
+          original_log_level = target.log_calls_level
+          target.log_calls_level = nil
+          execute_iteration(target, **static_args)
+        ensure
+          target.log_calls_level = original_log_level
         end
 
         # Override to use enqueue_all-specific async config
