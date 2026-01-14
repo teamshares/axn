@@ -139,6 +139,10 @@ module Axn
           # Merge: inferred first (as defaults), then explicit (as overrides), then kwarg configs (as final overrides)
           merged = inferred + filtered_explicit + kwarg_configs
 
+          # Sort for memory efficiency: model-based configs (using find_each) should be processed first
+          # to minimize memory usage in nested iterations
+          merged.sort_by! { |config| model_based_config?(config, target) ? 0 : 1 }
+
           return [merged, resolved_static] if merged.any?
 
           # No configs at all - error only if there are required fields not covered by static args
@@ -172,6 +176,19 @@ module Axn
             # Create an inferred config (equivalent to `enqueues_each :field`)
             BatchEnqueue::Config.new(field: field_config.field, from: nil, via: nil, filter_block: nil)
           end
+        end
+
+        # Checks if a config is model-based (will use find_each for memory-efficient iteration)
+        def model_based_config?(config, target)
+          # Configs with nil 'from' are inferred from model declarations
+          return true if config.from.nil?
+
+          # For explicit configs, check if the field has a model declaration that supports find_each
+          field_config = target.internal_field_configs.find { |c| c.field == config.field }
+          model_config = field_config&.validations&.dig(:model)
+          return true if model_config && model_config[:klass]&.respond_to?(:find_each)
+
+          false
         end
 
         def validate_async_configured!(target)
