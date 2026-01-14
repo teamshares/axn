@@ -161,14 +161,13 @@ FailingAction.call_async(data: "test")
 
 ## Batch Enqueueing with `enqueues_each`
 
-The `enqueues_each` method provides a declarative way to set up batch enqueueing. It creates methods that iterate over a collection and enqueue each item as a separate background job.
+The `enqueues_each` method provides a declarative way to set up batch enqueueing. It automatically iterates over collections and enqueues each item as a separate background job.
 
 ### Basic Usage
 
 ```ruby
 class SyncForCompany
   include Axn
-
   async :sidekiq
 
   expects :company, model: Company
@@ -178,29 +177,47 @@ class SyncForCompany
     # Sync individual company data
   end
 
-  # Declare the field to iterate over - source is inferred from model: Company
-  enqueues_each :company
+  # No enqueues_each needed! Source is auto-inferred from model: Company
 end
 
 # Usage
-SyncForCompany.enqueue_all  # Enqueues EnqueueAllTrigger, which iterates and enqueues individual jobs
+SyncForCompany.enqueue_all  # Automatically iterates Company.all and enqueues each company
 ```
 
 **How it works:**
 1. `enqueue_all` validates configuration upfront (async configured, static args present)
 2. Enqueues an `EnqueueAllTrigger` job in the background
 3. When `EnqueueAllTrigger` runs, it iterates over the source collection and enqueues individual jobs
+4. Model-based iterations (using `find_each`) are processed first for memory efficiency
 
-### Key Features
+### Auto-Inference from `model:` Declarations
 
-- **Declarative**: Define what to iterate over, not how to iterate
-- **Source Options**: Infer from `model:`, provide a lambda, or reference a class method
-- **Filtering**: Use a block to filter which items to enqueue
-- **Extraction**: Use `via:` to extract a specific attribute (e.g., `:id`)
-- **Multi-field**: Multiple `enqueues_each` declarations create cross-product iteration
-- **Static Fields**: Fields not covered by `enqueues_each` are passed through to each job
+If a field has a `model:` declaration and the model class responds to `find_each`, you **don't need to explicitly declare `enqueues_each`**. The source collection is automatically inferred:
 
-### Examples
+```ruby
+class SyncForCompany
+  include Axn
+  async :sidekiq
+
+  expects :company, model: Company  # Auto-inferred: Company.all
+
+  def call
+    # ... sync logic
+  end
+
+  # No enqueues_each needed - automatically iterates Company.all
+end
+
+SyncForCompany.enqueue_all  # Works without explicit enqueues_each!
+```
+
+### Explicit Configuration with `enqueues_each`
+
+Use `enqueues_each` when you need to:
+- Override the default source (e.g., `Company.active` instead of `Company.all`)
+- Add filtering logic
+- Extract specific attributes
+- Iterate over fields without `model:` declarations
 
 ```ruby
 class SyncForCompany
@@ -213,10 +230,7 @@ class SyncForCompany
     # ... sync logic
   end
 
-  # Basic - source inferred from model: Company → Company.all
-  enqueues_each :company
-
-  # With explicit source lambda
+  # Override default source
   enqueues_each :company, from: -> { Company.active }
 
   # With extraction (passes company_id instead of company object)
@@ -227,35 +241,150 @@ class SyncForCompany
     company.active? && !company.in_exit?
   end
 
-  # Multi-field cross-product (creates user_count × company_count jobs)
+  # Method name as source
+  enqueues_each :company, from: :active_companies
+end
+```
+
+### Overriding on `enqueue_all` Call
+
+You can override iteration sources or make fields static when calling `enqueue_all`:
+
+```ruby
+class SyncForCompany
+  include Axn
+  async :sidekiq
+
+  expects :company, model: Company
+  expects :user, model: User
+
+  def call
+    # ... sync logic
+  end
+
+  # Default: iterates Company.all
+  enqueues_each :company
+end
+
+# Override with a subset (enumerable kwarg replaces source)
+SyncForCompany.enqueue_all(company: Company.active.limit(10))
+
+# Override with a single value (scalar kwarg makes it static, no iteration)
+SyncForCompany.enqueue_all(company: Company.find(123))
+
+# Mix static and iterated fields
+SyncForCompany.enqueue_all(
+  company: Company.active,  # Iterates over active companies
+  user: User.find(1)        # Static: same user for all jobs
+)
+```
+
+### Dynamic Iteration via Kwargs
+
+You can iterate over fields without any `enqueues_each` declaration by passing enumerables directly:
+
+```ruby
+class ProcessFormats
+  include Axn
+  async :sidekiq
+
+  expects :format
+  expects :mode
+
+  def call
+    # ... process logic
+  end
+end
+
+# Pass enumerables to create cross-product iteration
+ProcessFormats.enqueue_all(
+  format: [:csv, :json, :xml],  # Iterates: 3 jobs
+  mode: :full                    # Static: same mode for all
+)
+
+# Multiple enumerables create cross-product
+ProcessFormats.enqueue_all(
+  format: [:csv, :json],         # 2 formats
+  mode: [:full, :incremental]    # 2 modes
+)
+# Result: 2 × 2 = 4 jobs total
+```
+
+**Note:** Arrays and Sets are treated as static values (not iterated) when the field expects an enumerable type:
+
+```ruby
+expects :tags, type: Array
+
+# This passes the entire array as a static value
+ProcessTags.enqueue_all(tags: ["ruby", "rails", "testing"])
+```
+
+### Multi-Field Cross-Product Iteration
+
+Multiple `enqueues_each` declarations create a cross-product of all combinations:
+
+```ruby
+class SyncForUserAndCompany
+  include Axn
+  async :sidekiq
+
+  expects :user, model: User
+  expects :company, model: Company
+
+  def call
+    # ... sync logic for user + company combination
+  end
+
   enqueues_each :user, from: -> { User.active }
   enqueues_each :company, from: -> { Company.active }
 end
+
+# Creates user_count × company_count jobs
+# Each combination of (user, company) gets its own job
+SyncForUserAndCompany.enqueue_all
 ```
 
 ### Static Fields
 
-Fields declared with `expects` but not covered by `enqueues_each` become static fields that must be passed to `enqueue_all`:
+Fields declared with `expects` but not covered by `enqueues_each` (or auto-inference) become static fields that must be passed to `enqueue_all`:
 
 ```ruby
 class SyncWithMode
   include Axn
   async :sidekiq
 
-  expects :company, model: Company
-  expects :sync_mode
+  expects :company, model: Company  # Auto-inferred, will iterate
+  expects :sync_mode                 # Static, must be provided
 
   def call
     # Uses both company (iterated) and sync_mode (static)
   end
-
-  enqueues_each :company  # Only iterates over company
 end
 
 # sync_mode must be provided - it's passed to every enqueued job
 SyncWithMode.enqueue_all(sync_mode: :full)
 ```
 
-### Iteration Method
+### Memory Efficiency
 
-`enqueues_each` uses `find_each` when available (ActiveRecord collections) for memory efficiency, falling back to `each` for plain arrays.
+For optimal memory usage, model-based configs (using `find_each`) are automatically processed first in nested iterations. This ensures ActiveRecord-style batch processing happens before loading potentially large enumerables into memory.
+
+```ruby
+# Model-based iteration uses find_each (memory efficient)
+expects :company, model: Company  # Processed first
+
+# Array-based iteration uses each (loads all into memory)
+enqueues_each :format, from: -> { [:csv, :json, :xml] }  # Processed second
+```
+
+### Iteration Method Selection
+
+- **`find_each`**: Used when the source responds to `find_each` (ActiveRecord collections) - processes in batches for memory efficiency
+- **`each`**: Used for plain arrays and other enumerables - loads all items into memory
+
+### Edge Cases and Limitations
+
+1. **Fields expecting enumerable types**: If a field expects `Array` or `Set`, arrays/sets passed to `enqueue_all` are treated as static values (not iterated)
+2. **Strings and Hashes**: Always treated as static values, even though they respond to `:each`
+3. **No model or source**: If a field has no `model:` declaration and no `enqueues_each` with `from:`, you must pass it as a kwarg to `enqueue_all` or it will raise an error
+4. **Required static fields**: Fields without defaults that aren't covered by iteration must be provided to `enqueue_all`
