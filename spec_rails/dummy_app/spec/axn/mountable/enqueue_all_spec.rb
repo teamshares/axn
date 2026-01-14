@@ -95,7 +95,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
         expect { action_class.enqueue_all }.to raise_error(
           Axn::Async::MissingEnqueueEachError,
-          /no enqueue_each configured/,
+          /not covered by enqueue_each/,
         )
       end
 

@@ -88,11 +88,11 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       # Handle no-expects case
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-      # Use the real _resolve_configs method to get configs (including inference)
-      configs = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target)
+      # Use the real _resolve_configs method to get configs and resolved static args
+      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target, static_args:)
 
       # Validate static args
-      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
+      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, resolved_static) if configs.any?
 
       # Execute iteration synchronously
       Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
@@ -107,7 +107,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
   describe "enqueue_all is defined on all Axn classes" do
     it "is available even without enqueue_each" do
       action_class = build_axn do
-        def call; end
       end
 
       expect(action_class).to respond_to(:enqueue_all)
@@ -323,7 +322,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       it "raises NotImplementedError" do
         action_class = build_axn do
           expects :company
-          def call; end
           enqueue_each :company, from: -> { [] }
         end
 
@@ -337,13 +335,12 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       it "raises MissingEnqueueEachError with instructions" do
         action_class = build_axn do
           expects :company  # No model: declaration
-          def call; end
           # No enqueue_each called
         end.tap { |klass| enable_async_on(klass) }
 
         expect do
           action_class.enqueue_all
-        end.to raise_error(Axn::Async::MissingEnqueueEachError, /no enqueue_each configured/)
+        end.to raise_error(Axn::Async::MissingEnqueueEachError, /not covered by enqueue_each/)
       end
     end
 
@@ -352,7 +349,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         cc = company_class
         action_class = build_axn do
           expects :company, model: cc  # model: with find_each
-          def call; end
           # No explicit enqueue_each - should be inferred
         end.tap { |klass| enable_async_on(klass) }
 
@@ -368,10 +364,64 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
     end
 
+    describe "multi-field: explicit config for one, inferred for another" do
+      it "merges inferred and explicit configs" do
+        cc = company_class
+        uc = user_class
+        action_class = build_axn do
+          expects :company, model: cc
+          expects :user, model: uc
+
+
+          # Only explicit config for company with filter, user should be inferred
+          enqueue_each :company, from: -> { cc.active }
+        end.tap { |klass| enable_async_on(klass) }
+
+        with_synchronous_enqueue_all
+
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        action_class.enqueue_all
+
+        # 2 active companies × 2 users = 4 jobs
+        expect(enqueued.length).to eq(4)
+        expect(enqueued.map { |e| e[:company].name }.uniq).to contain_exactly("Company A", "Company B")
+        expect(enqueued.map { |e| e[:user].name }.uniq).to contain_exactly("User X", "User Y")
+      end
+    end
+
+    describe "multi-field: explicit config for one, static arg for another" do
+      it "uses static arg instead of inferring" do
+        cc = company_class
+        uc = user_class
+        static_user = user_class._records.first
+
+        action_class = build_axn do
+          expects :company, model: cc
+          expects :user, model: uc
+
+
+          enqueue_each :company, from: -> { cc.active }
+        end.tap { |klass| enable_async_on(klass) }
+
+        with_synchronous_enqueue_all
+
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        # Pass user as static arg - should not iterate over users
+        action_class.enqueue_all(user: static_user)
+
+        # 2 active companies × 1 static user = 2 jobs
+        expect(enqueued.length).to eq(2)
+        expect(enqueued.all? { |e| e[:user] == static_user }).to be true
+      end
+    end
+
     describe "no expects at all" do
       it "just calls call_async directly" do
         action_class = build_axn do
-          def call; end
         end.tap { |klass| enable_async_on(klass) }
 
         expect(action_class).to receive(:call_async).with(no_args)
@@ -384,7 +434,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         action_class = build_axn do
           expects :company # No model:
 
-          def call; end
 
           enqueue_each :company # No from:
         end.tap { |klass| enable_async_on(klass) }
@@ -404,7 +453,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         cc = company_class
         action_class = build_axn do
           expects :company, type: cc
-          def call; end
           enqueue_each :company, from: -> { cc }
         end.tap { |klass| enable_async_on(klass) }
 
@@ -422,7 +470,6 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         items = [1, 2, 3]
         build_axn do
           expects :number
-          def call; end
           enqueue_each :number, from: -> { items }
         end.tap { |klass| enable_async_on(klass) }
       end
@@ -436,6 +483,272 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         action_class.enqueue_all
 
         expect(enqueued).to eq([{ number: 1 }, { number: 2 }, { number: 3 }])
+      end
+    end
+  end
+
+  describe "unified kwarg iteration" do
+    describe "scalar vs enumerable detection" do
+      before { with_synchronous_enqueue_all }
+
+      describe "boolean field with scalar" do
+        let(:action_class) do
+          build_axn do
+            expects :enabled, type: :boolean
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats scalar boolean as static (enqueues once)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(enabled: true)
+
+          expect(enqueued).to eq([{ enabled: true }])
+        end
+      end
+
+      describe "boolean field with array" do
+        let(:action_class) do
+          build_axn do
+            expects :enabled, type: :boolean
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats array as iterable (enqueues for each value)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(enabled: [true, false])
+
+          expect(enqueued).to contain_exactly(
+            { enabled: true },
+            { enabled: false },
+          )
+        end
+      end
+
+      describe "multiple fields with mixed scalars and enumerables" do
+        let(:action_class) do
+          build_axn do
+            expects :format
+            expects :mode
+            expects :priority
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "creates cross-product for enumerables, static for scalars" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(
+            format: [:csv, :json], # iterate
+            mode: :full,           # static
+            priority: [1, 2],      # iterate
+          )
+
+          # 2 formats × 1 mode × 2 priorities = 4 jobs
+          expect(enqueued.length).to eq(4)
+          expect(enqueued).to contain_exactly(
+            { format: :csv, mode: :full, priority: 1 },
+            { format: :csv, mode: :full, priority: 2 },
+            { format: :json, mode: :full, priority: 1 },
+            { format: :json, mode: :full, priority: 2 },
+          )
+        end
+      end
+    end
+
+    describe "field expects enumerable type" do
+      before { with_synchronous_enqueue_all }
+
+      describe "Array type" do
+        let(:action_class) do
+          build_axn do
+            expects :tags, type: Array
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats array as static value (not iterated)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(tags: %w[a b c])
+
+          # Should enqueue once with the entire array as the value
+          expect(enqueued).to eq([{ tags: %w[a b c] }])
+        end
+      end
+
+      describe "Set type" do
+        let(:action_class) do
+          build_axn do
+            expects :ids, type: Set
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats set as static value (not iterated)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          id_set = Set.new([1, 2, 3])
+          action_class.enqueue_all(ids: id_set)
+
+          expect(enqueued).to eq([{ ids: id_set }])
+        end
+      end
+    end
+
+    describe "string and hash are not iterated" do
+      before { with_synchronous_enqueue_all }
+
+      describe "string value" do
+        let(:action_class) do
+          build_axn do
+            expects :name
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats string as static (even though it responds to :each)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(name: "test")
+
+          expect(enqueued).to eq([{ name: "test" }])
+        end
+      end
+
+      describe "hash value" do
+        let(:action_class) do
+          build_axn do
+            expects :options
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "treats hash as static (even though it responds to :each)" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          action_class.enqueue_all(options: { foo: :bar })
+
+          expect(enqueued).to eq([{ options: { foo: :bar } }])
+        end
+      end
+    end
+
+    describe "kwarg overrides explicit enqueue_each config" do
+      before { with_synchronous_enqueue_all }
+
+      describe "enumerable kwarg replaces configured source" do
+        let(:action_class) do
+          cc = company_class
+          build_axn do
+            expects :company, type: cc
+            # Configured to iterate over all companies
+            enqueue_each :company, from: -> { cc.all }
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "uses kwarg enumerable instead of configured source" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          # Override with only first 2 companies
+          subset = company_class._records[0..1]
+          action_class.enqueue_all(company: subset)
+
+          expect(enqueued.length).to eq(2)
+          expect(enqueued.map { |e| e[:company] }).to eq(subset)
+        end
+      end
+
+      describe "scalar kwarg overrides configured iteration" do
+        let(:action_class) do
+          cc = company_class
+          build_axn do
+            expects :company, type: cc
+            enqueue_each :company, from: -> { cc.all }
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "uses scalar as static instead of iterating" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          single_company = company_class._records.first
+          action_class.enqueue_all(company: single_company)
+
+          # Should enqueue once with the specific company (not iterate)
+          expect(enqueued).to eq([{ company: single_company }])
+        end
+      end
+    end
+
+    describe "kwarg overrides inferred config" do
+      before { with_synchronous_enqueue_all }
+
+      describe "enumerable kwarg replaces inferred source" do
+        let(:action_class) do
+          cc = company_class
+          build_axn do
+            expects :company, model: cc
+            # No enqueue_each - should be inferred from model:
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "uses kwarg enumerable instead of inferred Model.all" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          # Override with only active companies
+          subset = company_class.active
+          action_class.enqueue_all(company: subset)
+
+          expect(enqueued.length).to eq(2) # Only active ones
+        end
+      end
+
+      describe "scalar kwarg skips inferred iteration" do
+        let(:action_class) do
+          cc = company_class
+          build_axn do
+            expects :company, model: cc
+          end.tap { |klass| enable_async_on(klass) }
+        end
+
+        it "uses scalar as static instead of inferring iteration" do
+          enqueued = []
+          allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+          single_company = company_class._records.first
+          action_class.enqueue_all(company: single_company)
+
+          expect(enqueued).to eq([{ company: single_company }])
+        end
+      end
+    end
+
+    describe "range iteration" do
+      before { with_synchronous_enqueue_all }
+
+      let(:action_class) do
+        build_axn do
+          expects :page_number
+        end.tap { |klass| enable_async_on(klass) }
+      end
+
+      it "iterates over a range" do
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        action_class.enqueue_all(page_number: 1..3)
+
+        expect(enqueued).to contain_exactly(
+          { page_number: 1 },
+          { page_number: 2 },
+          { page_number: 3 },
+        )
       end
     end
   end

@@ -45,10 +45,10 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       # Handle no-expects case
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-      # Use real _resolve_configs (includes inference)
-      configs = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target)
+      # Use real _resolve_configs (includes inference) - now returns [configs, resolved_static]
+      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target, static_args:)
 
-      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
+      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, resolved_static) if configs.any?
       Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
     end
   end
