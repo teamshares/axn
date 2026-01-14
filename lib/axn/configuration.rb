@@ -25,6 +25,18 @@ module Axn
       @default_async_config_block = block_given? ? block : nil
     end
 
+    # Async configuration for EnqueueAllTrigger (used by enqueue_all_async)
+    # Defaults to the default async config if not explicitly set
+    def _enqueue_all_async_adapter = @enqueue_all_async_adapter || _default_async_adapter
+    def _enqueue_all_async_config = @enqueue_all_async_config || _default_async_config
+    def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
+
+    def set_enqueue_all_async(adapter, **config, &block)
+      @enqueue_all_async_adapter = adapter
+      @enqueue_all_async_config = config.any? ? config : {}
+      @enqueue_all_async_config_block = block_given? ? block : nil
+    end
+
     def rails = @rails ||= RailsConfiguration.new
 
     def on_exception(e, action:, context: {})

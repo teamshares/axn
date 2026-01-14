@@ -92,14 +92,14 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
     end
   end
 
-  describe "the batch enqueue action class" do
-    it "has stripped field configurations (does not inherit parent expects)" do
-      # Get the batch enqueue action class
-      batch_action = test_class._batch_enqueue_action_class
+  describe "the shared EnqueueAllTrigger class" do
+    it "has its own fixed field configurations (does not inherit parent expects)" do
+      # The shared trigger has only target_class_name and static_args
+      trigger = Axn::Async::EnqueueAllTrigger
+      trigger_fields = trigger.internal_field_configs.map(&:field)
 
-      # It should NOT inherit parent's expects fields
-      expect(batch_action.internal_field_configs).to be_empty
-      expect(batch_action.external_field_configs).to be_empty
+      expect(trigger_fields).to contain_exactly(:target_class_name, :static_args)
+      expect(trigger_fields).not_to include(:company)
 
       # The original class should still have field configurations
       expect(test_class.internal_field_configs).not_to be_empty

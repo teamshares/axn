@@ -4,6 +4,13 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   before do
     Sidekiq::Testing.fake!
     Sidekiq::Queues.clear_all
+    # Configure the EnqueueAllTrigger to use sidekiq
+    Axn.config.set_enqueue_all_async(:sidekiq)
+  end
+
+  after do
+    # Reset to default
+    Axn.config.set_enqueue_all_async(false)
   end
 
   describe "core call behavior" do
@@ -101,23 +108,21 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   end
 
   describe ".enqueue_all_async" do
-    it "enqueues the enqueue_all action itself" do
+    it "enqueues the shared trigger action" do
       result = Actions::EnqueueAll::Tester.enqueue_all_async
 
       expect(result).to be_a(String) # Job ID
-      expect(Sidekiq::Queues["default"].size).to eq(1) # Should enqueue 1 job (the enqueue_all action itself)
+      expect(Sidekiq::Queues["default"].size).to eq(1)
 
-      # Verify the job is the enqueue_all action, not individual Tester jobs
+      # Verify the job is the shared EnqueueAllTrigger, not individual Tester jobs
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::BatchEnqueueAll")
-      expect(job["args"]).to eq([{}])
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllTrigger")
+      expect(job["args"]).to eq([{ "target_class_name" => "Actions::EnqueueAll::Tester", "static_args" => {} }])
     end
 
     it "executes the enqueue_all action when processed inline" do
-      # When run inline, the EnqueueAll action runs immediately, iterates, and
-      # enqueues individual Tester jobs, which then also run inline.
-      #
-      # Verify by capturing stdout from the individual action executions.
+      # When run inline, the EnqueueAllTrigger runs immediately, calls enqueue_all,
+      # which iterates and enqueues individual Tester jobs (also run inline).
       expect do
         Sidekiq::Testing.inline! do
           Actions::EnqueueAll::Tester.enqueue_all_async
@@ -128,22 +133,13 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
     end
 
     it "does not execute iteration immediately when not in inline mode" do
-      # This should NOT produce the "Action executed" output immediately
       expect do
         Actions::EnqueueAll::Tester.enqueue_all_async
       end.not_to output(/Action executed/).to_stdout
 
-      # Should only enqueue the enqueue_all action itself, not individual jobs
+      # Should only enqueue the trigger, not individual jobs
       expect(Sidekiq::Queues["default"].size).to eq(1)
-
-      # Verify the job is the enqueue_all action, not individual Tester jobs
-      job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::BatchEnqueueAll")
+      expect(Sidekiq::Queues["default"].first["class"]).to eq("Axn::Async::EnqueueAllTrigger")
     end
-
-    # NOTE: Error handling for enqueue_all_async is tested via the synchronous
-    # enqueue_all tests above. Async versions require named classes for Sidekiq,
-    # but the error behavior is identical since enqueue_all_async just wraps
-    # enqueue_all in a background job.
   end
 end

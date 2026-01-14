@@ -41,3 +41,6 @@ module Axn
     end
   end
 end
+
+# Load after Axn is defined since it includes Axn
+require "axn/async/enqueue_all_trigger"

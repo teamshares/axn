@@ -45,7 +45,6 @@ module Axn
 
       included do
         class_attribute :_batch_enqueue_configs, default: nil
-        class_attribute :_batch_enqueue_action_class, default: nil
       end
 
       # DSL methods for batch enqueueing
@@ -74,44 +73,15 @@ module Axn
           # Only define once - check if methods already exist
           return if respond_to?(:enqueue_all)
 
-          # Define enqueue_all class method
+          # Define enqueue_all class method (synchronous iteration)
           define_singleton_method(:enqueue_all) do |**static_args|
             _execute_batch_enqueue(**static_args)
           end
 
-          # Define enqueue_all_async class method
+          # Define enqueue_all_async class method (delegates to shared trigger)
           define_singleton_method(:enqueue_all_async) do |**static_args|
-            _batch_enqueue_action_class.call_async(**static_args)
+            EnqueueAllTrigger.call_async(target_class_name: name, static_args:)
           end
-
-          # Create action class for async execution
-          _create_batch_enqueue_action_class
-        end
-
-        def _create_batch_enqueue_action_class
-          return if _batch_enqueue_action_class.present?
-
-          # Create a simple action class for async execution
-          # Don't inherit from parent to avoid inheriting expects fields
-          # Just inherit async config
-          target = self
-          action_class = Class.new do
-            include Axn
-
-            define_method(:call) { target.enqueue_all }
-          end
-
-          # Apply async configuration from parent
-          if target.respond_to?(:_async_adapter) && target._async_adapter.present?
-            action_class.async(target._async_adapter, **(target._async_config || {}), &target._async_config_block)
-          end
-
-          # Set the class as a constant for Sidekiq to resolve by name
-          # This is necessary because Sidekiq inline mode looks up classes by their name
-          const_name = :BatchEnqueueAll
-          target.const_set(const_name, action_class) unless target.const_defined?(const_name)
-
-          self._batch_enqueue_action_class = action_class
         end
 
         def _execute_batch_enqueue(**static_args)

@@ -219,7 +219,7 @@ RSpec.describe "Axn::Mountable inherit modes" do
       expect(mounted_axn.internal_field_configs).to be_empty
     end
 
-    it "enqueue_each creates action that does not inherit parent expects" do
+    it "enqueue_each uses shared EnqueueAllTrigger with its own fixed fields" do
       parent = Class.new do
         include Axn
         before :some_hook
@@ -231,10 +231,13 @@ RSpec.describe "Axn::Mountable inherit modes" do
         enqueue_each :number, from: -> { [1, 2, 3] }
       end
 
-      batch_action = parent._batch_enqueue_action_class
-      expect(batch_action.before_hooks).to be_empty
-      # NOTE: enqueue_each action shouldn't inherit parent's :number field
-      expect(batch_action.internal_field_configs.map(&:field)).not_to include(:number)
+      # The shared trigger has its own fixed fields, not the parent's
+      trigger = Axn::Async::EnqueueAllTrigger
+      expect(trigger.internal_field_configs.map(&:field)).to contain_exactly(:target_class_name, :static_args)
+      expect(trigger.internal_field_configs.map(&:field)).not_to include(:number)
+
+      # Parent still has its expects declarations
+      expect(parent.internal_field_configs.map(&:field)).to include(:number)
     end
   end
 end
