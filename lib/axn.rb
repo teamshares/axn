@@ -18,6 +18,7 @@ require "axn/util/callable"
 require "axn/util/logging"
 require "axn/util/background_job"
 require "axn/util/contract_error_handling"
+require "axn/util/global_id_serialization"
 require "axn/form_object"
 
 # Extensions

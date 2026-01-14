@@ -26,11 +26,13 @@ module Axn
 
       def call
         target = target_class_name.constantize
-        # target_class_name and static_args already in context via expects
+
+        # Deserialize static_args (convert GlobalID strings back to objects)
+        deserialized_static_args = Axn::Util::GlobalIdSerialization.deserialize(static_args)
 
         count = self.class.execute_iteration(
           target,
-          **static_args.symbolize_keys,
+          **deserialized_static_args,
           on_progress: method(:set_logging_context),
         )
 
@@ -61,8 +63,20 @@ module Axn
           # Validate static args upfront (raises ArgumentError if missing)
           validate_static_args!(target, configs, resolved_static) if configs.any?
 
-          # Execute iteration in background via EnqueueAllOrchestrator
-          call_async(target_class_name: target.name, static_args:)
+          # Check if any configs came from kwargs (these have lambdas that can't be serialized)
+          # If so, we must execute iteration synchronously
+          has_kwarg_iteration = configs.any? { |c| c.from.is_a?(Proc) && static_args.key?(c.field) }
+
+          if has_kwarg_iteration
+            # Execute iteration synchronously - kwargs with iterables can't be serialized
+            execute_iteration(target, **static_args)
+          else
+            # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
+            serialized_static_args = Axn::Util::GlobalIdSerialization.serialize(resolved_static)
+
+            # Execute iteration in background via EnqueueAllOrchestrator
+            call_async(target_class_name: target.name, static_args: serialized_static_args)
+          end
         end
 
         # Execute the actual iteration (called from #call in background)
