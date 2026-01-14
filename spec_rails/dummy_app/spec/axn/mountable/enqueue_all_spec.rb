@@ -83,7 +83,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
         expect { action_class.enqueue_all }.to raise_error(NotImplementedError, /does not have async configured/)
       end
 
-      it "raises MissingEnqueueEachError when expects exist but no enqueues_each" do
+      it "raises MissingEnqueuesEachError when expects exist but no enqueues_each" do
         action_class = Class.new do
           include Axn
           async :sidekiq
@@ -94,7 +94,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
         end
 
         expect { action_class.enqueue_all }.to raise_error(
-          Axn::Async::MissingEnqueueEachError,
+          Axn::Async::MissingEnqueuesEachError,
           /not covered by enqueues_each/,
         )
       end

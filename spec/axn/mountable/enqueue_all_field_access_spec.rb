@@ -45,10 +45,10 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       # Handle no-expects case
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-      # Use real _resolve_configs (includes inference) - now returns [configs, resolved_static]
-      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target, static_args:)
+      # Use real resolve_configs (includes inference) - returns [configs, resolved_static]
+      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:resolve_configs, target, static_args:)
 
-      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, resolved_static) if configs.any?
+      Axn::Async::EnqueueAllTrigger.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
       Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
     end
   end
@@ -84,7 +84,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       allow(test_class).to receive(:call_async) { |**args| enqueued << args }
 
       result = test_class.enqueue_all
-      expect(result).to eq(true)
+      expect(result).to eq(1) # returns count of jobs enqueued
       expect(enqueued.length).to eq(1)
       expect(enqueued.first[:company].name).to eq("Test Company")
     end
@@ -111,7 +111,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       allow(os_like_class).to receive(:call_async) { |**args| enqueued << args }
 
       result = os_like_class.enqueue_all
-      expect(result).to eq(true)
+      expect(result).to eq(1) # returns count of jobs enqueued
       expect(enqueued.length).to eq(1)
     end
   end

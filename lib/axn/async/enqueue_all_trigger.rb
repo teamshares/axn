@@ -3,7 +3,7 @@
 module Axn
   module Async
     # Custom error for missing enqueues_each configuration
-    class MissingEnqueueEachError < StandardError; end
+    class MissingEnqueuesEachError < StandardError; end
 
     # Shared trigger action for executing batch enqueueing in the background.
     # Called by enqueue_all to iterate over configured fields asynchronously.
@@ -18,12 +18,22 @@ module Axn
     class EnqueueAllTrigger
       include Axn
 
+      # Disable automatic before/after logging - we log the count manually
+      log_calls false
+
       expects :target_class_name
       expects :static_args, default: {}, allow_blank: true
 
       def call
         target = target_class_name.constantize
-        self.class.execute_iteration(target, **static_args.symbolize_keys)
+        count = self.class.execute_iteration(target, **static_args.symbolize_keys)
+
+        Axn::Util::Logging.log_at_level(
+          self.class,
+          level: :info,
+          message_parts: ["Batch enqueued #{count} jobs for #{target.name}"],
+          error_context: "logging batch enqueue completion",
+        )
       end
 
       class << self
@@ -33,33 +43,34 @@ module Axn
         # @param static_args [Hash] Static arguments passed to each job
         # @return [String] Job ID from the async adapter
         def enqueue_for(target, **static_args)
-          # 1. Validate async is configured on target
-          _validate_async_configured!(target)
+          validate_async_configured!(target)
 
-          # 2. Handle no-expects case: just call_async directly
+          # Handle no-expects case: just call_async directly
           return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-          # 3. Get configs and resolved static args
-          #    Kwargs are split: scalars → resolved_static, enumerables → configs
-          configs, resolved_static = _resolve_configs(target, static_args:)
+          # Get configs and resolved static args
+          # Kwargs are split: scalars → resolved_static, enumerables → configs
+          configs, resolved_static = resolve_configs(target, static_args:)
 
-          # 4. Validate static args upfront (raises ArgumentError if missing)
-          _validate_static_args!(target, configs, resolved_static) if configs.any?
+          # Validate static args upfront (raises ArgumentError if missing)
+          validate_static_args!(target, configs, resolved_static) if configs.any?
 
-          # 5. Execute iteration in background via EnqueueAllTrigger
+          # Execute iteration in background via EnqueueAllTrigger
           call_async(target_class_name: target.name, static_args:)
         end
 
         # Execute the actual iteration (called from #call in background)
+        # Returns the count of jobs enqueued
         def execute_iteration(target, **static_args)
-          configs, resolved_static = _resolve_configs(target, static_args:)
-          _iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static)
-          true
+          configs, resolved_static = resolve_configs(target, static_args:)
+          count = { value: 0 }
+          iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:)
+          count[:value]
         end
 
         # Override to use enqueue_all-specific async config
         def call_async(...)
-          _ensure_enqueue_all_async_configured
+          ensure_enqueue_all_async_configured
           super
         end
 
@@ -75,7 +86,7 @@ module Axn
         # - Scalar values → static args (override any inferred/explicit config)
         # - Enumerable values → iteration source (replaces inferred/explicit config source)
         #   Exception: if field expects enumerable type (Array, etc), treat as scalar
-        def _resolve_configs(target, static_args: {})
+        def resolve_configs(target, static_args: {})
           explicit_configs = target._batch_enqueue_configs
           explicit_fields = explicit_configs.map(&:field)
 
@@ -86,7 +97,7 @@ module Axn
           static_args.each do |field, value|
             field_config = target.internal_field_configs.find { |c| c.field == field }
 
-            if _should_iterate?(value, field_config)
+            if should_iterate?(value, field_config)
               # Enumerable kwarg → create a config to iterate over it
               kwarg_configs << BatchEnqueue::Config.new(
                 field:,
@@ -113,7 +124,7 @@ module Axn
 
           # Infer configs for model: fields not already covered
           exclude_from_inference = explicit_fields + scalar_fields + iterable_kwarg_fields
-          inferred = _infer_configs_from_models(target, exclude: exclude_from_inference)
+          inferred = infer_configs_from_models(target, exclude: exclude_from_inference)
 
           # Merge: inferred first (as defaults), then explicit (as overrides), then kwarg configs (as final overrides)
           merged = inferred + filtered_explicit + kwarg_configs
@@ -129,7 +140,7 @@ module Axn
 
           return [[], resolved_static] if uncovered_required.empty?
 
-          raise MissingEnqueueEachError,
+          raise MissingEnqueuesEachError,
                 "#{target.name} has required fields (#{uncovered_required.join(", ")}) " \
                 "not covered by enqueues_each, model: declarations, or static args. " \
                 "Add `enqueues_each :field_name, from: -> { ... }` for fields to iterate, " \
@@ -138,7 +149,7 @@ module Axn
         end
 
         # Infer configs from fields with model: declarations whose model responds to find_each
-        def _infer_configs_from_models(target, exclude: [])
+        def infer_configs_from_models(target, exclude: [])
           target.internal_field_configs.filter_map do |field_config|
             next if exclude.include?(field_config.field)
 
@@ -153,7 +164,7 @@ module Axn
           end
         end
 
-        def _validate_async_configured!(target)
+        def validate_async_configured!(target)
           return if target._async_adapter.present? && target._async_adapter != false
 
           raise NotImplementedError,
@@ -161,7 +172,7 @@ module Axn
                 "Add `async :sidekiq` or `async :active_job` to enable enqueue_all."
         end
 
-        def _validate_static_args!(target, configs, static_args)
+        def validate_static_args!(target, configs, static_args)
           enqueue_each_fields = configs.map(&:field)
           all_expected_fields = target.internal_field_configs.map(&:field)
           static_fields = all_expected_fields - enqueue_each_fields
@@ -183,10 +194,11 @@ module Axn
                 "These fields are not covered by enqueues_each and must be provided."
         end
 
-        def _iterate(target:, configs:, index:, accumulated:, static_args:)
+        def iterate(target:, configs:, index:, accumulated:, static_args:, count:)
           # Base case: all fields accumulated, enqueue the job
           if index >= configs.length
             target.call_async(**accumulated, **static_args)
+            count[:value] += 1
             return
           end
 
@@ -204,17 +216,18 @@ module Axn
             value = config.via ? item.public_send(config.via) : item
 
             # Recurse to next field
-            _iterate(
+            iterate(
               target:,
               configs:,
               index: index + 1,
               accumulated: accumulated.merge(config.field => value),
               static_args:,
+              count:,
             )
           end
         end
 
-        def _ensure_enqueue_all_async_configured
+        def ensure_enqueue_all_async_configured
           return if _async_adapter.present?
           return unless Axn.config._enqueue_all_async_adapter.present?
 
@@ -230,10 +243,10 @@ module Axn
         # @param value [Object] The value passed in kwargs
         # @param field_config [Object, nil] The field's config from internal_field_configs
         # @return [Boolean] true if we should iterate over the value
-        def _should_iterate?(value, field_config)
+        def should_iterate?(value, field_config)
           return false unless value.respond_to?(:each)
           return false if value.is_a?(String) || value.is_a?(Hash)
-          return false if _field_expects_enumerable?(field_config)
+          return false if field_expects_enumerable?(field_config)
 
           true
         end
@@ -242,7 +255,7 @@ module Axn
         #
         # @param field_config [Object, nil] The field's config from internal_field_configs
         # @return [Boolean] true if the field expects an enumerable
-        def _field_expects_enumerable?(field_config)
+        def field_expects_enumerable?(field_config)
           return false unless field_config
 
           type_config = field_config.validations&.dig(:type)

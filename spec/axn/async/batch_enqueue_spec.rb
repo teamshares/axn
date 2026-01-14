@@ -88,11 +88,11 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       # Handle no-expects case
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-      # Use the real _resolve_configs method to get configs and resolved static args
-      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target, static_args:)
+      # Use the real resolve_configs method to get configs and resolved static args
+      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:resolve_configs, target, static_args:)
 
       # Validate static args
-      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, resolved_static) if configs.any?
+      Axn::Async::EnqueueAllTrigger.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
 
       # Execute iteration synchronously
       Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
@@ -332,7 +332,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
     end
 
     describe "no enqueues_each with expects (no model:)" do
-      it "raises MissingEnqueueEachError with instructions" do
+      it "raises MissingEnqueuesEachError with instructions" do
         action_class = build_axn do
           expects :company # No model: declaration
           # No enqueues_each called
@@ -340,7 +340,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
         expect do
           action_class.enqueue_all
-        end.to raise_error(Axn::Async::MissingEnqueueEachError, /not covered by enqueues_each/)
+        end.to raise_error(Axn::Async::MissingEnqueuesEachError, /not covered by enqueues_each/)
       end
     end
 

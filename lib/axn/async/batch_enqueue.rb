@@ -58,7 +58,7 @@ module Axn
         # @param static_args [Hash] Arguments to pass to every enqueued job
         # @return [String] Job ID from the async adapter
         # @raise [NotImplementedError] If async is not configured
-        # @raise [MissingEnqueueEachError] If expects exist but no enqueues_each configured
+        # @raise [MissingEnqueuesEachError] If expects exist but no enqueues_each configured
         # @raise [ArgumentError] If required static fields are missing
         def enqueue_all(**static_args)
           EnqueueAllTrigger.enqueue_for(self, **static_args)
