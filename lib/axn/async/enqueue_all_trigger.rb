@@ -26,7 +26,13 @@ module Axn
 
       def call
         target = target_class_name.constantize
-        count = self.class.execute_iteration(target, **static_args.symbolize_keys)
+        # target_class_name and static_args already in context via expects
+
+        count = self.class.execute_iteration(
+          target,
+          **static_args.symbolize_keys,
+          on_progress: method(:set_logging_context),
+        )
 
         Axn::Util::Logging.log_at_level(
           self.class,
@@ -61,10 +67,14 @@ module Axn
 
         # Execute the actual iteration (called from #call in background)
         # Returns the count of jobs enqueued
-        def execute_iteration(target, **static_args)
+        #
+        # @param target [Class] The action class to enqueue jobs for
+        # @param on_progress [Proc, nil] Callback to track iteration progress for logging context
+        # @param static_args [Hash] Static arguments to pass to each job
+        def execute_iteration(target, on_progress: nil, **static_args)
           configs, resolved_static = resolve_configs(target, static_args:)
           count = { value: 0 }
-          iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:)
+          iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:, on_progress:)
           count[:value]
         end
 
@@ -194,26 +204,57 @@ module Axn
                 "These fields are not covered by enqueues_each and must be provided."
         end
 
-        def iterate(target:, configs:, index:, accumulated:, static_args:, count:)
+        def iterate(target:, configs:, index:, accumulated:, static_args:, count:, on_progress:)
           # Base case: all fields accumulated, enqueue the job
           if index >= configs.length
+            on_progress&.call(stage: :enqueueing, enqueue_args: accumulated.merge(static_args))
             target.call_async(**accumulated, **static_args)
             count[:value] += 1
             return
           end
 
           config = configs[index]
+
+          # Track which field's source we're resolving
+          on_progress&.call(stage: :resolving_source, field: config.field)
           source = config.resolve_source(target:)
 
           # Use find_each if available (ActiveRecord), otherwise each
           iterator = source.respond_to?(:find_each) ? :find_each : :each
 
           source.public_send(iterator) do |item|
-            # Apply filter block if present
-            next if config.filter_block && !config.filter_block.call(item)
+            # Track current item being processed
+            item_id = item.try(:id) || item.to_s.truncate(100)
+            on_progress&.call(stage: :iterating, field: config.field, current_item_id: item_id)
 
-            # Apply via extraction if present
-            value = config.via ? item.public_send(config.via) : item
+            # Apply filter block if present - swallow errors, skip item
+            if config.filter_block
+              filter_result = begin
+                config.filter_block.call(item)
+              rescue StandardError => e
+                Axn::Internal::Logging.piping_error(
+                  "filter block for :#{config.field}",
+                  exception: e,
+                )
+                false
+              end
+              next unless filter_result
+            end
+
+            # Apply via extraction if present - swallow errors, skip item
+            value = if config.via
+                      begin
+                        item.public_send(config.via)
+                      rescue StandardError => e
+                        Axn::Internal::Logging.piping_error(
+                          "via extraction (:#{config.via}) for :#{config.field}",
+                          exception: e,
+                        )
+                        next
+                      end
+                    else
+                      item
+                    end
 
             # Recurse to next field
             iterate(
@@ -223,6 +264,7 @@ module Axn
               accumulated: accumulated.merge(config.field => value),
               static_args:,
               count:,
+              on_progress:,
             )
           end
         end

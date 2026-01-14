@@ -749,4 +749,106 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
     end
   end
+
+  describe "error handling" do
+    before { with_synchronous_enqueue_all }
+
+    describe "filter block exceptions" do
+      let(:action_class) do
+        build_axn do
+          expects :number
+
+          enqueues_each :number, from: -> { [1, 2, 3] } do |n|
+            raise "filter exploded" if n == 2
+
+            true
+          end
+        end.tap { |klass| enable_async_on(klass) }
+      end
+
+      it "swallows filter block errors and skips the item" do
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        # Should not raise, should skip item 2
+        action_class.enqueue_all
+
+        expect(enqueued).to contain_exactly(
+          { number: 1 },
+          { number: 3 },
+        )
+      end
+
+      it "logs the swallowed error via piping_error" do
+        allow(action_class).to receive(:call_async)
+        expect(Axn::Internal::Logging).to receive(:piping_error).with(
+          "filter block for :number",
+          exception: an_instance_of(RuntimeError),
+        )
+
+        action_class.enqueue_all
+      end
+    end
+
+    describe "via extraction exceptions" do
+      let(:action_class) do
+        items = [
+          Struct.new(:id).new(1),
+          Struct.new(:name).new("no id"), # doesn't respond to :id
+          Struct.new(:id).new(3),
+        ]
+
+        build_axn do
+          expects :item_id
+
+          enqueues_each :item_id, from: -> { items }, via: :id
+        end.tap { |klass| enable_async_on(klass) }
+      end
+
+      it "swallows via extraction errors and skips the item" do
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        # Should not raise, should skip item without :id
+        action_class.enqueue_all
+
+        expect(enqueued).to contain_exactly(
+          { item_id: 1 },
+          { item_id: 3 },
+        )
+      end
+
+      it "logs the swallowed error via piping_error" do
+        allow(action_class).to receive(:call_async)
+        expect(Axn::Internal::Logging).to receive(:piping_error).with(
+          "via extraction (:id) for :item_id",
+          exception: an_instance_of(NoMethodError),
+        )
+
+        action_class.enqueue_all
+      end
+    end
+
+    describe "progress tracking via on_progress callback" do
+      it "tracks stage and field during iteration" do
+        progress_calls = []
+        on_progress = ->(stage:, **rest) { progress_calls << { stage:, **rest } }
+
+        cc = company_class
+        action_class = build_axn do
+          expects :company, type: cc
+          enqueues_each :company, from: -> { cc.all }
+        end.tap { |klass| enable_async_on(klass) }
+
+        allow(action_class).to receive(:call_async)
+
+        Axn::Async::EnqueueAllTrigger.execute_iteration(action_class, on_progress:)
+
+        # Should have recorded resolving_source, then iterating for each item, then enqueueing
+        expect(progress_calls.first).to include(stage: :resolving_source, field: :company)
+        expect(progress_calls).to include(a_hash_including(stage: :iterating, field: :company))
+        expect(progress_calls.last).to include(stage: :enqueueing)
+      end
+    end
+  end
 end

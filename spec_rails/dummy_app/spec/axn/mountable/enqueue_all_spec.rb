@@ -139,13 +139,11 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
         end.to raise_error(RuntimeError, "source exploded")
       end
 
-      it "propagates exception from filter block" do
+      it "swallows filter block exception and skips item" do
         action_class = Class.new do
           include Axn
           async :sidekiq
           expects :item
-
-          def call; end
 
           enqueues_each :item, from: -> { [1, 2, 3] } do |item|
             raise "filter exploded for #{item}" if item == 2
@@ -154,9 +152,13 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
           end
         end
 
+        # Filter block errors are swallowed - should not raise
         expect do
           Axn::Async::EnqueueAllTrigger.execute_iteration(action_class)
-        end.to raise_error(RuntimeError, "filter exploded for 2")
+        end.not_to raise_error
+
+        # Should have enqueued 2 jobs (items 1 and 3, skipping 2)
+        expect(Sidekiq::Queues["default"].size).to eq(2)
       end
     end
   end
