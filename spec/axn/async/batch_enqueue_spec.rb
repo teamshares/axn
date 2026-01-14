@@ -88,15 +88,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       # Handle no-expects case
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-      configs = target._batch_enqueue_configs
+      # Use the real _resolve_configs method to get configs (including inference)
+      configs = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target)
 
-      # Handle missing enqueue_each case
-      if configs.nil? || configs.empty?
-        raise Axn::Async::MissingEnqueueEachError,
-              "#{target.name || "Anonymous class"} has expects declarations but no enqueue_each configured."
-      end
-
-      # Validate static args (call original for this)
+      # Validate static args
       Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
 
       # Execute iteration synchronously
@@ -338,10 +333,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
     end
 
-    describe "no enqueue_each with expects" do
+    describe "no enqueue_each with expects (no model:)" do
       it "raises MissingEnqueueEachError with instructions" do
         action_class = build_axn do
-          expects :company
+          expects :company  # No model: declaration
           def call; end
           # No enqueue_each called
         end.tap { |klass| enable_async_on(klass) }
@@ -349,6 +344,27 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         expect do
           action_class.enqueue_all
         end.to raise_error(Axn::Async::MissingEnqueueEachError, /no enqueue_each configured/)
+      end
+    end
+
+    describe "no enqueue_each but has model: with find_each" do
+      it "infers enqueue_each from model: declarations" do
+        cc = company_class
+        action_class = build_axn do
+          expects :company, model: cc  # model: with find_each
+          def call; end
+          # No explicit enqueue_each - should be inferred
+        end.tap { |klass| enable_async_on(klass) }
+
+        with_synchronous_enqueue_all
+
+        enqueued = []
+        allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+        action_class.enqueue_all
+
+        # Should have iterated over all 3 companies
+        expect(enqueued.length).to eq(3)
       end
     end
 

@@ -39,15 +39,8 @@ module Axn
           # 2. Handle no-expects case: just call_async directly
           return target.call_async(**static_args) if target.internal_field_configs.empty?
 
-          configs = target._batch_enqueue_configs
-
-          # 3. Handle missing enqueue_each case
-          if configs.empty?
-            raise MissingEnqueueEachError,
-                  "#{target.name} has expects declarations but no enqueue_each configured. " \
-                  "Add `enqueue_each :field_name, from: -> { ... }` for each field to iterate, " \
-                  "or use call_async directly for single invocations."
-          end
+          # 3. Get configs, inferring from model: declarations if none explicit
+          configs = _resolve_configs(target)
 
           # 4. Validate static args upfront (raises ArgumentError if missing)
           _validate_static_args!(target, configs, static_args)
@@ -58,7 +51,7 @@ module Axn
 
         # Execute the actual iteration (called from #call in background)
         def execute_iteration(target, **static_args)
-          configs = target._batch_enqueue_configs
+          configs = _resolve_configs(target)
           _iterate(target:, configs:, index: 0, accumulated: {}, static_args:)
           true
         end
@@ -70,6 +63,37 @@ module Axn
         end
 
         private
+
+        # Returns explicit configs or infers from model: declarations
+        def _resolve_configs(target)
+          explicit_configs = target._batch_enqueue_configs
+          return explicit_configs unless explicit_configs.empty?
+
+          # Try to infer from model: declarations
+          inferred = _infer_configs_from_models(target)
+          return inferred if inferred.any?
+
+          # No explicit or inferred configs
+          raise MissingEnqueueEachError,
+                "#{target.name} has expects declarations but no enqueue_each configured " \
+                "and no model: declarations that support find_each. " \
+                "Add `enqueue_each :field_name, from: -> { ... }` for each field to iterate, " \
+                "or use `expects :field, model: SomeModel` where SomeModel responds to find_each."
+        end
+
+        # Infer configs from fields with model: declarations whose model responds to find_each
+        def _infer_configs_from_models(target)
+          target.internal_field_configs.filter_map do |field_config|
+            model_config = field_config.validations&.dig(:model)
+            next unless model_config
+
+            model_class = model_config[:klass]
+            next unless model_class.respond_to?(:find_each)
+
+            # Create an inferred config (equivalent to `enqueue_each :field`)
+            BatchEnqueue::Config.new(field: field_config.field, from: nil, via: nil, filter_block: nil)
+          end
+        end
 
         def _validate_async_configured!(target)
           return if target._async_adapter.present? && target._async_adapter != false

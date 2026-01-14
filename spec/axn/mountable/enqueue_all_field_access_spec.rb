@@ -42,8 +42,11 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       # Validate async configured
       raise NotImplementedError, "Async not configured" unless target._async_adapter.present? && target._async_adapter != false
 
-      configs = target._batch_enqueue_configs
-      raise Axn::Async::MissingEnqueueEachError if configs.nil? || configs.empty?
+      # Handle no-expects case
+      return target.call_async(**static_args) if target.internal_field_configs.empty?
+
+      # Use real _resolve_configs (includes inference)
+      configs = Axn::Async::EnqueueAllTrigger.send(:_resolve_configs, target)
 
       Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
       Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
