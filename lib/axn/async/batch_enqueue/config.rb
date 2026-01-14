@@ -3,7 +3,7 @@
 module Axn
   module Async
     module BatchEnqueue
-      # Stores the configuration for a single enqueue_each declaration
+      # Stores the configuration for a single enqueues_each declaration
       class Config
         attr_reader :field, :from, :via, :filter_block
 
@@ -27,7 +27,7 @@ module Axn
 
           unless model_class
             raise ArgumentError,
-                  "enqueue_each :#{field} requires `from:` option or a `model:` declaration " \
+                  "enqueues_each :#{field} requires `from:` option or a `model:` declaration " \
                   "on `expects :#{field}` to infer the source collection."
           end
           model_class.all

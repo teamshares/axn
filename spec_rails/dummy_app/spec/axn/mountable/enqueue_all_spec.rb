@@ -77,25 +77,25 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
           def call; end
 
-          enqueue_each :item, from: -> { [1, 2, 3] }
+          enqueues_each :item, from: -> { [1, 2, 3] }
         end
 
         expect { action_class.enqueue_all }.to raise_error(NotImplementedError, /does not have async configured/)
       end
 
-      it "raises MissingEnqueueEachError when expects exist but no enqueue_each" do
+      it "raises MissingEnqueueEachError when expects exist but no enqueues_each" do
         action_class = Class.new do
           include Axn
           async :sidekiq
           expects :item
 
           def call; end
-          # No enqueue_each
+          # No enqueues_each
         end
 
         expect { action_class.enqueue_all }.to raise_error(
           Axn::Async::MissingEnqueueEachError,
-          /not covered by enqueue_each/,
+          /not covered by enqueues_each/,
         )
       end
 
@@ -108,7 +108,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
           def call; end
 
-          enqueue_each :item, from: -> { [1, 2, 3] }
+          enqueues_each :item, from: -> { [1, 2, 3] }
         end
 
         expect { action_class.enqueue_all }.to raise_error(
@@ -131,7 +131,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
           def call; end
 
-          enqueue_each :item, from: -> { raise "source exploded" }
+          enqueues_each :item, from: -> { raise "source exploded" }
         end
 
         expect do
@@ -147,7 +147,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
           def call; end
 
-          enqueue_each :item, from: -> { [1, 2, 3] } do |item|
+          enqueues_each :item, from: -> { [1, 2, 3] } do |item|
             raise "filter exploded for #{item}" if item == 2
 
             true

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe "Axn::Async::BatchEnqueue field access" do
-  # This spec verifies that enqueue_each properly iterates and enqueues jobs
+  # This spec verifies that enqueues_each properly iterates and enqueues jobs
 
   let!(:company_class) do
     Class.new do
@@ -64,7 +64,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
         "Processed company: #{company.name}"
       end
 
-      enqueue_each :company, from: -> { cc.all }
+      enqueues_each :company, from: -> { cc.all }
     end.tap { |klass| klass._async_adapter = :fake }
   end
 
@@ -92,7 +92,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
     it "demonstrates the pattern from the OS app" do
       # This reproduces the exact scenario from the OS app:
       # - A class with expects :company, model: true
-      # - An enqueue_each that iterates over companies
+      # - An enqueues_each that iterates over companies
       cc = company_class
 
       os_like_class = Class.new do
@@ -104,7 +104,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
           "Processed company: #{company.name}"
         end
 
-        enqueue_each :company, from: -> { cc.all }
+        enqueues_each :company, from: -> { cc.all }
       end.tap { |klass| klass._async_adapter = :fake }
 
       enqueued = []

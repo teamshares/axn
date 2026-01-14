@@ -101,5 +101,5 @@ RSpec.describe "Axn::Mountable superclass and inherit conflict validation" do
     end
   end
 
-  # NOTE: enqueue_each does not support superclass/inherit options - it always uses :async_only
+  # NOTE: enqueues_each does not support superclass/inherit options - it always uses :async_only
 end

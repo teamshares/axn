@@ -18,8 +18,8 @@ module Actions
         puts "Action executed: I was called with number: #{number} | #{instance_helper} | #{self.class.class_helper}"
       end
 
-      # Use enqueue_each to iterate over a fixed range
-      enqueue_each :number, from: -> { [1, 2, 3] }
+      # Use enqueues_each to iterate over a fixed range
+      enqueues_each :number, from: -> { [1, 2, 3] }
     end
   end
 end

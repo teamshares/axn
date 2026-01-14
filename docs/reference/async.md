@@ -159,9 +159,9 @@ end
 FailingAction.call_async(data: "test")
 ```
 
-## Batch Enqueueing with `enqueue_each`
+## Batch Enqueueing with `enqueues_each`
 
-The `enqueue_each` method provides a declarative way to set up batch enqueueing. It creates methods that iterate over a collection and enqueue each item as a separate background job.
+The `enqueues_each` method provides a declarative way to set up batch enqueueing. It creates methods that iterate over a collection and enqueue each item as a separate background job.
 
 ### Basic Usage
 
@@ -179,7 +179,7 @@ class SyncForCompany
   end
 
   # Declare the field to iterate over - source is inferred from model: Company
-  enqueue_each :company
+  enqueues_each :company
 end
 
 # Usage
@@ -197,8 +197,8 @@ SyncForCompany.enqueue_all  # Enqueues EnqueueAllTrigger, which iterates and enq
 - **Source Options**: Infer from `model:`, provide a lambda, or reference a class method
 - **Filtering**: Use a block to filter which items to enqueue
 - **Extraction**: Use `via:` to extract a specific attribute (e.g., `:id`)
-- **Multi-field**: Multiple `enqueue_each` declarations create cross-product iteration
-- **Static Fields**: Fields not covered by `enqueue_each` are passed through to each job
+- **Multi-field**: Multiple `enqueues_each` declarations create cross-product iteration
+- **Static Fields**: Fields not covered by `enqueues_each` are passed through to each job
 
 ### Examples
 
@@ -214,28 +214,28 @@ class SyncForCompany
   end
 
   # Basic - source inferred from model: Company → Company.all
-  enqueue_each :company
+  enqueues_each :company
 
   # With explicit source lambda
-  enqueue_each :company, from: -> { Company.active }
+  enqueues_each :company, from: -> { Company.active }
 
   # With extraction (passes company_id instead of company object)
-  enqueue_each :company_id, from: -> { Company.active }, via: :id
+  enqueues_each :company_id, from: -> { Company.active }, via: :id
 
   # With filter block
-  enqueue_each :company do |company|
+  enqueues_each :company do |company|
     company.active? && !company.in_exit?
   end
 
   # Multi-field cross-product (creates user_count × company_count jobs)
-  enqueue_each :user, from: -> { User.active }
-  enqueue_each :company, from: -> { Company.active }
+  enqueues_each :user, from: -> { User.active }
+  enqueues_each :company, from: -> { Company.active }
 end
 ```
 
 ### Static Fields
 
-Fields declared with `expects` but not covered by `enqueue_each` become static fields that must be passed to `enqueue_all`:
+Fields declared with `expects` but not covered by `enqueues_each` become static fields that must be passed to `enqueue_all`:
 
 ```ruby
 class SyncWithMode
@@ -249,7 +249,7 @@ class SyncWithMode
     # Uses both company (iterated) and sync_mode (static)
   end
 
-  enqueue_each :company  # Only iterates over company
+  enqueues_each :company  # Only iterates over company
 end
 
 # sync_mode must be provided - it's passed to every enqueued job
@@ -258,4 +258,4 @@ SyncWithMode.enqueue_all(sync_mode: :full)
 
 ### Iteration Method
 
-`enqueue_each` uses `find_each` when available (ActiveRecord collections) for memory efficiency, falling back to `each` for plain arrays.
+`enqueues_each` uses `find_each` when available (ActiveRecord collections) for memory efficiency, falling back to `each` for plain arrays.

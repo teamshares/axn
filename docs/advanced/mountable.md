@@ -383,7 +383,7 @@ mount_axn(:user@domain)    # Becomes UserDomain constant
 - **Use `mount_axn`** when you need full `Axn::Result` objects and error handling
 - **Use `mount_axn_method`** when you want direct return values for simple operations
 - **Use `step`** when composing complex workflows with multiple sequential operations
-- **Use `enqueue_each`** (from `Axn::Async`) when you need to process multiple items and enqueue each as a separate background job
+- **Use `enqueues_each`** (from `Axn::Async`) when you need to process multiple items and enqueue each as a separate background job
 
 ### 2. Keep Actions Focused
 
@@ -473,4 +473,4 @@ end
 
 ### Batch Processing
 
-See `enqueue_each` in the [Async documentation](../reference/async.md) for batch processing with background jobs.
+See `enqueues_each` in the [Async documentation](../reference/async.md) for batch processing with background jobs.

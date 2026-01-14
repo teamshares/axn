@@ -2,7 +2,7 @@
 
 module Axn
   module Async
-    # Custom error for missing enqueue_each configuration
+    # Custom error for missing enqueues_each configuration
     class MissingEnqueueEachError < StandardError; end
 
     # Shared trigger action for executing batch enqueueing in the background.
@@ -131,8 +131,8 @@ module Axn
 
           raise MissingEnqueueEachError,
                 "#{target.name} has required fields (#{uncovered_required.join(", ")}) " \
-                "not covered by enqueue_each, model: declarations, or static args. " \
-                "Add `enqueue_each :field_name, from: -> { ... }` for fields to iterate, " \
+                "not covered by enqueues_each, model: declarations, or static args. " \
+                "Add `enqueues_each :field_name, from: -> { ... }` for fields to iterate, " \
                 "use `expects :field, model: SomeModel` where SomeModel responds to find_each, " \
                 "or pass the field as a static argument to enqueue_all."
         end
@@ -148,7 +148,7 @@ module Axn
             model_class = model_config[:klass]
             next unless model_class.respond_to?(:find_each)
 
-            # Create an inferred config (equivalent to `enqueue_each :field`)
+            # Create an inferred config (equivalent to `enqueues_each :field`)
             BatchEnqueue::Config.new(field: field_config.field, from: nil, via: nil, filter_block: nil)
           end
         end
@@ -180,7 +180,7 @@ module Axn
 
           raise ArgumentError,
                 "Missing required static field(s): #{missing.join(", ")}. " \
-                "These fields are not covered by enqueue_each and must be provided."
+                "These fields are not covered by enqueues_each and must be provided."
         end
 
         def _iterate(target:, configs:, index:, accumulated:, static_args:)
