@@ -15,7 +15,7 @@ module Axn
     #   Axn.configure do |c|
     #     c.set_enqueue_all_async(:sidekiq, queue: :batch)
     #   end
-    class EnqueueAllTrigger
+    class EnqueueAllOrchestrator
       include Axn
 
       # Disable automatic before/after logging - we log the count manually
@@ -61,7 +61,7 @@ module Axn
           # Validate static args upfront (raises ArgumentError if missing)
           validate_static_args!(target, configs, resolved_static) if configs.any?
 
-          # Execute iteration in background via EnqueueAllTrigger
+          # Execute iteration in background via EnqueueAllOrchestrator
           call_async(target_class_name: target.name, static_args:)
         end
 

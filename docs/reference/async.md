@@ -186,8 +186,8 @@ SyncForCompany.enqueue_all  # Automatically iterates Company.all and enqueues ea
 
 **How it works:**
 1. `enqueue_all` validates configuration upfront (async configured, static args present)
-2. Enqueues an `EnqueueAllTrigger` job in the background
-3. When `EnqueueAllTrigger` runs, it iterates over the source collection and enqueues individual jobs
+2. Enqueues an `EnqueueAllOrchestrator` job in the background
+3. When `EnqueueAllOrchestrator` runs, it iterates over the source collection and enqueues individual jobs
 4. Model-based iterations (using `find_each`) are processed first for memory efficiency
 
 ### Auto-Inference from `model:` Declarations

@@ -219,7 +219,7 @@ RSpec.describe "Axn::Mountable inherit modes" do
       expect(mounted_axn.internal_field_configs).to be_empty
     end
 
-    it "enqueues_each uses shared EnqueueAllTrigger with its own fixed fields" do
+    it "enqueues_each uses shared EnqueueAllOrchestrator with its own fixed fields" do
       parent = Class.new do
         include Axn
         before :some_hook
@@ -232,7 +232,7 @@ RSpec.describe "Axn::Mountable inherit modes" do
       end
 
       # The shared trigger has its own fixed fields, not the parent's
-      trigger = Axn::Async::EnqueueAllTrigger
+      trigger = Axn::Async::EnqueueAllOrchestrator
       expect(trigger.internal_field_configs.map(&:field)).to contain_exactly(:target_class_name, :static_args)
       expect(trigger.internal_field_configs.map(&:field)).not_to include(:number)
 

@@ -78,7 +78,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
   # Helper to stub enqueue_for to execute synchronously (bypass call_async flow)
   # This avoids issues with anonymous classes not having a name to constantize
   def with_synchronous_enqueue_all
-    allow(Axn::Async::EnqueueAllTrigger).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
+    allow(Axn::Async::EnqueueAllOrchestrator).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
       # Validate async configured
       unless target._async_adapter.present? && target._async_adapter != false
         raise NotImplementedError,
@@ -89,13 +89,13 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
       # Use the real resolve_configs method to get configs and resolved static args
-      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:resolve_configs, target, static_args:)
+      configs, resolved_static = Axn::Async::EnqueueAllOrchestrator.send(:resolve_configs, target, static_args:)
 
       # Validate static args
-      Axn::Async::EnqueueAllTrigger.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
+      Axn::Async::EnqueueAllOrchestrator.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
 
       # Execute iteration synchronously
-      Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
+      Axn::Async::EnqueueAllOrchestrator.execute_iteration(target, **static_args)
     end
   end
 
@@ -842,7 +842,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
         allow(action_class).to receive(:call_async)
 
-        Axn::Async::EnqueueAllTrigger.execute_iteration(action_class, on_progress:)
+        Axn::Async::EnqueueAllOrchestrator.execute_iteration(action_class, on_progress:)
 
         # Should have recorded resolving_source, then iterating for each item, then enqueueing
         expect(progress_calls.first).to include(stage: :resolving_source, field: :company)

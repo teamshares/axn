@@ -4,7 +4,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   before do
     Sidekiq::Testing.fake!
     Sidekiq::Queues.clear_all
-    # Configure the EnqueueAllTrigger to use sidekiq
+    # Configure the EnqueueAllOrchestrator to use sidekiq
     Axn.config.set_enqueue_all_async(:sidekiq)
   end
 
@@ -36,15 +36,15 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   end
 
   describe ".enqueue_all" do
-    it "enqueues the EnqueueAllTrigger job" do
+    it "enqueues the EnqueueAllOrchestrator job" do
       result = Actions::EnqueueAll::Tester.enqueue_all
 
       expect(result).to be_a(String) # Job ID
       expect(Sidekiq::Queues["default"].size).to eq(1)
 
-      # Verify the job is the shared EnqueueAllTrigger
+      # Verify the job is the shared EnqueueAllOrchestrator
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Axn::Async::EnqueueAllTrigger")
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
       expect(job["args"]).to eq([{ "target_class_name" => "Actions::EnqueueAll::Tester", "static_args" => {} }])
     end
 
@@ -65,7 +65,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
       # Should only enqueue the trigger, not individual jobs
       expect(Sidekiq::Queues["default"].size).to eq(1)
-      expect(Sidekiq::Queues["default"].first["class"]).to eq("Axn::Async::EnqueueAllTrigger")
+      expect(Sidekiq::Queues["default"].first["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
     end
 
     describe "error handling - validation happens upfront" do
@@ -135,7 +135,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
         end
 
         expect do
-          Axn::Async::EnqueueAllTrigger.execute_iteration(action_class)
+          Axn::Async::EnqueueAllOrchestrator.execute_iteration(action_class)
         end.to raise_error(RuntimeError, "source exploded")
       end
 
@@ -154,7 +154,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
         # Filter block errors are swallowed - should not raise
         expect do
-          Axn::Async::EnqueueAllTrigger.execute_iteration(action_class)
+          Axn::Async::EnqueueAllOrchestrator.execute_iteration(action_class)
         end.not_to raise_error
 
         # Should have enqueued 2 jobs (items 1 and 3, skipping 2)

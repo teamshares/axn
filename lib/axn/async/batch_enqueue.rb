@@ -9,7 +9,7 @@ module Axn
     # Fields with `model:` declarations are automatically inferred for iteration.
     # Use `enqueues_each` to override defaults, add filtering, or iterate non-model fields.
     # All Axn classes have `enqueue_all` defined, which validates configuration and
-    # executes iteration asynchronously via EnqueueAllTrigger.
+    # executes iteration asynchronously via EnqueueAllOrchestrator.
     #
     # @example Auto-inference from model: (no enqueues_each needed)
     #   class SyncCompany
@@ -59,7 +59,7 @@ module Axn
         # Batch enqueue jobs for this action.
         #
         # Validates async is configured, validates static args, then executes
-        # iteration asynchronously via EnqueueAllTrigger.
+        # iteration asynchronously via EnqueueAllOrchestrator.
         #
         # Fields with `model:` declarations are automatically inferred for iteration.
         # You can override iteration by passing enumerables (to replace source) or
@@ -74,7 +74,7 @@ module Axn
         # @raise [MissingEnqueuesEachError] If expects exist but no iteration config found
         # @raise [ArgumentError] If required static fields are missing
         def enqueue_all(**static_args)
-          EnqueueAllTrigger.enqueue_for(self, **static_args)
+          EnqueueAllOrchestrator.enqueue_for(self, **static_args)
         end
 
         # Declare a field to iterate over for batch enqueueing.

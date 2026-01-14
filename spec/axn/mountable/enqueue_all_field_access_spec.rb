@@ -38,7 +38,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
 
   # Helper to stub enqueue_for to execute synchronously
   def with_synchronous_enqueue_all
-    allow(Axn::Async::EnqueueAllTrigger).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
+    allow(Axn::Async::EnqueueAllOrchestrator).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
       # Validate async configured
       raise NotImplementedError, "Async not configured" unless target._async_adapter.present? && target._async_adapter != false
 
@@ -46,10 +46,10 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       return target.call_async(**static_args) if target.internal_field_configs.empty?
 
       # Use real resolve_configs (includes inference) - returns [configs, resolved_static]
-      configs, resolved_static = Axn::Async::EnqueueAllTrigger.send(:resolve_configs, target, static_args:)
+      configs, resolved_static = Axn::Async::EnqueueAllOrchestrator.send(:resolve_configs, target, static_args:)
 
-      Axn::Async::EnqueueAllTrigger.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
-      Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
+      Axn::Async::EnqueueAllOrchestrator.send(:validate_static_args!, target, configs, resolved_static) if configs.any?
+      Axn::Async::EnqueueAllOrchestrator.execute_iteration(target, **static_args)
     end
   end
 
@@ -116,10 +116,10 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
     end
   end
 
-  describe "the shared EnqueueAllTrigger class" do
+  describe "the shared EnqueueAllOrchestrator class" do
     it "has its own fixed field configurations (does not inherit parent expects)" do
       # The shared trigger has only target_class_name and static_args
-      trigger = Axn::Async::EnqueueAllTrigger
+      trigger = Axn::Async::EnqueueAllOrchestrator
       trigger_fields = trigger.internal_field_configs.map(&:field)
 
       expect(trigger_fields).to contain_exactly(:target_class_name, :static_args)
