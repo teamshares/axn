@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/async/adapters"
+require "axn/async/batch_enqueue"
 
 module Axn
   module Async
@@ -8,6 +9,10 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+
+      # Include batch enqueue functionality
+      include BatchEnqueue
+      extend BatchEnqueue::DSL
     end
 
     class_methods do

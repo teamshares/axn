@@ -15,6 +15,7 @@
 * [INTERNAL] Refactored async adapters to use template method pattern - adapters now implement `_enqueue_async_job` hook instead of overriding `call_async`, eliminating duplication of notification and logging logic
 * [FEAT] Enhanced `error from:` to support arrays of child classes and `from: true` to match any child action - prefix is now optional when using `from:`
 * Improve handling of _async options to call_async (bugfix + serialization improvements)
+* [BREAKING] Replace `enqueue_all_via` block with new `enqueue_each` DSL (now in `Axn::Async`) - declarative batch enqueueing for background job processing
 
 ## 0.1.0-alpha.3
 * [FEAT] Added Vernier profiling support with `profile if:` conditional interface and `Axn.config.profiling` configuration

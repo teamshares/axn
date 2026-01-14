@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Mountable with enqueue_all" do
+RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   before do
     Sidekiq::Testing.fake!
+    Sidekiq::Queues.clear_all
   end
 
   describe "core call behavior" do
@@ -28,43 +29,80 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
   end
 
   describe ".enqueue_all" do
-    it "has access to instance and class helpers from superclass" do
-      expect do
-        Actions::EnqueueAll::Tester.enqueue_all(max: 2)
-      end.to output(
-        /About to enqueue_all: max: 2 \| instance_helper \| class_helper\n/,
-      ).to_stdout
-    end
-
     it "on success" do
-      result = Actions::EnqueueAll::Tester.enqueue_all(max: 2)
+      result = Actions::EnqueueAll::Tester.enqueue_all
       expect(result).to eq(true)
     end
 
-    it "on failure" do
-      expect do
-        Actions::EnqueueAll::Tester.enqueue_all(max: 5)
-      end.to raise_error(Axn::Failure, "don't like 5s")
+    it "enqueues individual jobs" do
+      Actions::EnqueueAll::Tester.enqueue_all
+
+      # Should have enqueued 3 individual Tester jobs (from: -> { [1, 2, 3] })
+      expect(Sidekiq::Queues["default"].size).to eq(3)
+
+      jobs = Sidekiq::Queues["default"].to_a
+      expect(jobs.map { |j| j["args"] }).to contain_exactly(
+        [{ "number" => 1 }],
+        [{ "number" => 2 }],
+        [{ "number" => 3 }],
+      )
     end
 
-    it "on exception" do
-      expect do
-        Actions::EnqueueAll::Tester.enqueue_all(max: 4)
-      end.to raise_error(RuntimeError, "don't like 4s")
-    end
+    describe "error handling" do
+      it "propagates exception from source lambda" do
+        action_class = Class.new do
+          include Axn
+          async :sidekiq
+          expects :item
 
-    # it "on error" do
-    #   pending "TODO: eventually we should support raising error message from parent's mapping?"
-    #   result = Actions::EnqueueAll::Tester.enqueue_all(max: 4)
-    #   expect(result).to raise_error(Axn::Failure, "bad times")
-    # end
+          def call; end
+
+          enqueue_each :item, from: -> { raise "source exploded" }
+        end
+
+        expect { action_class.enqueue_all }.to raise_error(RuntimeError, "source exploded")
+      end
+
+      it "propagates exception from filter block" do
+        action_class = Class.new do
+          include Axn
+          async :sidekiq
+          expects :item
+
+          def call; end
+
+          enqueue_each :item, from: -> { [1, 2, 3] } do |item|
+            raise "filter exploded for #{item}" if item == 2
+            true
+          end
+        end
+
+        expect { action_class.enqueue_all }.to raise_error(RuntimeError, "filter exploded for 2")
+      end
+
+      it "raises when missing required static fields" do
+        action_class = Class.new do
+          include Axn
+          async :sidekiq
+          expects :item
+          expects :required_field
+
+          def call; end
+
+          enqueue_each :item, from: -> { [1, 2, 3] }
+        end
+
+        expect { action_class.enqueue_all }.to raise_error(
+          ArgumentError,
+          /Missing required static field.*required_field/,
+        )
+      end
+    end
   end
 
   describe ".enqueue_all_async" do
     it "enqueues the enqueue_all action itself" do
-      Sidekiq::Queues.clear_all
-
-      result = Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
+      result = Actions::EnqueueAll::Tester.enqueue_all_async
 
       expect(result).to be_a(String) # Job ID
       expect(Sidekiq::Queues["default"].size).to eq(1) # Should enqueue 1 job (the enqueue_all action itself)
@@ -72,36 +110,28 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       # Verify the job is the enqueue_all action, not individual Tester jobs
       job = Sidekiq::Queues["default"].first
       expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
-      expect(job["args"]).to eq([{ "max" => 2 }])
+      expect(job["args"]).to eq([{}])
     end
 
     it "executes the enqueue_all action when processed inline" do
-      # NOTE: RSpec mocks on call_async interfere with inline execution
-      # because they intercept the call before it can be properly enqueued
+      # When run inline, the EnqueueAll action runs immediately, iterates, and
+      # enqueues individual Tester jobs, which then also run inline.
+      #
+      # Verify by capturing stdout from the individual action executions.
       expect do
         Sidekiq::Testing.inline! do
-          Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
+          Actions::EnqueueAll::Tester.enqueue_all_async
         end
       end.to output(
-        /(?:.*Sidekiq.*connecting to Redis.*)?About to enqueue_all: max: 2 \| instance_helper \| class_helper\n.*Action executed: I was called with number: 1 \| instance_helper \| class_helper\n.*Action executed: I was called with number: 2 \| instance_helper \| class_helper/m, # rubocop:disable Layout/LineLength
+        /I was called with number: 1.*I was called with number: 2.*I was called with number: 3/m,
       ).to_stdout
     end
 
-    it "handles errors in enqueue_all_via block when processed inline" do
+    it "does not execute iteration immediately when not in inline mode" do
+      # This should NOT produce the "Action executed" output immediately
       expect do
-        Sidekiq::Testing.inline! do
-          Actions::EnqueueAll::Tester.enqueue_all_async(max: 4)
-        end
-      end.to raise_error(RuntimeError, "don't like 4s")
-    end
-
-    it "does not execute enqueue_all_via block immediately when not in inline mode" do
-      Sidekiq::Queues.clear_all
-
-      # This should NOT produce the "About to enqueue_all" output immediately
-      expect do
-        Actions::EnqueueAll::Tester.enqueue_all_async(max: 2)
-      end.not_to output(/About to enqueue_all/).to_stdout
+        Actions::EnqueueAll::Tester.enqueue_all_async
+      end.not_to output(/Action executed/).to_stdout
 
       # Should only enqueue the enqueue_all action itself, not individual jobs
       expect(Sidekiq::Queues["default"].size).to eq(1)
@@ -109,25 +139,11 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       # Verify the job is the enqueue_all action, not individual Tester jobs
       job = Sidekiq::Queues["default"].first
       expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
-      expect(job["args"]).to eq([{ "max" => 2 }])
     end
 
-    it "calling enqueue_all directly enqueues individual Tester jobs" do
-      Sidekiq::Queues.clear_all
-
-      # Call enqueue_all directly (not async) - this executes the enqueue_all_via block immediately
-      # and enqueues the individual Tester jobs
-      Actions::EnqueueAll::Tester.enqueue_all(max: 3)
-
-      # Should have enqueued 3 individual Tester jobs
-      expect(Sidekiq::Queues["default"].size).to eq(3)
-
-      jobs = Sidekiq::Queues["default"].to_a
-      expect(jobs.map { |j| j["args"] }).to eq([
-                                                 [{ "number" => 1 }],
-                                                 [{ "number" => 2 }],
-                                                 [{ "number" => 3 }],
-                                               ])
-    end
+    # NOTE: Error handling for enqueue_all_async is tested via the synchronous
+    # enqueue_all tests above. Async versions require named classes for Sidekiq,
+    # but the error behavior is identical since enqueue_all_async just wraps
+    # enqueue_all in a background job.
   end
 end

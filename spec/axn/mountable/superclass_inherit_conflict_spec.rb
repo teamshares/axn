@@ -101,29 +101,5 @@ RSpec.describe "Axn::Mountable superclass and inherit conflict validation" do
     end
   end
 
-  describe "enqueue_all_via" do
-    it "raises error when both superclass and non-default inherit are specified" do
-      expect do
-        Class.new do
-          include Axn
-
-          enqueue_all_via superclass: Object, inherit: :lifecycle do
-            # Nothing
-          end
-        end
-      end.to raise_error(Axn::Mountable::MountingError, /cannot specify both 'superclass:' and 'inherit:' options/)
-    end
-
-    it "allows superclass with default inherit (:async_only)" do
-      expect do
-        Class.new do
-          include Axn
-
-          enqueue_all_via superclass: Object, inherit: :async_only do
-            # Nothing
-          end
-        end
-      end.not_to raise_error
-    end
-  end
+  # NOTE: enqueue_each does not support superclass/inherit options - it always uses :async_only
 end
