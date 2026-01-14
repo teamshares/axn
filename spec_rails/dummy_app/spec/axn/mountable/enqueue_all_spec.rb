@@ -109,7 +109,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
       # Verify the job is the enqueue_all action, not individual Tester jobs
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
+      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::BatchEnqueueAll")
       expect(job["args"]).to eq([{}])
     end
 
@@ -138,7 +138,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
       # Verify the job is the enqueue_all action, not individual Tester jobs
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::Axns::EnqueueAll")
+      expect(job["class"]).to eq("Actions::EnqueueAll::Tester::BatchEnqueueAll")
     end
 
     # NOTE: Error handling for enqueue_all_async is tested via the synchronous

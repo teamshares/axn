@@ -45,6 +45,7 @@ module Axn
 
       included do
         class_attribute :_batch_enqueue_configs, default: nil
+        class_attribute :_batch_enqueue_action_class, default: nil
       end
 
       # DSL methods for batch enqueueing
@@ -63,25 +64,120 @@ module Axn
           config = Config.new(field:, from:, via:, filter_block:)
           self._batch_enqueue_configs += [config]
 
-          # Mount the enqueue_all action on first enqueue_each call
-          _mount_batch_enqueue_action_if_needed
+          # Define enqueue_all methods on first enqueue_each call
+          _define_batch_enqueue_methods_if_needed
         end
 
         private
 
-        def _mount_batch_enqueue_action_if_needed
-          # Only mount once - check if we already have the descriptor
-          return if _mounted_axn_descriptors.any? { |d| d.name == "enqueue_all" }
+        def _define_batch_enqueue_methods_if_needed
+          # Only define once - check if methods already exist
+          return if respond_to?(:enqueue_all)
 
-          # Use mountable infrastructure to create the action class
-          # This gives us inheritance profiles, namespace management, etc.
-          Axn::Mountable::Helpers::Mounter.mount_via_strategy(
-            target: self,
-            as: :enqueue_all,
-            name: "enqueue_all",
-            axn_klass: nil,
-            inherit: :async_only,
-          ) { nil } # Placeholder - real call method defined by the strategy
+          # Define enqueue_all class method
+          define_singleton_method(:enqueue_all) do |**static_args|
+            _execute_batch_enqueue(**static_args)
+          end
+
+          # Define enqueue_all_async class method
+          define_singleton_method(:enqueue_all_async) do |**static_args|
+            _batch_enqueue_action_class.call_async(**static_args)
+          end
+
+          # Create action class for async execution
+          _create_batch_enqueue_action_class
+        end
+
+        def _create_batch_enqueue_action_class
+          return if _batch_enqueue_action_class.present?
+
+          # Create a simple action class for async execution
+          # Don't inherit from parent to avoid inheriting expects fields
+          # Just inherit async config
+          target = self
+          action_class = Class.new do
+            include Axn
+
+            define_method(:call) { target.enqueue_all }
+          end
+
+          # Apply async configuration from parent
+          if target.respond_to?(:_async_adapter) && target._async_adapter.present?
+            action_class.async(target._async_adapter, **(target._async_config || {}), &target._async_config_block)
+          end
+
+          # Set the class as a constant for Sidekiq to resolve by name
+          # This is necessary because Sidekiq inline mode looks up classes by their name
+          const_name = :BatchEnqueueAll
+          target.const_set(const_name, action_class) unless target.const_defined?(const_name)
+
+          self._batch_enqueue_action_class = action_class
+        end
+
+        def _execute_batch_enqueue(**static_args)
+          configs = _batch_enqueue_configs
+
+          # Fail helpfully if no enqueue_each was declared
+          if configs.nil? || configs.empty?
+            raise ArgumentError,
+                  "No enqueue_each declared on #{name}. " \
+                  "Add at least one `enqueue_each :field, from: -> { ... }` declaration."
+          end
+
+          # Validate static args - any expects field not covered by enqueue_each must be provided
+          enqueue_each_fields = configs.map(&:field)
+          all_expected_fields = internal_field_configs.map(&:field)
+          static_fields = all_expected_fields - enqueue_each_fields
+
+          # Check for required static fields (those without defaults and not optional)
+          required_static = static_fields.reject do |field|
+            field_config = internal_field_configs.find { |c| c.field == field }
+            next true if field_config&.default.present?
+            next true if field_config&.validations&.dig(:allow_blank)
+
+            false
+          end
+
+          missing = required_static - static_args.keys
+          if missing.any?
+            raise ArgumentError,
+                  "Missing required static field(s): #{missing.join(", ")}. " \
+                  "These fields are not covered by enqueue_each and must be provided."
+          end
+
+          # Execute nested iteration
+          _iterate_batch_enqueue(configs:, index: 0, accumulated: {}, static_args:)
+          true
+        end
+
+        def _iterate_batch_enqueue(configs:, index:, accumulated:, static_args:)
+          # Base case: all fields accumulated, enqueue the job
+          if index >= configs.length
+            call_async(**accumulated, **static_args)
+            return
+          end
+
+          config = configs[index]
+          source = config.resolve_source(target: self)
+
+          # Use find_each if available (ActiveRecord), otherwise each
+          iterator = source.respond_to?(:find_each) ? :find_each : :each
+
+          source.public_send(iterator) do |item|
+            # Apply filter block if present
+            next if config.filter_block && !config.filter_block.call(item)
+
+            # Apply via extraction if present
+            value = config.via ? item.public_send(config.via) : item
+
+            # Recurse to next field
+            _iterate_batch_enqueue(
+              configs:,
+              index: index + 1,
+              accumulated: accumulated.merge(config.field => value),
+              static_args:,
+            )
+          end
         end
       end
     end

@@ -219,7 +219,7 @@ RSpec.describe "Axn::Mountable inherit modes" do
       expect(mounted_axn.internal_field_configs).to be_empty
     end
 
-    it "enqueue_each defaults to :async_only" do
+    it "enqueue_each creates action that does not inherit parent expects" do
       parent = Class.new do
         include Axn
         before :some_hook
@@ -231,10 +231,10 @@ RSpec.describe "Axn::Mountable inherit modes" do
         enqueue_each :number, from: -> { [1, 2, 3] }
       end
 
-      mounted_axn = parent::Axns::EnqueueAll
-      expect(mounted_axn.before_hooks).to be_empty
-      # NOTE: enqueue_each mounted action shouldn't inherit parent's :number field
-      expect(mounted_axn.internal_field_configs.map(&:field)).not_to include(:number)
+      batch_action = parent._batch_enqueue_action_class
+      expect(batch_action.before_hooks).to be_empty
+      # NOTE: enqueue_each action shouldn't inherit parent's :number field
+      expect(batch_action.internal_field_configs.map(&:field)).not_to include(:number)
     end
   end
 end

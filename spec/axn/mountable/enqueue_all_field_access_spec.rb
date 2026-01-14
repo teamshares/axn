@@ -92,18 +92,14 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
     end
   end
 
-  describe "the mounted action class" do
-    it "has stripped field configurations (inherit: :async_only)" do
-      # Get the mounted action class
-      mounted_axn = test_class._mounted_axn_descriptors.first.mounted_axn_for(target: test_class)
+  describe "the batch enqueue action class" do
+    it "has stripped field configurations (does not inherit parent expects)" do
+      # Get the batch enqueue action class
+      batch_action = test_class._batch_enqueue_action_class
 
-      # The mounted action class should inherit from test_class but without fields
-      expect(mounted_axn.superclass).to be_a(Class)
-      expect(mounted_axn.superclass).to be < test_class
-
-      # But it should have stripped field configurations (async_only mode)
-      expect(mounted_axn.internal_field_configs).to be_empty
-      expect(mounted_axn.external_field_configs).to be_empty
+      # It should NOT inherit parent's expects fields
+      expect(batch_action.internal_field_configs).to be_empty
+      expect(batch_action.external_field_configs).to be_empty
 
       # The original class should still have field configurations
       expect(test_class.internal_field_configs).not_to be_empty
