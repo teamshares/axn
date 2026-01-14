@@ -183,16 +183,13 @@ class SyncForCompany
 end
 
 # Usage
-# Enqueue all companies immediately
-SyncForCompany.enqueue_all
-
-# Enqueue the enqueue_all action itself as a background job
-SyncForCompany.enqueue_all_async
+SyncForCompany.enqueue_all  # Enqueues EnqueueAllTrigger, which iterates and enqueues individual jobs
 ```
 
-**Generated methods:**
-- `SyncForCompany.enqueue_all` - Iterates and enqueues individual jobs immediately
-- `SyncForCompany.enqueue_all_async` - Enqueues the iteration action itself as a background job
+**How it works:**
+1. `enqueue_all` validates configuration upfront (async configured, static args present)
+2. Enqueues an `EnqueueAllTrigger` job in the background
+3. When `EnqueueAllTrigger` runs, it iterates over the source collection and enqueues individual jobs
 
 ### Key Features
 

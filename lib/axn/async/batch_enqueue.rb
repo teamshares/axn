@@ -7,7 +7,8 @@ module Axn
     # BatchEnqueue provides declarative batch enqueueing for Axn actions.
     #
     # Use `enqueue_each` to specify which fields to iterate over when batch enqueueing.
-    # This creates `enqueue_all` and `enqueue_all_async` methods on your action class.
+    # All Axn classes have `enqueue_all` defined, which validates configuration and
+    # executes iteration asynchronously via EnqueueAllTrigger.
     #
     # @example Simple iteration with model inference
     #   class SyncCompany
@@ -44,11 +45,25 @@ module Axn
       extend ActiveSupport::Concern
 
       included do
-        class_attribute :_batch_enqueue_configs, default: nil
+        class_attribute :_batch_enqueue_configs, default: []
       end
 
       # DSL methods for batch enqueueing
       module DSL
+        # Batch enqueue jobs for this action.
+        #
+        # Validates async is configured, validates static args, then executes
+        # iteration asynchronously via EnqueueAllTrigger.
+        #
+        # @param static_args [Hash] Arguments to pass to every enqueued job
+        # @return [String] Job ID from the async adapter
+        # @raise [NotImplementedError] If async is not configured
+        # @raise [MissingEnqueueEachError] If expects exist but no enqueue_each configured
+        # @raise [ArgumentError] If required static fields are missing
+        def enqueue_all(**static_args)
+          EnqueueAllTrigger.enqueue_for(self, **static_args)
+        end
+
         # Declare a field to iterate over for batch enqueueing
         #
         # @param field [Symbol] The field name from expects to iterate over
@@ -56,19 +71,7 @@ module Axn
         # @param via [Symbol, nil] Optional attribute to extract from each item (e.g., :id)
         # @param block [Proc, nil] Optional filter block - return truthy to enqueue, falsy to skip
         def enqueue_each(field, from: nil, via: nil, &filter_block)
-          self._batch_enqueue_configs ||= []
           self._batch_enqueue_configs += [Config.new(field:, from:, via:, filter_block:)]
-
-          _define_batch_enqueue_methods_if_needed
-        end
-
-        private
-
-        def _define_batch_enqueue_methods_if_needed
-          return if respond_to?(:enqueue_all)
-
-          define_singleton_method(:enqueue_all) { |**static_args| EnqueueAllTrigger.execute_for(self, **static_args) }
-          define_singleton_method(:enqueue_all_async) { |**static_args| EnqueueAllTrigger.call_async(target_class_name: name, static_args:) }
         end
       end
     end

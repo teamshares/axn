@@ -75,6 +75,50 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
     ]
   end
 
+  # Helper to stub enqueue_for to execute synchronously (bypass call_async flow)
+  # This avoids issues with anonymous classes not having a name to constantize
+  def with_synchronous_enqueue_all
+    allow(Axn::Async::EnqueueAllTrigger).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
+      # Validate async configured
+      unless target._async_adapter.present? && target._async_adapter != false
+        raise NotImplementedError,
+              "#{target.name || "Anonymous class"} does not have async configured."
+      end
+
+      # Handle no-expects case
+      return target.call_async(**static_args) if target.internal_field_configs.empty?
+
+      configs = target._batch_enqueue_configs
+
+      # Handle missing enqueue_each case
+      if configs.nil? || configs.empty?
+        raise Axn::Async::MissingEnqueueEachError,
+              "#{target.name || "Anonymous class"} has expects declarations but no enqueue_each configured."
+      end
+
+      # Validate static args (call original for this)
+      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
+
+      # Execute iteration synchronously
+      Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
+    end
+  end
+
+  # Helper to mark action as having async configured (for validation)
+  def enable_async_on(action_class)
+    action_class._async_adapter = :fake
+  end
+
+  describe "enqueue_all is defined on all Axn classes" do
+    it "is available even without enqueue_each" do
+      action_class = build_axn do
+        def call; end
+      end
+
+      expect(action_class).to respond_to(:enqueue_all)
+    end
+  end
+
   describe "single field iteration" do
     describe "with explicit from:" do
       let(:action_class) do
@@ -85,13 +129,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           define_method(:call) { "processed #{company.name}" }
 
           enqueue_each :company, from: -> { cc.all }
-        end
+        end.tap { |klass| enable_async_on(klass) }
       end
 
-      it "creates enqueue_all and enqueue_all_async methods" do
-        expect(action_class).to respond_to(:enqueue_all)
-        expect(action_class).to respond_to(:enqueue_all_async)
-      end
+      before { with_synchronous_enqueue_all }
 
       it "enqueues each item via call_async" do
         enqueued = []
@@ -118,8 +159,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           define_method(:call) { "processed #{company.name}" }
 
           enqueue_each :company
-        end
+        end.tap { |klass| enable_async_on(klass) }
       end
+
+      before { with_synchronous_enqueue_all }
 
       it "infers source from model class" do
         enqueued = []
@@ -141,10 +184,12 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
           enqueue_each :company, from: :active_companies
         end.tap do |klass|
-          # Define class method that returns active companies
           klass.define_singleton_method(:active_companies) { cc.active }
+          enable_async_on(klass)
         end
       end
+
+      before { with_synchronous_enqueue_all }
 
       it "calls the method to get source" do
         enqueued = []
@@ -167,8 +212,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         define_method(:call) { "processed company_id: #{company_id}" }
 
         enqueue_each :company_id, from: -> { cc.all }, via: :id
-      end
+      end.tap { |klass| enable_async_on(klass) }
     end
+
+    before { with_synchronous_enqueue_all }
 
     it "extracts the specified attribute" do
       enqueued = []
@@ -193,8 +240,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         define_method(:call) { "processed #{company.name}" }
 
         enqueue_each :company, from: -> { cc.all }, &:active?
-      end
+      end.tap { |klass| enable_async_on(klass) }
     end
+
+    before { with_synchronous_enqueue_all }
 
     it "only enqueues items where filter returns truthy" do
       enqueued = []
@@ -220,8 +269,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
         enqueue_each :user, from: -> { uc.all }
         enqueue_each :company, from: -> { cc.active }
-      end
+      end.tap { |klass| enable_async_on(klass) }
     end
+
+    before { with_synchronous_enqueue_all }
 
     it "creates cross-product of all fields" do
       enqueued = []
@@ -250,8 +301,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         define_method(:call) { "processed #{company.name} as #{format}" }
 
         enqueue_each :company, from: -> { cc.all }
-      end
+      end.tap { |klass| enable_async_on(klass) }
     end
+
+    before { with_synchronous_enqueue_all }
 
     it "passes static fields through to each enqueued job" do
       enqueued = []
@@ -271,46 +324,59 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
   end
 
   describe "error handling" do
-    describe "no enqueue_each declared" do
-      it "does not define enqueue_all if no enqueue_each is called" do
-        action_without_enqueue_each = build_axn do
+    describe "async not configured" do
+      it "raises NotImplementedError" do
+        action_class = build_axn do
           expects :company
           def call; end
-          # No enqueue_each called
+          enqueue_each :company, from: -> { [] }
         end
-
-        # enqueue_all should not be defined
-        expect(action_without_enqueue_each).not_to respond_to(:enqueue_all)
-      end
-
-      it "raises error if configs are cleared after declaration" do
-        # Edge case: configs cleared after enqueue_each was called
-        cc = company_class
-        action_class = build_axn do
-          expects :company, type: cc
-          def call; end
-          enqueue_each :company, from: -> { cc.all }
-        end
-
-        # Clear configs to test error handling
-        action_class._batch_enqueue_configs = nil
 
         expect do
           action_class.enqueue_all
-        end.to raise_error(ArgumentError, /No enqueue_each declared/)
+        end.to raise_error(NotImplementedError, /does not have async configured/)
+      end
+    end
+
+    describe "no enqueue_each with expects" do
+      it "raises MissingEnqueueEachError with instructions" do
+        action_class = build_axn do
+          expects :company
+          def call; end
+          # No enqueue_each called
+        end.tap { |klass| enable_async_on(klass) }
+
+        expect do
+          action_class.enqueue_all
+        end.to raise_error(Axn::Async::MissingEnqueueEachError, /no enqueue_each configured/)
+      end
+    end
+
+    describe "no expects at all" do
+      it "just calls call_async directly" do
+        action_class = build_axn do
+          def call; end
+        end.tap { |klass| enable_async_on(klass) }
+
+        expect(action_class).to receive(:call_async).with(no_args)
+        action_class.enqueue_all
       end
     end
 
     describe "no from: and no model" do
       it "raises helpful error" do
+        action_class = build_axn do
+          expects :company # No model:
+
+          def call; end
+
+          enqueue_each :company # No from:
+        end.tap { |klass| enable_async_on(klass) }
+
+        with_synchronous_enqueue_all
+
         expect do
-          build_axn do
-            expects :company # No model:
-
-            def call; end
-
-            enqueue_each :company # No from:
-          end.enqueue_all
+          action_class.enqueue_all
         end.to raise_error(ArgumentError, /requires `from:` option or a `model:` declaration/)
       end
     end
@@ -324,12 +390,11 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           expects :company, type: cc
           def call; end
           enqueue_each :company, from: -> { cc }
-        end
+        end.tap { |klass| enable_async_on(klass) }
 
-        # Stub call_async to not actually enqueue
+        with_synchronous_enqueue_all
         allow(action_class).to receive(:call_async)
 
-        # Verify find_each is called
         expect(company_class).to receive(:find_each).and_call_original
 
         action_class.enqueue_all
@@ -343,8 +408,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           expects :number
           def call; end
           enqueue_each :number, from: -> { items }
-        end
+        end.tap { |klass| enable_async_on(klass) }
       end
+
+      before { with_synchronous_enqueue_all }
 
       it "falls back to each" do
         enqueued = []

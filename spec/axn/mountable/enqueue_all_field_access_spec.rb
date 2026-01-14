@@ -31,6 +31,25 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
     ]
   end
 
+  # Helper to mark action as having async configured
+  def enable_async_on(action_class)
+    action_class._async_adapter = :fake
+  end
+
+  # Helper to stub enqueue_for to execute synchronously
+  def with_synchronous_enqueue_all
+    allow(Axn::Async::EnqueueAllTrigger).to receive(:enqueue_for).and_wrap_original do |_method, target, **static_args|
+      # Validate async configured
+      raise NotImplementedError, "Async not configured" unless target._async_adapter.present? && target._async_adapter != false
+
+      configs = target._batch_enqueue_configs
+      raise Axn::Async::MissingEnqueueEachError if configs.nil? || configs.empty?
+
+      Axn::Async::EnqueueAllTrigger.send(:_validate_static_args!, target, configs, static_args)
+      Axn::Async::EnqueueAllTrigger.execute_iteration(target, **static_args)
+    end
+  end
+
   let!(:test_class) do
     cc = company_class
     Class.new do
@@ -43,7 +62,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
       end
 
       enqueue_each :company, from: -> { cc.all }
-    end
+    end.tap { |klass| klass._async_adapter = :fake }
   end
 
   describe "main action call" do
@@ -55,6 +74,8 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
   end
 
   describe "enqueue_all call" do
+    before { with_synchronous_enqueue_all }
+
     it "enqueues jobs for each company" do
       enqueued = []
       allow(test_class).to receive(:call_async) { |**args| enqueued << args }
@@ -81,7 +102,7 @@ RSpec.describe "Axn::Async::BatchEnqueue field access" do
         end
 
         enqueue_each :company, from: -> { cc.all }
-      end
+      end.tap { |klass| klass._async_adapter = :fake }
 
       enqueued = []
       allow(os_like_class).to receive(:call_async) { |**args| enqueued << args }

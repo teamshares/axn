@@ -2,13 +2,16 @@
 
 module Axn
   module Async
+    # Custom error for missing enqueue_each configuration
+    class MissingEnqueueEachError < StandardError; end
+
     # Shared trigger action for executing batch enqueueing in the background.
-    # Used by enqueue_all and enqueue_all_async to iterate over configured fields.
+    # Called by enqueue_all to iterate over configured fields asynchronously.
     #
     # Configure the async adapter via Axn.config.set_enqueue_all_async,
     # or it defaults to Axn.config.set_default_async.
     #
-    # @example Configure a specific queue for all enqueue_all_async jobs
+    # @example Configure a specific queue for all enqueue_all jobs
     #   Axn.configure do |c|
     #     c.set_enqueue_all_async(:sidekiq, queue: :batch)
     #   end
@@ -20,26 +23,42 @@ module Axn
 
       def call
         target = target_class_name.constantize
-        self.class.execute_for(target, **static_args.symbolize_keys)
+        self.class.execute_iteration(target, **static_args.symbolize_keys)
       end
 
       class << self
-        # Execute batch enqueueing for a target action class
-        # Called by both enqueue_all (sync) and EnqueueAllTrigger#call (async)
-        def execute_for(target, **static_args)
+        # Entry point for enqueue_all - validates upfront, then executes async
+        #
+        # @param target [Class] The action class to batch enqueue
+        # @param static_args [Hash] Static arguments passed to each job
+        # @return [String] Job ID from the async adapter
+        def enqueue_for(target, **static_args)
+          # 1. Validate async is configured on target
+          _validate_async_configured!(target)
+
+          # 2. Handle no-expects case: just call_async directly
+          return target.call_async(**static_args) if target.internal_field_configs.empty?
+
           configs = target._batch_enqueue_configs
 
-          # Fail helpfully if no enqueue_each was declared
-          if configs.nil? || configs.empty?
-            raise ArgumentError,
-                  "No enqueue_each declared on #{target.name}. " \
-                  "Add at least one `enqueue_each :field, from: -> { ... }` declaration."
+          # 3. Handle missing enqueue_each case
+          if configs.empty?
+            raise MissingEnqueueEachError,
+                  "#{target.name} has expects declarations but no enqueue_each configured. " \
+                  "Add `enqueue_each :field_name, from: -> { ... }` for each field to iterate, " \
+                  "or use call_async directly for single invocations."
           end
 
-          # Validate static args
+          # 4. Validate static args upfront (raises ArgumentError if missing)
           _validate_static_args!(target, configs, static_args)
 
-          # Execute nested iteration
+          # 5. Execute iteration in background via EnqueueAllTrigger
+          call_async(target_class_name: target.name, static_args:)
+        end
+
+        # Execute the actual iteration (called from #call in background)
+        def execute_iteration(target, **static_args)
+          configs = target._batch_enqueue_configs
           _iterate(target:, configs:, index: 0, accumulated: {}, static_args:)
           true
         end
@@ -51,6 +70,14 @@ module Axn
         end
 
         private
+
+        def _validate_async_configured!(target)
+          return if target._async_adapter.present? && target._async_adapter != false
+
+          raise NotImplementedError,
+                "#{target.name} does not have async configured. " \
+                "Add `async :sidekiq` or `async :active_job` to enable enqueue_all."
+        end
 
         def _validate_static_args!(target, configs, static_args)
           enqueue_each_fields = configs.map(&:field)
