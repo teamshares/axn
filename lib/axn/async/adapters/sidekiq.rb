@@ -18,6 +18,11 @@ module Axn
 
           include ::Sidekiq::Job
 
+          # Sidekiq's processor calls .new on the worker class from outside the class hierarchy
+          # (see Sidekiq::Processor#dispatch which does `klass.new`).
+          # Since Axn::Core makes :new private, we need to restore it for Sidekiq workers.
+          public_class_method :new
+
           # Apply configuration block if present
           class_eval(&_async_config_block) if _async_config_block
 
