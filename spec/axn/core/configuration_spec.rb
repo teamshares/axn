@@ -30,25 +30,11 @@ RSpec.describe Axn::Configuration do
   end
 
   describe "async configuration" do
+    # Tests that use real adapters (:sidekiq, :active_job) are in spec_rails/
+    # since they require those gems to be loaded.
+
     it "defaults to disabled" do
       expect(config._default_async_adapter).to be false
-      expect(config._default_async_config).to eq({})
-      expect(config._default_async_config_block).to be_nil
-    end
-
-    it "can set adapter, config, and block together" do
-      block = proc { puts "test" }
-      config.set_default_async(:sidekiq, queue: "high", retry: 5, &block)
-
-      expect(config._default_async_adapter).to eq(:sidekiq)
-      expect(config._default_async_config).to eq({ queue: "high", retry: 5 })
-      expect(config._default_async_config_block).to eq(block)
-    end
-
-    it "can set just the adapter" do
-      config.set_default_async(:active_job)
-
-      expect(config._default_async_adapter).to eq(:active_job)
       expect(config._default_async_config).to eq({})
       expect(config._default_async_config_block).to be_nil
     end
@@ -74,39 +60,6 @@ RSpec.describe Axn::Configuration do
       expect do
         config.set_default_async(nil)
       end.to raise_error(ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion")
-    end
-
-    it "allows setting config and block when adapter is false but already set" do
-      config.set_default_async(:sidekiq)
-      expect do
-        config.set_default_async(false, queue: "test")
-      end.not_to raise_error
-      expect(config._default_async_config).to eq({ queue: "test" })
-    end
-
-    it "overwrites previous values when called multiple times" do
-      # First call
-      block1 = proc { puts "first block" }
-      config.set_default_async(:sidekiq, queue: "first", retry: 1, &block1)
-
-      expect(config._default_async_adapter).to eq(:sidekiq)
-      expect(config._default_async_config).to eq({ queue: "first", retry: 1 })
-      expect(config._default_async_config_block).to eq(block1)
-
-      # Second call - should overwrite everything
-      block2 = proc { puts "second block" }
-      config.set_default_async(:active_job, queue: "second", retry: 2, &block2)
-
-      expect(config._default_async_adapter).to eq(:active_job)
-      expect(config._default_async_config).to eq({ queue: "second", retry: 2 })
-      expect(config._default_async_config_block).to eq(block2)
-
-      # Third call - should overwrite again
-      config.set_default_async(false, queue: "third", retry: 3)
-
-      expect(config._default_async_adapter).to be false
-      expect(config._default_async_config).to eq({ queue: "third", retry: 3 })
-      expect(config._default_async_config_block).to be_nil
     end
   end
 

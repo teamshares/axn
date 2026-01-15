@@ -106,12 +106,6 @@ module Axn
           target.log_calls_level = original_log_level
         end
 
-        # Override to use enqueue_all-specific async config
-        def call_async(...)
-          ensure_enqueue_all_async_configured
-          super
-        end
-
         private
 
         # Builds iteration sources and resolves static args from kwargs
@@ -214,7 +208,7 @@ module Axn
           # For explicit configs, check if the field has a model declaration that supports find_each
           field_config = target.internal_field_configs.find { |c| c.field == config.field }
           model_config = field_config&.validations&.dig(:model)
-          return true if model_config && model_config[:klass]&.respond_to?(:find_each)
+          return true if model_config && model_config[:klass].respond_to?(:find_each)
 
           false
         end
@@ -312,17 +306,6 @@ module Axn
               on_progress:,
             )
           end
-        end
-
-        def ensure_enqueue_all_async_configured
-          return if _async_adapter.present?
-          return unless Axn.config._enqueue_all_async_adapter.present?
-
-          async(
-            Axn.config._enqueue_all_async_adapter,
-            **Axn.config._enqueue_all_async_config,
-            &Axn.config._enqueue_all_async_config_block
-          )
         end
 
         # Determines if a kwarg value should be iterated over or used as static
