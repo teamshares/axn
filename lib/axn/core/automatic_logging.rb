@@ -40,7 +40,7 @@ module Axn
             level: self.class.log_calls_level,
             message_parts: ["About to execute"],
             join_string: " with: ",
-            before: Axn.config.env.production? ? nil : "\n------\n",
+            before: _top_level_separator,
             error_context: "logging before hook",
             context_direction: :inbound,
             context_instance: self,
@@ -68,11 +68,18 @@ module Axn
               "Execution completed (with outcome: #{result.outcome}) in #{result.elapsed_time} milliseconds",
             ],
             join_string: ". Set: ",
-            after: Axn.config.env.production? ? nil : "\n------\n",
+            after: _top_level_separator,
             error_context: "logging after hook",
             context_direction: :outbound,
             context_instance: self,
           )
+        end
+
+        def _top_level_separator
+          return if Axn.config.env.production?
+          return if NestingTracking._current_axn_stack.size > 1
+
+          "\n------\n"
         end
       end
     end

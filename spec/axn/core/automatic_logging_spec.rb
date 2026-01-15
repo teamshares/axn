@@ -454,6 +454,80 @@ RSpec.describe Axn::Core::AutomaticLogging do
     end
   end
 
+  describe "log separators with nested actions" do
+    let(:log_messages) { [] }
+    let(:logger) { instance_double(Logger, info: nil) }
+
+    before do
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+      allow(logger).to receive(:info) do |message|
+        log_messages << message
+      end
+    end
+
+    context "when action is called at top level" do
+      let(:action) { build_axn }
+
+      it "includes separator before and after logs" do
+        action.call
+
+        before_log = log_messages.find { |msg| msg.include?("About to execute") }
+        after_log = log_messages.find { |msg| msg.include?("Execution completed") }
+
+        expect(before_log).to start_with("\n------\n")
+        expect(after_log).to end_with("\n------\n")
+      end
+    end
+
+    context "when action is nested" do
+      let(:outer_action) do
+        inner = inner_action
+        build_axn do
+          define_method(:call) { inner.call }
+        end
+      end
+
+      let(:inner_action) { build_axn }
+
+      it "includes separator only for outer action, not inner" do
+        outer_action.call
+
+        # Find logs by checking for the nesting pattern
+        outer_before = log_messages.find { |msg| msg.include?("About to execute") && !msg.include?(" > ") }
+        inner_before = log_messages.find { |msg| msg.include?("About to execute") && msg.include?(" > ") }
+        inner_after = log_messages.find { |msg| msg.include?("Execution completed") && msg.include?(" > ") }
+        outer_after = log_messages.find { |msg| msg.include?("Execution completed") && !msg.include?(" > ") }
+
+        # Outer logs have separators
+        expect(outer_before).to start_with("\n------\n")
+        expect(outer_after).to end_with("\n------\n")
+
+        # Inner logs do not have separators
+        expect(inner_before).not_to start_with("\n------\n")
+        expect(inner_after).not_to end_with("\n------\n")
+      end
+    end
+
+    context "when in production environment" do
+      before do
+        allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+      end
+
+      let(:action) { build_axn }
+
+      it "does not include separators" do
+        action.call
+
+        before_log = log_messages.find { |msg| msg.include?("About to execute") }
+        after_log = log_messages.find { |msg| msg.include?("Execution completed") }
+
+        expect(before_log).not_to include("------")
+        expect(after_log).not_to include("------")
+      end
+    end
+  end
+
   describe "async invocation logging" do
     let(:log_messages) { [] }
     let(:logger) { instance_double(Logger) }

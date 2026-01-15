@@ -70,12 +70,12 @@ module Axn
         case data
         when Hash
           # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
-          "{#{data.map { |k, v| "#{k}: #{format_object(v)}" }.join(", ")}}"
+          "{#{data.map { |k, v| "#{k}: #{format_object(v)}" }.join(', ')}}"
         when Array
           data.map { |v| format_object(v) }
         else
           return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
-          return "<#{data.class.name}##{data.to_param.presence || "unpersisted"}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+          return "<#{data.class.name}##{data.to_param.presence || 'unpersisted'}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
 
           data.inspect
         end

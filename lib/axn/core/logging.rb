@@ -30,7 +30,12 @@ module Axn
           end
         end
 
-        def _log_prefix = "[#{name.presence || "Anonymous Class"}]"
+        def _log_prefix
+          names = NestingTracking._current_axn_stack.map do |axn|
+            axn.class.name.presence || "Anonymous Class"
+          end
+          "[#{names.join(' > ')}]"
+        end
       end
     end
   end

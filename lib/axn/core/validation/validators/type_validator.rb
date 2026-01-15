@@ -39,7 +39,7 @@ module Axn
       private
 
       def types = Array(options[:klass])
-      def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(", ")}"
+      def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(', ')}"
 
       def valid_type?(type:, value:, allow_blank:)
         # NOTE: allow mocks to pass type validation by default (much easier testing ergonomics)

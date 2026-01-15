@@ -9,7 +9,7 @@ module Axn
       # @param inject [Array<Symbol>] optional additional attributes to include in the form (e.g. [:user, :company])
       # @yield block to define the form class when type is a string and the constant doesn't exist
       def self.configure(expect: :params, expose: :form, type: nil, inject: nil, &block)
-        expect ||= :"#{expose.to_s.delete_suffix("_form")}_params"
+        expect ||= :"#{expose.to_s.delete_suffix('_form')}_params"
 
         # Aliasing to avoid shadowing/any confusion
         expect_attr = expect

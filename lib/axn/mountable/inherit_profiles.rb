@@ -45,12 +45,12 @@ module Axn
         case inherit
         when Symbol
           PROFILES.fetch(inherit) do
-            raise ArgumentError, "Unknown inherit profile: #{inherit.inspect}. Valid profiles: #{PROFILES.keys.join(", ")}"
+            raise ArgumentError, "Unknown inherit profile: #{inherit.inspect}. Valid profiles: #{PROFILES.keys.join(', ')}"
           end
         when Hash
           # Validate hash keys
           invalid_keys = inherit.keys - PROFILES[:none].keys
-          raise ArgumentError, "Invalid inherit keys: #{invalid_keys.join(", ")}. Valid keys: #{PROFILES[:none].keys.join(", ")}" if invalid_keys.any?
+          raise ArgumentError, "Invalid inherit keys: #{invalid_keys.join(', ')}. Valid keys: #{PROFILES[:none].keys.join(', ')}" if invalid_keys.any?
 
           # Merge with none profile to ensure all keys are present
           PROFILES[:none].merge(inherit)
