@@ -214,6 +214,15 @@ module Axn
         end
 
         def validate_async_configured!(target)
+          # Set up default async configuration if none is set (same pattern as call_async)
+          if target._async_adapter.nil? && Axn.config._default_async_adapter.present?
+            target.async(
+              Axn.config._default_async_adapter,
+              **Axn.config._default_async_config,
+              &Axn.config._default_async_config_block
+            )
+          end
+
           return if target._async_adapter.present? && target._async_adapter != false
 
           raise NotImplementedError,
