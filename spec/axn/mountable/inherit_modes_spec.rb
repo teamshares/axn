@@ -219,7 +219,7 @@ RSpec.describe "Axn::Mountable inherit modes" do
       expect(mounted_axn.internal_field_configs).to be_empty
     end
 
-    it "enqueue_all_via defaults to :async_only" do
+    it "enqueues_each uses shared EnqueueAllOrchestrator with its own fixed fields" do
       parent = Class.new do
         include Axn
         before :some_hook
@@ -228,15 +228,16 @@ RSpec.describe "Axn::Mountable inherit modes" do
         def call; end
         def some_hook; end
 
-        enqueue_all_via do
-          [1, 2, 3].each { |i| enqueue(number: i) }
-        end
+        enqueues_each :number, from: -> { [1, 2, 3] }
       end
 
-      mounted_axn = parent::Axns::EnqueueAll
-      expect(mounted_axn.before_hooks).to be_empty
-      # NOTE: enqueue_all_via shouldn't inherit parent's :number field
-      expect(mounted_axn.internal_field_configs.map(&:field)).not_to include(:number)
+      # The shared trigger has its own fixed fields, not the parent's
+      trigger = Axn::Async::EnqueueAllOrchestrator
+      expect(trigger.internal_field_configs.map(&:field)).to contain_exactly(:target_class_name, :static_args)
+      expect(trigger.internal_field_configs.map(&:field)).not_to include(:number)
+
+      # Parent still has its expects declarations
+      expect(parent.internal_field_configs.map(&:field)).to include(:number)
     end
   end
 end

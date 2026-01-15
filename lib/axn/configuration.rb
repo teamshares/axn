@@ -23,6 +23,22 @@ module Axn
       @default_async_adapter = adapter unless adapter.nil?
       @default_async_config = config.any? ? config : {}
       @default_async_config_block = block_given? ? block : nil
+
+      _apply_async_to_enqueue_all_orchestrator
+    end
+
+    # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async)
+    # Defaults to the default async config if not explicitly set
+    def _enqueue_all_async_adapter = @enqueue_all_async_adapter || _default_async_adapter
+    def _enqueue_all_async_config = @enqueue_all_async_config || _default_async_config
+    def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
+
+    def set_enqueue_all_async(adapter, **config, &block)
+      @enqueue_all_async_adapter = adapter
+      @enqueue_all_async_config = config.any? ? config : {}
+      @enqueue_all_async_config_block = block_given? ? block : nil
+
+      _apply_async_to_enqueue_all_orchestrator
     end
 
     def rails = @rails ||= RailsConfiguration.new
@@ -50,7 +66,7 @@ module Axn
     def logger
       @logger ||= begin
         # Use sidekiq logger if in background
-        if Axn::Util::BackgroundJob.running_in_background? && defined?(Sidekiq)
+        if Axn::Util::ExecutionContext.background? && defined?(Sidekiq)
           Sidekiq.logger
         else
           Rails.logger
@@ -65,6 +81,24 @@ module Axn
     def env
       @env ||= ENV["RACK_ENV"].presence || ENV["RAILS_ENV"].presence || "development"
       ActiveSupport::StringInquirer.new(@env)
+    end
+
+    private
+
+    # Apply async config to EnqueueAllOrchestrator if it's already loaded.
+    # Called from set_default_async and set_enqueue_all_async to ensure the
+    # orchestrator has Sidekiq::Job included before any worker tries to process jobs.
+    def _apply_async_to_enqueue_all_orchestrator
+      return unless defined?(Axn::Async::EnqueueAllOrchestrator)
+
+      adapter = _enqueue_all_async_adapter
+      return if adapter.nil? || adapter == false
+
+      Axn::Async::EnqueueAllOrchestrator.async(
+        adapter,
+        **_enqueue_all_async_config,
+        &_enqueue_all_async_config_block
+      )
     end
   end
 

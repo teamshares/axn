@@ -146,4 +146,64 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       expect { perform_enqueued_jobs }.to raise_error(StandardError, "Intentional failure")
     end
   end
+
+  describe "_async config with symbol keys and durations" do
+    context "with symbol keys" do
+      it "accepts _async config with symbol keys for wait" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 3600 })
+        expect(job).to be_a(ActiveJob::Base)
+      end
+
+      it "accepts _async config with symbol keys for wait_until" do
+        future_time = 1.hour.from_now
+        job = test_action.call_async(name: "World", age: 25, _async: { wait_until: future_time })
+        expect(job).to be_a(ActiveJob::Base)
+      end
+
+      it "does not leak _async into job arguments" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 3600 })
+        expect(job.arguments.first).not_to have_key(:_async)
+        expect(job.arguments.first).not_to have_key("_async")
+      end
+    end
+
+    context "with ActiveSupport::Duration values" do
+      it "accepts duration for wait option" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+        expect(job).to be_a(ActiveJob::Base)
+      end
+
+      it "accepts duration for wait option with symbol key" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 1.hour })
+        expect(job).to be_a(ActiveJob::Base)
+      end
+
+      it "does not leak _async into job arguments with duration" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+        expect(job.arguments.first).not_to have_key(:_async)
+        expect(job.arguments.first).not_to have_key("_async")
+      end
+
+      it "converts duration to seconds correctly" do
+        proxy_instance = double("proxy")
+        allow(test_action).to receive(:active_job_proxy_class).and_return(proxy_instance)
+        allow(proxy_instance).to receive(:set).with(wait: 300).and_return(proxy_instance) # 5.minutes = 300 seconds
+
+        expect(proxy_instance).to receive(:perform_later).with({ name: "World", age: 25 })
+
+        test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+      end
+    end
+
+    context "with both symbol keys and durations" do
+      it "handles symbol keys with duration values" do
+        job = test_action.call_async(name: "World", age: 25, _async: { wait: 30.minutes })
+        expect(job).to be_a(ActiveJob::Base)
+      end
+
+      it "does not cause serialization errors" do
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes }) }.not_to raise_error
+      end
+    end
+  end
 end

@@ -21,7 +21,6 @@ module Axn
   #
   # - `mount_axn` and `mount_axn_method`: `:lifecycle` - Inherits hooks, callbacks, messages, and async config (but not fields)
   # - `step`: `:none` - Completely independent to avoid conflicts
-  # - `enqueue_all_via`: `:async_only` - Only inherits async configuration
   #
   # ### Inheritance Profiles
   #
@@ -51,12 +50,6 @@ module Axn
   #   # step uses :none (completely independent)
   #   MyClass.step :my_step do
   #     # Will NOT run log_start or track_success
-  #   end
-  #
-  #   # enqueue_all_via uses :async_only (only inherits async config)
-  #   MyClass.enqueue_all_via do
-  #     # Can call enqueue (uses inherited async config)
-  #     # Does NOT inherit hooks, callbacks, or messages
   #   end
   #
   # @example Custom inheritance control

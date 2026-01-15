@@ -162,4 +162,74 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       it { expect { test_action.call_async(name: "Test", age: 25, complex: unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize") }
     end
   end
+
+  describe "_async config with symbol keys and durations" do
+    context "with symbol keys" do
+      it "accepts _async config with symbol keys for wait" do
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 3600 }) }.not_to raise_error
+      end
+
+      it "accepts _async config with symbol keys for wait_until" do
+        future_time = 1.hour.from_now
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait_until: future_time }) }.not_to raise_error
+      end
+
+      it "does not leak _async into job arguments" do
+        Sidekiq::Testing.fake!
+        Sidekiq::Job.jobs.clear
+
+        test_action.call_async(name: "World", age: 25, _async: { wait: 3600 })
+
+        job = Sidekiq::Job.jobs.first
+        expect(job["args"].first).not_to have_key("_async")
+        expect(job["args"].first).not_to have_key(:_async)
+      end
+    end
+
+    context "with ActiveSupport::Duration values" do
+      it "accepts duration for wait option" do
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes }) }.not_to raise_error
+      end
+
+      it "accepts duration for wait option with symbol key" do
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 1.hour }) }.not_to raise_error
+      end
+
+      it "does not leak _async into job arguments with duration" do
+        Sidekiq::Testing.fake!
+        Sidekiq::Job.jobs.clear
+
+        test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+
+        job = Sidekiq::Job.jobs.first
+        expect(job["args"].first).not_to have_key("_async")
+        expect(job["args"].first).not_to have_key(:_async)
+      end
+
+      it "converts duration to seconds correctly" do
+        Sidekiq::Testing.fake!
+        Sidekiq::Job.jobs.clear
+
+        expect(test_action).to receive(:perform_in).with(300, anything) # 5.minutes = 300 seconds
+
+        test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+      end
+    end
+
+    context "with both symbol keys and durations" do
+      it "handles symbol keys with duration values" do
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 30.minutes }) }.not_to raise_error
+      end
+
+      it "does not cause serialization errors" do
+        Sidekiq::Testing.fake!
+        Sidekiq::Job.jobs.clear
+        Sidekiq.strict_args!(true)
+
+        expect { test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes }) }.not_to raise_error
+
+        Sidekiq.strict_args!(false)
+      end
+    end
+  end
 end

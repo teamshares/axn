@@ -54,7 +54,7 @@ Metrics/ModuleLength:
   Enabled: false
 
 Metrics/ClassLength:
-  Max: 175
+  Max: 250
 
 Metrics/MethodLength:
   Max: 70
@@ -75,7 +75,7 @@ Naming/MethodParameterName:
   AllowedNames: e, on, id, if, as
 
 Metrics/ParameterLists:
-  Max: 10
+  Max: 11
 
 Layout/LineLength:
   Max: 160

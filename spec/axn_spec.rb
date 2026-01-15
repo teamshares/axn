@@ -15,10 +15,6 @@ RSpec.describe Axn do
       end
     end
 
-    it "prevents direct instantiation via new" do
-      expect { action_class.new(name: "World") }.to raise_error(NoMethodError, /private method `new' called/)
-    end
-
     it "allows instantiation via call class method" do
       result = action_class.call(name: "World")
       expect(result).to be_ok

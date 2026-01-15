@@ -16,8 +16,9 @@ require "axn/core"
 require "axn/util/memoization"
 require "axn/util/callable"
 require "axn/util/logging"
-require "axn/util/background_job"
+require "axn/util/execution_context"
 require "axn/util/contract_error_handling"
+require "axn/util/global_id_serialization"
 require "axn/form_object"
 
 # Extensions
@@ -41,3 +42,6 @@ module Axn
     end
   end
 end
+
+# Load after Axn is defined since it includes Axn
+require "axn/async/enqueue_all_orchestrator"

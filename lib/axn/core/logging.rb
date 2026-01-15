@@ -17,16 +17,22 @@ module Axn
       module ClassMethods
         def log_level = Axn.config.log_level
 
-        def log(message, level: log_level, before: nil, after: nil)
-          msg = [_log_prefix, message].compact_blank.join(" ")
+        # @param message [String] The message to log
+        # @param level [Symbol] The log level (default: log_level)
+        # @param before [String, nil] Text to prepend to the message
+        # @param after [String, nil] Text to append to the message
+        # @param prefix [String, nil] Override the default prefix (useful for class-level logging)
+        def log(message, level: log_level, before: nil, after: nil, prefix: nil)
+          resolved_prefix = prefix.nil? ? _log_prefix : prefix
+          msg = [resolved_prefix, message].compact_blank.join(" ")
           msg = [before, msg, after].compact_blank.join if before || after
 
           Axn.config.logger.send(level, msg)
         end
 
         LEVELS.each do |level|
-          define_method(level) do |message, before: nil, after: nil|
-            log(message, level:, before:, after:)
+          define_method(level) do |message, before: nil, after: nil, prefix: nil|
+            log(message, level:, before:, after:, prefix:)
           end
         end
 

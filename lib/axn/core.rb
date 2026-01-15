@@ -67,8 +67,6 @@ module Axn
         include Core::UseStrategy
         include Core::Memoization
         include Core::DefaultCall
-
-        private_class_method :new
       end
     end
 

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/async/adapters"
+require "axn/async/batch_enqueue"
 
 module Axn
   module Async
@@ -8,6 +9,10 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+
+      # Include batch enqueue functionality
+      include BatchEnqueue
+      extend BatchEnqueue::DSL
     end
 
     class_methods do
@@ -77,11 +82,20 @@ module Axn
           level: log_calls_level,
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
           join_string: " with: ",
-          before: Axn.config.env.production? ? nil : "\n------\n",
+          before: _async_log_separator,
+          prefix: "[#{name.presence || 'Anonymous Class'}]",
           error_context: "logging async invocation",
           context_direction: :inbound,
           context_data: kwargs,
         )
+      end
+
+      def _async_log_separator
+        return if Axn.config.env.production?
+        return if Axn::Util::ExecutionContext.background?
+        return if Axn::Util::ExecutionContext.console?
+
+        "\n------\n"
       end
 
       # Hook method that must be implemented by async adapter modules.
@@ -121,6 +135,43 @@ module Axn
         return unless Axn.config._default_async_adapter.present?
 
         async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+      end
+
+      # Extracts and normalizes _async options from kwargs.
+      # Returns normalized options hash (with string keys and converted durations) and removes _async from kwargs.
+      #
+      # @param kwargs [Hash] The keyword arguments (modified in place)
+      # @return [Hash, nil] Normalized async options hash, or nil if no _async options present
+      def _extract_and_normalize_async_options(kwargs)
+        async_options = kwargs.delete(:_async) if kwargs[:_async].is_a?(Hash)
+        _normalize_async_options(async_options) if async_options
+      end
+
+      # Normalizes _async options hash:
+      # - Converts symbol keys to string keys
+      # - Converts ActiveSupport::Duration values to integer seconds (for wait)
+      # - Preserves Time objects (for wait_until)
+      #
+      # @param async_hash [Hash, nil] The async options hash
+      # @return [Hash, nil] Normalized hash with string keys, or nil if input is not a hash
+      def _normalize_async_options(async_hash)
+        return nil unless async_hash.is_a?(Hash)
+
+        normalized = {}
+        async_hash.each do |key, value|
+          string_key = key.to_s
+
+          normalized[string_key] = case string_key
+                                   when "wait"
+                                     # Convert ActiveSupport::Duration to integer seconds
+                                     value.respond_to?(:to_i) ? value.to_i : value
+                                   else
+                                     # Preserve wait_until and other keys/values as-is
+                                     value
+                                   end
+        end
+
+        normalized
       end
     end
   end

@@ -77,6 +77,8 @@ module Axn
 
         def _top_level_separator
           return if Axn.config.env.production?
+          return if Axn::Util::ExecutionContext.background?
+          return if Axn::Util::ExecutionContext.console?
           return if NestingTracking._current_axn_stack.size > 1
 
           "\n------\n"

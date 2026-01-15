@@ -27,12 +27,15 @@ module Axn
           def _enqueue_async_job(kwargs)
             job = active_job_proxy_class
 
-            if kwargs[:_async].is_a?(Hash)
-              options = kwargs.delete(:_async)
-              if options[:wait_until]
-                job = job.set(wait_until: options[:wait_until])
-              elsif options[:wait]
-                job = job.set(wait: options[:wait])
+            # Extract and normalize _async options (removes _async from kwargs)
+            normalized_options = _extract_and_normalize_async_options(kwargs)
+
+            # Process normalized async options if present
+            if normalized_options
+              if normalized_options["wait_until"]
+                job = job.set(wait_until: normalized_options["wait_until"])
+              elsif normalized_options["wait"]
+                job = job.set(wait: normalized_options["wait"])
               end
             end
 
