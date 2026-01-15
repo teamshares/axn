@@ -186,9 +186,10 @@ SyncForCompany.enqueue_all  # Automatically iterates Company.all and enqueues ea
 
 **How it works:**
 1. `enqueue_all` validates configuration upfront (async configured, static args present)
-2. Enqueues an `EnqueueAllOrchestrator` job in the background
-3. When `EnqueueAllOrchestrator` runs, it iterates over the source collection and enqueues individual jobs
-4. Model-based iterations (using `find_each`) are processed first for memory efficiency
+2. If all arguments are serializable, enqueues an `EnqueueAllOrchestrator` job in the background
+3. If any argument is unserializable (e.g., an AR relation override), executes in the foreground instead
+4. During execution, iterates over the source collection and enqueues individual jobs
+5. Model-based iterations (using `find_each`) are processed first for memory efficiency
 
 ### Auto-Inference from `model:` Declarations
 
@@ -381,6 +382,44 @@ enqueues_each :format, from: -> { [:csv, :json, :xml] }  # Processed second
 
 - **`find_each`**: Used when the source responds to `find_each` (ActiveRecord collections) - processes in batches for memory efficiency
 - **`each`**: Used for plain arrays and other enumerables - loads all items into memory
+
+### Background vs Foreground Execution
+
+By default, `enqueue_all` enqueues an `EnqueueAllOrchestrator` job to perform the iteration and individual job enqueueing in the background. This makes it safe to call directly from clock processes (e.g., Heroku scheduler) without risking memory bloat from loading large collections.
+
+However, if you pass an **enumerable override** (like an ActiveRecord relation or array), `enqueue_all` automatically falls back to foreground execution—iterating and enqueueing immediately in the current process. This is because the iteration source (a lambda wrapping the enumerable) cannot be serialized for background execution.
+
+```ruby
+class SyncForCompany
+  include Axn
+  async :sidekiq
+
+  expects :company, model: Company
+
+  def call
+    # ... sync logic
+  end
+
+  enqueues_each :company, from: -> { Company.active }
+end
+
+# Default: enqueues orchestrator job in background (safe for clock processes)
+SyncForCompany.enqueue_all
+
+# Override with a relation: executes in foreground (relation can't be serialized)
+SyncForCompany.enqueue_all(company: Company.where(plan: "enterprise"))
+
+# Override with a single value: runs in background (GlobalID-serializable scalar)
+SyncForCompany.enqueue_all(company: Company.find(123))
+```
+
+**Why this matters:**
+- Configure your default iteration source via `enqueues_each` for scheduled/recurring jobs
+- By default, `enqueue_all` runs safely in the background without loading your entire dataset into memory
+- For one-off manual calls with a filtered subset, pass an enumerable override—foreground execution handles it automatically
+- Scalar overrides (single objects) are serialized via GlobalID and still run in the background
+
+This design lets you use the same action class for both scheduled batch processing and ad-hoc targeted runs.
 
 ### Edge Cases and Limitations
 
