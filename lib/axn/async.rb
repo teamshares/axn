@@ -92,8 +92,8 @@ module Axn
 
       def _async_log_separator
         return if Axn.config.env.production?
-        return if Axn::Util::BackgroundJob.running_in_background?
-        return if Axn::Util::BackgroundJob.running_in_console?
+        return if Axn::Util::ExecutionContext.background?
+        return if Axn::Util::ExecutionContext.console?
 
         "\n------\n"
       end

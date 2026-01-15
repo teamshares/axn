@@ -66,7 +66,7 @@ module Axn
     def logger
       @logger ||= begin
         # Use sidekiq logger if in background
-        if Axn::Util::BackgroundJob.running_in_background? && defined?(Sidekiq)
+        if Axn::Util::ExecutionContext.background? && defined?(Sidekiq)
           Sidekiq.logger
         else
           Rails.logger
