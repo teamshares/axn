@@ -7,7 +7,7 @@ module Axn
         extend ActiveSupport::Concern
 
         def self._running_in_background?
-          defined?(Sidekiq) && Sidekiq.server?
+          defined?(::Sidekiq) && ::Sidekiq.server?
         end
 
         included do
