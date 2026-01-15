@@ -73,7 +73,7 @@ module Axn
           if has_kwarg_iteration
             # Execute iteration synchronously - kwargs with iterables can't be serialized
             kwarg_fields = configs.select { |c| c.from.is_a?(Proc) && static_args.key?(c.field) }.map(&:field)
-            info "[enqueue_all] Running in foreground: kwargs #{kwarg_fields.join(", ")} cannot be serialized for background execution"
+            info "[enqueue_all] Running in foreground: kwargs #{kwarg_fields.join(', ')} cannot be serialized for background execution"
             execute_iteration_without_logging(target, **static_args)
           else
             # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
@@ -177,7 +177,7 @@ module Axn
           return [[], resolved_static] if uncovered_required.empty?
 
           raise MissingEnqueuesEachError,
-                "#{target.name} has required fields (#{uncovered_required.join(", ")}) " \
+                "#{target.name} has required fields (#{uncovered_required.join(', ')}) " \
                 "not covered by enqueues_each, model: declarations, or static args. " \
                 "Add `enqueues_each :field_name, from: -> { ... }` for fields to iterate, " \
                 "use `expects :field, model: SomeModel` where SomeModel responds to find_each, " \
@@ -239,7 +239,7 @@ module Axn
           return unless missing.any?
 
           raise ArgumentError,
-                "Missing required static field(s): #{missing.join(", ")}. " \
+                "Missing required static field(s): #{missing.join(', ')}. " \
                 "These fields are not covered by enqueues_each and must be provided."
         end
 

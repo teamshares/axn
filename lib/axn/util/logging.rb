@@ -16,6 +16,7 @@ module Axn
       # @param join_string [String] String to join message parts with
       # @param before [String, nil] Text to prepend to the message
       # @param after [String, nil] Text to append to the message
+      # @param prefix [String, nil] Override the default log prefix (useful for class-level logging)
       # @param context_direction [Symbol, nil] Direction for context logging (:inbound or :outbound)
       # @param context_instance [Object, nil] Action instance for instance-level context_for_logging
       # @param context_data [Hash, nil] Raw data for class-level context_for_logging
@@ -27,6 +28,7 @@ module Axn
         join_string: " ",
         before: nil,
         after: nil,
+        prefix: nil,
         context_direction: nil,
         context_instance: nil,
         context_data: nil
@@ -48,7 +50,7 @@ module Axn
         full_message_parts = context_str ? message_parts + [context_str] : message_parts
         message = full_message_parts.compact.join(join_string)
 
-        action_class.public_send(level, message, before:, after:)
+        action_class.public_send(level, message, before:, after:, prefix:)
       rescue StandardError => e
         Axn::Internal::Logging.piping_error(error_context, action: action_class, exception: e)
       end

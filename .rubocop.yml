@@ -75,7 +75,7 @@ Naming/MethodParameterName:
   AllowedNames: e, on, id, if, as
 
 Metrics/ParameterLists:
-  Max: 10
+  Max: 11
 
 Layout/LineLength:
   Max: 160

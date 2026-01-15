@@ -21,6 +21,14 @@ module Axn
       rescue StandardError
         false
       end
+
+      # Determines if code is currently running in an interactive console (IRB, Pry, Rails console).
+      # Used to skip visual separators in console output since the prompt already provides separation.
+      #
+      # @return [Boolean] true if running in a console, false otherwise
+      def running_in_console?
+        defined?(Rails::Console) || defined?(IRB) || defined?(Pry)
+      end
     end
   end
 end

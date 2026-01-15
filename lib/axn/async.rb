@@ -82,11 +82,20 @@ module Axn
           level: log_calls_level,
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
           join_string: " with: ",
-          before: Axn.config.env.production? ? nil : "\n------\n",
+          before: _async_log_separator,
+          prefix: "[#{name.presence || 'Anonymous Class'}]",
           error_context: "logging async invocation",
           context_direction: :inbound,
           context_data: kwargs,
         )
+      end
+
+      def _async_log_separator
+        return if Axn.config.env.production?
+        return if Axn::Util::BackgroundJob.running_in_background?
+        return if Axn::Util::BackgroundJob.running_in_console?
+
+        "\n------\n"
       end
 
       # Hook method that must be implemented by async adapter modules.

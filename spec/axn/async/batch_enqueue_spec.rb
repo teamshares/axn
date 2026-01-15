@@ -82,7 +82,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       # Validate async configured
       unless target._async_adapter.present? && target._async_adapter != false
         raise NotImplementedError,
-              "#{target.name || "Anonymous class"} does not have async configured."
+              "#{target.name || 'Anonymous class'} does not have async configured."
       end
 
       # Handle no-expects case
