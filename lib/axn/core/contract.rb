@@ -41,7 +41,7 @@ module Axn
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
+            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
             self.internal_field_configs += configs
@@ -63,7 +63,7 @@ module Axn
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
             duplicated = external_field_configs.map(&:field) & configs.map(&:field)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(", ")}" if duplicated.any?
+            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
             self.external_field_configs += configs

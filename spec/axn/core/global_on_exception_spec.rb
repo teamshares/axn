@@ -34,7 +34,7 @@ RSpec.describe "Global on_exception handler" do
 
       it "logs the exception but doesn't call a custom handler" do
         expect_any_instance_of(action).to receive(:log).with(
-          "#{"#" * 10} Handled exception (RuntimeError): Something went wrong! #{"#" * 10}",
+          "#{'#' * 10} Handled exception (RuntimeError): Something went wrong! #{'#' * 10}",
         )
         expect(action.call(name: "error", age: 25)).not_to be_ok
       end
@@ -228,7 +228,7 @@ RSpec.describe "Global on_exception handler" do
       it "logs with decorative formatting" do
         expect(Axn.config).to receive(:on_exception).and_call_original
         expect_any_instance_of(action).to receive(:log).with(
-          "#{"#" * 10} Handled exception (RuntimeError): Test error #{"#" * 10}",
+          "#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}",
         )
         action.call
       end
@@ -268,7 +268,7 @@ RSpec.describe "Global on_exception handler" do
       ).and_call_original
 
       expect_any_instance_of(action).to receive(:log).with(
-        "#{"#" * 10} Handled exception (RuntimeError): Test error #{"#" * 10}",
+        "#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}",
       )
 
       result = action.call(trigger_error: true)

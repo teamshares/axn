@@ -46,7 +46,7 @@ module Axn
 
             if exposed_fields.size > 1
               raise MountingError,
-                    "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
+                    "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(', ')}. " \
                     "Use a fresh block with mount_axn_method or ensure the axn class has exactly one exposed field."
             end
           end
@@ -85,7 +85,7 @@ module Axn
             exposed_fields.first # Single field, assume it's expose_return_as
           else
             raise MountingError,
-                  "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(", ")}. " \
+                  "Cannot determine expose_return_as for existing axn class with multiple exposed fields: #{exposed_fields.join(', ')}. " \
                   "Use a fresh block with mount_axn_method or ensure the axn class has exactly one exposed field."
           end
         end

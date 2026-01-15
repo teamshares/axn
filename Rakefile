@@ -8,7 +8,7 @@ RSpec::Core::RakeTask.new(:spec)
 # RuboCop specs (separate from main specs to avoid loading RuboCop unnecessarily)
 task :spec_rubocop do
   files = Dir.glob("spec_rubocop/**/*_spec.rb")
-  sh "bundle exec rspec #{files.join(" ")}"
+  sh "bundle exec rspec #{files.join(' ')}"
 end
 
 # Rails specs (separate from main specs to avoid loading Rails unnecessarily)

@@ -68,7 +68,7 @@ end
 puts "\n=== Usage Examples ==="
 
 # Built-in adapter usage
-puts "Built-in disabled adapter: #{BuiltInAction.call(name: "World")}"
+puts "Built-in disabled adapter: #{BuiltInAction.call(name: 'World')}"
 
 # Custom adapter usage
 puts "Custom adapter:"

@@ -108,9 +108,9 @@ end
 
 # Sidekiq actions (when Sidekiq is available)
 if defined?(Sidekiq)
-  puts "Sidekiq action (kwargs): #{SidekiqAction.call(name: "World")}"
-  puts "Sidekiq action (block): #{SidekiqActionWithBlock.call(name: "World")}"
-  puts "SimpleSidekiq action: #{SimpleSidekiqAction.call(name: "World")}"
+  puts "Sidekiq action (kwargs): #{SidekiqAction.call(name: 'World')}"
+  puts "Sidekiq action (block): #{SidekiqActionWithBlock.call(name: 'World')}"
+  puts "SimpleSidekiq action: #{SimpleSidekiqAction.call(name: 'World')}"
 
   # Async execution examples
   puts "\n=== Async Execution Examples ==="
@@ -131,7 +131,7 @@ end
 
 # ActiveJob actions (when ActiveJob is available)
 if defined?(ActiveJob)
-  puts "ActiveJob action: #{ActiveJobAction.call(name: "World")}"
+  puts "ActiveJob action: #{ActiveJobAction.call(name: 'World')}"
 
   # Async execution examples
   puts "\n=== ActiveJob Async Execution Examples ==="

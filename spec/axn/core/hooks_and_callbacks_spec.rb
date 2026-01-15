@@ -32,7 +32,7 @@ RSpec.describe Axn do
         context "on #{callback_type}" do
           let(:trigger) { callback_type == :success ? :ok : :raise }
 
-          it "#{should_skip_value ? "does not execute" : "executes"} the #{callback_type} callback" do
+          it "#{should_skip_value ? 'does not execute' : 'executes'} the #{callback_type} callback" do
             expect do
               if callback_type == :success
                 expect(action.call(trigger:, should_skip:)).to be_ok
