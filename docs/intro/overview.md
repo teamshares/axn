@@ -13,7 +13,7 @@ This library provides a set of conventions for writing business logic in Rails (
 
 ### Minimal example
 
-Your logic goes in a <abbr title="Plain Old Ruby Object">PORO</abbr>. The only requirements are to `include Action` and a `call` method, meaning the basic skeleton looks something like this:
+Your logic goes in a <abbr title="Plain Old Ruby Object">PORO</abbr>. The only requirements are to `include Axn` and define a `call` method, meaning the basic skeleton looks something like this:
 
 ```ruby
 class Foo

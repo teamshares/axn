@@ -49,49 +49,6 @@ To complete execution early with a success result, call `done!` with an optional
 
 If you declare that your action `exposes` anything, you need to actually `expose` it.
 
-### Default call behavior
-
-If you don't define a `call` method, Axn provides a default implementation that automatically exposes all declared exposures by calling methods with matching names. This allows you to simplify actions that only need to compute and expose values:
-
-```ruby
-class CertificatesByDestination
-  include Axn
-  exposes :certs_by_destination, type: Hash
-
-  private
-
-  def certs_by_destination
-    # Your logic here - automatically exposed
-    { "dest1" => "cert1", "dest2" => "cert2" }
-  end
-end
-```
-
-This is equivalent to:
-
-```ruby
-class CertificatesByDestination
-  include Axn
-  exposes :certs_by_destination, type: Hash
-
-  def call
-    expose certs_by_destination: certs_by_destination
-  end
-
-  private
-
-  def certs_by_destination
-    { "dest1" => "cert1", "dest2" => "cert2" }
-  end
-end
-```
-
-**Important notes:**
-- The default `call` requires a method matching each declared exposure (unless a `default` is provided)
-- If a method is missing and no default is provided, the action will fail with a helpful error message
-- You can still override `call` to implement custom logic when needed
-- If a method returns `nil` for an exposed-only field with no default, it's treated as missing (user-defined methods that legitimately return `nil` should use `expose` explicitly or provide a default)
-
 ```ruby
 class Foo
   include Axn
@@ -312,6 +269,37 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution, but allows `around` hooks to complete normally.
 
+#### Around hooks
+
+Around hooks wrap the entire action execution, including before and after hooks. They receive a block that represents the next step in the chain:
+
+```ruby
+class Foo
+  include Axn
+
+  around :with_timing
+  around do |chain|
+    log("outer around start")
+    chain.call
+    log("outer around end")
+  end
+
+  def call
+    log("in call")
+  end
+
+  private
+
+  def with_timing(chain)
+    start = Time.current
+    chain.call
+    log("Took #{Time.current - start}s")
+  end
+end
+```
+
+#### Before/After example
+
 For instance, given this configuration:
 
 ```ruby
@@ -355,6 +343,62 @@ This follows the natural pattern of setup (general → specific) and teardown (s
 A number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails. See the [Class Interface docs](/reference/class#callbacks) for details.
 
 ## Strategies
+
 A number of [Strategies](/strategies/index), which are <abbr title="Don't Repeat Yourself">DRY</abbr>ed bits of commonly-used configuration, are available for your use as well.
 
+::: info Optional Peer Libraries
+Axn provides enhanced functionality when certain peer libraries are available:
+
+- **Rails**: Automatic engine loading, autoloading for `app/actions`, and generators
+- **Faraday**: Enables the [Client Strategy](/strategies/client) for HTTP API integrations
+- **memo_wise**: Extends built-in `memo` helper to support methods with arguments (see [Memoization recipe](/recipes/memoization))
+
+These are all optional—Axn works great without them, but they unlock additional features when present.
+:::
+
+## Advanced: Default call behavior
+
+::: tip For Experienced Users
+This section covers an advanced shortcut. If you're new to Axn, start by explicitly defining your `call` method.
+:::
+
+If you don't define a `call` method, Axn provides a default implementation that automatically exposes all declared exposures by calling methods with matching names. This allows you to simplify actions that only need to compute and expose values:
+
+```ruby
+class CertificatesByDestination
+  include Axn
+  exposes :certs_by_destination, type: Hash
+
+  private
+
+  def certs_by_destination
+    # Your logic here - automatically exposed
+    { "dest1" => "cert1", "dest2" => "cert2" }
+  end
+end
 ```
+
+This is equivalent to:
+
+```ruby
+class CertificatesByDestination
+  include Axn
+  exposes :certs_by_destination, type: Hash
+
+  def call
+    expose certs_by_destination: certs_by_destination
+  end
+
+  private
+
+  def certs_by_destination
+    { "dest1" => "cert1", "dest2" => "cert2" }
+  end
+end
+```
+
+**Important notes:**
+- The default `call` requires a method matching each declared exposure (unless a `default` is provided)
+- If a method is missing and no default is provided, the action will fail with a helpful error message
+- You can still override `call` to implement custom logic when needed
+- If a method returns `nil` for an exposed-only field with no default, it's treated as missing (user-defined methods that legitimately return `nil` should use `expose` explicitly or provide a default)

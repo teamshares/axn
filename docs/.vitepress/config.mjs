@@ -39,6 +39,16 @@ export default defineConfig({
           { text: 'Instance Interface', link: '/reference/instance' },
           { text: 'Result Interface', link: '/reference/axn-result' },
           { text: 'Async', link: '/reference/async' },
+          { text: 'FormObject', link: '/reference/form-object' },
+        ]
+      },
+      {
+        text: 'Strategies',
+        items: [
+          { text: 'Overview', link: '/strategies/index' },
+          { text: 'Transaction', link: '/strategies/transaction' },
+          { text: 'Form', link: '/strategies/form' },
+          { text: 'Client', link: '/strategies/client' },
         ]
       },
       {
@@ -52,19 +62,12 @@ export default defineConfig({
         ]
       },
       {
-        text: 'Strategies',
-        items: [
-          { text: 'Overview', link: '/strategies/index' },
-          { text: 'Transaction', link: '/strategies/transaction' },
-        ]
-      },
-      {
         text: 'Advanced',
         items: [
           { text: 'Profiling', link: '/advanced/profiling' },
           { text: 'Conventions', link: '/advanced/conventions' },
           { text: 'Mountable', link: '/advanced/mountable' },
-          { text: 'ROUGH NOTES', link: '/advanced/rough' },
+          { text: 'Internal Notes', link: '/advanced/rough' },
         ]
       },
     ],

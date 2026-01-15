@@ -70,11 +70,7 @@ end
 
 ## Advanced Example: Production Implementation
 
-::: danger ALPHA
-The following example is from a production codebase and includes advanced features like retry command generation and error fingerprinting. These patterns are still evolving and may change.
-:::
-
-Here's a more comprehensive example that includes additional context and a retry command generator:
+Here's a comprehensive example that includes additional context, a retry command generator, and proper handling of ActiveRecord models:
 
 ```ruby
 Axn.configure do |c|
@@ -92,6 +88,37 @@ Axn.configure do |c|
     end
   end
 
+  # Format values for retry commands - produces copy-pasteable Ruby code
+  def format_value_for_retry_command(value)
+    # Handle ActiveRecord model instances
+    if value.respond_to?(:to_global_id) && value.respond_to?(:id) && !value.is_a?(Class)
+      begin
+        model_class = value.class.name
+        id = value.id
+        return "#{model_class}.find(#{id.inspect})"
+      rescue StandardError
+        # If accessing id fails, fall through to default behavior
+      end
+    end
+
+    # Handle GlobalID strings (useful for serialized values)
+    if value.is_a?(String) && value.start_with?("gid://")
+      begin
+        gid = GlobalID.parse(value)
+        if gid
+          model_class = gid.model_class.name
+          id = gid.model_id
+          return "#{model_class}.find(#{id.inspect})"
+        end
+      rescue StandardError
+        # If parsing fails, fall through to default behavior
+      end
+    end
+
+    # Default: use inspect for other types
+    value.inspect
+  end
+
   def retry_command(action:, context:)
     action_name = action.class.name
     return nil if action_name.nil?
@@ -102,7 +129,7 @@ Axn.configure do |c|
 
     args = expected_fields.map do |field|
       value = context[field]
-      "#{field}: #{value.inspect}"
+      "#{field}: #{format_value_for_retry_command(value)}"
     end.join(", ")
 
     "#{action_name}.call(#{args})"
@@ -130,11 +157,30 @@ end
 
 This example includes:
 
-- **Formatted context**: Uses `format_hash_values` to serialize complex objects
+- **Formatted context**: Uses `format_hash_values` to serialize complex objects for readable error tracking
+- **Smart retry commands**: Generates copy-pasteable Ruby code, converting ActiveRecord models to `Model.find(id)` calls instead of raw inspect output
+- **GlobalID support**: Handles both live model instances and serialized GlobalID strings
 - **Additional context**: Includes `Current.attributes` (if using a Current pattern) for request-level context
-- **Retry command**: Generates a command string that can be used to retry the action with the same arguments
 - **Error fingerprinting**: Creates a fingerprint from action name, exception class, and message to group similar errors
 - **Error handling**: Wraps the Honeybadger notification in a rescue block to prevent reporting failures from masking the original exception
 
-The `retry_command` function generates a string like `MyAction.call(user_id: 123, name: "John")` that can be copied from your error tracking system and executed in a Rails console to reproduce the error.
+### Example Output
+
+For an action like:
+
+```ruby
+class UpdateUser
+  include Axn
+  expects :user, model: User
+  expects :name, type: String
+end
+```
+
+The retry command would generate:
+
+```ruby
+UpdateUser.call(user: User.find(123), name: "Alice")
+```
+
+This can be copied directly from your error tracking system and pasted into a Rails console to reproduce the error.
 

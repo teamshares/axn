@@ -149,39 +149,67 @@ def build_error_message(exception:)
 end
 ```
 
-::: warning Message Ordering
-**Important**: Static success/error messages (those without conditions) should be defined **first** in your action class. If you define conditional messages before static ones, the conditional messages will never be reached because the static message will always match first.
+## Message Matching Order {#message-matching-order}
 
-**Correct order:**
-```ruby
-class MyAction
-  include Axn
-
-  # Define static fallback first
-  success "Default success message"
-  error "Default error message"
-
-  # Then define conditional messages
-  success "Special success", if: :special_condition?
-  error "Special error", if: ArgumentError
-end
-```
-
-**Incorrect order (conditional messages will be shadowed):**
-```ruby
-class MyAction
-  include Axn
-
-  # These conditional messages will never be reached!
-  success "Special success", if: :special_condition?
-  error "Special error", if: ArgumentError
-
-  # Static messages defined last will always match first
-  success "Default success message"
-  error "Default error message"
-end
-```
+::: danger Important: Understanding Handler Evaluation Order
+Message handlers are stored in **last-defined-first** order and evaluated in that order until a match is found. This has critical implications for how you structure your message declarations.
 :::
+
+### How It Works
+
+1. Handlers are registered in reverse definition order (last defined = first evaluated)
+2. The system evaluates handlers one by one until finding one that matches
+3. Static handlers (no `if:` or `unless:` condition) **always match**
+4. Once a match is found, evaluation stops
+
+### Correct Pattern: Static Fallbacks First
+
+Because static handlers always match, they must be defined **first** (so they're evaluated **last**):
+
+```ruby
+class MyAction
+  include Axn
+
+  # 1. Define static fallback FIRST (evaluated last, catches anything unmatched)
+  error "Something went wrong"
+
+  # 2. Define conditional handlers AFTER (evaluated first, catch specific cases)
+  error "Invalid input provided", if: ArgumentError
+  error "Record not found", if: ActiveRecord::RecordNotFound
+end
+```
+
+### Incorrect Pattern: Conditional Messages Shadowed
+
+If you define static handlers last, they match first and conditional handlers are never reached:
+
+```ruby
+class MyAction
+  include Axn
+
+  # These will NEVER be reached!
+  error "Invalid input provided", if: ArgumentError
+  error "Record not found", if: ActiveRecord::RecordNotFound
+
+  # This static handler is evaluated FIRST and always matches
+  error "Something went wrong"
+end
+```
+
+### With Inheritance
+
+Child class handlers are evaluated before parent class handlers:
+
+```ruby
+class ParentAction
+  include Axn
+  error "Parent error"  # Evaluated last
+end
+
+class ChildAction < ParentAction
+  error "Child error"   # Evaluated first
+end
+```
 
 ## Conditional messages
 
@@ -370,45 +398,22 @@ This results in:
 - With custom message: "API Error: Request failed: Something went wrong in the inner action"
 - With prefix only: "API Error: Something went wrong in the inner action"
 
-### Message ordering and inheritance
+### Message ordering with `from:`
 
-Messages are evaluated in **last-defined-first** order, meaning the most recently defined message that matches its conditions will be used. This applies to both success and error messages:
-
-```ruby
-class ParentAction
-  include Axn
-
-  success "Parent success message"
-  error "Parent error message"
-end
-
-class ChildAction < ParentAction
-  success "Child success message"  # This will be used when action succeeds
-  error "Child error message"      # This will be used when action fails
-end
-```
-
-Within a single class, later definitions override earlier ones:
+When using `from:` with inheritance, the same [message matching order](#message-matching-order) applies. Define your `from:` handlers after your static fallback:
 
 ```ruby
-class MyAction
+class OuterAction
   include Axn
 
-  success "First success message"           # Ignored
-  success "Second success message"          # Ignored
-  success "Final success message"           # This will be used
+  # Static fallback first
+  error "Something went wrong"
 
-  error "First error message"               # Ignored
-  error "Second error message"              # Ignored
-  error "Final error message"               # This will be used
+  # Then from: handlers for specific child actions
+  error from: InnerAction, prefix: "Inner failed: "
+  error from: AnotherAction, prefix: "Another failed: "
 end
 ```
-
-::: tip Message Evaluation Order
-The system evaluates handlers in the order they were defined until it finds one that matches and doesn't raise an exception. If a handler raises an exception, it falls back to the next matching handler, then to static messages, and finally to the default message.
-
-**Key point**: Static messages (without conditions) are evaluated **first** in the order they were defined. This means you should define your static fallback messages at the top of your class, before any conditional messages, to ensure proper fallback behavior.
-:::
 
 ## `.async`
 

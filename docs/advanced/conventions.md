@@ -12,7 +12,7 @@ These conventions are still in flux as the library is solidified and we gain mor
 
 ## Organizing Actions (Rails)
 
-You _can_ `include Action` into _any_ Ruby class, but to keep track of things we've found it helpful to:
+You _can_ `include Axn` into _any_ Ruby class, but to keep track of things we've found it helpful to:
 
   * Create a new `app/actions` folder for our actions
   * Name them `Actions::[DOMAIN]::[VERB]` where `[DOMAIN]` is a (possibly nested) identifier and `[VERB]` is the action to be taken.
