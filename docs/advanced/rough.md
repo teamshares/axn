@@ -1,14 +1,33 @@
-::: danger ALPHA
-* TODO: convert rough notes into actual documentation
-:::
+# Internal Notes
 
-## Rough Notes
+This page contains internal implementation notes for contributors and advanced users.
 
-* General note: the inbound/outbound contexts are views into an underlying shared object (passed down through organize calls) -- modifications of one will affect the other (e.g. preprocessing inbound args implicitly transforms them on the underlying context, which is echoed if you also expose it on outbound).
+## Context Sharing
 
-* `context_for_logging` (and decent #inspect support)
+The inbound/outbound contexts are views into an underlying shared object. Modifications to one affect the other:
 
-* Configuring logging (will default to Rails.logger if available, else fall back to basic Logger (but can explicitly set via e.g. `Axn.config.logger = Logger.new($stdout`))
+- Preprocessing inbound args implicitly transforms them on the underlying context
+- If you also expose a preprocessed field on outbound, it will reflect the transformed value
 
-    * Note `context_for_logging` is available (filtered to accessible attrs, filtering out sensitive values). Automatically passed into `on_exception` hook.
+## Logging and Debugging
 
+For information about logging configuration, see the [Configuration reference](/reference/configuration):
+
+- **Logger configuration**: [logger](/reference/configuration#logger)
+- **Log levels**: [log_level](/reference/configuration#log-level)
+- **Automatic logging**: [Automatic Logging](/reference/configuration#automatic-logging)
+
+### `context_for_logging`
+
+The `context_for_logging` method returns a hash of the action's context, with:
+- Filtering to accessible attributes
+- Sensitive values removed (fields marked with `sensitive: true`)
+
+This is automatically passed to the `on_exception` hook. See [Adding Additional Context to Exception Logging](/reference/configuration#adding-additional-context-to-exception-logging) for customizing the context.
+
+### `#inspect` Support
+
+Action instances provide a readable `#inspect` output that shows:
+- The action class name
+- Field values (with sensitive values filtered)
+- Current execution state

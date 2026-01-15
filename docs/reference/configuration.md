@@ -206,7 +206,7 @@ This ensures that:
 
 ## `additional_includes`
 
-This is much less critical than the preceding options, but on the off chance you want to add additional customization to _all_ your actions you can set additional modules to be included alongside `include Action`.
+This is much less critical than the preceding options, but on the off chance you want to add additional customization to _all_ your actions you can set additional modules to be included alongside `include Axn`.
 
 For example:
 
@@ -224,7 +224,35 @@ Sets the log level used when you call `log "Some message"` in your Action.  Note
 
 ## `env`
 
-Automatically detects the environment from `RACK_ENV` or `RAILS_ENV`, defaulting to `"development"`. This is used internally for conditional behavior (e.g., more verbose logging in non-production environments).
+Automatically detects the environment from `RACK_ENV` or `RAILS_ENV`, defaulting to `"development"`. Returns an `ActiveSupport::StringInquirer`, allowing you to use predicate methods like `env.production?` or `env.development?`.
+
+```ruby
+Axn.config.env.production?   # => true/false
+Axn.config.env.development?  # => true/false
+Axn.config.env.test?         # => true/false
+```
+
+### Environment-Dependent Behavior
+
+Several Axn behaviors change based on the detected environment:
+
+| Behavior | Production | Non-Production |
+| -------- | ---------- | -------------- |
+| Log separators in async calls | Hidden | Visible (`------`) |
+| `raise_piping_errors_outside_production` | Always `false` (errors swallowed) | Configurable |
+| Error message verbosity | Minimal | More detailed |
+
+### Overriding the Environment
+
+You can explicitly set the environment if auto-detection doesn't work for your setup:
+
+```ruby
+Axn.configure do |c|
+  c.env = "staging"
+end
+
+Axn.config.env.staging?  # => true
+```
 
 ## `set_default_async`
 
