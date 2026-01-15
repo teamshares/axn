@@ -33,4 +33,4 @@ THE BODY HERE
 EOF
 )"
 
-11. Report the PR URL to the user
+11. Report the PR URL to the user as a link they can click
