@@ -79,6 +79,9 @@ module Axn
       self.class.field_names.each_with_object({}) do |field_name, hash|
         next unless respond_to?(field_name)
 
+        # Skip parent_form to avoid infinite recursion with circular references
+        next if field_name == :parent_form
+
         value = public_send(field_name)
         hash[field_name] = value.is_a?(Axn::FormObject) ? value.to_h : value
       end
