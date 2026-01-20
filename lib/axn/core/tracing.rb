@@ -50,16 +50,7 @@ module Axn
         # which means it's not suitable for wrapping execution with a span and tracking child spans.
         # We use OpenTelemetry for that, if available.
         if defined?(OpenTelemetry)
-          # #region agent log
-          tracer_instance = Tracing.tracer
-          provider_class = OpenTelemetry.tracer_provider.class.name
-          tracer_class = tracer_instance.class.name
-          Rails.logger.info "[AXN_DEBUG] _with_tracing: resource=#{resource}, provider=#{provider_class}, tracer=#{tracer_class}" if defined?(Rails)
-          # #endregion
-          tracer_instance.in_span("axn.call", attributes: { "axn.resource" => resource }) do |span|
-            # #region agent log
-            Rails.logger.info "[AXN_DEBUG] _with_tracing: inside span, span_class=#{span.class.name}, recording=#{span.respond_to?(:recording?) ? span.recording? : 'n/a'}" if defined?(Rails)
-            # #endregion
+          Tracing.tracer.in_span("axn.call", attributes: { "axn.resource" => resource }) do |span|
             instrument_block.call
           ensure
             # Update span with outcome and error status after execution

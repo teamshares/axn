@@ -139,7 +139,70 @@ Axn automatically creates OpenTelemetry spans for all action executions when Ope
 
 When an action fails or raises an exception, the span is marked as an error with the exception details recorded.
 
-No configuration is required—if OpenTelemetry is loaded in your application, Axn will automatically instrument all actions. To send traces to an APM provider like Datadog, configure OpenTelemetry with the appropriate exporter.
+### Basic Setup
+
+If you just want OpenTelemetry spans (without sending to an APM provider), install the API gem:
+
+```ruby
+# Gemfile
+gem "opentelemetry-api"
+```
+
+Then configure a tracer provider:
+
+```ruby
+# config/initializers/opentelemetry.rb
+require "opentelemetry-sdk"
+
+OpenTelemetry::SDK.configure do |c|
+  c.service_name = "my-app"
+end
+```
+
+### Datadog Integration
+
+To send OpenTelemetry spans to Datadog APM, you need both the OpenTelemetry SDK and the Datadog bridge. The bridge intercepts `OpenTelemetry::SDK.configure` and routes spans to Datadog's tracer.
+
+**1. Add the required gems:**
+
+```ruby
+# Gemfile
+gem "datadog"           # Datadog APM
+gem "opentelemetry-api" # OpenTelemetry API
+gem "opentelemetry-sdk" # OpenTelemetry SDK (required for Datadog bridge)
+```
+
+**2. Configure Datadog first, then OpenTelemetry:**
+
+The order matters — Datadog must be configured before loading the OpenTelemetry bridge, and `OpenTelemetry::SDK.configure` must be called after the bridge is loaded.
+
+```ruby
+# config/initializers/datadog.rb (use a filename that loads early, e.g., 00_datadog.rb)
+
+# 1. Configure Datadog first
+Datadog.configure do |c|
+  c.env = Rails.env
+  c.service = "my-app"
+  c.tracing.enabled = Rails.env.production? || Rails.env.staging?
+  c.tracing.instrument :rails
+end
+
+# 2. Load the OpenTelemetry SDK and Datadog bridge
+require "opentelemetry-api"
+require "opentelemetry-sdk"
+require "datadog/opentelemetry"
+
+# 3. Configure OpenTelemetry SDK (Datadog intercepts this)
+OpenTelemetry::SDK.configure do |c|
+  c.service_name = "my-app"
+end
+```
+
+::: warning Important
+The `opentelemetry-sdk` gem is required — not just `opentelemetry-api`. The Datadog bridge only activates when `OpenTelemetry::SDK` is defined and `OpenTelemetry::SDK.configure` is called.
+:::
+
+With this setup, all Axn actions will automatically create spans that appear in Datadog APM as children of your Rails request traces.
 
 ## `emit_metrics`
 
