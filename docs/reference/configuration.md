@@ -115,20 +115,20 @@ class ProcessPendingRecords
 end
 ```
 
-## `raise_piping_errors_outside_production`
+## `raise_piping_errors_in_dev`
 
-By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development and test environments, you can opt-in to have these errors raised instead of logged:
+By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development, you can opt-in to have these errors raised instead of logged:
 
 ```ruby
 Axn.configure do |c|
-  c.raise_piping_errors_outside_production = true
+  c.raise_piping_errors_in_dev = true
 end
 ```
 
 **Important notes:**
-- This setting only applies in development and test environments—errors are always swallowed in production for safety
-- When enabled, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged
-- This is useful for debugging issues in user-provided callbacks or framework instrumentation code
+- This setting only applies in the development environment—errors are always swallowed in test and production
+- Test and production environments behave identically (errors swallowed), ensuring tests verify actual production behavior
+- When enabled in development, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged, putting issues front and center during manual testing
 
 ## OpenTelemetry Tracing
 
@@ -236,11 +236,11 @@ Axn.config.env.test?         # => true/false
 
 Several Axn behaviors change based on the detected environment:
 
-| Behavior | Production | Non-Production |
-| -------- | ---------- | -------------- |
-| Log separators in async calls | Hidden | Visible (`------`) |
-| `raise_piping_errors_outside_production` | Always `false` (errors swallowed) | Configurable |
-| Error message verbosity | Minimal | More detailed |
+| Behavior | Production | Test | Development |
+| -------- | ---------- | ---- | ----------- |
+| Log separators in async calls | Hidden | Visible (`------`) | Visible (`------`) |
+| `raise_piping_errors_in_dev` | Always swallowed | Always swallowed | Configurable |
+| Error message verbosity | Minimal | More detailed | More detailed |
 
 ### Overriding the Environment
 

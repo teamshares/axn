@@ -4,8 +4,9 @@ module Axn
   module Internal
     module Logging
       def self.piping_error(desc, exception:, action: nil)
-        # If raise_piping_errors_outside_production is enabled and we're in development or test, raise instead of log
-        raise exception if Axn.config.raise_piping_errors_outside_production && (Axn.config.env.development? || Axn.config.env.test?)
+        # If raise_piping_errors_in_dev is enabled and we're in development, raise instead of log.
+        # Test and production environments always swallow the error to match production behavior.
+        raise exception if Axn.config.raise_piping_errors_in_dev && Axn.config.env.development?
 
         # Extract just filename/line number from backtrace
         src = exception.backtrace.first.split.first.split("/").last.split(":")[0, 2].join(":")
