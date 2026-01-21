@@ -8,7 +8,7 @@
 * [FEAT] Default `call` method automatically exposes declared exposures by calling methods with matching names - you can now omit `call` entirely when you only need to expose values from private methods
 * [BREAKING] Rename `auto_log` -> `log_calls`
 * [FEAT] Add `log_errors`
-* [FEAT] Add `raise_piping_errors_outside_production` config option to raise framework errors in dev/test
+* [FEAT] Add `raise_piping_errors_in_dev` config option to raise framework errors in dev only
 * [BREAKING] Convert profiling from `profile` method to `use :vernier` strategy - profiling now only captures hooks and user code (excludes framework overhead like tracing, logging, timing)
 * [FEAT] Add `set_logging_context` and `additional_logging_context` hook to inject additional context into exception logging
 * [FEAT] Added ActiveSupport::Notification emission for `axn.call_async` (separate from `axn.call`) - emits notification when async jobs are enqueued with payload including resource, action_class, kwargs, and adapter name

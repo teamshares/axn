@@ -4,6 +4,8 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   before do
     Sidekiq::Testing.fake!
     Sidekiq::Queues.clear_all
+    # Reset any leaked default async config from other tests
+    Axn.config.set_default_async(false)
     # Configure the EnqueueAllOrchestrator to use sidekiq
     Axn.config.set_enqueue_all_async(:sidekiq)
   end
@@ -11,6 +13,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
   after do
     # Reset to default
     Axn.config.set_enqueue_all_async(false)
+    Axn.config.set_default_async(false)
   end
 
   describe "core call behavior" do

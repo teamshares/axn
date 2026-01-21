@@ -188,6 +188,29 @@ RSpec.describe Axn::FormObject do
       form_class.field_names = %i[name nonexistent]
       expect(form.to_h).to eq({ name: "John" })
     end
+
+    it "skips parent_form to avoid infinite recursion with circular references" do
+      child = Class.new(described_class) do
+        attr_accessor :parent_form, :child_field
+      end
+
+      parent = Class.new(described_class) do
+        attr_accessor :parent_field
+
+        nested_forms child_form: child
+      end
+
+      form = parent.new(parent_field: "parent", child_form: { child_field: "child" })
+      # Verify parent_form is set (circular reference exists)
+      expect(form.child_form.parent_form).to eq(form)
+
+      # Verify to_h doesn't cause infinite recursion and excludes parent_form
+      expect { form.to_h }.not_to raise_error
+      expect(form.to_h).to eq({
+                                parent_field: "parent",
+                                child_form: { child_field: "child" },
+                              })
+    end
   end
 
   describe "ActiveModel::Model integration" do

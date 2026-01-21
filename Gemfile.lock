@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    axn (0.1.0.pre.alpha.3)
+    axn (0.1.0.pre.alpha.4)
       activemodel (>= 7.2)
       activesupport (>= 7.2)
 

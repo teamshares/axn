@@ -28,7 +28,7 @@ RSpec.describe "Axn Generator Templates" do
           expects :param2
 
           def call
-            # TODO: Implement action logic
+            # TODO: Implement logic
           end
         end
       RUBY
@@ -67,7 +67,7 @@ RSpec.describe "Axn Generator Templates" do
           include Axn
 
           def call
-            # TODO: Implement action logic
+            # TODO: Implement logic
           end
         end
       RUBY
@@ -83,7 +83,7 @@ RSpec.describe "Axn Generator Templates" do
           expects :param
 
           def call
-            # TODO: Implement action logic
+            # TODO: Implement logic
           end
         end
       RUBY

@@ -9,7 +9,7 @@ RSpec.describe Axn::Internal::Logging do
     before do
       exception.set_backtrace(backtrace)
       allow(Axn).to receive_message_chain(:config, :logger).and_return(logger)
-      allow(Axn).to receive_message_chain(:config, :raise_piping_errors_outside_production).and_return(false)
+      allow(Axn).to receive_message_chain(:config, :raise_piping_errors_in_dev).and_return(false)
       allow(logger).to receive(:warn)
     end
 
@@ -63,15 +63,14 @@ RSpec.describe Axn::Internal::Logging do
       end
     end
 
-    context "with raise_piping_errors_outside_production enabled" do
+    context "with raise_piping_errors_in_dev enabled" do
       before do
-        allow(Axn).to receive_message_chain(:config, :raise_piping_errors_outside_production).and_return(true)
+        allow(Axn).to receive_message_chain(:config, :raise_piping_errors_in_dev).and_return(true)
       end
 
       context "in development" do
         before do
           allow(Axn).to receive_message_chain(:config, :env, :development?).and_return(true)
-          allow(Axn).to receive_message_chain(:config, :env, :test?).and_return(false)
           allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
         end
 
@@ -84,33 +83,31 @@ RSpec.describe Axn::Internal::Logging do
       context "in test" do
         before do
           allow(Axn).to receive_message_chain(:config, :env, :development?).and_return(false)
-          allow(Axn).to receive_message_chain(:config, :env, :test?).and_return(true)
           allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
         end
 
-        it "raises the exception instead of logging" do
-          expect(logger).not_to receive(:warn)
-          expect { described_class.piping_error("foo", exception:) }.to raise_error(StandardError, "fail message")
+        it "logs and does not raise (matches production behavior)" do
+          expect(logger).to receive(:warn)
+          expect { described_class.piping_error("foo", exception:) }.not_to raise_error
         end
       end
 
       context "in production" do
         before do
           allow(Axn).to receive_message_chain(:config, :env, :development?).and_return(false)
-          allow(Axn).to receive_message_chain(:config, :env, :test?).and_return(false)
           allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
         end
 
-        it "still logs and does not raise" do
+        it "logs and does not raise" do
           expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
           expect { described_class.piping_error("foo", exception:) }.not_to raise_error
         end
       end
     end
 
-    context "with raise_piping_errors_outside_production disabled" do
+    context "with raise_piping_errors_in_dev disabled" do
       before do
-        allow(Axn).to receive_message_chain(:config, :raise_piping_errors_outside_production).and_return(false)
+        allow(Axn).to receive_message_chain(:config, :raise_piping_errors_in_dev).and_return(false)
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
       end
 
