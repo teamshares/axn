@@ -739,7 +739,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
   end
 
   describe "no expects at all" do
-    # Note: This test doesn't use with_synchronous_enqueue_all because the no-expects case
+    # NOTE: This test doesn't use with_synchronous_enqueue_all because the no-expects case
     # goes through a different code path (direct call_async) which would trigger
     # LocalJumpError with the return statement in the stub.
     it "just calls call_async directly" do
