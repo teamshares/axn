@@ -21,7 +21,7 @@ gem "jbuilder", "~> 2.7"
 gem "bootsnap", ">= 1.4.4", require: false
 
 group :development, :test do
-  gem "pry-byebug", "3.11.0"
+  gem "pry-byebug", "3.12.0"
   gem "sidekiq", "~> 7" # Background job processor -- when update, ensure `process_context_to_sidekiq_args` is still compatible
 end
 
