@@ -19,6 +19,20 @@ module Axn
           @tracer_provider = current_provider
           @tracer = current_provider.tracer("axn", Axn::VERSION)
         end
+
+        # Check if the OpenTelemetry tracer supports the record_exception option for in_span.
+        # This was added in opentelemetry-api 1.7.0 (2025-09-17).
+        # We cache the result since method signature doesn't change at runtime.
+        def _supports_record_exception_option?
+          return @supports_record_exception if defined?(@supports_record_exception)
+          return @supports_record_exception = false unless defined?(OpenTelemetry)
+
+          @supports_record_exception = begin
+            OpenTelemetry::Trace::Tracer.instance_method(:in_span).parameters.any? { |_, name| name == :record_exception }
+          rescue StandardError
+            false
+          end
+        end
       end
 
       private
@@ -50,7 +64,13 @@ module Axn
         # which means it's not suitable for wrapping execution with a span and tracking child spans.
         # We use OpenTelemetry for that, if available.
         if defined?(OpenTelemetry)
-          Tracing.tracer.in_span("axn.call", attributes: { "axn.resource" => resource }) do |span|
+          # Build in_span kwargs - we pass record_exception: false because we manually record
+          # exceptions in the ensure block below with proper outcome context.
+          # The record_exception option was added in opentelemetry-api 1.7.0 (2025-09-17).
+          in_span_kwargs = { attributes: { "axn.resource" => resource } }
+          in_span_kwargs[:record_exception] = false if Tracing._supports_record_exception_option?
+
+          Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
             instrument_block.call
           ensure
             # Update span with outcome and error status after execution

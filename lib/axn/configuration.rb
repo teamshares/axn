@@ -9,6 +9,25 @@ module Axn
     attr_accessor :emit_metrics, :raise_piping_errors_in_dev
     attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
 
+    # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).
+    # Options:
+    #   :every_attempt - trigger on every retry attempt (includes retry context)
+    #   :first_and_exhausted - trigger on first attempt and when retries exhausted (default)
+    #   :only_exhausted - only trigger when retries exhausted (via death handler)
+    ASYNC_EXCEPTION_REPORTING_OPTIONS = %i[every_attempt first_and_exhausted only_exhausted].freeze
+
+    def async_exception_reporting
+      @async_exception_reporting ||= :first_and_exhausted
+    end
+
+    def async_exception_reporting=(value)
+      unless ASYNC_EXCEPTION_REPORTING_OPTIONS.include?(value)
+        raise ArgumentError, "async_exception_reporting must be one of: #{ASYNC_EXCEPTION_REPORTING_OPTIONS.join(', ')}"
+      end
+
+      @async_exception_reporting = value
+    end
+
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []

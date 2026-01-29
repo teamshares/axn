@@ -81,6 +81,28 @@ RSpec.describe Axn::Configuration do
     end
   end
 
+  describe "#async_exception_reporting" do
+    it "defaults to :first_and_exhausted" do
+      expect(config.async_exception_reporting).to eq(:first_and_exhausted)
+    end
+
+    it "can be set to :every_attempt" do
+      config.async_exception_reporting = :every_attempt
+      expect(config.async_exception_reporting).to eq(:every_attempt)
+    end
+
+    it "can be set to :only_exhausted" do
+      config.async_exception_reporting = :only_exhausted
+      expect(config.async_exception_reporting).to eq(:only_exhausted)
+    end
+
+    it "raises ArgumentError for invalid values" do
+      expect do
+        config.async_exception_reporting = :invalid
+      end.to raise_error(ArgumentError, /must be one of:/)
+    end
+  end
+
   describe "#on_exception" do
     let(:exception) { StandardError.new("fail!") }
     let(:action) { double("Action", log: nil) }

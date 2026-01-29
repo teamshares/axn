@@ -2,6 +2,7 @@
 
 require "axn/async/adapters"
 require "axn/async/batch_enqueue"
+require "axn/async/retry_context"
 
 module Axn
   module Async

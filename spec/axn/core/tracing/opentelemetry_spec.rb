@@ -33,6 +33,7 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
     # Clear the cached tracer so it's recreated with the restored OpenTelemetry
     Axn::Core::Tracing.instance_variable_set(:@tracer, nil)
     Axn::Core::Tracing.instance_variable_set(:@tracer_provider, nil)
+    Axn::Core::Tracing.instance_variable_set(:@supports_record_exception, nil)
 
     # Restore original if it existed, but don't conflict with stub_const cleanup
     if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
@@ -46,7 +47,7 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
     it "creates OpenTelemetry span with correct name and attributes" do
       action.call
       expect(mock_tracer_provider).to have_received(:tracer).with("axn", Axn::VERSION)
-      expect(mock_tracer).to have_received(:in_span).with("axn.call", attributes: { "axn.resource" => "AnonymousClass" })
+      expect(mock_tracer).to have_received(:in_span).with("axn.call", hash_including(attributes: { "axn.resource" => "AnonymousClass" }))
     end
 
     it "sets #{outcome} outcome attribute on span" do
@@ -131,7 +132,61 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
 
     it "uses class name as resource in span attributes" do
       action.call
-      expect(mock_tracer).to have_received(:in_span).with("axn.call", attributes: { "axn.resource" => "TestAction" })
+      expect(mock_tracer).to have_received(:in_span).with("axn.call", hash_including(attributes: { "axn.resource" => "TestAction" }))
     end
+  end
+
+  describe "record_exception option" do
+    context "when OpenTelemetry supports record_exception option" do
+      before do
+        allow(Axn::Core::Tracing).to receive(:_supports_record_exception_option?).and_return(true)
+      end
+
+      it "passes record_exception: false to in_span" do
+        action = build_axn
+        action.call
+        expect(mock_tracer).to have_received(:in_span).with(
+          "axn.call",
+          attributes: { "axn.resource" => "AnonymousClass" },
+          record_exception: false,
+        )
+      end
+    end
+
+    context "when OpenTelemetry does not support record_exception option" do
+      before do
+        allow(Axn::Core::Tracing).to receive(:_supports_record_exception_option?).and_return(false)
+      end
+
+      it "does not pass record_exception to in_span" do
+        action = build_axn
+        action.call
+        expect(mock_tracer).to have_received(:in_span).with(
+          "axn.call",
+          attributes: { "axn.resource" => "AnonymousClass" },
+        )
+      end
+    end
+  end
+
+  describe "._supports_record_exception_option?" do
+    before do
+      # Clear the cached value
+      Axn::Core::Tracing.remove_instance_variable(:@supports_record_exception) if Axn::Core::Tracing.instance_variable_defined?(:@supports_record_exception)
+    end
+
+    it "caches the result" do
+      # First call - will check OpenTelemetry
+      first_result = Axn::Core::Tracing._supports_record_exception_option?
+      expect(Axn::Core::Tracing.instance_variable_defined?(:@supports_record_exception)).to be true
+
+      # Second call should return cached value
+      second_result = Axn::Core::Tracing._supports_record_exception_option?
+      expect(first_result).to eq(second_result)
+    end
+
+    # NOTE: Testing the actual detection requires a real OpenTelemetry::Trace::Tracer class
+    # with specific method signatures. The implementation uses introspection on the tracer's
+    # in_span method parameters, which is tested indirectly through the integration tests above.
   end
 end

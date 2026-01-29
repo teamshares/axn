@@ -62,8 +62,43 @@ module Axn
 
               # Define the perform method
               proxy.define_method(:perform) do |job_context = {}|
-                # Call the original action class with the job context
-                action_class.call!(**job_context)
+                # Set up retry context using ActiveJob's built-in executions counter
+                # executions is 1 on first run, 2 on first retry, etc.
+                # If executions is not available (stubbed ActiveJob), default to 1
+                retry_context = Axn::Async::RetryContext.new(
+                  adapter: :active_job,
+                  attempt: _axn_current_attempt,
+                  max_retries: _axn_max_retries,
+                  job_id: _axn_job_id,
+                )
+
+                result = Axn::Async::CurrentRetryContext.with(retry_context) do
+                  action_class.call(**job_context)
+                end
+
+                # Only re-raise unexpected exceptions so ActiveJob can retry.
+                # Axn::Failure is a deliberate business decision (from fail!), not a transient error.
+                # Per Sidekiq's ethos (which applies to background jobs generally):
+                # "Retries are for unexpected errors."
+                raise result.exception if result.outcome.exception?
+
+                result
+              end
+
+              # Helper to get current attempt number (1-indexed)
+              proxy.define_method(:_axn_current_attempt) do
+                respond_to?(:executions) ? executions : 1
+              end
+
+              # Helper to determine max retries for this job
+              proxy.define_method(:_axn_max_retries) do
+                # Try to get from retry_on configuration, default to 5
+                self.class.try(:retry_limit) || 5
+              end
+
+              # Helper to get job ID
+              proxy.define_method(:_axn_job_id) do
+                respond_to?(:job_id) ? job_id : nil
               end
             end
           end

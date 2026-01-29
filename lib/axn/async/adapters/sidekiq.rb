@@ -58,8 +58,19 @@ module Axn
         def perform(*args)
           context = Axn::Util::GlobalIdSerialization.deserialize(args.first)
 
-          # Always use bang version so sidekiq can retry if we failed
-          self.class.call!(**context)
+          # NOTE: For retry context to be available (affecting when on_exception triggers),
+          # you must add Axn::Async::Adapters::Sidekiq::Middleware to your Sidekiq server middleware.
+          # The middleware sets up CurrentRetryContext with job retry information.
+          # Without the middleware, on_exception will trigger on every attempt.
+
+          result = self.class.call(**context)
+
+          # Only re-raise unexpected exceptions so Sidekiq can retry.
+          # Axn::Failure is a deliberate business decision (from fail!), not a transient error.
+          # Per Sidekiq's ethos: "Sidekiq retries are for unexpected errors."
+          raise result.exception if result.outcome.exception?
+
+          result
         end
       end
     end

@@ -89,6 +89,77 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     end
   end
 
+  describe "#perform exception handling" do
+    let(:successful_action) do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job)
+
+      build_axn do
+        async :sidekiq
+        expects :value
+        exposes :result_value
+
+        def call
+          expose result_value: value * 2
+        end
+      end
+    end
+
+    let(:failing_action) do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job)
+
+      build_axn do
+        async :sidekiq
+        expects :should_fail
+
+        def call
+          fail! "Business logic failure" if should_fail
+        end
+      end
+    end
+
+    let(:exception_action) do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job)
+
+      build_axn do
+        async :sidekiq
+
+        def call
+          raise "Unexpected error"
+        end
+      end
+    end
+
+    it "returns result on success" do
+      worker = successful_action.send(:new)
+      result = worker.perform({ "value" => 5 })
+
+      expect(result).to be_ok
+      expect(result.result_value).to eq(10)
+    end
+
+    it "does not raise on Axn::Failure (business logic failure)" do
+      worker = failing_action.send(:new)
+
+      # Should NOT raise - Axn::Failure is a business decision, not a transient error
+      expect { worker.perform({ "should_fail" => true }) }.not_to raise_error
+
+      # But the result should indicate failure
+      result = worker.perform({ "should_fail" => true })
+      expect(result.outcome).to be_failure
+      expect(result.exception).to be_a(Axn::Failure)
+    end
+
+    it "re-raises unexpected exceptions for Sidekiq retry" do
+      worker = exception_action.send(:new)
+
+      # Should raise - unexpected errors should trigger Sidekiq retries
+      expect { worker.perform({}) }.to raise_error(RuntimeError, "Unexpected error")
+    end
+  end
+
   describe "kwargs configuration" do
     let(:action_class_with_kwargs) do
       stub_const("Sidekiq", Module.new)

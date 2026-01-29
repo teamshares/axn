@@ -91,4 +91,78 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       end
     end
   end
+
+  describe "proxy #perform exception handling" do
+    let(:successful_action) do
+      active_job_base = Class.new
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", active_job_base)
+
+      build_axn do
+        async :active_job
+        expects :value
+        exposes :result_value
+
+        def call
+          expose result_value: value * 2
+        end
+      end
+    end
+
+    let(:failing_action) do
+      active_job_base = Class.new
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", active_job_base)
+
+      build_axn do
+        async :active_job
+        expects :should_fail
+
+        def call
+          fail! "Business logic failure" if should_fail
+        end
+      end
+    end
+
+    let(:exception_action) do
+      active_job_base = Class.new
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", active_job_base)
+
+      build_axn do
+        async :active_job
+
+        def call
+          raise "Unexpected error"
+        end
+      end
+    end
+
+    it "returns result on success" do
+      proxy = successful_action.send(:active_job_proxy_class).new
+      result = proxy.perform({ value: 5 })
+
+      expect(result).to be_ok
+      expect(result.result_value).to eq(10)
+    end
+
+    it "does not raise on Axn::Failure (business logic failure)" do
+      proxy = failing_action.send(:active_job_proxy_class).new
+
+      # Should NOT raise - Axn::Failure is a business decision, not a transient error
+      expect { proxy.perform({ should_fail: true }) }.not_to raise_error
+
+      # But the result should indicate failure
+      result = proxy.perform({ should_fail: true })
+      expect(result.outcome).to be_failure
+      expect(result.exception).to be_a(Axn::Failure)
+    end
+
+    it "re-raises unexpected exceptions for ActiveJob retry" do
+      proxy = exception_action.send(:active_job_proxy_class).new
+
+      # Should raise - unexpected errors should trigger ActiveJob retries
+      expect { proxy.perform({}) }.to raise_error(RuntimeError, "Unexpected error")
+    end
+  end
 end
