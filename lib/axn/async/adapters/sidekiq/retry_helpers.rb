@@ -29,6 +29,28 @@ module Axn
               Axn.config.async_max_retries || SIDEKIQ_DEFAULT_RETRIES
             end
           end
+
+          # Calculates the attempt number from Sidekiq's retry_count field.
+          # Sidekiq's retry_count semantics:
+          # - nil: first execution (attempt 1)
+          # - 0: first retry after first failure (attempt 2)
+          # - 1: second retry (attempt 3)
+          # - etc.
+          def extract_attempt_number(job)
+            retry_count = job["retry_count"]
+            retry_count.nil? ? 1 : retry_count + 2
+          end
+
+          # Builds an Axn::Async::RetryContext from a Sidekiq job hash.
+          # Used by both middleware and death handler to ensure consistent context.
+          def build_retry_context(job)
+            RetryContext.new(
+              adapter: :sidekiq,
+              attempt: extract_attempt_number(job),
+              max_retries: extract_max_retries(job),
+              job_id: job["jid"],
+            )
+          end
         end
       end
     end

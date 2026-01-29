@@ -53,7 +53,7 @@ end
 ```
 
 ::: warning
-ActiveJob adapter requires a configuration block. Keyword arguments are not supported:
+ActiveJob adapter requires a configuration block. Keyword arguments are not supported because ActiveJob methods like `retry_on` and `discard_on` require exception classes as arguments:
 
 ```ruby
 # ❌ This will raise an error
@@ -221,8 +221,8 @@ Axn.configure do |c|
 end
 ```
 
-::: tip
-On Rails < 7.1, `after_discard` is not available. In this case, `:only_exhausted` mode will trigger during the final attempt execution rather than after discard.
+::: warning
+Rails 7.1+ is required for `:first_and_exhausted` and `:only_exhausted` modes with the ActiveJob adapter. These modes rely on `after_discard` which was introduced in Rails 7.1. On older Rails versions, Axn will raise an error if you try to use these modes with ActiveJob.
 :::
 
 ## Limitations

@@ -27,16 +27,11 @@ module Axn
               config_mode = Axn.config.async_exception_reporting
               return if config_mode == :every_attempt # Already reported on each attempt
 
-              retry_context = RetryContext.new(
-                adapter: :sidekiq,
-                attempt: (job["retry_count"] || 0) + 1,
-                max_retries: RetryHelpers.extract_max_retries(job),
-                job_id: job["jid"],
-              )
+              retry_context = RetryHelpers.build_retry_context(job)
 
               # For :first_and_exhausted, we need to report now (exhausted)
               # For :only_exhausted, we need to report now (only time)
-              return unless retry_context.should_trigger_on_exception?(config_mode)
+              return unless retry_context.should_trigger_on_exception?(config_mode, from_exhaustion_handler: true)
 
               job_args = (job["args"]&.first || {}).symbolize_keys
 

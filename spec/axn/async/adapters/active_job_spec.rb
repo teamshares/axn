@@ -3,10 +3,18 @@
 require_relative "../../../support/shared_examples/async_adapter_interface"
 
 RSpec.describe "Axn::Async with ActiveJob adapter" do
+  # Mock ActiveJob::Base with after_discard to simulate Rails 7.1+
+  let(:active_job_base_with_after_discard) do
+    Class.new do
+      def self.after_discard(&)
+        # Mock implementation
+      end
+    end
+  end
+
   let(:action_class) do
-    active_job_base = Class.new
     stub_const("ActiveJob", Module.new)
-    stub_const("ActiveJob::Base", active_job_base)
+    stub_const("ActiveJob::Base", active_job_base_with_after_discard)
 
     build_axn do
       async :active_job
@@ -94,9 +102,8 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
 
   describe "proxy #perform exception handling" do
     let(:successful_action) do
-      active_job_base = Class.new
       stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base)
+      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
 
       build_axn do
         async :active_job
@@ -110,9 +117,8 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
     end
 
     let(:failing_action) do
-      active_job_base = Class.new
       stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base)
+      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
 
       build_axn do
         async :active_job
@@ -125,9 +131,8 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
     end
 
     let(:exception_action) do
-      active_job_base = Class.new
       stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base)
+      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
 
       build_axn do
         async :active_job
@@ -163,6 +168,101 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
 
       # Should raise - unexpected errors should trigger ActiveJob retries
       expect { proxy.perform({}) }.to raise_error(RuntimeError, "Unexpected error")
+    end
+  end
+
+  describe "kwargs configuration" do
+    it "raises error when kwargs are provided" do
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
+
+      expect do
+        build_axn do
+          async :active_job, queue: :high_priority
+          expects :name
+        end
+      end.to raise_error(ArgumentError, /ActiveJob adapter requires a configuration block/)
+    end
+  end
+
+  describe "Rails version validation" do
+    context "when after_discard is not available (Rails < 7.1)" do
+      let(:old_active_job_base) { Class.new } # No after_discard method
+
+      it "raises error for :first_and_exhausted mode" do
+        stub_const("ActiveJob", Module.new)
+        stub_const("ActiveJob::Base", old_active_job_base)
+        allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+        expect do
+          build_axn do
+            async :active_job
+            expects :name
+          end
+        end.to raise_error(ArgumentError, /requires Rails 7.1\+/)
+      end
+
+      it "raises error for :only_exhausted mode" do
+        stub_const("ActiveJob", Module.new)
+        stub_const("ActiveJob::Base", old_active_job_base)
+        allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+
+        expect do
+          build_axn do
+            async :active_job
+            expects :name
+          end
+        end.to raise_error(ArgumentError, /requires Rails 7.1\+/)
+      end
+
+      it "allows :every_attempt mode" do
+        stub_const("ActiveJob", Module.new)
+        stub_const("ActiveJob::Base", old_active_job_base)
+        allow(Axn.config).to receive(:async_exception_reporting).and_return(:every_attempt)
+
+        expect do
+          build_axn do
+            async :active_job
+            expects :name
+          end
+        end.not_to raise_error
+      end
+    end
+
+    context "when after_discard is available (Rails 7.1+)" do
+      let(:new_active_job_base) do
+        Class.new do
+          def self.after_discard(&)
+            # Mock implementation
+          end
+        end
+      end
+
+      it "allows :first_and_exhausted mode" do
+        stub_const("ActiveJob", Module.new)
+        stub_const("ActiveJob::Base", new_active_job_base)
+        allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+        expect do
+          build_axn do
+            async :active_job
+            expects :name
+          end
+        end.not_to raise_error
+      end
+
+      it "allows :only_exhausted mode" do
+        stub_const("ActiveJob", Module.new)
+        stub_const("ActiveJob::Base", new_active_job_base)
+        allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+
+        expect do
+          build_axn do
+            async :active_job
+            expects :name
+          end
+        end.not_to raise_error
+      end
     end
   end
 end

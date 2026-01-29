@@ -26,8 +26,10 @@ module Axn
         when false
           include Adapters.find(:disabled)
         when nil
-          # Use default configuration
-          async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+          # Use default configuration, but preserve any user-provided block/config
+          merged_config = Axn.config._default_async_config.merge(config)
+          merged_block = block || Axn.config._default_async_config_block
+          async Axn.config._default_async_adapter, **merged_config, &merged_block
         else
           # Look up adapter in registry
           adapter_module = Adapters.find(adapter)

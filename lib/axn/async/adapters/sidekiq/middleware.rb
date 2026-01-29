@@ -23,13 +23,7 @@ module Axn
             # Only set up context for Axn workers
             return yield unless worker.class.included_modules.include?(Axn::Core)
 
-            context = RetryContext.new(
-              adapter: :sidekiq,
-              attempt: (job["retry_count"] || 0) + 1,
-              max_retries: RetryHelpers.extract_max_retries(job),
-              job_id: job["jid"],
-            )
-
+            context = RetryHelpers.build_retry_context(job)
             CurrentRetryContext.with(context, &)
           end
         end

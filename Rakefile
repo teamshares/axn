@@ -34,6 +34,21 @@ task rubocop_specs: %i[spec_rubocop]
 task all_specs: %i[spec spec_rubocop spec_rails]
 task specs: %i[all_specs]
 
+# Integration verification for async adapters (requires Redis for Sidekiq)
+task :verify_async do
+  Dir.chdir("spec_rails/dummy_app") do
+    sh "BUNDLE_GEMFILE=Gemfile bundle exec rake async:verify:all"
+  end
+end
+
+desc "Run all verification checks (specs, rubocop, async integration)"
+task verify: %i[spec spec_rubocop spec_rails rubocop verify_async] do
+  puts ""
+  puts "=" * 60
+  puts "✅ All verification checks passed!"
+  puts "=" * 60
+end
+
 # Benchmark tasks
 namespace :benchmark do
   desc "Run benchmarks and save results for current gem version (runs automatically after rake release)"
@@ -123,6 +138,9 @@ namespace :benchmark do
     puts Benchmark::Comparison.format_comparison(comparison)
   end
 end
+
+# Require verify to pass before release
+Rake::Task["release"].enhance([:verify])
 
 # Automatically run benchmark:release after rake release
 Rake::Task["release"].enhance do

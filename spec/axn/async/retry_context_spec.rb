@@ -65,9 +65,15 @@ RSpec.describe Axn::Async::RetryContext do
         expect(context.should_trigger_on_exception?(:first_and_exhausted)).to be false
       end
 
-      it "returns true when retries are exhausted" do
+      it "returns false when retries are exhausted (exhaustion handler reports instead)" do
         context = described_class.new(adapter: :sidekiq, attempt: 26, max_retries: 25)
-        expect(context.should_trigger_on_exception?(:first_and_exhausted)).to be true
+        # Regular exception flow should NOT report on exhaustion - exhaustion handler does
+        expect(context.should_trigger_on_exception?(:first_and_exhausted)).to be false
+      end
+
+      it "returns true when called from exhaustion handler" do
+        context = described_class.new(adapter: :sidekiq, attempt: 26, max_retries: 25)
+        expect(context.should_trigger_on_exception?(:first_and_exhausted, from_exhaustion_handler: true)).to be true
       end
     end
 
@@ -82,9 +88,15 @@ RSpec.describe Axn::Async::RetryContext do
         expect(context.should_trigger_on_exception?(:only_exhausted)).to be false
       end
 
-      it "returns true when retries are exhausted" do
+      it "returns false when retries are exhausted (exhaustion handler reports instead)" do
         context = described_class.new(adapter: :sidekiq, attempt: 26, max_retries: 25)
-        expect(context.should_trigger_on_exception?(:only_exhausted)).to be true
+        # Regular exception flow should NOT report - exhaustion handler does
+        expect(context.should_trigger_on_exception?(:only_exhausted)).to be false
+      end
+
+      it "returns true when called from exhaustion handler" do
+        context = described_class.new(adapter: :sidekiq, attempt: 26, max_retries: 25)
+        expect(context.should_trigger_on_exception?(:only_exhausted, from_exhaustion_handler: true)).to be true
       end
     end
 

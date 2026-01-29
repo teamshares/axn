@@ -23,13 +23,25 @@ module Axn
         attempt > max_retries
       end
 
-      # Determines if on_exception should be triggered based on config and retry state
-      def should_trigger_on_exception?(config_mode = Axn.config.async_exception_reporting)
+      # Determines if on_exception should be triggered based on config and retry state.
+      #
+      # For :first_and_exhausted and :only_exhausted modes, exhaustion reporting is handled by:
+      # - Sidekiq: Death handler (calls this with from_exhaustion_handler: true)
+      # - ActiveJob: after_discard callback (calls this with from_exhaustion_handler: true)
+      #   Note: ActiveJob adapter requires Rails 7.1+ for these modes (raises error on older Rails)
+      #
+      # @param from_exhaustion_handler [Boolean] if true, called from exhaustion/discard handler
+      def should_trigger_on_exception?(config_mode = Axn.config.async_exception_reporting, from_exhaustion_handler: false)
         case config_mode
-        when :every_attempt then true
-        when :first_and_exhausted then first_attempt? || retries_exhausted?
-        when :only_exhausted then retries_exhausted?
-        else true # Unknown modes default to triggering
+        when :first_and_exhausted
+          # Exhaustion handler reports on exhaustion, regular flow reports on first attempt only
+          from_exhaustion_handler || first_attempt?
+        when :only_exhausted
+          # Only exhaustion handler should report
+          from_exhaustion_handler
+        else
+          # :every_attempt and unknown modes default to triggering
+          true
         end
       end
 

@@ -49,9 +49,24 @@ module Axn
         included do
           raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob::Base)
 
-          # Validate that kwargs are not provided for ActiveJob
+          # ActiveJob configuration requires a block because methods like retry_on/discard_on
+          # take exception classes as arguments, not just simple values.
           if _async_config&.any?
-            raise ArgumentError, "ActiveJob adapter requires a configuration block. Use `async :active_job do ... end` instead of passing keyword arguments."
+            raise ArgumentError,
+                  "ActiveJob adapter requires a configuration block. " \
+                  "Use `async :active_job do ... end` instead of keyword arguments."
+          end
+
+          # Validate Rails version for exhaustion-based reporting modes
+          # after_discard (required for :first_and_exhausted and :only_exhausted) is Rails 7.1+
+          unless ::ActiveJob::Base.respond_to?(:after_discard)
+            mode = Axn.config.async_exception_reporting
+            if %i[first_and_exhausted only_exhausted].include?(mode)
+              raise ArgumentError,
+                    "async_exception_reporting mode :#{mode} requires Rails 7.1+ for ActiveJob adapter. " \
+                    "Rails 7.1 introduced `after_discard` which is needed to detect exhausted retries. " \
+                    "Use :every_attempt mode or upgrade to Rails 7.1+."
+            end
           end
         end
 
@@ -163,9 +178,6 @@ module Axn
 
                 config_mode = Axn.config.async_exception_reporting
 
-                # For :every_attempt, we already reported during perform - skip here
-                return if config_mode == :every_attempt
-
                 # Build retry context for the discard
                 retry_context = Axn::Async::RetryContext.new(
                   adapter: :active_job,
@@ -173,6 +185,9 @@ module Axn
                   max_retries: _axn_max_retries,
                   job_id: _axn_job_id,
                 )
+
+                # Check if we should report based on config (this is an exhaustion handler)
+                return unless retry_context.should_trigger_on_exception?(config_mode, from_exhaustion_handler: true)
 
                 job_args = begin
                   (job.arguments.first || {}).symbolize_keys
