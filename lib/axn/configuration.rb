@@ -28,6 +28,11 @@ module Axn
       @async_exception_reporting = value
     end
 
+    # Optional override for max retries across all async jobs.
+    # When nil (default), each adapter uses its own default (Sidekiq: 25, ActiveJob: 5).
+    # When explicitly set, this value overrides the adapter's default for retry context tracking.
+    attr_accessor :async_max_retries
+
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []

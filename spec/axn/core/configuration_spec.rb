@@ -103,6 +103,17 @@ RSpec.describe Axn::Configuration do
     end
   end
 
+  describe "#async_max_retries" do
+    it "defaults to nil (uses adapter defaults)" do
+      expect(config.async_max_retries).to be_nil
+    end
+
+    it "can be set to override adapter defaults" do
+      config.async_max_retries = 10
+      expect(config.async_max_retries).to eq(10)
+    end
+  end
+
   describe "#on_exception" do
     let(:exception) { StandardError.new("fail!") }
     let(:action) { double("Action", log: nil) }

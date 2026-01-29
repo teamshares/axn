@@ -6,8 +6,42 @@ module Axn
       module ActiveJob
         extend ActiveSupport::Concern
 
-        def self._running_in_background?
-          defined?(ActiveJob) && ActiveJob::Base.current_job.present?
+        # Fallback max retries when we can't determine from job or backend.
+        # Matches ActiveJob's retry_on default of 5 attempts.
+        FALLBACK_MAX_RETRIES = 5
+
+        class << self
+          def _running_in_background?
+            defined?(::ActiveJob) && ::ActiveJob::Base.current_job.present?
+          end
+
+          # Attempts to determine max retries from the ActiveJob backend.
+          # Returns nil if unable to determine (caller should use fallback).
+          def backend_max_retries
+            return @backend_max_retries if defined?(@backend_max_retries)
+
+            @backend_max_retries = detect_backend_max_retries
+          end
+
+          private
+
+          def detect_backend_max_retries
+            # Try Sidekiq first (most common)
+            if defined?(::Sidekiq)
+              # Sidekiq 7+ uses default_configuration
+              return ::Sidekiq.default_configuration[:max_retries] || 25 if ::Sidekiq.respond_to?(:default_configuration)
+              # Sidekiq 6 and earlier use options hash
+              return ::Sidekiq.options[:max_retries] if ::Sidekiq.respond_to?(:options) && ::Sidekiq.options[:max_retries]
+
+              # Sidekiq is loaded but we can't get config - use its known default
+              return 25
+            end
+
+            # Other backends - return nil to use fallback
+            nil
+          rescue StandardError
+            nil
+          end
         end
 
         included do
@@ -92,8 +126,11 @@ module Axn
 
               # Helper to determine max retries for this job
               proxy.define_method(:_axn_max_retries) do
-                # Try to get from retry_on configuration, default to 5
-                self.class.try(:retry_limit) || 5
+                # Priority: job's retry_limit > config override > backend default > fallback
+                self.class.try(:retry_limit) ||
+                  Axn.config.async_max_retries ||
+                  Axn::Async::Adapters::ActiveJob.backend_max_retries ||
+                  Axn::Async::Adapters::ActiveJob::FALLBACK_MAX_RETRIES
               end
 
               # Helper to get job ID
