@@ -26,6 +26,9 @@ module Axn
       end
 
       @async_exception_reporting = value
+
+      # Auto-register Sidekiq middleware/death handler if needed and Sidekiq is available
+      _auto_configure_sidekiq_for_async_exception_reporting(value)
     end
 
     # Optional override for max retries across all async jobs.
@@ -123,6 +126,29 @@ module Axn
         **_enqueue_all_async_config,
         &_enqueue_all_async_config_block
       )
+    end
+
+    # Auto-configures Sidekiq middleware and death handler when async_exception_reporting
+    # is set to a mode that requires them.
+    #
+    # This registers if Sidekiq is available. The middleware and death handler
+    # are no-ops for non-Axn jobs (they check if the worker includes Axn::Core),
+    # so it's safe to register even if some actions use ActiveJob instead.
+    #
+    # Note: ActiveJob with Sidekiq backend uses ActiveJob's own `executions`
+    # counter for retry tracking, not this middleware.
+    def _auto_configure_sidekiq_for_async_exception_reporting(mode)
+      return unless defined?(::Sidekiq)
+      return if mode == :every_attempt # No special requirements for this mode
+
+      # Require the auto_configure module (lazy load to avoid circular deps)
+      require "axn/async/adapters/sidekiq/auto_configure"
+
+      # Auto-register the required components
+      Axn::Async::Adapters::Sidekiq::AutoConfigure.register!
+    rescue LoadError
+      # Sidekiq adapter files not available - user will need to configure manually
+      nil
     end
   end
 

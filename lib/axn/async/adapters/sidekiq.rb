@@ -58,10 +58,9 @@ module Axn
         def perform(*args)
           context = Axn::Util::GlobalIdSerialization.deserialize(args.first)
 
-          # NOTE: For retry context to be available (affecting when on_exception triggers),
-          # you must add Axn::Async::Adapters::Sidekiq::Middleware to your Sidekiq server middleware.
-          # The middleware sets up CurrentRetryContext with job retry information.
-          # Without the middleware, on_exception will trigger on every attempt.
+          # Retry context is set up by Axn::Async::Adapters::Sidekiq::Middleware.
+          # This is auto-registered when async_exception_reporting config is set.
+          # See Axn::Async::Adapters::Sidekiq::AutoConfigure for manual registration.
 
           result = self.class.call(**context)
 
