@@ -53,6 +53,8 @@ async :sidekiq, queue: "high_priority", retry: 5
 - `priority`: Job priority (default: 0)
 - Any other Sidekiq options supported by `sidekiq_options`
 
+For detailed setup instructions including middleware configuration, see [Sidekiq Adapter Setup](/reference/async/sidekiq).
+
 #### ActiveJob
 
 The ActiveJob adapter provides integration with Rails' ActiveJob framework.
@@ -71,6 +73,8 @@ end
 - `priority`: Job priority
 - `wait`: Delay before execution
 - Any other ActiveJob options
+
+For detailed setup instructions, see [ActiveJob Adapter Setup](/reference/async/active-job).
 
 #### Disabled
 
@@ -143,21 +147,31 @@ end
 
 ## Error Handling
 
-Async actions trigger via `call!` internally, so they raise on failure, which means the background job system can seamlessly handle retries.
+Axn distinguishes between **business logic failures** (via `fail!`) and **unexpected exceptions**:
+
+- **`fail!` (business failures)**: These do NOT trigger retries. A call to `fail!` indicates a deliberate business decision that should not be retried.
+- **Unexpected exceptions**: These DO trigger retries, allowing transient errors to be recovered.
 
 ```ruby
-class FailingAction
+class PaymentAction
   include Axn
   async :sidekiq, retry: 3
 
   def call
-    fail! "Something went wrong"
+    # This will NOT trigger retries - it's a business decision
+    fail! "Insufficient funds" if insufficient_funds?
+
+    # This WILL trigger retries - it's an unexpected error
+    raise NetworkError, "Connection timeout" if connection_failed?
   end
 end
-
-# The job will be retried up to 3 times before giving up
-FailingAction.call_async(data: "test")
 ```
+
+This follows Sidekiq's own guidance: "Retries are for unexpected errors."
+
+### Exception Reporting in Async Context
+
+When unexpected exceptions occur in async jobs, Axn provides control over when `on_exception` is triggered. See [Async Exception Reporting](/reference/configuration#async-exception-reporting) for configuration options.
 
 ## Batch Enqueueing with `enqueues_each`
 

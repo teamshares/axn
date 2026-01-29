@@ -317,6 +317,67 @@ end
 Axn.config.env.staging?  # => true
 ```
 
+## Async Exception Reporting
+
+Controls when `on_exception` is triggered for unexpected exceptions in async jobs. This helps manage the volume of error reports during retries.
+
+```ruby
+Axn.configure do |c|
+  c.async_exception_reporting = :first_and_exhausted  # default
+end
+```
+
+### Available Modes
+
+| Mode | When `on_exception` fires |
+|------|---------------------------|
+| `:every_attempt` | Every time the job runs and fails (includes all retries) |
+| `:first_and_exhausted` | First attempt + when job exhausts all retries (default) |
+| `:only_exhausted` | Only when job exhausts all retries |
+
+### Retry Context
+
+When `on_exception` is triggered in an async context, the `context` hash includes retry information under the `:async` key:
+
+```ruby
+Axn.configure do |c|
+  c.on_exception = proc do |e, action:, context:|
+    if context[:async]
+      # Available fields:
+      # context[:async][:adapter]          # :sidekiq or :active_job
+      # context[:async][:attempt]          # Current attempt (1-indexed)
+      # context[:async][:max_retries]      # Max retry attempts
+      # context[:async][:job_id]           # Job ID (if available)
+      # context[:async][:first_attempt]    # true if first attempt
+      # context[:async][:retries_exhausted] # true if all retries exhausted
+
+      Honeybadger.notify(e, context: {
+        axn_context: context,
+        retry_info: "Attempt #{context[:async][:attempt]} of #{context[:async][:max_retries]}"
+      })
+    else
+      # Foreground execution - no retry context
+      Honeybadger.notify(e, context: { axn_context: context })
+    end
+  end
+end
+```
+
+## `async_max_retries`
+
+Optional override for max retries across all async jobs. When set, this value is used for retry context tracking instead of the adapter's default.
+
+```ruby
+Axn.configure do |c|
+  # Override the default max retries for all async jobs
+  c.async_max_retries = 10
+end
+```
+
+When not set (default), each adapter uses its own default:
+- **Sidekiq**: 25 (Sidekiq's default)
+- **ActiveJob**: 5 (matches `retry_on` default), or auto-detected from Sidekiq if used as backend
+
 ## `set_default_async`
 
 Configures the default async adapter and settings for all actions that don't explicitly specify their own async configuration.
