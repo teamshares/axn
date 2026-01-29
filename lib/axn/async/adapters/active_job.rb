@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../exception_reporting"
+
 module Axn
   module Async
     class Adapters
@@ -162,19 +164,7 @@ module Axn
                 config_mode = Axn.config.async_exception_reporting
 
                 # For :every_attempt, we already reported during perform - skip here
-                # For :first_and_exhausted, we reported on first attempt, now report on discard
-                # For :only_exhausted, we only report on discard
-                case config_mode
-                when :every_attempt
-                  # Already reported during perform, skip
-                  return
-                when :first_and_exhausted
-                  # Report if this is exhausted (not first attempt - that was already reported)
-                  # after_discard fires after all retries exhausted OR on discard_on
-                  # We always report here since it's either exhausted or explicitly discarded
-                when :only_exhausted
-                  # Always report on discard
-                end
+                return if config_mode == :every_attempt
 
                 # Build retry context for the discard
                 retry_context = Axn::Async::RetryContext.new(
@@ -184,61 +174,23 @@ module Axn
                   job_id: _axn_job_id,
                 )
 
-                # Build context similar to normal on_exception flow
                 job_args = begin
                   (job.arguments.first || {}).symbolize_keys
                 rescue StandardError
                   {}
                 end
-                filtered_context = axn_class.context_for_logging(data: job_args, direction: :inbound)
 
-                context = filtered_context.merge(
-                  async: retry_context.to_h.merge(discarded: true),
+                Axn::Async::ExceptionReporting.trigger_on_exception(
+                  exception:,
+                  action_class: axn_class,
+                  retry_context:,
+                  job_args:,
+                  extra_context: { async: { discarded: true } },
+                  log_prefix: "ActiveJob after_discard handler",
                 )
-
-                # Create a proxy action for logging
-                proxy_action = DiscardedJobAction.new(job, axn_class, exception)
-
-                # Trigger on_exception
-                Axn.config.on_exception(exception, action: proxy_action, context:)
-              rescue StandardError => e
-                Axn::Internal::Logging.piping_error("in ActiveJob after_discard handler", exception: e)
               end
             end
           end
-        end
-
-        # Proxy action for discarded job reporting
-        class DiscardedJobAction
-          def initialize(job, action_class, exception)
-            @job = job
-            @action_class = action_class
-            @exception = exception
-          end
-
-          def log(message)
-            Axn.config.logger.warn("[Axn::DiscardedJob] #{message}")
-          end
-
-          def result
-            @result ||= DiscardedJobResult.new(@exception)
-          end
-
-          def class
-            @action_class
-          end
-        end
-
-        class DiscardedJobResult
-          def initialize(exception)
-            @exception = exception
-          end
-
-          def error
-            @exception&.message || "Job was discarded"
-          end
-
-          attr_reader :exception
         end
       end
     end

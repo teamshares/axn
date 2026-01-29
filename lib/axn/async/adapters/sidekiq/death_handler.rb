@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "retry_helpers"
+require_relative "../../exception_reporting"
 
 module Axn
   module Async
@@ -37,68 +38,27 @@ module Axn
               # For :only_exhausted, we need to report now (only time)
               return unless retry_context.should_trigger_on_exception?(config_mode)
 
-              # Build context using the action class's context_for_logging to properly
-              # filter sensitive values. Job args contain the serialized action input context.
               job_args = (job["args"]&.first || {}).symbolize_keys
-              filtered_context = klass.context_for_logging(data: job_args, direction: :inbound)
 
-              # Merge async retry information and job metadata
-              action_context = filtered_context.merge(
-                async: retry_context.to_h,
-                _job_metadata: {
-                  job_class: job["class"],
-                  jid: job["jid"],
-                  queue: job["queue"],
-                  created_at: job["created_at"],
-                  failed_at: job["failed_at"],
-                  error_class: job["error_class"],
-                  error_message: job["error_message"],
-                }.compact,
+              ExceptionReporting.trigger_on_exception(
+                exception:,
+                action_class: klass,
+                retry_context:,
+                job_args:,
+                extra_context: {
+                  _job_metadata: {
+                    job_class: job["class"],
+                    jid: job["jid"],
+                    queue: job["queue"],
+                    created_at: job["created_at"],
+                    failed_at: job["failed_at"],
+                    error_class: job["error_class"],
+                    error_message: job["error_message"],
+                  }.compact,
+                },
+                log_prefix: "Sidekiq death handler",
               )
-
-              # Create a proxy action for logging that provides the expected interface
-              proxy_action = DeadJobAction.new(job, klass, exception)
-
-              # Call the global on_exception handler
-              Axn.config.on_exception(exception, action: proxy_action, context: action_context)
-            rescue StandardError => e
-              # Don't let death handler errors prevent job death processing
-              Axn::Internal::Logging.piping_error("in Sidekiq death handler", exception: e)
             end
-          end
-
-          # Proxy action for dead job reporting that mimics an Axn action instance.
-          # Provides the interface expected by on_exception handlers.
-          class DeadJobAction
-            def initialize(job, action_class, exception)
-              @job = job
-              @action_class = action_class
-              @exception = exception
-            end
-
-            def log(message)
-              Axn.config.logger.warn("[Axn::DeadJob] #{message}")
-            end
-
-            def result
-              @result ||= DeadJobResult.new(@exception)
-            end
-
-            def class
-              @action_class
-            end
-          end
-
-          class DeadJobResult
-            def initialize(exception)
-              @exception = exception
-            end
-
-            def error
-              @exception&.message || "Job exhausted all retries"
-            end
-
-            attr_reader :exception
           end
         end
       end
