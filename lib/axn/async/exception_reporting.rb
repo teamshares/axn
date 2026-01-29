@@ -19,10 +19,11 @@ module Axn
           # Filter sensitive values using the action class's context_for_logging
           filtered_context = action_class.context_for_logging(data: job_args, direction: :inbound)
 
-          # Build final context with async info
+          # Build final context with async info (avoid mutating extra_context)
+          async_extra = extra_context[:async] || {}
           context = filtered_context.merge(
-            async: retry_context.to_h.merge(extra_context.delete(:async) || {}),
-          ).merge(extra_context)
+            async: retry_context.to_h.merge(async_extra),
+          ).merge(extra_context.except(:async))
 
           # Create proxy action for the on_exception interface
           proxy_action = DiscardedJobAction.new(action_class, exception)
