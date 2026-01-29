@@ -184,13 +184,48 @@ In this case:
 | You need Sidekiq-specific features (batches, etc.) | You're using non-Sidekiq backend |
 | Performance is critical | You prefer Rails conventions |
 
+## Discarded Job Handling (Rails 7.1+)
+
+On Rails 7.1+, Axn automatically registers an `after_discard` callback on the proxy job class. This triggers `on_exception` when:
+
+- `discard_on` catches an exception
+- `retry_on` exhausts all retries
+- An unhandled exception causes the job to be discarded
+
+This means `:first_and_exhausted` and `:only_exhausted` modes work correctly—exceptions are reported when the job is actually discarded, not just on the final attempt.
+
+```ruby
+class MyAction
+  include Axn
+
+  async :active_job do
+    discard_on ValidationError  # Will trigger on_exception when discarded
+    retry_on NetworkError, attempts: 3  # Will trigger on_exception when exhausted
+  end
+
+  def call
+    # ...
+  end
+end
+```
+
+The discard context includes `discarded: true` in the async info:
+
+```ruby
+Axn.configure do |c|
+  c.on_exception = proc do |e, context:|
+    if context.dig(:async, :discarded)
+      puts "Job was discarded!"
+    end
+  end
+end
+```
+
+::: tip
+On Rails < 7.1, `after_discard` is not available. In this case, `:only_exhausted` mode will trigger during the final attempt execution rather than after discard.
+:::
+
 ## Limitations
-
-### No Death Handler Equivalent (Yet)
-
-Unlike Sidekiq, ActiveJob doesn't have a built-in "death handler" for exhausted retries. For `:only_exhausted` mode, Axn triggers `on_exception` when `executions > max_retries`, which happens during the final attempt execution—not after the job is fully discarded.
-
-Rails 7.1+ provides `after_discard` which could be used for this, but Axn doesn't currently integrate with it automatically.
 
 ### Retry Configuration
 

@@ -4,6 +4,7 @@
 * [BREAKING][BUGFIX] `fail!` in async jobs no longer triggers retries - business logic failures complete without retry (Sidekiq and ActiveJob adapters)
 * [FEAT] Add `async_exception_reporting` config to control when `on_exception` triggers in async context (`:every_attempt`, `:first_and_exhausted`, `:only_exhausted`)
 * [FEAT] Add retry context to `on_exception` calls in async jobs - includes attempt number, max retries, exhausted status, and job ID
+* [INTERNAL] ActiveJob adapter now uses `after_discard` callback (Rails 7.1+) to properly report discarded jobs including `discard_on` exceptions and exhausted retries
 
 ## 0.1.0-alpha.4
 * [FEAT] Action class constants are now created eagerly when child classes inherit from parents with mounted actions, allowing direct constant access (e.g., `TeamsharesAPI::Company::Axns::Get.call`)
