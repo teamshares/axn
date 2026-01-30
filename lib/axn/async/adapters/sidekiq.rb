@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "sidekiq/auto_configure"
+
 module Axn
   module Async
     class Adapters
@@ -58,9 +60,12 @@ module Axn
         def perform(*args)
           context = Axn::Util::GlobalIdSerialization.deserialize(args.first)
 
-          # Retry context is set up by Axn::Async::Adapters::Sidekiq::Middleware.
-          # This is auto-registered when async_exception_reporting config is set.
-          # See Axn::Async::Adapters::Sidekiq::AutoConfigure for manual registration.
+          # Validate Sidekiq configuration once on first job execution in a real server context.
+          # Skip validation when:
+          # - Already validated
+          # - In Sidekiq test mode (inline/fake)
+          # - In a test environment (where Sidekiq may be stubbed)
+          AutoConfigure.validate_configuration!(Axn.config.async_exception_reporting) unless AutoConfigure.skip_validation?
 
           result = self.class.call(**context)
 

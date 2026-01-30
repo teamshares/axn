@@ -28,6 +28,20 @@ module Axn
               @death_handler_registered == true
             end
 
+            def validated?
+              @validated == true
+            end
+
+            # Returns true if validation should be skipped.
+            # Skip when already validated, in Sidekiq test mode, or in a test environment.
+            def skip_validation?
+              return true if validated?
+              return true if defined?(::Sidekiq::Testing) && ::Sidekiq::Testing.enabled?
+              return true if ENV["RAILS_ENV"] == "test" || ENV["RACK_ENV"] == "test"
+
+              false
+            end
+
             # Registers both middleware and death handler.
             # Safe to call multiple times - will not duplicate registrations.
             def register!
@@ -71,9 +85,11 @@ module Axn
             # Validates that required components are registered for the given config mode.
             # Raises ConfigurationError with instructions if configuration is incomplete.
             #
-            # Note: This checks whether register! was called, not whether Sidekiq
-            # has actually loaded the middleware (which happens when server starts).
+            # This is called once on first Sidekiq job execution to catch misconfiguration early.
+            # It checks whether register! was called, not whether Sidekiq has actually loaded
+            # the middleware (which happens when server starts).
             def validate_configuration!(mode)
+              @validated = true
               return if mode == :every_attempt # No special requirements
 
               issues = []
@@ -111,6 +127,7 @@ module Axn
               @registered = false
               @middleware_registered = false
               @death_handler_registered = false
+              @validated = false
             end
           end
         end
