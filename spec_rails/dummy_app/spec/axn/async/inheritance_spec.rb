@@ -32,10 +32,12 @@ RSpec.describe "Axn::Async inheritance" do
     it "child proxy calls child's call method, not parent's" do
       # Create a spy to track which call method gets executed
       child_instance = child_class.send(:new, name: "World")
-      allow(child_class).to receive(:call!).and_call_original
+      allow(child_class).to receive(:call).and_call_original
 
-      # Mock the call! method to verify it's called on the child class
-      expect(child_class).to receive(:call!).with(name: "World").and_return("Child: Hello, World!")
+      # Mock the call method to verify it's called on the child class
+      # Note: adapters now call `call` (not `call!`) to handle failures correctly
+      mock_result = instance_double(Axn::Result, outcome: instance_double("Outcome", exception?: false))
+      expect(child_class).to receive(:call).with(name: "World").and_return(mock_result)
 
       if adapter_type == :sidekiq
         # Execute the perform method (this is what Sidekiq would call)
@@ -48,7 +50,7 @@ RSpec.describe "Axn::Async inheritance" do
         result = proxy_instance.perform({ name: "World" })
       end
 
-      expect(result).to eq("Child: Hello, World!")
+      expect(result).to eq(mock_result)
     end
   end
 
@@ -56,10 +58,12 @@ RSpec.describe "Axn::Async inheritance" do
     it "parent proxy calls parent's call method" do
       # Create a spy to track which call method gets executed
       parent_instance = parent_class.send(:new, name: "World")
-      allow(parent_class).to receive(:call!).and_call_original
+      allow(parent_class).to receive(:call).and_call_original
 
-      # Mock the call! method to verify it's called on the parent class
-      expect(parent_class).to receive(:call!).with(name: "World").and_return("Parent: Hello, World!")
+      # Mock the call method to verify it's called on the parent class
+      # Note: adapters now call `call` (not `call!`) to handle failures correctly
+      mock_result = instance_double(Axn::Result, outcome: instance_double("Outcome", exception?: false))
+      expect(parent_class).to receive(:call).with(name: "World").and_return(mock_result)
 
       if adapter_type == :sidekiq
         # Execute the perform method (this is what Sidekiq would call)
@@ -72,7 +76,7 @@ RSpec.describe "Axn::Async inheritance" do
         result = proxy_instance.perform({ name: "World" })
       end
 
-      expect(result).to eq("Parent: Hello, World!")
+      expect(result).to eq(mock_result)
     end
   end
   context "when parent class has async :sidekiq" do

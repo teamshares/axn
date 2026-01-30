@@ -117,6 +117,10 @@ RSpec.describe Axn::Async do
         def self.perform_later(*args)
           # Mock implementation
         end
+
+        def self.after_discard(&)
+          # Mock Rails 7.1+ after_discard
+        end
       end
 
       stub_const("ActiveJob", Module.new)
@@ -142,21 +146,14 @@ RSpec.describe Axn::Async do
 
   context "when configured with :active_job and kwargs" do
     it "raises ArgumentError" do
-      active_job_base = Class.new do
-        def self.perform_later(*args)
-          # Mock implementation
-        end
-      end
-
       stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base)
+      stub_const("ActiveJob::Base", Class.new)
 
       expect do
         build_axn do
           async :active_job, queue: "high_priority"
         end
-      end.to raise_error(ArgumentError,
-                         "ActiveJob adapter requires a configuration block. Use `async :active_job do ... end` instead of passing keyword arguments.")
+      end.to raise_error(ArgumentError, /ActiveJob adapter requires a configuration block/)
     end
   end
 

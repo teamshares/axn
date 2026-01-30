@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "sidekiq/auto_configure"
+
 module Axn
   module Async
     class Adapters
@@ -58,8 +60,21 @@ module Axn
         def perform(*args)
           context = Axn::Util::GlobalIdSerialization.deserialize(args.first)
 
-          # Always use bang version so sidekiq can retry if we failed
-          self.class.call!(**context)
+          # Validate Sidekiq configuration once on first job execution in a real server context.
+          # Skip validation when:
+          # - Already validated
+          # - In Sidekiq test mode (inline/fake)
+          # - In a test environment (where Sidekiq may be stubbed)
+          AutoConfigure.validate_configuration!(Axn.config.async_exception_reporting) unless AutoConfigure.skip_validation?
+
+          result = self.class.call(**context)
+
+          # Only re-raise unexpected exceptions so Sidekiq can retry.
+          # Axn::Failure is a deliberate business decision (from fail!), not a transient error.
+          # Per Sidekiq's ethos: "Sidekiq retries are for unexpected errors."
+          raise result.exception if result.outcome.exception?
+
+          result
         end
       end
     end

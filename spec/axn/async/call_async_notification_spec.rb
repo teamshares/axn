@@ -80,6 +80,9 @@ RSpec.describe "Action axn.call_async notification" do
           end
         end
 
+        # Add after_discard for Rails 7.1+ compatibility
+        active_job_base.define_singleton_method(:after_discard) { |&block| }
+
         stub_const("ActiveJob", Module.new)
         stub_const("ActiveJob::Base", active_job_base)
 

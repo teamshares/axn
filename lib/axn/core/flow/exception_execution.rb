@@ -9,12 +9,23 @@ module Axn
             include InstanceMethods
 
             def _trigger_on_exception(exception)
+              # Check if we're in an async context and should skip based on retry policy
+              retry_context = Axn::Async::CurrentRetryContext.current if defined?(Axn::Async::CurrentRetryContext)
+              if retry_context && !retry_context.should_trigger_on_exception?
+                # Skip triggering - will be handled by death handler or on a later attempt
+                return
+              end
+
               # Call any handlers registered on *this specific action* class
               # (handlers can call context_for_logging themselves if needed)
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
+              # Build context with async information if available
+              context = context_for_logging
+              context[:async] = retry_context.to_h if retry_context
+
               # Call any global handlers
-              Axn.config.on_exception(exception, action: self, context: context_for_logging)
+              Axn.config.on_exception(exception, action: self, context:)
             rescue StandardError => e
               # No action needed -- downstream #on_exception implementation should ideally log any internal failures, but
               # we don't want exception *handling* failures to cascade and overwrite the original exception.
