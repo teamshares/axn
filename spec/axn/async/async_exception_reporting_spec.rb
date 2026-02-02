@@ -41,6 +41,15 @@ RSpec.describe "Per-class async_exception_reporting" do
 
       expect(action._async_exception_reporting).to eq(:only_exhausted)
     end
+
+    it "accepts nil to clear the override" do
+      action = build_axn do
+        async_exception_reporting :only_exhausted
+        async_exception_reporting nil
+      end
+
+      expect(action._async_exception_reporting).to be_nil
+    end
   end
 
   describe "inheritance" do
@@ -65,6 +74,19 @@ RSpec.describe "Per-class async_exception_reporting" do
 
       expect(parent._async_exception_reporting).to eq(:only_exhausted)
       expect(child._async_exception_reporting).to eq(:every_attempt)
+    end
+
+    it "child classes can clear parent's setting to use global config" do
+      parent = build_axn do
+        async_exception_reporting :only_exhausted
+      end
+
+      child = Class.new(parent) do
+        async_exception_reporting nil
+      end
+
+      expect(parent._async_exception_reporting).to eq(:only_exhausted)
+      expect(child._async_exception_reporting).to be_nil
     end
   end
 

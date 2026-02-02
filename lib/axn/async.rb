@@ -22,7 +22,8 @@ module Axn
       # This allows library authors to configure exception reporting behavior for their actions
       # without affecting the host app's global Axn.config.async_exception_reporting setting.
       #
-      # @param mode [Symbol] One of :every_attempt, :first_and_exhausted, or :only_exhausted
+      # @param mode [Symbol, nil] One of :every_attempt, :first_and_exhausted, or :only_exhausted.
+      #   Use nil to clear the per-class override and fall back to the global config.
       # @raise [ArgumentError] if mode is not a valid option
       #
       # @example
@@ -31,6 +32,11 @@ module Axn
       #     async_exception_reporting :only_exhausted
       #   end
       def async_exception_reporting(mode)
+        if mode.nil?
+          self._async_exception_reporting = nil
+          return
+        end
+
         unless Axn::Configuration::ASYNC_EXCEPTION_REPORTING_OPTIONS.include?(mode)
           raise ArgumentError,
                 "async_exception_reporting must be one of: #{Axn::Configuration::ASYNC_EXCEPTION_REPORTING_OPTIONS.join(', ')}"
