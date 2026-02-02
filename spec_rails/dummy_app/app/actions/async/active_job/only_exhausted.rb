@@ -4,13 +4,11 @@ module Actions
   module Async
     module ActiveJob
       class OnlyExhausted
-        include Axn
+        include Concerns::OnlyExhaustedBehavior
 
         async :active_job do
           retry_on StandardError, attempts: 2
         end
-
-        include Concerns::OnlyExhaustedBehavior
       end
     end
   end

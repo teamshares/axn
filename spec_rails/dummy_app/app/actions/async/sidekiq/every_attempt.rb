@@ -4,13 +4,11 @@ module Actions
   module Async
     module Sidekiq
       class EveryAttempt
-        include Axn
+        include Concerns::EveryAttemptBehavior
 
         async :sidekiq do
           sidekiq_options retry: 2
         end
-
-        include Concerns::EveryAttemptBehavior
       end
     end
   end

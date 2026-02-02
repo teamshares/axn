@@ -4,13 +4,11 @@ module Actions
   module Async
     module Sidekiq
       class OnlyExhausted
-        include Axn
+        include Concerns::OnlyExhaustedBehavior
 
         async :sidekiq do
           sidekiq_options retry: 2
         end
-
-        include Concerns::OnlyExhaustedBehavior
       end
     end
   end

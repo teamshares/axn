@@ -4,13 +4,11 @@ module Actions
   module Async
     module ActiveJob
       class EveryAttempt
-        include Axn
+        include Concerns::EveryAttemptBehavior
 
         async :active_job do
           retry_on StandardError, attempts: 2
         end
-
-        include Concerns::EveryAttemptBehavior
       end
     end
   end
