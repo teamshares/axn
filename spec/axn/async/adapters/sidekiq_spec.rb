@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../../../support/shared_examples/async_adapter_interface"
+require_relative "../../../support/shared_examples/async_adapter_behavior"
 
 RSpec.describe "Axn::Async with Sidekiq adapter" do
   let(:sidekiq_job) do
@@ -41,7 +42,38 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     end
   end
 
+  # Shared example configuration for Sidekiq adapter
+  let(:adapter_name) { :sidekiq }
+
+  let(:setup_framework_mocks) do
+    sidekiq_job_module = sidekiq_job
+    lambda do
+      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq::Job", sidekiq_job_module)
+    end
+  end
+
+  let(:build_action) do
+    lambda do |config_block|
+      action = build_axn do
+        async :sidekiq
+      end
+      action.class_eval(&config_block) if config_block
+      action
+    end
+  end
+
+  let(:get_worker) do
+    ->(action_class) { action_class.send(:new) }
+  end
+
+  let(:perform_job) do
+    ->(worker, args) { worker.perform(args.transform_keys(&:to_s)) }
+  end
+
   it_behaves_like "an async adapter interface", :sidekiq, Axn::Async::Adapters::Sidekiq
+  it_behaves_like "async adapter exception handling"
+  it_behaves_like "async adapter per-class exception reporting"
 
   describe ".call_async" do
     it "calls perform_async with processed context" do
@@ -86,77 +118,6 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     it "calls perform_async with processed context" do
       expect(action_class).to receive(:perform_async).with(hash_including("name" => "World", "age" => 25))
       action_class.call_async(name: "World", age: 25)
-    end
-  end
-
-  describe "#perform exception handling" do
-    let(:successful_action) do
-      stub_const("Sidekiq", Module.new)
-      stub_const("Sidekiq::Job", sidekiq_job)
-
-      build_axn do
-        async :sidekiq
-        expects :value
-        exposes :result_value
-
-        def call
-          expose result_value: value * 2
-        end
-      end
-    end
-
-    let(:failing_action) do
-      stub_const("Sidekiq", Module.new)
-      stub_const("Sidekiq::Job", sidekiq_job)
-
-      build_axn do
-        async :sidekiq
-        expects :should_fail
-
-        def call
-          fail! "Business logic failure" if should_fail
-        end
-      end
-    end
-
-    let(:exception_action) do
-      stub_const("Sidekiq", Module.new)
-      stub_const("Sidekiq::Job", sidekiq_job)
-
-      build_axn do
-        async :sidekiq
-
-        def call
-          raise "Unexpected error"
-        end
-      end
-    end
-
-    it "returns result on success" do
-      worker = successful_action.send(:new)
-      result = worker.perform({ "value" => 5 })
-
-      expect(result).to be_ok
-      expect(result.result_value).to eq(10)
-    end
-
-    it "does not raise on Axn::Failure (business logic failure)" do
-      worker = failing_action.send(:new)
-
-      # Should NOT raise - Axn::Failure is a business decision, not a transient error
-      expect { worker.perform({ "should_fail" => true }) }.not_to raise_error
-
-      # But the result should indicate failure
-      result = worker.perform({ "should_fail" => true })
-      expect(result.outcome).to be_failure
-      expect(result.exception).to be_a(Axn::Failure)
-    end
-
-    it "re-raises unexpected exceptions for Sidekiq retry" do
-      worker = exception_action.send(:new)
-
-      # Should raise - unexpected errors should trigger Sidekiq retries
-      expect { worker.perform({}) }.to raise_error(RuntimeError, "Unexpected error")
     end
   end
 

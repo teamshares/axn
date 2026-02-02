@@ -23,8 +23,8 @@ module Axn
               klass = job["class"].to_s.safe_constantize
               return unless klass&.included_modules&.include?(Axn::Core)
 
-              # Check if we should report based on config
-              config_mode = Axn.config.async_exception_reporting
+              # Use per-class override if set, otherwise fall back to global config
+              config_mode = klass.try(:_async_exception_reporting) || Axn.config.async_exception_reporting
               return if config_mode == :every_attempt # Already reported on each attempt
 
               retry_context = RetryHelpers.build_retry_context(job)

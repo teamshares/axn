@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
 require_relative "base_verifier"
+require_relative "shared_scenarios"
 require "sidekiq/api"
 require "json"
 
 module Integration
   class SidekiqVerifier < BaseVerifier
+    include SharedScenarios
+
     SIDEKIQ_STARTUP_TIMEOUT = 10 # seconds
     SIDEKIQ_SHUTDOWN_TIMEOUT = 5 # seconds
 
@@ -281,6 +284,10 @@ module Integration
         ],
         first_and_exhausted: [
           scenario_first_and_exhausted_reports_first_and_death,
+          # Per-class override tests: run with global :first_and_exhausted
+          # to prove per-class overrides work
+          scenario_per_class_only_exhausted_respected,
+          scenario_per_class_every_attempt_respected,
         ],
         only_exhausted: [
           scenario_only_exhausted_reports_only_on_death,

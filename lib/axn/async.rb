@@ -10,6 +10,7 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+      class_attribute :_async_exception_reporting, default: nil
 
       # Include batch enqueue functionality
       include BatchEnqueue
@@ -17,6 +18,33 @@ module Axn
     end
 
     class_methods do
+      # Sets the exception reporting mode for this action class, overriding the global config.
+      # This allows library authors to configure exception reporting behavior for their actions
+      # without affecting the host app's global Axn.config.async_exception_reporting setting.
+      #
+      # @param mode [Symbol, nil] One of :every_attempt, :first_and_exhausted, or :only_exhausted.
+      #   Use nil to clear the per-class override and fall back to the global config.
+      # @raise [ArgumentError] if mode is not a valid option
+      #
+      # @example
+      #   class SlackSender::Base
+      #     include Axn
+      #     async_exception_reporting :only_exhausted
+      #   end
+      def async_exception_reporting(mode)
+        if mode.nil?
+          self._async_exception_reporting = nil
+          return
+        end
+
+        unless Axn::Configuration::ASYNC_EXCEPTION_REPORTING_OPTIONS.include?(mode)
+          raise ArgumentError,
+                "async_exception_reporting must be one of: #{Axn::Configuration::ASYNC_EXCEPTION_REPORTING_OPTIONS.join(', ')}"
+        end
+
+        self._async_exception_reporting = mode
+      end
+
       def async(adapter = nil, **config, &block)
         self._async_adapter = adapter
         self._async_config = config

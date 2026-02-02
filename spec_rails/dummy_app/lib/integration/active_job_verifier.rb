@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
 require_relative "base_verifier"
+require_relative "shared_scenarios"
 
 module Integration
   class ActiveJobVerifier < BaseVerifier
+    include SharedScenarios
+
     private
 
     def setup
@@ -31,6 +34,9 @@ module Integration
         scenario_first_and_exhausted_mode,
         scenario_only_exhausted_mode,
         scenario_discard_on_triggers_on_exception,
+        # Per-class override scenarios
+        scenario_per_class_only_exhausted_in_active_job,
+        scenario_per_class_every_attempt_in_active_job,
       ]
     end
 
@@ -141,6 +147,64 @@ module Integration
             # Rails < 7.1 - no after_discard, may not report depending on config
             puts "(skipped - Rails < 7.1)"
           end
+        },
+      }
+    end
+
+    # ============================================================
+    # Per-Class Override Scenarios (ActiveJob-specific)
+    # ============================================================
+
+    # Scenario: Per-class :only_exhausted override is respected
+    # Note: ActiveJob's async adapter doesn't retry, so we test that the
+    # per-class setting is applied correctly. Full retry testing requires
+    # Sidekiq integration tests.
+    def scenario_per_class_only_exhausted_in_active_job
+      {
+        name: "Per-class :only_exhausted setting is applied",
+        setup: lambda {
+          # Set global to :every_attempt, so we can verify per-class override works
+          Axn.configure { |c| c.async_exception_reporting = :every_attempt }
+        },
+        action: lambda {
+          Actions::Integration::FailingWithExceptionOnlyExhausted.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          # With per-class :only_exhausted, the first attempt should NOT trigger on_exception
+          # (even though global is :every_attempt)
+          first_attempt_reports = reports.select do |r|
+            r[:context].dig(:async, :attempt) == 1 &&
+              !r[:context].dig(:async, :discarded)
+          end
+
+          # Should have no non-discarded reports for attempt 1
+          assert first_attempt_reports.empty?,
+                 "Expected no first-attempt reports for per-class :only_exhausted, got #{first_attempt_reports.size}"
+        },
+      }
+    end
+
+    # Scenario: Per-class :every_attempt override is respected
+    def scenario_per_class_every_attempt_in_active_job
+      {
+        name: "Per-class :every_attempt setting is applied",
+        setup: lambda {
+          # Set global to :only_exhausted, so we can verify per-class override works
+          Axn.configure { |c| c.async_exception_reporting = :only_exhausted }
+        },
+        action: lambda {
+          Actions::Integration::FailingWithExceptionEveryAttempt.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          # With per-class :every_attempt, the first attempt SHOULD trigger on_exception
+          # (even though global is :only_exhausted)
+          first_attempt_reports = reports.select do |r|
+            r[:context].dig(:async, :attempt) == 1
+          end
+
+          # Should have at least one report for attempt 1
+          assert first_attempt_reports.any?,
+                 "Expected first-attempt report for per-class :every_attempt, got none"
         },
       }
     end

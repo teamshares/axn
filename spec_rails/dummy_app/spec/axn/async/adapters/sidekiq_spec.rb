@@ -1,9 +1,17 @@
 # frozen_string_literal: true
 
+require_relative "../../../support/shared_examples/async_adapter_rails_behavior"
+
 RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
   let(:test_action) { Actions::Async::TestActionSidekiq }
   let(:failing_action) { Actions::Async::FailingActionSidekiq }
   let(:expected_log_message) { /Action executed: Hello, World! You are 25 years old\./ }
+
+  # Shared example configuration
+  let(:enqueue_job) { ->(action, args) { action.call_async(**args) } }
+  let(:perform_enqueued) { -> {} } # Sidekiq inline mode executes immediately
+  let(:action_with_only_exhausted) { Actions::Async::Sidekiq::OnlyExhausted }
+  let(:action_with_every_attempt) { Actions::Async::Sidekiq::EveryAttempt }
 
   before do
     Sidekiq::Testing.inline!
@@ -17,6 +25,9 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     Sidekiq.strict_args!(true)
     Sidekiq::Job.jobs.clear
   end
+
+  it_behaves_like "async adapter rails delayed execution"
+  it_behaves_like "async adapter rails per-class exception reporting"
 
   describe ".call_async" do
     it { expect(test_action.call_async(name: "World", age: 25)).to match(/\A[0-9a-f]{24}\z/) }

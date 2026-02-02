@@ -176,7 +176,8 @@ module Axn
                 # Skip Axn::Failure - it's a business decision, not an error to report
                 return if exception.is_a?(Axn::Failure)
 
-                config_mode = Axn.config.async_exception_reporting
+                # Use per-class override if set, otherwise fall back to global config
+                config_mode = axn_class.try(:_async_exception_reporting) || Axn.config.async_exception_reporting
 
                 # Build retry context for the discard
                 retry_context = Axn::Async::RetryContext.new(
