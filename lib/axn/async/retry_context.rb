@@ -30,9 +30,13 @@ module Axn
       # - ActiveJob: after_discard callback (calls this with from_exhaustion_handler: true)
       #   Note: ActiveJob adapter requires Rails 7.1+ for these modes (raises error on older Rails)
       #
+      # @param config_mode [Symbol, nil] The exception reporting mode. If nil, falls back to global config.
       # @param from_exhaustion_handler [Boolean] if true, called from exhaustion/discard handler
-      def should_trigger_on_exception?(config_mode = Axn.config.async_exception_reporting, from_exhaustion_handler: false)
-        case config_mode
+      def should_trigger_on_exception?(config_mode = nil, from_exhaustion_handler: false)
+        # Fall back to global config when no per-class override is set
+        resolved_mode = config_mode || Axn.config.async_exception_reporting
+
+        case resolved_mode
         when :first_and_exhausted
           # Exhaustion handler reports on exhaustion, regular flow reports on first attempt only
           from_exhaustion_handler || first_attempt?

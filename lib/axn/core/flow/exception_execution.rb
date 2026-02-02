@@ -11,9 +11,13 @@ module Axn
             def _trigger_on_exception(exception)
               # Check if we're in an async context and should skip based on retry policy
               retry_context = Axn::Async::CurrentRetryContext.current if defined?(Axn::Async::CurrentRetryContext)
-              if retry_context && !retry_context.should_trigger_on_exception?
-                # Skip triggering - will be handled by death handler or on a later attempt
-                return
+              if retry_context
+                # Use per-class override if set, otherwise fall back to global config (nil uses default)
+                mode = self.class.try(:_async_exception_reporting)
+                unless retry_context.should_trigger_on_exception?(mode)
+                  # Skip triggering - will be handled by death handler or on a later attempt
+                  return
+                end
               end
 
               # Call any handlers registered on *this specific action* class
