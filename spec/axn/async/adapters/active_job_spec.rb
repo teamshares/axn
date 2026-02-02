@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../../../support/shared_examples/async_adapter_interface"
+require_relative "../../../support/shared_examples/async_adapter_behavior"
 
 RSpec.describe "Axn::Async with ActiveJob adapter" do
   # Mock ActiveJob::Base with after_discard to simulate Rails 7.1+
@@ -22,7 +23,38 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
     end
   end
 
+  # Shared example configuration for ActiveJob adapter
+  let(:adapter_name) { :active_job }
+
+  let(:setup_framework_mocks) do
+    aj_base = active_job_base_with_after_discard
+    lambda do
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", aj_base)
+    end
+  end
+
+  let(:build_action) do
+    lambda do |config_block|
+      action = build_axn do
+        async :active_job
+      end
+      action.class_eval(&config_block) if config_block
+      action
+    end
+  end
+
+  let(:get_worker) do
+    ->(action_class) { action_class.send(:active_job_proxy_class).new }
+  end
+
+  let(:perform_job) do
+    ->(worker, args) { worker.perform(args) }
+  end
+
   it_behaves_like "an async adapter interface", :active_job, Axn::Async::Adapters::ActiveJob
+  it_behaves_like "async adapter exception handling"
+  it_behaves_like "async adapter per-class exception reporting"
 
   describe ".call_async" do
     it "calls perform_later on the proxy class with context" do
@@ -97,77 +129,6 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
         second_proxy = action_class.send(:active_job_proxy_class)
         expect(first_proxy).to be(second_proxy)
       end
-    end
-  end
-
-  describe "proxy #perform exception handling" do
-    let(:successful_action) do
-      stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
-
-      build_axn do
-        async :active_job
-        expects :value
-        exposes :result_value
-
-        def call
-          expose result_value: value * 2
-        end
-      end
-    end
-
-    let(:failing_action) do
-      stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
-
-      build_axn do
-        async :active_job
-        expects :should_fail
-
-        def call
-          fail! "Business logic failure" if should_fail
-        end
-      end
-    end
-
-    let(:exception_action) do
-      stub_const("ActiveJob", Module.new)
-      stub_const("ActiveJob::Base", active_job_base_with_after_discard)
-
-      build_axn do
-        async :active_job
-
-        def call
-          raise "Unexpected error"
-        end
-      end
-    end
-
-    it "returns result on success" do
-      proxy = successful_action.send(:active_job_proxy_class).new
-      result = proxy.perform({ value: 5 })
-
-      expect(result).to be_ok
-      expect(result.result_value).to eq(10)
-    end
-
-    it "does not raise on Axn::Failure (business logic failure)" do
-      proxy = failing_action.send(:active_job_proxy_class).new
-
-      # Should NOT raise - Axn::Failure is a business decision, not a transient error
-      expect { proxy.perform({ should_fail: true }) }.not_to raise_error
-
-      # But the result should indicate failure
-      result = proxy.perform({ should_fail: true })
-      expect(result.outcome).to be_failure
-      expect(result.exception).to be_a(Axn::Failure)
-    end
-
-    it "re-raises unexpected exceptions for ActiveJob retry" do
-      proxy = exception_action.send(:active_job_proxy_class).new
-
-      # Should raise - unexpected errors should trigger ActiveJob retries
-      expect { proxy.perform({}) }.to raise_error(RuntimeError, "Unexpected error")
     end
   end
 
