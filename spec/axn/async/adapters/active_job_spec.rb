@@ -226,4 +226,137 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       end
     end
   end
+
+  describe "discard handler reporting modes" do
+    # This spec calls the after_discard handler directly. It verifies we don’t
+    # double-report when the perform path already reported (e.g. :every_attempt,
+    # or :first_and_exhausted on first attempt).
+    let(:active_job_base_with_hooks) do
+      Class.new do
+        # Use class method that stores callbacks, ensuring inherited classes get their own array
+        def self.after_discard(&block)
+          @after_discard_callbacks ||= []
+          @after_discard_callbacks << block
+        end
+
+        def self.after_discard_callbacks
+          @after_discard_callbacks ||= []
+        end
+      end
+    end
+
+    let(:action_for_discard_test) do
+      stub_const("ActiveJob", Module.new)
+      stub_const("ActiveJob::Base", active_job_base_with_hooks)
+
+      build_axn do
+        async :active_job
+        expects :name
+
+        def call
+          raise StandardError, "boom"
+        end
+      end
+    end
+
+    it "does not trigger on_exception from discard handler when mode is :every_attempt" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:every_attempt)
+
+      # Track on_exception calls
+      exception_reports = []
+      allow(Axn.config).to receive(:on_exception) do |exception, **kwargs|
+        exception_reports << { exception:, **kwargs }
+      end
+
+      proxy_class = action_for_discard_test.send(:active_job_proxy_class)
+      proxy_instance = proxy_class.new
+
+      # Stub methods the discard handler uses
+      allow(proxy_instance).to receive(:_axn_current_attempt).and_return(1)
+      allow(proxy_instance).to receive(:_axn_max_retries).and_return(5)
+      allow(proxy_instance).to receive(:_axn_job_id).and_return("job-123")
+
+      exception = StandardError.new("boom")
+      mock_job = double("job", arguments: [{ name: "test" }])
+
+      # Invoke the discard handler directly (simulating after_discard callback)
+      proxy_instance.send(:_axn_handle_discard, mock_job, exception, action_for_discard_test)
+
+      # Should NOT have called on_exception because mode is :every_attempt
+      expect(exception_reports).to be_empty
+    end
+
+    it "triggers on_exception from discard handler when mode is :only_exhausted" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+
+      exception_reports = []
+      allow(Axn.config).to receive(:on_exception) do |exception, **kwargs|
+        exception_reports << { exception:, **kwargs }
+      end
+
+      proxy_class = action_for_discard_test.send(:active_job_proxy_class)
+      proxy_instance = proxy_class.new
+
+      allow(proxy_instance).to receive(:_axn_current_attempt).and_return(5)
+      allow(proxy_instance).to receive(:_axn_max_retries).and_return(5)
+      allow(proxy_instance).to receive(:_axn_job_id).and_return("job-123")
+
+      exception = StandardError.new("boom")
+      mock_job = double("job", arguments: [{ name: "test" }])
+
+      proxy_instance.send(:_axn_handle_discard, mock_job, exception, action_for_discard_test)
+
+      # Should have called on_exception because mode is :only_exhausted and this is exhaustion handler
+      expect(exception_reports.size).to eq(1)
+      expect(exception_reports.first[:context][:async][:discarded]).to be true
+    end
+
+    it "does not trigger on_exception from discard handler when mode is :first_and_exhausted and first attempt" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+      exception_reports = []
+      allow(Axn.config).to receive(:on_exception) do |exception, **kwargs|
+        exception_reports << { exception:, **kwargs }
+      end
+
+      proxy_class = action_for_discard_test.send(:active_job_proxy_class)
+      proxy_instance = proxy_class.new
+
+      allow(proxy_instance).to receive(:_axn_current_attempt).and_return(1)
+      allow(proxy_instance).to receive(:_axn_max_retries).and_return(5)
+      allow(proxy_instance).to receive(:_axn_job_id).and_return("job-123")
+
+      exception = StandardError.new("boom")
+      mock_job = double("job", arguments: [{ name: "test" }])
+
+      proxy_instance.send(:_axn_handle_discard, mock_job, exception, action_for_discard_test)
+
+      # For :first_and_exhausted, attempt 1 is reported by perform path, not discard handler.
+      expect(exception_reports).to be_empty
+    end
+
+    it "triggers on_exception from discard handler when mode is :first_and_exhausted and later attempt" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+      exception_reports = []
+      allow(Axn.config).to receive(:on_exception) do |exception, **kwargs|
+        exception_reports << { exception:, **kwargs }
+      end
+
+      proxy_class = action_for_discard_test.send(:active_job_proxy_class)
+      proxy_instance = proxy_class.new
+
+      allow(proxy_instance).to receive(:_axn_current_attempt).and_return(2)
+      allow(proxy_instance).to receive(:_axn_max_retries).and_return(5)
+      allow(proxy_instance).to receive(:_axn_job_id).and_return("job-123")
+
+      exception = StandardError.new("boom")
+      mock_job = double("job", arguments: [{ name: "test" }])
+
+      proxy_instance.send(:_axn_handle_discard, mock_job, exception, action_for_discard_test)
+
+      expect(exception_reports.size).to eq(1)
+      expect(exception_reports.first[:context][:async][:discarded]).to be true
+    end
+  end
 end

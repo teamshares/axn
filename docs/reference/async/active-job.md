@@ -225,6 +225,20 @@ end
 Rails 7.1+ is required for `:first_and_exhausted` and `:only_exhausted` modes with the ActiveJob adapter. These modes rely on `after_discard` which was introduced in Rails 7.1. On older Rails versions, Axn will raise an error if you try to use these modes with ActiveJob.
 :::
 
+::: warning
+With `:only_exhausted` mode, non-retryable errors should use **`discard_on`** so Rails calls `after_discard` and the exception is reported. If you use **`retry_on`** with a block that swallows the exception (using `next` without re-raising), Rails does **not** call `after_discard`, so those exceptions will not be reported in `:only_exhausted` mode.
+
+```ruby
+# ✅ Good: discard_on triggers after_discard → exception reported
+discard_on ValidationError
+
+# ❌ Problem: next without re-raise swallows exception → not reported
+retry_on StandardError do |job, exception|
+  next if non_retryable?(exception)  # Job completes, but no after_discard
+end
+```
+:::
+
 ## Limitations
 
 ### Retry Configuration

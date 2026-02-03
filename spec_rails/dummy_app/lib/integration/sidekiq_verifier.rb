@@ -281,9 +281,11 @@ module Integration
           scenario_exception_triggers_on_exception,
           scenario_retry_context_tracked,
           scenario_every_attempt_reports_each_retry,
+          scenario_no_retry_job_reports_exactly_once_every_attempt,
         ],
         first_and_exhausted: [
           scenario_first_and_exhausted_reports_first_and_death,
+          scenario_no_retry_job_reports_exactly_once_first_and_exhausted,
           # Per-class override tests: run with global :first_and_exhausted
           # to prove per-class overrides work
           scenario_per_class_only_exhausted_respected,
@@ -291,6 +293,7 @@ module Integration
         ],
         only_exhausted: [
           scenario_only_exhausted_reports_only_on_death,
+          scenario_no_retry_job_reports_exactly_once_only_exhausted,
         ],
       }
     end
@@ -482,6 +485,62 @@ module Integration
 
           # Should NOT have first_attempt: true (this comes from regular attempts)
           # Death handler sets retries_exhausted but not first_attempt
+        },
+      }
+    end
+
+    # ============================================================
+    # First-attempt death/discard scenarios (retry: false)
+    # ============================================================
+
+    def scenario_no_retry_job_reports_exactly_once_every_attempt
+      {
+        name: ":every_attempt + retry:false reports exactly once (no death handler report)",
+        setup: nil,
+        action: lambda {
+          Actions::Integration::FailingWithExceptionNoRetry.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          matching = reports.select { |r| r[:message]&.include?("Intentional failure (no retry)") }
+          assert_equal 1, matching.size, "Expected exactly 1 report, got #{matching.size}"
+
+          attempt = matching.first[:context]&.dig(:async, :attempt)
+          assert_equal 1, attempt, "Expected attempt 1, got #{attempt.inspect}"
+        },
+      }
+    end
+
+    def scenario_no_retry_job_reports_exactly_once_first_and_exhausted
+      {
+        name: ":first_and_exhausted + retry:false reports exactly once (avoid double-report)",
+        setup: nil,
+        action: lambda {
+          Actions::Integration::FailingWithExceptionNoRetry.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          matching = reports.select { |r| r[:message]&.include?("Intentional failure (no retry)") }
+          assert_equal 1, matching.size,
+                       "Expected exactly 1 report for first-attempt death, got #{matching.size}"
+
+          attempt = matching.first[:context]&.dig(:async, :attempt)
+          assert_equal 1, attempt, "Expected attempt 1, got #{attempt.inspect}"
+        },
+      }
+    end
+
+    def scenario_no_retry_job_reports_exactly_once_only_exhausted
+      {
+        name: ":only_exhausted + retry:false reports exactly once (death handler only)",
+        setup: nil,
+        action: lambda {
+          Actions::Integration::FailingWithExceptionNoRetry.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          matching = reports.select { |r| r[:message]&.include?("Intentional failure (no retry)") }
+          assert_equal 1, matching.size, "Expected exactly 1 report, got #{matching.size}"
+
+          retries_exhausted = matching.first[:context]&.dig(:async, :retries_exhausted)
+          assert retries_exhausted == true, "Expected retries_exhausted: true, got #{retries_exhausted.inspect}"
         },
       }
     end

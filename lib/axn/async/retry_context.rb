@@ -38,8 +38,14 @@ module Axn
 
         case resolved_mode
         when :first_and_exhausted
-          # Exhaustion handler reports on exhaustion, regular flow reports on first attempt only
-          from_exhaustion_handler || first_attempt?
+          # Regular flow reports on first attempt only.
+          # Exhaustion handler reports only when retries were exhausted after multiple attempts,
+          # NOT when job was discarded on first attempt (perform already reported).
+          if from_exhaustion_handler
+            !first_attempt? # avoid double-report when job discarded on first attempt
+          else
+            first_attempt?
+          end
         when :only_exhausted
           # Only exhaustion handler should report
           from_exhaustion_handler

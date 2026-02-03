@@ -179,6 +179,9 @@ module Axn
                 # Use per-class override if set, otherwise fall back to global config
                 config_mode = axn_class.try(:_async_exception_reporting) || Axn.config.async_exception_reporting
 
+                # Skip if :every_attempt - already reported on each attempt in perform
+                return if config_mode == :every_attempt
+
                 # Build retry context for the discard
                 retry_context = Axn::Async::RetryContext.new(
                   adapter: :active_job,
