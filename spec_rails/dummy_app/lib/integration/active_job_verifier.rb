@@ -34,6 +34,10 @@ module Integration
         scenario_first_and_exhausted_mode,
         scenario_only_exhausted_mode,
         scenario_discard_on_triggers_on_exception,
+        # Double-report prevention scenarios
+        scenario_every_attempt_discard_exactly_one_report,
+        scenario_first_and_exhausted_discard_exactly_one_report,
+        scenario_only_exhausted_discard_exactly_one_report,
         # Per-class override scenarios
         scenario_per_class_only_exhausted_in_active_job,
         scenario_per_class_every_attempt_in_active_job,
@@ -126,11 +130,15 @@ module Integration
     end
 
     # Scenario: discard_on triggers on_exception via after_discard (Rails 7.1+)
+    # Note: With :only_exhausted, the report comes from after_discard (marked discarded: true).
+    # With :first_and_exhausted on first-attempt discard, the report comes from perform path
+    # (not marked discarded) to avoid double-reporting.
     def scenario_discard_on_triggers_on_exception
       {
         name: "discard_on triggers on_exception (Rails 7.1+)",
         setup: lambda {
-          Axn.configure { |c| c.async_exception_reporting = :first_and_exhausted }
+          # Use :only_exhausted to verify after_discard path specifically
+          Axn.configure { |c| c.async_exception_reporting = :only_exhausted }
         },
         action: lambda {
           Actions::Integration::Discardable.call_async(name: "test")
@@ -140,11 +148,95 @@ module Integration
             # Rails 7.1+ - should have reported via after_discard
             assert_exception_reported(reports, exception_class: Actions::Integration::DiscardableError)
 
-            # At least one should be marked as discarded
+            # With :only_exhausted, the report comes from after_discard (marked discarded: true)
             discarded_report = reports.find { |r| r[:context].dig(:async, :discarded) }
             assert discarded_report, "Expected at least one report with discarded: true"
           else
             # Rails < 7.1 - no after_discard, may not report depending on config
+            puts "(skipped - Rails < 7.1)"
+          end
+        },
+      }
+    end
+
+    # ============================================================
+    # Double-Report Prevention Scenarios
+    # ============================================================
+
+    # Scenario: :every_attempt + discard_on should produce exactly 1 report
+    # (discard handler should skip when mode is :every_attempt)
+    def scenario_every_attempt_discard_exactly_one_report
+      {
+        name: ":every_attempt + discard_on produces exactly 1 report (no double)",
+        setup: lambda {
+          Axn.configure { |c| c.async_exception_reporting = :every_attempt }
+        },
+        action: lambda {
+          Actions::Integration::Discardable.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          if ActiveJob::Base.respond_to?(:after_discard)
+            matching = reports.select { |r| r[:exception].is_a?(Actions::Integration::DiscardableError) }
+            assert_equal 1, matching.size,
+                         "Expected exactly 1 report for :every_attempt + discard_on, got #{matching.size}"
+
+            # Ensure it did NOT come from after_discard
+            assert !matching.first[:context].dig(:async, :discarded),
+                   "Expected report to NOT have discarded: true (discard handler should skip in :every_attempt)"
+          else
+            puts "(skipped - Rails < 7.1)"
+          end
+        },
+      }
+    end
+
+    # Scenario: :first_and_exhausted + first-attempt discard should produce exactly 1 report
+    # (discard handler should skip when first_attempt? to avoid double-report)
+    def scenario_first_and_exhausted_discard_exactly_one_report
+      {
+        name: ":first_and_exhausted + first-attempt discard produces exactly 1 report (no double)",
+        setup: lambda {
+          Axn.configure { |c| c.async_exception_reporting = :first_and_exhausted }
+        },
+        action: lambda {
+          Actions::Integration::Discardable.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          if ActiveJob::Base.respond_to?(:after_discard)
+            matching = reports.select { |r| r[:exception].is_a?(Actions::Integration::DiscardableError) }
+            assert_equal 1, matching.size,
+                         "Expected exactly 1 report for :first_and_exhausted + first-attempt discard, got #{matching.size}"
+
+            # Ensure it did NOT come from after_discard (attempt 1 is reported by perform path)
+            assert !matching.first[:context].dig(:async, :discarded),
+                   "Expected report to NOT have discarded: true (avoid double-report on first-attempt discard)"
+          else
+            puts "(skipped - Rails < 7.1)"
+          end
+        },
+      }
+    end
+
+    # Scenario: :only_exhausted + discard_on should produce exactly 1 report
+    # (only discard handler reports, perform path skips)
+    def scenario_only_exhausted_discard_exactly_one_report
+      {
+        name: ":only_exhausted + discard_on produces exactly 1 report",
+        setup: lambda {
+          Axn.configure { |c| c.async_exception_reporting = :only_exhausted }
+        },
+        action: lambda {
+          Actions::Integration::Discardable.call_async(name: "test")
+        },
+        verify: lambda { |reports|
+          if ActiveJob::Base.respond_to?(:after_discard)
+            matching = reports.select { |r| r[:exception].is_a?(Actions::Integration::DiscardableError) }
+            assert_equal 1, matching.size,
+                         "Expected exactly 1 report for :only_exhausted + discard_on, got #{matching.size}"
+            # Should be marked as discarded
+            assert matching.first[:context].dig(:async, :discarded),
+                   "Expected report to have discarded: true"
+          else
             puts "(skipped - Rails < 7.1)"
           end
         },

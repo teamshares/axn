@@ -71,9 +71,16 @@ RSpec.describe Axn::Async::RetryContext do
         expect(context.should_trigger_on_exception?(:first_and_exhausted)).to be false
       end
 
-      it "returns true when called from exhaustion handler" do
+      it "returns true when called from exhaustion handler after retries exhausted" do
         context = described_class.new(adapter: :sidekiq, attempt: 26, max_retries: 25)
         expect(context.should_trigger_on_exception?(:first_and_exhausted, from_exhaustion_handler: true)).to be true
+      end
+
+      it "returns false when called from exhaustion handler on first-attempt discard (avoid double-report)" do
+        # When a job is discarded on first attempt, perform path already reported (first_attempt? true).
+        # Exhaustion handler should NOT report again to avoid double-report.
+        context = described_class.new(adapter: :sidekiq, attempt: 1, max_retries: 25)
+        expect(context.should_trigger_on_exception?(:first_and_exhausted, from_exhaustion_handler: true)).to be false
       end
     end
 
