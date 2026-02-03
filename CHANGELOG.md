@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.4.1
 * [BREAKING][BUGFIX] `fail!` in async jobs no longer triggers retries - business logic failures complete without retry (Sidekiq and ActiveJob adapters)
 * [FEAT] Add `async_exception_reporting` config to control when `on_exception` triggers in async context (`:every_attempt`, `:first_and_exhausted`, `:only_exhausted`)
 * [FEAT] Add retry context to `on_exception` calls in async jobs - includes attempt number, max retries, exhausted status, and job ID
