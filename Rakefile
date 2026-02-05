@@ -139,8 +139,8 @@ namespace :benchmark do
   end
 end
 
-# Require verify to pass before release
-Rake::Task["release"].enhance([:verify])
+# Require verify to pass before release (build is the first prerequisite of release, so this runs before push)
+Rake::Task["build"].enhance([:verify])
 
 # Automatically run benchmark:release after rake release
 Rake::Task["release"].enhance do
