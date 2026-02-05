@@ -18,6 +18,10 @@ module Axn
           # Use Sidekiq::Job if available (Sidekiq 7+), otherwise error
           raise LoadError, "Sidekiq::Job is not available. Please check your Sidekiq version." unless defined?(::Sidekiq::Job)
 
+          # Ensure middleware and death handler are registered for current async_exception_reporting
+          # (e.g. when async :sidekiq is used without ever setting async_exception_reporting).
+          AutoConfigure.ensure_registered_for_current_config!
+
           include ::Sidekiq::Job
 
           # Sidekiq's processor calls .new on the worker class from outside the class hierarchy

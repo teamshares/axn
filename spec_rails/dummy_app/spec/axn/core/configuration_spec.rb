@@ -68,12 +68,28 @@ RSpec.describe Axn::Configuration do
       config.set_default_async(:sidekiq)
       expect(config).to have_received(:_apply_async_to_enqueue_all_orchestrator).once
     end
+
+    it "registers Sidekiq exception reporting when set_default_async(:sidekiq) without ever setting async_exception_reporting" do
+      skip "Sidekiq not loaded" unless defined?(Sidekiq)
+
+      Axn::Async::Adapters::Sidekiq::AutoConfigure.reset!
+      # Ensure we use the default (never call async_exception_reporting=)
+      config.instance_variable_set(:@async_exception_reporting, nil)
+
+      config.set_default_async(:sidekiq, queue: "default")
+
+      expect(Axn::Async::Adapters::Sidekiq::AutoConfigure.registered?).to be true
+    ensure
+      Axn::Async::Adapters::Sidekiq::AutoConfigure.reset! if defined?(Axn::Async::Adapters::Sidekiq::AutoConfigure)
+    end
   end
 
   describe "eager EnqueueAllOrchestrator configuration" do
     # This test actually applies the config - run it last and only with sidekiq
     # to avoid polluting other tests.
     it "applies sidekiq config to EnqueueAllOrchestrator" do
+      skip "Sidekiq not loaded" unless defined?(Sidekiq)
+
       config.set_enqueue_all_async(:sidekiq)
 
       expect(Axn::Async::EnqueueAllOrchestrator._async_adapter).to eq(:sidekiq)

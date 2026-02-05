@@ -51,6 +51,7 @@ module Axn
       @default_async_config = config.any? ? config : {}
       @default_async_config_block = block_given? ? block : nil
 
+      _ensure_async_exception_reporting_registered_for_adapter(adapter)
       _apply_async_to_enqueue_all_orchestrator
     end
 
@@ -65,6 +66,7 @@ module Axn
       @enqueue_all_async_config = config.any? ? config : {}
       @enqueue_all_async_config_block = block_given? ? block : nil
 
+      _ensure_async_exception_reporting_registered_for_adapter(adapter)
       _apply_async_to_enqueue_all_orchestrator
     end
 
@@ -126,6 +128,20 @@ module Axn
         **_enqueue_all_async_config,
         &_enqueue_all_async_config_block
       )
+    end
+
+    # Ensures the given async adapter has exception-reporting components registered
+    # for the current async_exception_reporting mode (e.g. Sidekiq middleware/death handler).
+    # Called when setting default or enqueue_all async adapter so the default mode works
+    # without the app having to set async_exception_reporting explicitly.
+    def _ensure_async_exception_reporting_registered_for_adapter(adapter)
+      return if adapter.nil? || adapter == false
+
+      case adapter
+      when :sidekiq
+        _auto_configure_sidekiq_for_async_exception_reporting(async_exception_reporting)
+      end
+      # Active Job has no global registration (per-class proxy with after_discard).
     end
 
     # Auto-configures Sidekiq middleware and death handler when async_exception_reporting
