@@ -61,6 +61,35 @@ RSpec.describe Axn::Configuration do
         config.set_default_async(nil)
       end.to raise_error(ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion")
     end
+
+    it "triggers async exception reporting registration for Sidekiq when set_default_async(:sidekiq)" do
+      allow(config).to receive(:_ensure_async_exception_reporting_registered_for_adapter)
+      allow(config).to receive(:_apply_async_to_enqueue_all_orchestrator)
+
+      config.set_default_async(:sidekiq, queue: "default")
+
+      expect(config).to have_received(:_ensure_async_exception_reporting_registered_for_adapter).with(:sidekiq)
+    end
+
+    it "calls ensure with false when adapter is false (no registration for disabled async)" do
+      allow(config).to receive(:_ensure_async_exception_reporting_registered_for_adapter)
+      allow(config).to receive(:_apply_async_to_enqueue_all_orchestrator)
+
+      config.set_default_async(false, queue: "low")
+
+      expect(config).to have_received(:_ensure_async_exception_reporting_registered_for_adapter).with(false)
+    end
+  end
+
+  describe "set_enqueue_all_async and async exception reporting" do
+    it "triggers async exception reporting registration for Sidekiq when set_enqueue_all_async(:sidekiq)" do
+      allow(config).to receive(:_ensure_async_exception_reporting_registered_for_adapter)
+      allow(config).to receive(:_apply_async_to_enqueue_all_orchestrator)
+
+      config.set_enqueue_all_async(:sidekiq, queue: "batch")
+
+      expect(config).to have_received(:_ensure_async_exception_reporting_registered_for_adapter).with(:sidekiq)
+    end
   end
 
   describe "#rails" do

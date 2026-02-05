@@ -42,6 +42,21 @@ module Axn
               false
             end
 
+            # Ensures middleware and death handler are registered for the current
+            # Axn.config.async_exception_reporting mode. Call when the Sidekiq adapter
+            # is included (e.g. via async :sidekiq or default async) so that default
+            # mode works without the app setting async_exception_reporting explicitly.
+            # Safe to call multiple times - register! is idempotent.
+            # No-ops when Sidekiq is a minimal stub (e.g. in unit tests without full Sidekiq).
+            def ensure_registered_for_current_config!
+              return unless defined?(::Sidekiq) && ::Sidekiq.respond_to?(:configure_server)
+
+              mode = Axn.config.async_exception_reporting
+              return if mode == :every_attempt
+
+              register!
+            end
+
             # Registers both middleware and death handler.
             # Safe to call multiple times - will not duplicate registrations.
             def register!

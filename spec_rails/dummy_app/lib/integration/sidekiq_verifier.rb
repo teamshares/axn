@@ -81,27 +81,14 @@ module Integration
         :poll_interval_average: 1
       YAML
 
-      # Create an initializer that configures Sidekiq and exception tracking
-      # Note: Default async adapter is set via AXN_DEFAULT_ASYNC_ADAPTER env var
+      # Create an initializer that configures Sidekiq and exception tracking.
+      # Middleware and death handler are already registered by Axn when the app loads
+      # (set_default_async(:sidekiq) triggers auto-registration). Do not add them again
+      # or reports will fire twice.
       initializer_file = Rails.root.join("tmp", "sidekiq_test_init.rb")
       File.write(initializer_file, <<~RUBY)
         # Load Rails environment first if not already loaded
         require "#{Rails.root.join('config', 'environment.rb')}" unless defined?(Rails.application)
-
-        # Explicitly require Sidekiq adapter components (they're lazily loaded)
-        require "axn/async/adapters/sidekiq/middleware"
-        require "axn/async/adapters/sidekiq/death_handler"
-
-        # Auto-configure Axn Sidekiq middleware and death handler
-        Sidekiq.configure_server do |config|
-          # Register middleware
-          config.server_middleware do |chain|
-            chain.add Axn::Async::Adapters::Sidekiq::Middleware
-          end
-
-          # Register death handler
-          config.death_handlers << Axn::Async::Adapters::Sidekiq::DeathHandler
-        end
 
         # Configure Axn to track exceptions in Redis for test verification
         EXCEPTION_KEY = "#{@exception_key}"

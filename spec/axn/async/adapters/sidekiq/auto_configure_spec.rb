@@ -29,6 +29,49 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::AutoConfigure do
     end
   end
 
+  describe ".ensure_registered_for_current_config!" do
+    before do
+      stub_const("Sidekiq", Module.new)
+      allow(Sidekiq).to receive(:configure_server).and_yield(double(
+                                                               server_middleware: ->(&block) { block.call(double(add: nil, any?: false)) },
+                                                               death_handlers: [],
+                                                             ))
+    end
+
+    it "registers when config mode is :first_and_exhausted (default)" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+      described_class.ensure_registered_for_current_config!
+
+      expect(described_class.registered?).to be true
+    end
+
+    it "registers when config mode is :only_exhausted" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+
+      described_class.ensure_registered_for_current_config!
+
+      expect(described_class.registered?).to be true
+    end
+
+    it "does not register when config mode is :every_attempt" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:every_attempt)
+
+      described_class.ensure_registered_for_current_config!
+
+      expect(described_class.registered?).to be false
+    end
+
+    it "is idempotent (safe to call multiple times)" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:first_and_exhausted)
+
+      described_class.ensure_registered_for_current_config!
+      described_class.ensure_registered_for_current_config!
+
+      expect(described_class.registered?).to be true
+    end
+  end
+
   describe ".validate_configuration!" do
     context "with :every_attempt mode" do
       it "does not raise even without middleware" do
