@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* [BUGFIX] `set_default_async(:sidekiq)` now properly triggers `AutoConfigure.register!`
 
 ## 0.1.0-alpha.4.1
 * [BREAKING][BUGFIX] `fail!` in async jobs no longer triggers retries - business logic failures complete without retry (Sidekiq and ActiveJob adapters)
