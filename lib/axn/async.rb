@@ -108,7 +108,7 @@ module Axn
       end
 
       def _log_async_invocation(kwargs, adapter_name:)
-        Axn::Util::Logging.log_at_level(
+        Axn::Internal::LogFormatting.log_at_level(
           self,
           level: log_calls_level,
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
@@ -123,8 +123,8 @@ module Axn
 
       def _async_log_separator
         return if Axn.config.env.production?
-        return if Axn::Util::ExecutionContext.background?
-        return if Axn::Util::ExecutionContext.console?
+        return if Axn::Internal::ExecutionContext.background?
+        return if Axn::Internal::ExecutionContext.console?
 
         "\n------\n"
       end

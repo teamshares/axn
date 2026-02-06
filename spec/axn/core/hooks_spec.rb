@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Axn do
-  describe "#_with_hooks" do
+  describe "hooks execution" do
     def build_hooked(&block)
       hooked = build_axn do
         attr_reader :steps
@@ -9,7 +9,8 @@ RSpec.describe Axn do
 
       hooked.class_eval do
         def self.process
-          new.tap(&:call).steps
+          # Must use _run to go through the Executor which handles hooks
+          new.tap(&:_run).steps
         end
 
         def initialize(**)
@@ -18,7 +19,8 @@ RSpec.describe Axn do
         end
 
         def call
-          _with_hooks { steps << :process }
+          # This runs inside with_hooks via the Executor
+          steps << :process
         end
       end
 

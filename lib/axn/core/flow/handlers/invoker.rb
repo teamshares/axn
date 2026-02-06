@@ -41,12 +41,12 @@ module Axn
             end
 
             method = action.method(symbol)
-            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(method, exception)
+            filtered_args, filtered_kwargs = Axn::Internal::Callable.only_requested_params_for_exception(method, exception)
             action.send(symbol, *filtered_args, **filtered_kwargs)
           end
 
           def call_callable_handler(action:, callable:, exception: nil)
-            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(callable, exception)
+            filtered_args, filtered_kwargs = Axn::Internal::Callable.only_requested_params_for_exception(callable, exception)
             action.instance_exec(*filtered_args, **filtered_kwargs, &callable)
           end
 

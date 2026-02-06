@@ -747,7 +747,8 @@ RSpec.describe Axn do
   describe "custom error layers" do
     shared_examples "action with custom error layers" do
       before do
-        expect_any_instance_of(action).to receive(:_trigger_on_exception).and_call_original
+        # Verify exception handling triggers via Executor
+        expect_any_instance_of(Axn::Executor).to receive(:trigger_on_exception).and_call_original
       end
 
       it { expect(result).not_to be_ok }

@@ -3,12 +3,6 @@
 module Axn
   module Core
     module Timing
-      def self.included(base)
-        base.class_eval do
-          include InstanceMethods
-        end
-      end
-
       # Get the current monotonic time
       def self.now
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -24,17 +18,7 @@ module Axn
         (now - start_time).round(6)
       end
 
-      module InstanceMethods
-        private
-
-        def _with_timing
-          timing_start = Core::Timing.now
-          yield
-        ensure
-          elapsed_mils = Core::Timing.elapsed_ms(timing_start)
-          @__context.send(:elapsed_time=, elapsed_mils)
-        end
-      end
+      # InstanceMethods removed - timing is now handled by Axn::Executor
     end
   end
 end

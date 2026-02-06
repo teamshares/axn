@@ -75,7 +75,7 @@ module Axn
 
           raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
-          Axn::Util::Memoization.define_memoized_reader_method(self, field) do
+          Axn::Internal::Memoization.define_memoized_reader_method(self, field) do
             Axn::Core::FieldResolvers.resolve(type: :extract, field:, provided_data: public_send(on))
           end
 
@@ -86,7 +86,7 @@ module Axn
           # Apply the same syntactic sugar processing as the main contract system
           processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(options, [field])
 
-          Axn::Util::Memoization.define_memoized_reader_method(self, field) do
+          Axn::Internal::Memoization.define_memoized_reader_method(self, field) do
             # Create a data source that contains the subfield data for the resolver
             subfield_data = public_send(on)
 

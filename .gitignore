@@ -6,6 +6,7 @@
 /pkg/
 /spec/reports/
 /tmp/
+
 # Track last release version for benchmarks
 !/tmp/benchmark_reports/.last_release
 .DS_Store
@@ -25,3 +26,5 @@ Gemfile.lock
 
 # Ignore all .gem files
 *.gem
+
+.local_design_notes/

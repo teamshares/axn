@@ -15,16 +15,17 @@ module Axn
         end
       end
 
-      def _tracking_nesting(axn)
-        NestingTracking._current_axn_stack.push(axn)
-        yield
-      ensure
-        NestingTracking._current_axn_stack.pop
-      end
-
       # Shared method for both class and instance access
       def self._current_axn_stack
         ActiveSupport::IsolatedExecutionState[:_axn_stack] ||= []
+      end
+
+      # Tracks nesting of axn calls for logging/debugging purposes
+      def self.tracking(axn)
+        _current_axn_stack.push(axn)
+        yield
+      ensure
+        _current_axn_stack.pop
       end
     end
   end

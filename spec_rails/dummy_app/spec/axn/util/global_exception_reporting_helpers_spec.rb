@@ -2,7 +2,7 @@
 
 # Rails-specific tests for GlobalExceptionReportingHelpers
 # These tests require ActiveRecord, ActionController, and GlobalID
-RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
+RSpec.describe Axn::Internal::GlobalExceptionReportingHelpers do
   describe ".format_hash_values" do
     it "converts GlobalID-able objects to GlobalID strings" do
       user = User.create!(name: "Test User")

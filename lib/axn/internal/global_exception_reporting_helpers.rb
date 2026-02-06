@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module Axn
-  module Util
-    # Internal utilities for formatting context data for global exception reporting.
+  module Internal
+    # Utilities for formatting context data for global exception reporting.
     # These methods are used by the exception handling system to prepare context
     # for error tracking services (e.g., Honeybadger, Sentry).
     module GlobalExceptionReportingHelpers
@@ -16,7 +16,7 @@ module Axn
         # @return [Hash] A new hash with formatted values
         #
         # @example
-        #   formatted = Axn::Util::GlobalExceptionReportingHelpers.format_hash_values({
+        #   formatted = Axn::Internal::GlobalExceptionReportingHelpers.format_hash_values({
         #     user: User.find(123),
         #     params: ActionController::Parameters.new(name: "Alice")
         #   })
@@ -32,13 +32,13 @@ module Axn
         # @return [String] Ruby code representation of the value
         #
         # @example
-        #   Axn::Util::GlobalExceptionReportingHelpers.format_value_for_retry_command(User.find(123))
+        #   Axn::Internal::GlobalExceptionReportingHelpers.format_value_for_retry_command(User.find(123))
         #   # => "User.find(123)"
         #
-        #   Axn::Util::GlobalExceptionReportingHelpers.format_value_for_retry_command("gid://app/User/123")
+        #   Axn::Internal::GlobalExceptionReportingHelpers.format_value_for_retry_command("gid://app/User/123")
         #   # => "User.find(123)"
         #
-        #   Axn::Util::GlobalExceptionReportingHelpers.format_value_for_retry_command("Alice")
+        #   Axn::Internal::GlobalExceptionReportingHelpers.format_value_for_retry_command("Alice")
         #   # => "\"Alice\""
         def format_value_for_retry_command(value)
           # Handle ActiveRecord model instances
@@ -78,7 +78,7 @@ module Axn
         # @return [String, nil] The retry command, or nil if action name is unavailable
         #
         # @example
-        #   Axn::Util::GlobalExceptionReportingHelpers.retry_command(
+        #   Axn::Internal::GlobalExceptionReportingHelpers.retry_command(
         #     action: update_user_action,
         #     context: { user: User.find(123), name: "Alice" }
         #   )
@@ -116,7 +116,7 @@ module Axn
         #   }
         #
         # @example
-        #   context = Axn::Util::GlobalExceptionReportingHelpers.build_exception_context(
+        #   context = Axn::Internal::GlobalExceptionReportingHelpers.build_exception_context(
         #     action: update_user_action,
         #     retry_context: nil
         #   )

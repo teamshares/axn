@@ -11,15 +11,18 @@ require "axn/exceptions"
 
 # The core implementation
 require "axn/core"
+require "axn/executor"
 
-# Utilities
-require "axn/util/memoization"
-require "axn/util/callable"
-require "axn/util/logging"
-require "axn/util/execution_context"
-require "axn/util/contract_error_handling"
-require "axn/util/global_id_serialization"
-require "axn/util/global_exception_reporting_helpers"
+# Internal utilities
+require "axn/internal/memoization"
+require "axn/internal/callable"
+require "axn/internal/log_formatting"
+require "axn/internal/execution_context"
+require "axn/internal/contract_error_handling"
+require "axn/internal/global_id_serialization"
+require "axn/internal/global_exception_reporting_helpers"
+require "axn/internal/subfield_path"
+require "axn/internal/field_config"
 require "axn/form_object"
 
 # Extensions

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module Axn
-  module Util
-    module Logging
+  module Internal
+    module LogFormatting
       extend self
 
       MAX_CONTEXT_LENGTH = 150

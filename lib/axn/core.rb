@@ -72,21 +72,7 @@ module Axn
 
     # Main entry point for action execution
     def _run
-      _tracking_nesting(self) do
-        _with_tracing do
-          _with_logging do
-            _with_timing do
-              _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-                _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-                  _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                    call
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
+      Axn::Executor.new(self).run
     end
 
     def fail!(message = nil, **exposures)

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
+RSpec.describe Axn::Internal::GlobalExceptionReportingHelpers do
   describe ".format_hash_values" do
     it "leaves other values unchanged" do
       result = described_class.format_hash_values({
