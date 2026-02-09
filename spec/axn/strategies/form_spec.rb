@@ -164,66 +164,124 @@ RSpec.describe Axn::Strategies::Form do
     context "with block-based form definition" do
       let(:create_user_class) { build_axn }
 
-      before do
-        stub_const("BlockFormTest", Module.new)
-        stub_const("BlockFormTest::CreateUser", create_user_class)
-        BlockFormTest::CreateUser.class_eval do
-          use :form, type: "BlockFormTest::CreateUser::Form" do
-            validates :name, :email, presence: true
-          end
-        end
-      end
-
-      it "defines form class inline when type constant doesn't exist" do
-        instance = BlockFormTest::CreateUser.allocate
-        instance.send(:initialize, params: { name: "Alice", email: "alice@example.com" })
-
-        expect(instance.form).to be_a(BlockFormTest::CreateUser::Form)
-        expect(BlockFormTest::CreateUser::Form < Axn::FormObject).to be(true)
-        expect(instance.form.to_h).to eq({ name: "Alice", email: "alice@example.com" })
-        expect(instance.form.email).to eq("alice@example.com")
-        expect(instance.form.valid?).to be(true)
-      end
-
-      it "evaluates block in the context of the class" do
-        # Verify that self inside the block was the class
-        form_instance = BlockFormTest::CreateUser::Form.new(name: "Test", email: "test@example.com")
-        expect(form_instance).to respond_to(:name)
-        expect(form_instance).to respond_to(:email)
-        expect(form_instance).to respond_to(:valid?)
-      end
-
-      it "works with nested namespaces" do
-        stub_const("BlockFormTest::Nested", Module.new)
-
-        nested_action_class = Class.new do
-          include Axn
-        end
-
-        stub_const("BlockFormTest::Nested::Action", nested_action_class)
-        BlockFormTest::Nested::Action.class_eval do
-          use :form, type: "BlockFormTest::Nested::Action::Form" do
-            attr_accessor :value
+      context "when type is a string and constant does not exist" do
+        before do
+          stub_const("BlockFormTest", Module.new)
+          stub_const("BlockFormTest::CreateUser", create_user_class)
+          BlockFormTest::CreateUser.class_eval do
+            use :form, type: "BlockFormTest::CreateUser::Form" do
+              validates :name, :email, presence: true
+            end
           end
         end
 
-        instance = BlockFormTest::Nested::Action.allocate
-        instance.send(:initialize, params: { value: "test" })
+        it "defines form class inline when type constant doesn't exist" do
+          instance = BlockFormTest::CreateUser.allocate
+          instance.send(:initialize, params: { name: "Alice", email: "alice@example.com" })
 
-        expect(instance.form).to be_a(BlockFormTest::Nested::Action::Form)
-        expect(instance.form.value).to eq("test")
+          expect(instance.form).to be_a(BlockFormTest::CreateUser::Form)
+          expect(BlockFormTest::CreateUser::Form < Axn::FormObject).to be(true)
+          expect(instance.form.to_h).to eq({ name: "Alice", email: "alice@example.com" })
+          expect(instance.form.email).to eq("alice@example.com")
+          expect(instance.form.valid?).to be(true)
+        end
+
+        it "evaluates block in the context of the class" do
+          # Verify that self inside the block was the class
+          form_instance = BlockFormTest::CreateUser::Form.new(name: "Test", email: "test@example.com")
+          expect(form_instance).to respond_to(:name)
+          expect(form_instance).to respond_to(:email)
+          expect(form_instance).to respond_to(:valid?)
+        end
+
+        it "works with nested namespaces" do
+          stub_const("BlockFormTest::Nested", Module.new)
+
+          nested_action_class = Class.new do
+            include Axn
+          end
+
+          stub_const("BlockFormTest::Nested::Action", nested_action_class)
+          BlockFormTest::Nested::Action.class_eval do
+            use :form, type: "BlockFormTest::Nested::Action::Form" do
+              attr_accessor :value
+            end
+          end
+
+          instance = BlockFormTest::Nested::Action.allocate
+          instance.send(:initialize, params: { value: "test" })
+
+          expect(instance.form).to be_a(BlockFormTest::Nested::Action::Form)
+          expect(instance.form.value).to eq("test")
+        end
+      end
+
+      context "when type is omitted (block-only, anonymous form class)" do
+        it "creates an anonymous form class from the block and does not assign a constant" do
+          stub_const("BlockFormTest", Module.new)
+          stub_const("BlockFormTest::CreateUser", create_user_class)
+          action_class = BlockFormTest::CreateUser
+          action_class.class_eval do
+            use :form do
+              validates :name, :email, presence: true
+            end
+          end
+
+          instance = action_class.allocate
+          instance.send(:initialize, params: { name: "Alice", email: "alice@example.com" })
+
+          expect(instance.form).to be_a(Axn::FormObject)
+          expect(instance.form.class.name).to eq("BlockFormTest::CreateUser::Form")
+          expect(instance.form.to_h).to eq({ name: "Alice", email: "alice@example.com" })
+          expect(instance.form.valid?).to be(true)
+          expect(BlockFormTest::CreateUser.const_defined?(:Form, false)).to be(false)
+        end
+
+        it "validates and fails when invalid" do
+          stub_const("BlockFormTest", Module.new)
+          stub_const("BlockFormTest::CreateUser", create_user_class)
+          BlockFormTest::CreateUser.class_eval do
+            use :form do
+              validates :name, presence: true
+            end
+          end
+
+          result = BlockFormTest::CreateUser.call(params: {})
+          expect(result).not_to be_ok
+        end
       end
     end
 
     context "error handling" do
-      it "raises error if type is nil for anonymous class" do
+      it "raises error if type is nil and no block for anonymous class" do
         anonymous_action = Class.new do
           include Axn
         end
 
         expect do
           anonymous_action.use(:form, type: nil)
-        end.to raise_error(ArgumentError, "form strategy: must pass explicit :type parameter to `use :form` when applying to anonymous classes")
+        end.to raise_error(ArgumentError, "form strategy: must pass explicit :type parameter or a block to `use :form` when applying to anonymous classes")
+      end
+
+      it "allows anonymous class when block is provided (anonymous form class)" do
+        anonymous_action = Class.new do
+          include Axn
+
+          use :form do
+            validates :foo, presence: true
+          end
+          exposes :value
+
+          def call
+            expose :value, form.foo
+          end
+        end
+
+        result = anonymous_action.call(params: { foo: "bar" })
+        expect(result).to be_ok
+        expect(result.value).to eq("bar")
+        expect(result.form.class.name).to eq("AnonymousForm")
+        expect(anonymous_action.call(params: {})).not_to be_ok
       end
 
       it "raises error if form class does not implement valid?" do

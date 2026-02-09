@@ -7,7 +7,8 @@ module Axn
       # @param expose [Symbol] the attribute name to expose in the context (e.g. :form)
       # @param type [Class, String] the form class to use, or a string constant path
       # @param inject [Array<Symbol>] optional additional attributes to include in the form (e.g. [:user, :company])
-      # @yield block to define the form class when type is a string and the constant doesn't exist
+      # @yield block to define the form class (optional). When type is omitted, the block defines an anonymous form class.
+      #   When type is a string and the constant doesn't exist, the block defines the class and it is assigned to that constant.
       def self.configure(expect: :params, expose: :form, type: nil, inject: nil, &block)
         expect ||= :"#{expose.to_s.delete_suffix('_form')}_params"
 
@@ -19,7 +20,7 @@ module Axn
           extend ActiveSupport::Concern
 
           included do
-            raise ArgumentError, "form strategy: must pass explicit :type parameter to `use :form` when applying to anonymous classes" if type.nil? && name.nil?
+            raise ArgumentError, "form strategy: must pass explicit :type parameter or a block to `use :form` when applying to anonymous classes" if type.nil? && name.nil? && !block_given?
 
             resolved_type = Axn::Strategies::Form.resolve_type(type, expose_attr, name, &block)
 
@@ -51,9 +52,18 @@ module Axn
       # @param type [Class, String, nil] the form class, constant path, or nil for auto-detection
       # @param expose_attr [Symbol] the attribute name to expose (used for auto-detection)
       # @param action_name [String, nil] the name of the action class (used for auto-detection)
-      # @yield block to define the form class when type is a string and the constant doesn't exist
+      # @yield block to define the form class (when type is nil = anonymous form; when type is a string and constant doesn't exist = define and assign)
       # @return [Class] the resolved form class
       def self.resolve_type(type, expose_attr, action_name, &)
+        # Simplest case: form defined purely by block, no type/constant
+        if type.nil? && block_given?
+          form_class_name = action_name ? "#{action_name}::#{expose_attr.to_s.classify}" : "AnonymousForm"
+          return Class.new(Axn::FormObject).tap do |klass|
+            klass.define_singleton_method(:name) { form_class_name }
+            klass.class_eval(&)
+          end
+        end
+
         type ||= "#{action_name}::#{expose_attr.to_s.classify}"
 
         if type.is_a?(Class)

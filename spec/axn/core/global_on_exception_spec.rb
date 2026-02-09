@@ -295,8 +295,6 @@ RSpec.describe "Global on_exception handler" do
 
     describe "automatic formatting" do
       it "always formats complex objects in context" do
-        # This is a basic test - more comprehensive formatting tests
-        # should be in the ExternallyUsefulUtil spec
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
         end
