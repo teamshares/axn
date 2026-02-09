@@ -5,36 +5,36 @@ module Axn
   module Extras
     module Strategies
       module Client
-        # Injects request/response into the action's set_logging_context under client_strategy__last_request
+        # Injects request/response into the action's set_execution_context under client_strategy__last_request
         # so exception reporting (e.g. on_exception) includes the last client request (url, method, status, etc.).
-        def self.ensure_logging_context_middleware_defined
-          return if const_defined?(:LoggingContextMiddleware, false)
+        def self.ensure_execution_context_middleware_defined
+          return if const_defined?(:ExecutionContextMiddleware, false)
 
-          const_set(:LoggingContextMiddleware, Class.new(::Faraday::Middleware) do
+          const_set(:ExecutionContextMiddleware, Class.new(::Faraday::Middleware) do
             def initialize(app, action_instance)
               super(app)
               @action_instance = action_instance
             end
 
             def call(env)
-              set_request_context(env)
-              @app.call(env).on_complete { |response_env| set_response_context(env, response_env) }
+              assign_request_context(env)
+              @app.call(env).on_complete { |response_env| assign_response_context(env, response_env) }
             end
 
             private
 
-            def set_request_context(env)
-              return unless @action_instance.respond_to?(:set_logging_context, true)
+            def assign_request_context(env)
+              return unless @action_instance.respond_to?(:set_execution_context, true)
 
-              @action_instance.send(:set_logging_context,
+              @action_instance.send(:set_execution_context,
                                     client_strategy__last_request: {
                                       url: env.url.to_s,
                                       method: env.method.to_s.upcase,
                                     })
             end
 
-            def set_response_context(request_env, response_env)
-              return unless @action_instance.respond_to?(:set_logging_context, true)
+            def assign_response_context(request_env, response_env)
+              return unless @action_instance.respond_to?(:set_execution_context, true)
 
               last_request = {
                 url: request_env.url.to_s,
@@ -42,7 +42,7 @@ module Axn
                 status: response_env.status,
               }
               last_request[:response_content_type] = response_env.response_headers["Content-Type"] if response_env.response_headers["Content-Type"]
-              @action_instance.send(:set_logging_context, client_strategy__last_request: last_request)
+              @action_instance.send(:set_execution_context, client_strategy__last_request: last_request)
             end
           end)
         end
@@ -72,9 +72,9 @@ module Axn
                   # Because middleware is executed in reverse order, downstream user may need flexibility in where to inject configs
                   prepend_config&.call(conn)
 
-                  # Auto-inject request/response into set_logging_context for exception reporting
-                  Client.ensure_logging_context_middleware_defined
-                  conn.use Client::LoggingContextMiddleware, self
+                  # Auto-inject request/response into set_execution_context for exception reporting
+                  Client.ensure_execution_context_middleware_defined
+                  conn.use Client::ExecutionContextMiddleware, self
 
                   conn.response :raise_error
                   conn.request :url_encoded

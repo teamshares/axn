@@ -41,11 +41,11 @@ RSpec.describe "Global on_exception handler" do
     end
 
     context "when global handler is set" do
-      it "calls the global handler with exception, action, and context" do
+      it "calls the global handler with exception, action, and context (inputs and outputs)" do
         expect(Axn.config).to receive(:on_exception).with(
           an_instance_of(RuntimeError),
           action: an_instance_of(action),
-          context: { inputs: { name: "error", age: 25 } },
+          context: hash_including(inputs: { name: "error", age: 25 }, outputs: {}),
         ).and_call_original
 
         result = action.call(name: "error", age: 25)
@@ -76,7 +76,7 @@ RSpec.describe "Global on_exception handler" do
         expect(Axn.config).to receive(:on_exception).with(
           an_instance_of(RuntimeError),
           action: an_instance_of(action),
-          context: { inputs: { trigger_error: true } },
+          context: hash_including(inputs: { trigger_error: true }, outputs: {}),
         ).and_call_original
 
         action.call(trigger_error: true)
@@ -88,7 +88,7 @@ RSpec.describe "Global on_exception handler" do
         expect(Axn.config).to receive(:on_exception).with(
           an_instance_of(RuntimeError),
           action: an_instance_of(action),
-          context: { inputs: { trigger_error: true } },
+          context: hash_including(inputs: { trigger_error: true }, outputs: {}),
         ).and_call_original
 
         action.call(trigger_error: true)
@@ -100,7 +100,7 @@ RSpec.describe "Global on_exception handler" do
         expect(Axn.config).to receive(:on_exception).with(
           an_instance_of(RuntimeError),
           action: an_instance_of(action),
-          context: { inputs: { trigger_error: true } },
+          context: hash_including(inputs: { trigger_error: true }, outputs: {}),
         ).and_call_original
 
         action.call(trigger_error: true)
@@ -112,7 +112,7 @@ RSpec.describe "Global on_exception handler" do
         expect(Axn.config).to receive(:on_exception).with(
           an_instance_of(RuntimeError),
           action: an_instance_of(action),
-          context: { inputs: { trigger_error: true } },
+          context: hash_including(inputs: { trigger_error: true }, outputs: {}),
         ).and_call_original
 
         action.call(trigger_error: true)
@@ -141,14 +141,15 @@ RSpec.describe "Global on_exception handler" do
       expect(Axn.config).to receive(:on_exception).with(
         an_instance_of(RuntimeError),
         action: an_instance_of(action),
-        context: {
+        context: hash_including(
           inputs: {
             username: "fail",
             password: "[FILTERED]",
             email: "[FILTERED]",
             age: 30,
           },
-        },
+          outputs: {},
+        ),
       ).and_call_original
 
       action.call(username: "fail", password: "secret123", email: "user@example.com", age: 30)
@@ -206,7 +207,7 @@ RSpec.describe "Global on_exception handler" do
       expect(Axn.config).to receive(:on_exception).with(
         an_instance_of(RuntimeError),
         action: an_instance_of(action),
-        context: { inputs: { error_type: "RuntimeError" } },
+        context: hash_including(inputs: { error_type: "RuntimeError" }, outputs: {}),
       ).and_call_original
 
       action.call(error_type: "RuntimeError")
@@ -266,7 +267,7 @@ RSpec.describe "Global on_exception handler" do
       expect(Axn.config).to receive(:on_exception).with(
         an_instance_of(RuntimeError),
         action: an_instance_of(action),
-        context: { inputs: { trigger_error: true } },
+        context: hash_including(inputs: { trigger_error: true }, outputs: {}),
       ).and_call_original
 
       expect_any_instance_of(action).to receive(:log).with(
@@ -304,9 +305,10 @@ RSpec.describe "Global on_exception handler" do
     end
 
     describe "automatic formatting" do
-      it "always formats complex objects in context" do
+      it "always formats complex objects in context and includes outputs" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
+          expect(context[:outputs]).to eq({})
         end
 
         action.call(name: "test", value: 42)
@@ -379,8 +381,9 @@ RSpec.describe "Global on_exception handler" do
 
       it "includes all context enhancements (formatting always on, Current auto-detected, retry command if enabled)" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context.keys).to contain_exactly(:inputs, :retry_command, :current_attributes)
+          expect(context.keys).to contain_exactly(:inputs, :outputs, :retry_command, :current_attributes)
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
+          expect(context[:outputs]).to eq({})
           expect(context[:retry_command]).to be_a(String)
           expect(context[:current_attributes]).to eq({ user_id: 456 })
         end

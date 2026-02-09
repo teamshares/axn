@@ -20,7 +20,10 @@ module Axn
           extend ActiveSupport::Concern
 
           included do
-            raise ArgumentError, "form strategy: must pass explicit :type parameter or a block to `use :form` when applying to anonymous classes" if type.nil? && name.nil? && !block_given?
+            if type.nil? && name.nil? && !block_given?
+              raise ArgumentError,
+                    "form strategy: must pass explicit :type parameter or a block to `use :form` when applying to anonymous classes"
+            end
 
             resolved_type = Axn::Strategies::Form.resolve_type(type, expose_attr, name, &block)
 

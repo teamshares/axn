@@ -179,11 +179,11 @@ RSpec.describe Axn::Extras::Strategies::Client do
       end
     end
 
-    context "additional logging context (client request/response)" do
-      it "injects LoggingContextMiddleware into the connection" do
+    context "additional execution context (client request/response)" do
+      it "injects ExecutionContextMiddleware into the connection" do
         instance = create_client_instance(test_action)
 
-        expect(middleware_klasses(instance.client)).to include(Axn::Extras::Strategies::Client::LoggingContextMiddleware)
+        expect(middleware_klasses(instance.client)).to include(Axn::Extras::Strategies::Client::ExecutionContextMiddleware)
       end
 
       it "includes client_strategy__last_request (url, method, status) in exception context when a request was made" do
@@ -206,16 +206,17 @@ RSpec.describe Axn::Extras::Strategies::Client do
 
         action.call
 
+        # client_strategy__last_request is now at top level of context (not nested in inputs)
         expect(Axn.config).to have_received(:on_exception).with(
           an_instance_of(RuntimeError),
           hash_including(
             context: hash_including(
-              inputs: hash_including(
-                client_strategy__last_request: hash_including(
-                  url: a_string_matching(/api\.example\.com.*users/),
-                  method: "GET",
-                  status: 200,
-                ),
+              inputs: {},
+              outputs: {},
+              client_strategy__last_request: hash_including(
+                url: a_string_matching(/api\.example\.com.*users/),
+                method: "GET",
+                status: 200,
               ),
             ),
           ),

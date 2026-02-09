@@ -55,13 +55,16 @@ The `context` hash is automatically formatted and contains:
 
 ```ruby
 {
-  inputs: { ... },              # Action inputs + any strategy-injected context (e.g. client_strategy__last_request), formatted recursively
+  inputs: { ... },              # Action inputs (declared expects fields only), formatted recursively
+  outputs: { ... },             # Action outputs (declared exposes fields only), formatted recursively
+  # ... any extra keys from set_execution_context or additional_execution_context hook
+  # e.g. client_strategy__last_request: { url: ..., method: ..., status: ... }
   current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
   async: { ... }                # Async retry info (only present in async context)
 }
 ```
 
-`inputs` includes both declared action inputs and any extra context set by strategies (for example, the `:client` strategy adds `client_strategy__last_request` with url, method, status). Formatting is applied recursively to nested hashes and arrays.
+Additional context (like `client_strategy__last_request` from the `:client` strategy) appears at the top level alongside `inputs` and `outputs`, not nested inside them. Formatting is applied recursively to nested hashes and arrays.
 
 **What gets formatted automatically:**
 - **ActiveRecord objects** → GlobalID strings (e.g., `"gid://app/User/123"`)
@@ -74,6 +77,8 @@ The `context` hash is automatically formatted and contains:
 Axn.configure do |c|
   c.on_exception = proc do |e, action:, context:|
     # context[:inputs] - Your action's inputs (formatted)
+    # context[:outputs] - Your action's outputs (formatted)
+    # context[:client_strategy__last_request] - Example extra key from :client strategy
     # context[:current_attributes] - Rails Current.attributes (if present)
     # context[:async] - Retry info (if in async context)
     
@@ -93,7 +98,7 @@ end
 
 When processing records in a loop or performing batch operations, you may want to include additional context (like which record is being processed) in exception logs. You can do this in two ways:
 
-**Option 1: Explicit setter** - Call `set_logging_context` during execution:
+**Option 1: Explicit setter** - Call `set_execution_context` during execution:
 
 ```ruby
 class ProcessPendingRecords
@@ -101,14 +106,14 @@ class ProcessPendingRecords
 
   def call
     pending_records.each do |record|
-      set_logging_context(current_record_id: record.id, batch_index: @index)
+      set_execution_context(current_record_id: record.id, batch_index: @index)
       # ... process record ...
     end
   end
 end
 ```
 
-**Option 2: Hook method** - Define a private `additional_logging_context` method that returns a hash:
+**Option 2: Hook method** - Define a private `additional_execution_context` method that returns a hash:
 
 ```ruby
 class ProcessPendingRecords
@@ -123,7 +128,7 @@ class ProcessPendingRecords
 
   private
 
-  def additional_logging_context
+  def additional_execution_context
     return {} unless @current_record
 
     {
@@ -134,16 +139,19 @@ class ProcessPendingRecords
 end
 ```
 
-Both approaches can be used together - they will be merged. The additional context is **only** included in exception logging (not in normal pre/post execution logs), and is evaluated lazily (the hook method is only called when an exception occurs).
+Both approaches can be used together - they will be merged at the top level of the context hash. The additional context is **only** included in `execution_context` (used for exception reporting and handlers), not in normal pre/post execution logs, and is evaluated lazily (the hook method is only called when needed).
 
-Action-specific `on_exception` handlers can also access this context by calling `context_for_logging` directly:
+**Reserved keys:** The keys `:inputs` and `:outputs` are reserved. If you try to set them via `set_execution_context` or the hook, they will be ignored—the actual inputs and outputs always come from the action's contract.
+
+Action-specific `on_exception` handlers can access the full context by calling `execution_context`:
 
 ```ruby
 class ProcessPendingRecords
   include Axn
 
   on_exception do |exception:|
-    log "Failed with this extra context: #{context_for_logging}"
+    ctx = execution_context
+    log "Failed processing. Inputs: #{ctx[:inputs]}, Extra: #{ctx[:current_record_id]}"
     # ... handle exception with context ...
   end
 end

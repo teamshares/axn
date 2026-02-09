@@ -21,10 +21,10 @@ RSpec.describe Axn do
     end
 
     let(:filtered_context) do
-      { inputs: { name: "Foo", ssn: "[FILTERED]", outbound: 1 } }
+      { inputs: { name: "Foo", ssn: "[FILTERED]" }, outputs: { outbound: 1 } }
     end
 
-    it "is given a filtered context (sensitive values filtered + only declared inbound/outbound fields)" do
+    it "is given a filtered context (sensitive values filtered + inputs and outputs separated)" do
       expect(Axn.config).to receive(:on_exception).with(anything,
                                                         action:,
                                                         context: filtered_context).and_call_original

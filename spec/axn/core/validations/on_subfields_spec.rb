@@ -270,17 +270,17 @@ RSpec.describe Axn do
           expect(result.internal_ctx.inspect).not_to include("secret123")
         end
 
-        it "filters sensitive subfield in context_for_logging" do
-          # Test that context_for_logging filters sensitive subfields
+        it "filters sensitive subfield in execution_context" do
+          # Test that execution_context filters sensitive subfields
           instance = action.send(:new, user_data:)
-          filtered_context = instance.send(:context_for_logging)
+          exec_ctx = instance.execution_context
 
-          expect(filtered_context[:user_data]).to include(password: "[FILTERED]")
-          expect(filtered_context[:user_data]).to include(email: "user@example.com")
+          expect(exec_ctx[:inputs][:user_data]).to include(password: "[FILTERED]")
+          expect(exec_ctx[:inputs][:user_data]).to include(email: "user@example.com")
 
           # Ensure the actual sensitive value is NOT present
-          expect(filtered_context.to_s).not_to include("secret123")
-          expect(filtered_context[:user_data][:password]).not_to eq("secret123")
+          expect(exec_ctx.to_s).not_to include("secret123")
+          expect(exec_ctx[:inputs][:user_data][:password]).not_to eq("secret123")
         end
 
         it "filters sensitive subfield in result inspect" do
@@ -307,16 +307,16 @@ RSpec.describe Axn do
         end
 
         it "filters sensitive subfield in error context" do
-          # Test that sensitive data is filtered in error logging by checking context_for_logging
+          # Test that sensitive data is filtered in error logging by checking execution_context
           instance = action.send(:new, user_data:)
-          filtered_context = instance.send(:context_for_logging)
+          exec_ctx = instance.execution_context
 
-          expect(filtered_context[:user_data]).to include(password: "[FILTERED]")
-          expect(filtered_context[:user_data]).to include(email: "invalid-email")
+          expect(exec_ctx[:inputs][:user_data]).to include(password: "[FILTERED]")
+          expect(exec_ctx[:inputs][:user_data]).to include(email: "invalid-email")
 
           # Ensure the actual sensitive value is NOT present
-          expect(filtered_context.to_s).not_to include("secret123")
-          expect(filtered_context[:user_data][:password]).not_to eq("secret123")
+          expect(exec_ctx.to_s).not_to include("secret123")
+          expect(exec_ctx[:inputs][:user_data][:password]).not_to eq("secret123")
         end
       end
 
@@ -338,16 +338,15 @@ RSpec.describe Axn do
         end
 
         it "filters sensitive subfield in exception context" do
-          expected_context = {
-            inputs: {
-              user_data: { password: "[FILTERED]", email: "user@example.com" },
-            },
-          }
-
           expect(Axn.config).to receive(:on_exception).with(
             anything,
             action:,
-            context: expected_context,
+            context: hash_including(
+              inputs: {
+                user_data: { password: "[FILTERED]", email: "user@example.com" },
+              },
+              outputs: {},
+            ),
           ).and_call_original
 
           expect(result).not_to be_ok
@@ -366,17 +365,16 @@ RSpec.describe Axn do
         end
 
         it "filters sensitive subfield in logging context" do
-          # Test that the logging context filters sensitive subfields
-          # by checking that the context_for_logging method works correctly
+          # Test that inputs_for_logging filters sensitive subfields for automatic logging
           instance = action.send(:new, user_data:)
-          filtered_context = instance.send(:context_for_logging)
+          filtered_inputs = instance.send(:inputs_for_logging)
 
-          expect(filtered_context[:user_data]).to include(password: "[FILTERED]")
-          expect(filtered_context[:user_data]).to include(email: "user@example.com")
+          expect(filtered_inputs[:user_data]).to include(password: "[FILTERED]")
+          expect(filtered_inputs[:user_data]).to include(email: "user@example.com")
 
           # Ensure the actual sensitive value is NOT present
-          expect(filtered_context.to_s).not_to include("secret123")
-          expect(filtered_context[:user_data][:password]).not_to eq("secret123")
+          expect(filtered_inputs.to_s).not_to include("secret123")
+          expect(filtered_inputs[:user_data][:password]).not_to eq("secret123")
         end
       end
     end

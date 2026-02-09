@@ -16,8 +16,8 @@ module Axn
         # @param extra_context [Hash] additional context to merge (e.g., discarded: true, _job_metadata)
         # @param log_prefix [String] prefix for error logging (e.g., "Sidekiq death handler")
         def trigger_on_exception(exception:, action_class:, retry_context:, job_args:, extra_context: {}, log_prefix: "async")
-          # Filter sensitive values using the action class's context_for_logging
-          filtered_context = action_class.context_for_logging(data: job_args, direction: :inbound)
+          # Filter sensitive values using the action class's internal _context_slice
+          filtered_context = action_class._context_slice(data: job_args, direction: :inbound)
 
           # Build final context with async info (avoid mutating extra_context)
           async_extra = extra_context[:async] || {}

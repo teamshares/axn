@@ -34,12 +34,12 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
         attr_accessor :name
       end
       form = form_class.new(name: "Nested")
-      payload = { wrapper: { form: form, user: User.create!(name: "Test") } }
+      payload = { wrapper: { form:, user: User.create!(name: "Test") } }
 
       result = described_class.format_hash_values(payload)
 
       expect(result[:wrapper][:form]).to eq({ name: "Nested" })
-      expect(result[:wrapper][:user]).to match(/\Agid:\/\//)
+      expect(result[:wrapper][:user]).to match(%r{\Agid://})
     end
   end
 

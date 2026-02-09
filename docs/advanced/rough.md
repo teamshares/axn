@@ -17,13 +17,25 @@ For information about logging configuration, see the [Configuration reference](/
 - **Log levels**: [log_level](/reference/configuration#log-level)
 - **Automatic logging**: [Automatic Logging](/reference/configuration#automatic-logging)
 
-### `context_for_logging`
+### `execution_context`
 
-The `context_for_logging` method returns a hash of the action's context, with:
-- Filtering to accessible attributes
-- Sensitive values removed (fields marked with `sensitive: true`)
+The `execution_context` method returns a structured hash for exception reporting and handlers:
+
+```ruby
+{
+  inputs: { ... },   # Filtered inbound fields (sensitive values removed)
+  outputs: { ... },  # Filtered outbound fields (sensitive values removed)
+  # ... any extra keys from set_execution_context or additional_execution_context hook
+}
+```
 
 This is automatically passed to the `on_exception` hook. See [Adding Additional Context to Exception Logging](/reference/configuration#adding-additional-context-to-exception-logging) for customizing the context.
+
+**Private methods for automatic logging:**
+- `inputs_for_logging` - Returns only filtered inbound fields (used by pre-execution logs)
+- `outputs_for_logging` - Returns only filtered outbound fields (used by post-execution logs)
+
+These private methods do NOT include additional context from `set_execution_context` or the hook—they are specifically for automatic logging which only needs to show what the action was called with and what it produced.
 
 ### `#inspect` Support
 

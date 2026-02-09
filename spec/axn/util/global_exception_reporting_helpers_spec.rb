@@ -127,7 +127,7 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
   end
 
   describe ".build_exception_context" do
-    it "builds context with formatted inputs" do
+    it "builds context with formatted inputs and outputs" do
       action_class = build_axn do
         expects :name, type: String
         expects :age, type: Integer
@@ -145,6 +145,7 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
 
       expect(result).to eq({
                              inputs: { name: "Alice", age: 30 },
+                             outputs: {},
                            })
     end
 
@@ -169,6 +170,7 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
 
       expect(result).to eq({
                              inputs: { name: "Alice" },
+                             outputs: {},
                              async: { attempt: 2, max_attempts: 5 },
                            })
     end
@@ -194,6 +196,7 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
 
         expect(result).to eq({
                                inputs: { name: "Alice" },
+                               outputs: {},
                                retry_command: 'TestAction.call(name: "Alice")',
                              })
       ensure
@@ -222,6 +225,7 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
 
         expect(result).to eq({
                                inputs: { name: "Alice" },
+                               outputs: {},
                              })
       ensure
         Axn.config._include_retry_command_in_exceptions = original_value

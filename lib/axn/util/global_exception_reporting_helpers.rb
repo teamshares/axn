@@ -108,6 +108,8 @@ module Axn
         # @return [Hash] Enhanced context with structure:
         #   {
         #     inputs: { ... },              # User's action inputs (filtered for sensitive data, always formatted)
+        #     outputs: { ... },             # Action outputs (filtered for sensitive data, always formatted)
+        #     ...extra_keys...,             # Additional context from set_execution_context / hook (formatted)
         #     retry_command: "...",         # Optional: copy-pasteable retry command (if _include_retry_command_in_exceptions is true)
         #     current_attributes: { ... },  # Optional: Current.attributes if defined and present
         #     async: { ... }                # Optional: async retry context if applicable
@@ -118,16 +120,21 @@ module Axn
         #     action: update_user_action,
         #     retry_context: nil
         #   )
-        #   # => { inputs: { user_id: 123, name: "Alice" }, current_attributes: { request_id: "abc" } }
+        #   # => { inputs: { user_id: 123, name: "Alice" }, outputs: {}, current_attributes: { request_id: "abc" } }
         def build_exception_context(action:, retry_context: nil)
-          # Get base inputs (already filtered for sensitive data)
-          raw_inputs = action.context_for_logging
+          # Get structured execution context (inputs, outputs, and extra keys at top level)
+          exec_ctx = action.execution_context
+          raw_inputs = exec_ctx[:inputs]
 
-          # Start building the context
-          context = {}
+          # Start building the context with formatted execution context
+          context = {
+            inputs: format_hash_values(raw_inputs),
+            outputs: format_hash_values(exec_ctx[:outputs] || {}),
+          }
 
-          # Always format inputs for error tracking
-          context[:inputs] = format_hash_values(raw_inputs)
+          # Add any extra keys from execution context (from set_execution_context / hook)
+          extra_keys = exec_ctx.except(:inputs, :outputs)
+          context.merge!(format_hash_values(extra_keys)) if extra_keys.any?
 
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context

@@ -21,7 +21,7 @@ module Axn
               end
 
               # Call any handlers registered on *this specific action* class
-              # (handlers can call context_for_logging themselves if needed)
+              # (handlers can call execution_context to get a structured hash with inputs, outputs, and extra keys)
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
               # Build enhanced context for global handler
