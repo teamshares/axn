@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "English"
 module Axn
   module Core
     module Flow
@@ -22,7 +23,7 @@ module Axn
           rescue Axn::Internal::EarlyCompletion, Axn::Failure
             raise if allow_flow_control
 
-            Axn::Internal::Logging.piping_error(operation, action:, exception: $!)
+            Axn::Internal::Logging.piping_error(operation, action:, exception: $ERROR_INFO)
           rescue StandardError => e
             Axn::Internal::Logging.piping_error(operation, action:, exception: e)
           end

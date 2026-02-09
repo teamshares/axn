@@ -21,7 +21,7 @@ RSpec.describe Axn do
     end
 
     let(:filtered_context) do
-      { name: "Foo", ssn: "[FILTERED]", outbound: 1 }
+      { inputs: { name: "Foo", ssn: "[FILTERED]", outbound: 1 } }
     end
 
     it "is given a filtered context (sensitive values filtered + only declared inbound/outbound fields)" do

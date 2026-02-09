@@ -19,6 +19,7 @@ require "axn/util/logging"
 require "axn/util/execution_context"
 require "axn/util/contract_error_handling"
 require "axn/util/global_id_serialization"
+require "axn/util/global_exception_reporting_helpers"
 require "axn/form_object"
 
 # Extensions

@@ -24,9 +24,11 @@ module Axn
               # (handlers can call context_for_logging themselves if needed)
               self.class._dispatch_callbacks(:exception, action: self, exception:)
 
-              # Build context with async information if available
-              context = context_for_logging
-              context[:async] = retry_context.to_h if retry_context
+              # Build enhanced context for global handler
+              context = Axn::Util::GlobalExceptionReportingHelpers.build_exception_context(
+                action: self,
+                retry_context:,
+              )
 
               # Call any global handlers
               Axn.config.on_exception(exception, action: self, context:)

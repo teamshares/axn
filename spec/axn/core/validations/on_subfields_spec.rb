@@ -339,7 +339,9 @@ RSpec.describe Axn do
 
         it "filters sensitive subfield in exception context" do
           expected_context = {
-            user_data: { password: "[FILTERED]", email: "user@example.com" },
+            inputs: {
+              user_data: { password: "[FILTERED]", email: "user@example.com" },
+            },
           }
 
           expect(Axn.config).to receive(:on_exception).with(

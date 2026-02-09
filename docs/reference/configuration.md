@@ -5,12 +5,13 @@ Somewhere at boot (e.g. `config/initializers/actions.rb` in Rails), you can call
 ```ruby
 Axn.configure do |c|
   c.log_level = :info
-  c.logger = ...
+  c.logger = Rails.logger
+  
   c.on_exception = proc do |e, action:, context:|
-    message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
-
-    Rails.logger.warn(message)
-    Honeybadger.notify(message, context: { axn_context: context })
+    Honeybadger.notify(
+      "[#{action.class.name}] #{e.class.name}: #{e.message}",
+      context: context
+    )
   end
 end
 ```
@@ -22,38 +23,69 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 For example, if you're using Honeybadger this could look something like:
 
 ```ruby
-  Axn.configure do |c|
-    c.on_exception = proc do |e, action:, context:|
-      message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
-
-      Rails.logger.warn(message)
-      Honeybadger.notify(message, context: { axn_context: context })
-    end
+Axn.configure do |c|
+  c.on_exception = proc do |e, action:, context:|
+    Honeybadger.notify(
+      "[#{action.class.name}] #{e.class.name}: #{e.message}",
+      context: context
+    )
   end
+end
 ```
 
 **Note:** The `action:` and `context:` keyword arguments are *optional*—your proc can accept any combination of `e`, `action:`, and `context:`. Only the keyword arguments you explicitly declare will be passed to your handler. All of the following are valid:
 
 ```ruby
-  # Only exception object
-  c.on_exception = proc { |e| ... }
+# Only exception object
+c.on_exception = proc { |e| ... }
 
-  # Exception and action
-  c.on_exception = proc { |e, action:| ... }
+# Exception and action
+c.on_exception = proc { |e, action:| ... }
 
-  # Exception and context
-  c.on_exception = proc { |e, context:| ... }
+# Exception and context
+c.on_exception = proc { |e, context:| ... }
 
-  # Exception, action, and context
-  c.on_exception = proc { |e, action:, context:| ... }
+# Exception, action, and context
+c.on_exception = proc { |e, action:, context:| ... }
 ```
 
-A couple notes:
+### Context Structure
 
-  * `context` will contain the arguments passed to the `action`, _but_ any marked as sensitive (e.g. `expects :foo, sensitive: true`) will be filtered out in the logs.
-  * If your handler raises, the failure will _also_ be swallowed and logged
-  * This handler is global across _all_ Axns.  You can also specify per-Action handlers via [the class-level declaration](/reference/class#on-exception).
-  * The `context` hash may contain complex objects (like ActiveRecord models, `ActionController::Parameters`, or `Axn::FormObject` instances) that aren't easily serialized by error tracking systems. See [Formatting Context for Error Tracking Systems](/recipes/formatting-context-for-error-tracking) for a recipe to convert these to readable formats.
+The `context` hash is automatically formatted and contains:
+
+```ruby
+{
+  inputs: { ... },              # Action inputs (always formatted, sensitive fields filtered)
+  current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
+  async: { ... }                # Async retry info (only present in async context)
+}
+```
+
+**What gets formatted automatically:**
+- **ActiveRecord objects** → GlobalID strings (e.g., `"gid://app/User/123"`)
+- **ActionController::Parameters** → Plain hashes
+- **Axn::FormObject instances** → Hash representation
+
+**Example with all context fields:**
+
+```ruby
+Axn.configure do |c|
+  c.on_exception = proc do |e, action:, context:|
+    # context[:inputs] - Your action's inputs (formatted)
+    # context[:current_attributes] - Rails Current.attributes (if present)
+    # context[:async] - Retry info (if in async context)
+    
+    Honeybadger.notify(e, context: context)
+  end
+end
+```
+
+### Additional Notes
+
+- Sensitive fields (marked with `expects :foo, sensitive: true`) are automatically filtered to `"[FILTERED]"`
+- If your handler raises an exception, the failure will be swallowed and logged
+- This handler is global across _all_ actions. You can also specify per-action handlers via [the class-level declaration](/reference/class#on-exception)
+- Complex objects are automatically formatted for error tracking systems
 
 ### Adding Additional Context to Exception Logging
 
@@ -342,22 +374,24 @@ When `on_exception` is triggered in an async context, the `context` hash include
 ```ruby
 Axn.configure do |c|
   c.on_exception = proc do |e, action:, context:|
+    # context[:async] is automatically included when in async context
+    # Available fields:
+    # context[:async][:adapter]           # :sidekiq or :active_job
+    # context[:async][:attempt]           # Current attempt (1-indexed)
+    # context[:async][:max_retries]       # Max retry attempts
+    # context[:async][:job_id]            # Job ID (if available)
+    # context[:async][:first_attempt]     # true if first attempt
+    # context[:async][:retries_exhausted] # true if all retries exhausted
+    
     if context[:async]
-      # Available fields:
-      # context[:async][:adapter]          # :sidekiq or :active_job
-      # context[:async][:attempt]          # Current attempt (1-indexed)
-      # context[:async][:max_retries]      # Max retry attempts
-      # context[:async][:job_id]           # Job ID (if available)
-      # context[:async][:first_attempt]    # true if first attempt
-      # context[:async][:retries_exhausted] # true if all retries exhausted
-
-      Honeybadger.notify(e, context: {
-        axn_context: context,
+      # Add custom retry info to context
+      enhanced_context = context.merge(
         retry_info: "Attempt #{context[:async][:attempt]} of #{context[:async][:max_retries]}"
-      })
+      )
+      Honeybadger.notify(e, context: enhanced_context)
     else
-      # Foreground execution - no retry context
-      Honeybadger.notify(e, context: { axn_context: context })
+      # Foreground execution - context still includes inputs and current_attributes
+      Honeybadger.notify(e, context: context)
     end
   end
 end
@@ -549,9 +583,10 @@ Axn.configure do |c|
 
   # Exception handling
   c.on_exception = proc do |e, action:, context:|
-    message = "[#{action.class.name}] Failing due to #{e.class.name}: #{e.message}"
-    Rails.logger.warn(message)
-    Honeybadger.notify(message, context: { axn_context: context })
+    Honeybadger.notify(
+      "[#{action.class.name}] #{e.class.name}: #{e.message}",
+      context: context
+    )
   end
 
   # Observability

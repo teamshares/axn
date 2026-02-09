@@ -29,9 +29,11 @@ RSpec.describe "Additional logging context" do
         hash_including(
           action: an_instance_of(action),
           context: hash_including(
-            name: "error",
-            current_record_id: 123,
-            batch_index: 5,
+            inputs: hash_including(
+              name: "error",
+              current_record_id: 123,
+              batch_index: 5,
+            ),
           ),
         ),
       ).and_call_original
@@ -50,7 +52,7 @@ RSpec.describe "Additional logging context" do
 
       expect(Axn.config).to receive(:on_exception).with(
         anything,
-        hash_including(context: hash_including(step: "processing", record_id: 456)),
+        hash_including(context: hash_including(inputs: hash_including(step: "processing", record_id: 456))),
       ).and_call_original
 
       action.call
@@ -115,9 +117,11 @@ RSpec.describe "Additional logging context" do
         hash_including(
           action: an_instance_of(action),
           context: hash_including(
-            name: "error",
-            current_record_id: 789,
-            record_type: "User",
+            inputs: hash_including(
+              name: "error",
+              current_record_id: 789,
+              record_type: "User",
+            ),
           ),
         ),
       ).and_call_original
@@ -197,11 +201,13 @@ RSpec.describe "Additional logging context" do
         hash_including(
           action: an_instance_of(action),
           context: hash_including(
-            name: "error",
-            batch_id: "batch-123",
-            step: "processing",
-            current_record_id: 111,
-            record_type: "Order",
+            inputs: hash_including(
+              name: "error",
+              batch_id: "batch-123",
+              step: "processing",
+              current_record_id: 111,
+              record_type: "Order",
+            ),
           ),
         ),
       ).and_call_original
@@ -225,7 +231,7 @@ RSpec.describe "Additional logging context" do
 
       expect(Axn.config).to receive(:on_exception).with(
         anything,
-        hash_including(context: hash_including(step: "from_hook")),
+        hash_including(context: hash_including(inputs: hash_including(step: "from_hook"))),
       ).and_call_original
 
       action.call
