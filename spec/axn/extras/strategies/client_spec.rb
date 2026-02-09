@@ -178,6 +178,53 @@ RSpec.describe Axn::Extras::Strategies::Client do
         expect(middleware_klasses(instance.client)).not_to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
       end
     end
+
+    context "additional execution context (client request/response)" do
+      it "injects ExecutionContextMiddleware into the connection" do
+        instance = create_client_instance(test_action)
+
+        expect(middleware_klasses(instance.client)).to include(Axn::Extras::Strategies::Client::ExecutionContextMiddleware)
+      end
+
+      it "includes client_strategy__last_request (url, method, status) in exception context when a request was made" do
+        original_handler = Axn.config.instance_variable_get(:@on_exception)
+        Axn.config.instance_variable_set(:@on_exception, nil)
+        allow(Axn.config).to receive(:on_exception)
+
+        action = build_axn do
+          use :client, url: "https://api.example.com" do |conn|
+            conn.adapter :test do |stub|
+              stub.get("/users") { [200, { "Content-Type" => "application/json" }, "{}"] }
+            end
+          end
+
+          def call
+            client.get("/users")
+            raise "intentional failure after request"
+          end
+        end
+
+        action.call
+
+        # client_strategy__last_request is now at top level of context (not nested in inputs)
+        expect(Axn.config).to have_received(:on_exception).with(
+          an_instance_of(RuntimeError),
+          hash_including(
+            context: hash_including(
+              inputs: {},
+              outputs: {},
+              client_strategy__last_request: hash_including(
+                url: a_string_matching(/api\.example\.com.*users/),
+                method: "GET",
+                status: 200,
+              ),
+            ),
+          ),
+        )
+      ensure
+        Axn.config.instance_variable_set(:@on_exception, original_handler)
+      end
+    end
   end
 
   describe "strategy registration" do

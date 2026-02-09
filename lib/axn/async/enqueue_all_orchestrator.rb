@@ -33,7 +33,7 @@ module Axn
         count = self.class.execute_iteration(
           target,
           **deserialized_static_args,
-          on_progress: method(:set_logging_context),
+          on_progress: method(:set_execution_context),
         )
 
         message_parts = ["Batch enqueued #{count} jobs for #{target.name}"]

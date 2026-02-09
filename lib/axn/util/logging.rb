@@ -37,12 +37,15 @@ module Axn
 
         # Prepare and format context if needed
         context_str = if context_instance && context_direction
-                        # Instance-level context_for_logging
-                        data = context_instance.context_for_logging(context_direction)
+                        # Instance-level: use private inputs_for_logging / outputs_for_logging
+                        data = case context_direction
+                               when :inbound then context_instance.send(:inputs_for_logging)
+                               when :outbound then context_instance.send(:outputs_for_logging)
+                               end
                         format_context(data)
                       elsif context_data && context_direction
-                        # Class-level context_for_logging
-                        data = action_class.context_for_logging(data: context_data, direction: context_direction)
+                        # Class-level: use internal _context_slice
+                        data = action_class._context_slice(data: context_data, direction: context_direction)
                         format_context(data)
                       end
 

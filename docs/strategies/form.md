@@ -62,7 +62,9 @@ end
 
 ### Inline Form Definition
 
-You can define the form class inline using a block:
+You can pass the form in directly as a block instead of a separate class.
+
+**Block only** — the form class is not assigned to a constant, but it is given a `name` (default: the action’s name + `Form`, e.g. `"CreateUser::Form"`) so it shows up clearly in logging and exception reporting:
 
 ```ruby
 class CreateUser
@@ -79,7 +81,14 @@ class CreateUser
 end
 ```
 
-This creates an anonymous form class that inherits from `Axn::FormObject`.
+**Block + type string** — the form class is named using the given string (e.g. `"CreateUser::Form"`). If that constant doesn't exist yet, the block defines the class and we assign it to that name:
+
+```ruby
+use :form, type: "CreateUser::Form" do
+  validates :email, presence: true
+  validates :name, presence: true
+end
+```
 
 ### Custom Field Names
 

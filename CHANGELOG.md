@@ -2,6 +2,14 @@
 
 ## Unreleased
 * [BUGFIX] `set_default_async(:sidekiq)` now properly triggers `AutoConfigure.register!`
+* [BREAKING] Refactored context API for exception reporting and handlers:
+  * **Removed** `context_for_logging(direction)` instance method
+  * **Added** public `execution_context` method returning structured hash: `{ inputs: {...}, outputs: {...}, **extra_keys }`
+  * **Added** private `inputs_for_logging` / `outputs_for_logging` methods for automatic pre/post logging (do NOT include extra context)
+  * **Renamed** `set_logging_context` → `set_execution_context`, `clear_logging_context` → `clear_execution_context`, hook `additional_logging_context` → `additional_execution_context`
+  * **Reserved keys:** `:inputs` and `:outputs` cannot be set via `set_execution_context` or the hook—they always come from the action's contract
+  * **Internal:** Class method `context_for_logging(data:, direction:)` renamed to `_context_slice(data:, direction:)`
+  * Exception context now includes both `inputs` and `outputs` with additional context merged at the top level (not nested inside `inputs`)
 
 ## 0.1.0-alpha.4.1
 * [BREAKING][BUGFIX] `fail!` in async jobs no longer triggers retries - business logic failures complete without retry (Sidekiq and ActiveJob adapters)

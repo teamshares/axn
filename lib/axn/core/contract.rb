@@ -90,7 +90,9 @@ module Axn
           configs.map(&:field)
         end
 
-        def context_for_logging(data:, direction: nil)
+        # Internal method for filtering context data by direction
+        # Used by instance methods (inputs_for_logging, outputs_for_logging) and async exception reporting
+        def _context_slice(data:, direction: nil)
           inspection_filter.filter(data.slice(*_declared_fields(direction)))
         end
 
@@ -169,6 +171,9 @@ module Axn
         end
       end
 
+      # Reserved keys that cannot be set via set_execution_context or additional_execution_context hook
+      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs].freeze
+
       module InstanceMethods
         def internal_context = @internal_context ||= _build_context_facade(:inbound)
         def result = @result ||= _build_context_facade(:outbound)
@@ -193,35 +198,41 @@ module Axn
           end
         end
 
-        # Set additional context to be included in exception logging
-        # This context is only used when exceptions occur, not in normal pre/post logging
-        def set_logging_context(**kwargs)
-          @__additional_logging_context ||= {}
-          @__additional_logging_context.merge!(kwargs)
+        # Set additional context to be included in execution_context for exception reporting/handlers.
+        # This context is NOT included in automatic pre/post logging (which only logs inputs/outputs).
+        # Reserved keys (:inputs, :outputs) are stripped before merging.
+        def set_execution_context(**kwargs)
+          @__additional_execution_context ||= {}
+          @__additional_execution_context.merge!(kwargs.except(*RESERVED_EXECUTION_CONTEXT_KEYS))
         end
 
-        # Clear any previously set additional logging context
-        def clear_logging_context
-          @__additional_logging_context = nil
+        # Clear any previously set additional execution context
+        def clear_execution_context
+          @__additional_execution_context = nil
         end
 
-        def context_for_logging(direction = nil)
-          base_context = self.class.context_for_logging(
-            data: @__context.__combined_data,
-            direction:,
-          )
+        # Returns a structured hash for exception reporting and handlers.
+        # Contains :inputs, :outputs, and any extra keys from set_execution_context / additional_execution_context hook.
+        # Reserved keys (:inputs, :outputs) from extra context are stripped before merging at top level.
+        def execution_context
+          explicit_context = @__additional_execution_context || {}
+          hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}
+          extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
-          # Only merge additional context for exception logging (direction is nil)
-          # Pre/post logging don't need additional context since they only log inputs/outputs
-          return base_context if direction
-
-          # Merge both explicit setter context and hook method context (if both exist)
-          explicit_context = @__additional_logging_context || {}
-          hook_context = respond_to?(:additional_logging_context, true) ? additional_logging_context : {}
-          base_context.merge(explicit_context).merge(hook_context)
+          { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
         end
 
         private
+
+        # Filtered inbound fields only (no additional context) - used by automatic logging
+        def inputs_for_logging
+          self.class._context_slice(data: @__context.__combined_data, direction: :inbound)
+        end
+
+        # Filtered outbound fields only (no additional context) - used by automatic logging
+        def outputs_for_logging
+          self.class._context_slice(data: @__context.__combined_data, direction: :outbound)
+        end
 
         def _handle_early_completion_if_raised
           yield

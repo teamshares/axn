@@ -7,7 +7,7 @@ module Axn
 
   class Configuration
     attr_accessor :emit_metrics, :raise_piping_errors_in_dev
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails
+    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails, :_include_retry_command_in_exceptions
 
     # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).
     # Options:
@@ -39,6 +39,13 @@ module Axn
     def log_level = @log_level ||= :info
 
     def additional_includes = @additional_includes ||= []
+
+    # EXPERIMENTAL: When true, automatically generates a retry command in exception context.
+    # This is marked experimental because the retry command generation may not work well
+    # for all action types (e.g., actions with complex object dependencies).
+    def _include_retry_command_in_exceptions
+      @_include_retry_command_in_exceptions.nil? ? false : @_include_retry_command_in_exceptions
+    end
 
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}

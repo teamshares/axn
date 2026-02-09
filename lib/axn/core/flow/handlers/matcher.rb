@@ -36,15 +36,12 @@ module Axn
           def exception_class? = @rule.is_a?(Class) && @rule <= Exception
 
           def apply_callable(action:, exception:)
-            filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(@rule, exception)
-            !!action.instance_exec(*filtered_args, **filtered_kwargs, &@rule)
+            !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
           end
 
           def apply_symbol(action:, exception:)
             if action.respond_to?(@rule)
-              method = action.method(@rule)
-              filtered_args, filtered_kwargs = Axn::Util::Callable.only_requested_params_for_exception(method, exception)
-              !!action.public_send(@rule, *filtered_args, **filtered_kwargs)
+              !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
             else
               begin
                 klass = Object.const_get(@rule.to_s)
