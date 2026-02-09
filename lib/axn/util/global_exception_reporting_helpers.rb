@@ -7,9 +7,10 @@ module Axn
     # for error tracking services (e.g., Honeybadger, Sentry).
     module GlobalExceptionReportingHelpers
       class << self
-        # Format hash values for error tracking systems.
+        # Format hash values for error tracking systems (recursive).
         # Converts complex objects (ActiveRecord models, ActionController::Parameters, FormObjects)
         # into serializable formats suitable for logging and error tracking.
+        # Nested hashes and arrays are traversed and their values formatted as well.
         #
         # @param hash [Hash] The hash to format
         # @return [Hash] A new hash with formatted values
@@ -21,17 +22,7 @@ module Axn
         #   })
         #   # => { user: "gid://app/User/123", params: { name: "Alice" } }
         def format_hash_values(hash)
-          hash.transform_values do |v|
-            if v.respond_to?(:to_global_id)
-              v.to_global_id.to_s
-            elsif defined?(ActionController::Parameters) && v.is_a?(ActionController::Parameters)
-              v.to_unsafe_h
-            elsif v.is_a?(Axn::FormObject)
-              v.to_h
-            else
-              v
-            end
-          end
+          hash.transform_values { |v| format_value(v) }
         end
 
         # Format a single value for retry command generation.
@@ -94,7 +85,7 @@ module Axn
         #   # => "UpdateUser.call(user: User.find(123), name: \"Alice\")"
         def retry_command(action:, context:)
           action_name = action.class.name
-          return nil if action_name.nil?
+          return nil if action_name.nil? # Anonymous (unnamed) actions cannot generate a retry command
 
           expected_fields = action.internal_field_configs.map(&:field)
 
@@ -159,6 +150,33 @@ module Axn
           end
 
           context
+        end
+
+        private
+
+        # Recursively format a single value (Hash, Array, or scalar/complex object).
+        def format_value(value)
+          case value
+          when Hash
+            format_hash_values(value)
+          when Array
+            value.map { |item| format_value(item) }
+          else
+            format_single_value(value)
+          end
+        end
+
+        # Format a single non-container value for error tracking.
+        def format_single_value(value)
+          if value.respond_to?(:to_global_id)
+            value.to_global_id.to_s
+          elsif defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters)
+            format_hash_values(value.to_unsafe_h)
+          elsif value.is_a?(Axn::FormObject)
+            format_hash_values(value.to_h)
+          else
+            value
+          end
         end
       end
     end

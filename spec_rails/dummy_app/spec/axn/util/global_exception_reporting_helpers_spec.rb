@@ -28,6 +28,19 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
 
       expect(result[:form]).to eq({ name: "Alice", age: 30 })
     end
+
+    it "recursively formats nested complex objects" do
+      form_class = Class.new(Axn::FormObject) do
+        attr_accessor :name
+      end
+      form = form_class.new(name: "Nested")
+      payload = { wrapper: { form: form, user: User.create!(name: "Test") } }
+
+      result = described_class.format_hash_values(payload)
+
+      expect(result[:wrapper][:form]).to eq({ name: "Nested" })
+      expect(result[:wrapper][:user]).to match(/\Agid:\/\//)
+    end
   end
 
   describe ".format_value_for_retry_command" do

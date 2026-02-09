@@ -293,6 +293,16 @@ RSpec.describe "Global on_exception handler" do
 
     let(:action) { TestEnhancedContextAction }
 
+    shared_context "with retry command in exceptions enabled" do
+      around do |example|
+        original = Axn.config._include_retry_command_in_exceptions
+        Axn.config._include_retry_command_in_exceptions = true
+        example.run
+      ensure
+        Axn.config._include_retry_command_in_exceptions = original
+      end
+    end
+
     describe "automatic formatting" do
       it "always formats complex objects in context" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
@@ -304,13 +314,7 @@ RSpec.describe "Global on_exception handler" do
     end
 
     describe "_include_retry_command_in_exceptions (experimental)" do
-      before do
-        Axn.config._include_retry_command_in_exceptions = true
-      end
-
-      after do
-        Axn.config._include_retry_command_in_exceptions = false
-      end
+      include_context "with retry command in exceptions enabled"
 
       it "includes retry command in context when enabled" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
@@ -357,9 +361,9 @@ RSpec.describe "Global on_exception handler" do
     end
 
     describe "combined features" do
-      before do
-        Axn.config._include_retry_command_in_exceptions = true
+      include_context "with retry command in exceptions enabled"
 
+      before do
         stub_const("Current", Class.new do
           class << self
             attr_accessor :user_id
@@ -371,10 +375,6 @@ RSpec.describe "Global on_exception handler" do
         end)
 
         Current.user_id = 456
-      end
-
-      after do
-        Axn.config._include_retry_command_in_exceptions = false
       end
 
       it "includes all context enhancements (formatting always on, Current auto-detected, retry command if enabled)" do

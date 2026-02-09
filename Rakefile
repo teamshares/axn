@@ -139,7 +139,8 @@ namespace :benchmark do
   end
 end
 
-# Require verify to pass before release (build is the first prerequisite of release, so this runs before push)
+# Require verify to pass before release. This relies on the default gem release task
+# (from bundler/gem_tasks) depending on "build"; verify runs before build, so before push.
 Rake::Task["build"].enhance([:verify])
 
 # Automatically run benchmark:release after rake release

@@ -19,6 +19,18 @@ RSpec.describe Axn::Util::GlobalExceptionReportingHelpers do
                              hash: { nested: "value" },
                            })
     end
+
+    it "recursively formats nested hashes and arrays" do
+      result = described_class.format_hash_values({
+                                                    outer: { inner: "x" },
+                                                    list: [{ a: 1 }, { b: 2 }],
+                                                  })
+
+      expect(result).to eq({
+                             outer: { inner: "x" },
+                             list: [{ a: 1 }, { b: 2 }],
+                           })
+    end
   end
 
   describe ".format_value_for_retry_command" do

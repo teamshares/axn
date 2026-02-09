@@ -55,11 +55,13 @@ The `context` hash is automatically formatted and contains:
 
 ```ruby
 {
-  inputs: { ... },              # Action inputs (always formatted, sensitive fields filtered)
+  inputs: { ... },              # Action inputs + any strategy-injected context (e.g. client_strategy__last_request), formatted recursively
   current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
   async: { ... }                # Async retry info (only present in async context)
 }
 ```
+
+`inputs` includes both declared action inputs and any extra context set by strategies (for example, the `:client` strategy adds `client_strategy__last_request` with url, method, status). Formatting is applied recursively to nested hashes and arrays.
 
 **What gets formatted automatically:**
 - **ActiveRecord objects** → GlobalID strings (e.g., `"gid://app/User/123"`)
