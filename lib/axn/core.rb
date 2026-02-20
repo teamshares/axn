@@ -11,8 +11,6 @@ require "axn/core/logging"
 require "axn/core/flow"
 require "axn/core/automatic_logging"
 require "axn/core/use_strategy"
-require "axn/core/timing"
-require "axn/core/tracing"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
 

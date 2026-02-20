@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Core
+  module Internal
     module Timing
       # Get the current monotonic time
       def self.now
@@ -17,8 +17,6 @@ module Axn
       def self.elapsed_seconds(start_time)
         (now - start_time).round(6)
       end
-
-      # InstanceMethods removed - timing is now handled by Axn::Executor
     end
   end
 end

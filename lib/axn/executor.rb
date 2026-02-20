@@ -75,9 +75,9 @@ module Axn
 
       if defined?(OpenTelemetry)
         in_span_kwargs = { attributes: { "axn.resource" => resource } }
-        in_span_kwargs[:record_exception] = false if Axn::Core::Tracing._supports_record_exception_option?
+        in_span_kwargs[:record_exception] = false if Axn::Internal::Tracing.supports_record_exception_option?
 
-        Axn::Core::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
+        Axn::Internal::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
           instrument_block.call
         ensure
           begin
@@ -173,10 +173,10 @@ module Axn
     # =========================================================================
 
     def with_timing
-      timing_start = Axn::Core::Timing.now
+      timing_start = Axn::Internal::Timing.now
       yield
     ensure
-      elapsed_mils = Axn::Core::Timing.elapsed_ms(timing_start)
+      elapsed_mils = Axn::Internal::Timing.elapsed_ms(timing_start)
       @context.send(:elapsed_time=, elapsed_mils)
     end
 

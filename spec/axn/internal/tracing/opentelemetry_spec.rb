@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
+RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   let(:mock_tracer) { instance_double("OpenTelemetry::Trace::Tracer") }
   let(:mock_span) { instance_double("OpenTelemetry::Trace::Span") }
   let(:mock_tracer_provider) { instance_double("OpenTelemetry::Trace::TracerProvider") }
@@ -31,9 +31,9 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
 
   after do
     # Clear the cached tracer so it's recreated with the restored OpenTelemetry
-    Axn::Core::Tracing.instance_variable_set(:@tracer, nil)
-    Axn::Core::Tracing.instance_variable_set(:@tracer_provider, nil)
-    Axn::Core::Tracing.instance_variable_set(:@supports_record_exception, nil)
+    Axn::Internal::Tracing.instance_variable_set(:@tracer, nil)
+    Axn::Internal::Tracing.instance_variable_set(:@tracer_provider, nil)
+    Axn::Internal::Tracing.instance_variable_set(:@supports_record_exception, nil)
 
     # Restore original if it existed, but don't conflict with stub_const cleanup
     if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
@@ -139,7 +139,7 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
   describe "record_exception option" do
     context "when OpenTelemetry supports record_exception option" do
       before do
-        allow(Axn::Core::Tracing).to receive(:_supports_record_exception_option?).and_return(true)
+        allow(Axn::Internal::Tracing).to receive(:supports_record_exception_option?).and_return(true)
       end
 
       it "passes record_exception: false to in_span" do
@@ -155,7 +155,7 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
 
     context "when OpenTelemetry does not support record_exception option" do
       before do
-        allow(Axn::Core::Tracing).to receive(:_supports_record_exception_option?).and_return(false)
+        allow(Axn::Internal::Tracing).to receive(:supports_record_exception_option?).and_return(false)
       end
 
       it "does not pass record_exception to in_span" do
@@ -169,19 +169,19 @@ RSpec.describe "Axn::Core::Tracing OpenTelemetry" do
     end
   end
 
-  describe "._supports_record_exception_option?" do
+  describe ".supports_record_exception_option?" do
     before do
       # Clear the cached value
-      Axn::Core::Tracing.remove_instance_variable(:@supports_record_exception) if Axn::Core::Tracing.instance_variable_defined?(:@supports_record_exception)
+      Axn::Internal::Tracing.remove_instance_variable(:@supports_record_exception) if Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)
     end
 
     it "caches the result" do
       # First call - will check OpenTelemetry
-      first_result = Axn::Core::Tracing._supports_record_exception_option?
-      expect(Axn::Core::Tracing.instance_variable_defined?(:@supports_record_exception)).to be true
+      first_result = Axn::Internal::Tracing.supports_record_exception_option?
+      expect(Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)).to be true
 
       # Second call should return cached value
-      second_result = Axn::Core::Tracing._supports_record_exception_option?
+      second_result = Axn::Internal::Tracing.supports_record_exception_option?
       expect(first_result).to eq(second_result)
     end
 

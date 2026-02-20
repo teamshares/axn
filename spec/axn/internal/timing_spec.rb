@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Core::Timing do
+RSpec.describe Axn::Internal::Timing do
   describe ".now" do
     it "returns a monotonic time value" do
       time1 = described_class.now

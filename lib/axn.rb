@@ -23,6 +23,8 @@ require "axn/internal/global_id_serialization"
 require "axn/internal/global_exception_reporting_helpers"
 require "axn/internal/subfield_path"
 require "axn/internal/field_config"
+require "axn/internal/timing"
+require "axn/internal/tracing"
 require "axn/form_object"
 
 # Extensions

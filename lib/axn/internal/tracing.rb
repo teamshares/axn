@@ -3,7 +3,7 @@
 require "securerandom"
 
 module Axn
-  module Core
+  module Internal
     module Tracing
       class << self
         # Cache the tracer instance to avoid repeated lookups
@@ -23,7 +23,7 @@ module Axn
         # Check if the OpenTelemetry tracer supports the record_exception option for in_span.
         # This was added in opentelemetry-api 1.7.0 (2025-09-17).
         # We cache the result since method signature doesn't change at runtime.
-        def _supports_record_exception_option?
+        def supports_record_exception_option?
           return @supports_record_exception if defined?(@supports_record_exception)
           return @supports_record_exception = false unless defined?(OpenTelemetry)
 
@@ -34,8 +34,6 @@ module Axn
           end
         end
       end
-
-      # Instance methods removed - tracing is now handled by Axn::Executor
     end
   end
 end
