@@ -22,8 +22,6 @@ require "axn/core/validation/validators/type_validator"
 require "axn/core/validation/validators/validate_validator"
 
 require "axn/core/field_resolvers"
-require "axn/core/contract_validation"
-require "axn/core/contract_validation_for_subfields"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
 require "axn/core/default_call"
@@ -50,23 +48,20 @@ module Axn
     def self.included(base)
       base.class_eval do
         extend ClassMethods
+
+        # DSL modules that add class methods/attributes users interact with
         include Core::Hooks
         include Core::Logging
         include Core::AutomaticLogging
-        include Core::Tracing
-        include Core::Timing
-
         include Core::Flow
-
-        include Core::ContractValidation
-        include Core::ContractValidationForSubfields
         include Core::Contract
         include Core::ContractForSubfields
-        include Core::NestingTracking
-
         include Core::UseStrategy
         include Core::Memoization
         include Core::DefaultCall
+
+        # Internal: adds _nested_in_another_axn? class method used by call!
+        include Core::NestingTracking
       end
     end
 
