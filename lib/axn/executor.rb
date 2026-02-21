@@ -161,8 +161,8 @@ module Axn
 
     def top_level_separator
       return if Axn.config.env.production?
-      return if Internal::ExecutionContext.background?
-      return if Internal::ExecutionContext.console?
+      return if Util::ExecutionContext.background?
+      return if Util::ExecutionContext.console?
       return if Axn::Core::NestingTracking._current_axn_stack.size > 1
 
       "\n------\n"

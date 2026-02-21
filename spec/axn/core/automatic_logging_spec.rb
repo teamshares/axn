@@ -462,8 +462,8 @@ RSpec.describe Axn::Core::AutomaticLogging do
       allow(Axn.config).to receive(:logger).and_return(logger)
       allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
       # Simulate running in a log file context (not console, not background)
-      allow(Axn::Internal::ExecutionContext).to receive(:console?).and_return(false)
-      allow(Axn::Internal::ExecutionContext).to receive(:background?).and_return(false)
+      allow(Axn::Util::ExecutionContext).to receive(:console?).and_return(false)
+      allow(Axn::Util::ExecutionContext).to receive(:background?).and_return(false)
       allow(logger).to receive(:info) do |message|
         log_messages << message
       end

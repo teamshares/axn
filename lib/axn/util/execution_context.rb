@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Internal
+  module Util
     module ExecutionContext
       module_function
 
@@ -11,7 +11,7 @@ module Axn
       # @return [Boolean] true if running in a background job, false otherwise
       #
       # @example
-      #   if Axn::Internal::ExecutionContext.background?
+      #   if Axn::Util::ExecutionContext.background?
       #     # Code is running in Sidekiq or ActiveJob
       #   end
       def background?
