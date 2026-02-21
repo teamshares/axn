@@ -117,12 +117,12 @@ RSpec.describe Axn do
     end
 
     before do
-      allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
     end
 
-    it "calls Axn::Internal::Logging.piping_error when on_exception handler raises" do
+    it "calls Axn::Internal::PipingError.piping_error when on_exception handler raises" do
       action.call
-      expect(Axn::Internal::Logging).to have_received(:piping_error).with(
+      expect(Axn::Internal::PipingError).to have_received(:swallow).with(
         a_string_including("executing callback"),
         hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail in handler" }),
       )
@@ -142,12 +142,12 @@ RSpec.describe Axn do
     end
 
     before do
-      allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
     end
 
-    it "calls Axn::Internal::Logging.piping_error when event handler matcher raises" do
+    it "calls Axn::Internal::PipingError.piping_error when event handler matcher raises" do
       action.call
-      expect(Axn::Internal::Logging).to have_received(:piping_error).with(
+      expect(Axn::Internal::PipingError).to have_received(:swallow).with(
         a_string_including("determining if handler applies to exception"),
         hash_including(action:, exception: an_object_satisfying { |e| e.is_a?(StandardError) && e.message == "fail in matcher" }),
       )

@@ -172,7 +172,7 @@ RSpec.describe "Global on_exception handler" do
         raise "Handler error: #{e.message}"
       end
 
-      expect(Axn::Internal::Logging).to receive(:piping_error).with(
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
         "executing on_exception hooks",
         hash_including(action: an_instance_of(action), exception: an_object_satisfying { |e|
           e.is_a?(RuntimeError) && e.message == "Handler error: Something went wrong"

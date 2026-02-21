@@ -43,7 +43,7 @@ module Axn
           end
 
           # Wrap the method with memoization
-          Axn::Util::Memoization.define_memoized_reader_method(self, method_name) do
+          Axn::Internal::Memoization.define_memoized_reader_method(self, method_name) do
             method.bind(self).call
           end
         end

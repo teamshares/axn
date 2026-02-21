@@ -96,7 +96,7 @@ module Axn
       return unless @on_exception
 
       # Only pass the args and kwargs that the given block expects
-      Axn::Util::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
+      Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
     end
 
     def logger

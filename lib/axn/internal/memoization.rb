@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Util
+  module Internal
     module Memoization
       UNSET = Object.new.freeze
 

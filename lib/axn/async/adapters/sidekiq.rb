@@ -46,7 +46,7 @@ module Axn
             normalized_options = _extract_and_normalize_async_options(kwargs)
 
             # Convert kwargs to string keys and handle GlobalID conversion
-            job_kwargs = Axn::Util::GlobalIdSerialization.serialize(kwargs)
+            job_kwargs = Axn::Internal::GlobalIdSerialization.serialize(kwargs)
 
             # Process normalized async options if present
             if normalized_options
@@ -62,7 +62,7 @@ module Axn
         end
 
         def perform(*args)
-          context = Axn::Util::GlobalIdSerialization.deserialize(args.first)
+          context = Axn::Internal::GlobalIdSerialization.deserialize(args.first)
 
           # Validate Sidekiq configuration once on first job execution in a real server context.
           # Skip validation when:

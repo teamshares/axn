@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Core::Tracing ActiveSupport::Notifications" do
+RSpec.describe "Axn::Internal::Tracing ActiveSupport::Notifications" do
   let(:notifications) { [] }
 
   before do

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/internal/logging"
+require "axn/internal/piping_error"
 
 require "axn/context"
 
@@ -11,8 +11,6 @@ require "axn/core/logging"
 require "axn/core/flow"
 require "axn/core/automatic_logging"
 require "axn/core/use_strategy"
-require "axn/core/timing"
-require "axn/core/tracing"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
 
@@ -22,8 +20,6 @@ require "axn/core/validation/validators/type_validator"
 require "axn/core/validation/validators/validate_validator"
 
 require "axn/core/field_resolvers"
-require "axn/core/contract_validation"
-require "axn/core/contract_validation_for_subfields"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
 require "axn/core/default_call"
@@ -50,43 +46,26 @@ module Axn
     def self.included(base)
       base.class_eval do
         extend ClassMethods
+
+        # DSL modules that add class methods/attributes users interact with
         include Core::Hooks
         include Core::Logging
         include Core::AutomaticLogging
-        include Core::Tracing
-        include Core::Timing
-
         include Core::Flow
-
-        include Core::ContractValidation
-        include Core::ContractValidationForSubfields
         include Core::Contract
         include Core::ContractForSubfields
-        include Core::NestingTracking
-
         include Core::UseStrategy
         include Core::Memoization
         include Core::DefaultCall
+
+        # Internal: adds _nested_in_another_axn? class method used by call!
+        include Core::NestingTracking
       end
     end
 
     # Main entry point for action execution
     def _run
-      _tracking_nesting(self) do
-        _with_tracing do
-          _with_logging do
-            _with_timing do
-              _with_exception_handling do # Exceptions stop here; outer wrappers access result status (and must not introduce another exception layer)
-                _with_contract do # Library internals -- any failures (e.g. contract violations) *should* fail the Action::Result
-                  _with_hooks do # User hooks -- any failures here *should* fail the Action::Result
-                    call
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
+      Axn::Executor.new(self).run
     end
 
     def fail!(message = nil, **exposures)

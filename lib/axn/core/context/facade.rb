@@ -45,7 +45,7 @@ module Axn
     def action_name = @action.class.name.presence || "The action"
 
     def _define_model_field_method(field, options)
-      Axn::Util::Memoization.define_memoized_reader_method(singleton_class, field) do
+      Axn::Internal::Memoization.define_memoized_reader_method(singleton_class, field) do
         Axn::Core::FieldResolvers.resolve(
           type: :model,
           field:,

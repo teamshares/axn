@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn::Core::Tracing emit_metrics" do
+RSpec.describe "Axn::Internal::Tracing emit_metrics" do
   let(:metrics_calls) { [] }
 
   before do

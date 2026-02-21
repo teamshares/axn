@@ -669,7 +669,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       end
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Internal::Logging).to receive(:piping_error).with(
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
         "filter block for :number",
         exception: an_instance_of(RuntimeError),
       )
@@ -729,7 +729,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       mounted_action.enqueues_each :item_id, from: -> { items }, via: :id
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Internal::Logging).to receive(:piping_error).with(
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
         "via extraction (:id) for :item_id",
         exception: an_instance_of(NoMethodError),
       )

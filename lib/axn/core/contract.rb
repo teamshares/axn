@@ -224,44 +224,14 @@ module Axn
 
         private
 
-        # Filtered inbound fields only (no additional context) - used by automatic logging
+        # Filtered inbound fields only (no additional context) - used by automatic logging and execution_context
         def inputs_for_logging
           self.class._context_slice(data: @__context.__combined_data, direction: :inbound)
         end
 
-        # Filtered outbound fields only (no additional context) - used by automatic logging
+        # Filtered outbound fields only (no additional context) - used by automatic logging and execution_context
         def outputs_for_logging
           self.class._context_slice(data: @__context.__combined_data, direction: :outbound)
-        end
-
-        def _handle_early_completion_if_raised
-          yield
-          nil
-        rescue Axn::Internal::EarlyCompletion => e
-          @__context.__record_early_completion(e.message)
-          _trigger_on_success
-          true
-        end
-
-        def _with_contract(&)
-          return if _handle_early_completion_if_raised { _apply_inbound_preprocessing! }
-          return if _handle_early_completion_if_raised { _apply_defaults!(:inbound) }
-
-          _validate_contract!(:inbound)
-
-          if _handle_early_completion_if_raised(&)
-            # Even with early completion, we need to validate outbound and apply defaults
-            _apply_defaults!(:outbound)
-            _validate_contract!(:outbound)
-            return
-          end
-
-          _apply_defaults!(:outbound)
-          _validate_contract!(:outbound)
-
-          # TODO: improve location of this triggering
-          @__context.__finalize! # Mark result as finalized
-          _trigger_on_success
         end
 
         def _build_context_facade(direction)

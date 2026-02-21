@@ -148,10 +148,10 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
-        it "calls Axn::Internal::Logging.piping_error when success message callable raises" do
+        it "calls Axn::Internal::PipingError.piping_error when success message callable raises" do
           result = action.call
           expect(result).to be_ok
           expect(result.success).to eq("Action completed successfully")
@@ -175,7 +175,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
         it "falls back to next non-failing success message" do
@@ -204,7 +204,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
         it "falls back to next non-failing success message when condition is false" do
@@ -240,7 +240,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
         it "falls back to next non-failing success message" do
@@ -271,7 +271,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
         it "falls back to static message when all dynamic ones fail" do
@@ -297,7 +297,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
         it "falls back to default success message when all configured ones fail" do
@@ -725,10 +725,10 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
         end
 
-        it "calls Axn::Internal::Logging.piping_error when error message callable raises" do
+        it "calls Axn::Internal::PipingError.piping_error when error message callable raises" do
           result = action.call
           expect(result).not_to be_ok
           expect(result.exception).to be_a(RuntimeError)
@@ -747,7 +747,8 @@ RSpec.describe Axn do
   describe "custom error layers" do
     shared_examples "action with custom error layers" do
       before do
-        expect_any_instance_of(action).to receive(:_trigger_on_exception).and_call_original
+        # Verify exception handling triggers via Executor
+        expect_any_instance_of(Axn::Executor).to receive(:trigger_on_exception).and_call_original
       end
 
       it { expect(result).not_to be_ok }

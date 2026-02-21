@@ -2,8 +2,11 @@
 
 module Axn
   module Internal
-    module Logging
-      def self.piping_error(desc, exception:, action: nil)
+    # Handles errors from "piping" code - hooks, callbacks, and other non-critical
+    # code paths that shouldn't break the main action flow. Errors are logged
+    # (or raised in development if configured) rather than propagating.
+    module PipingError
+      def self.swallow(desc, exception:, action: nil)
         # If raise_piping_errors_in_dev is enabled and we're in development, raise instead of log.
         # Test and production environments always swallow the error to match production behavior.
         raise exception if Axn.config.raise_piping_errors_in_dev && Axn.config.env.development?

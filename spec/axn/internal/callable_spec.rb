@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Util::Callable do
+RSpec.describe Axn::Internal::Callable do
   describe ".call_with_desired_shape" do
     context "when callable accepts specific keyword arguments" do
       let(:callable) do

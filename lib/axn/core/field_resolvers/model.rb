@@ -38,7 +38,7 @@ module Axn
         rescue StandardError => e
           # Log the exception but don't re-raise
           finder_name = finder.is_a?(Method) ? finder.name : finder
-          Axn::Internal::Logging.piping_error("finding #{field} with #{finder_name}", exception: e)
+          Axn::Internal::PipingError.swallow("finding #{field} with #{finder_name}", exception: e)
           nil
         end
 

@@ -28,7 +28,7 @@ module Axn
         target = target_class_name.constantize
 
         # Deserialize static_args (convert GlobalID strings back to objects)
-        deserialized_static_args = Axn::Util::GlobalIdSerialization.deserialize(static_args)
+        deserialized_static_args = Axn::Internal::GlobalIdSerialization.deserialize(static_args)
 
         count = self.class.execute_iteration(
           target,
@@ -39,7 +39,7 @@ module Axn
         message_parts = ["Batch enqueued #{count} jobs for #{target.name}"]
         message_parts << "with explicit args: #{static_args.inspect}" if static_args.any?
 
-        Axn::Util::Logging.log_at_level(
+        Axn::Internal::CallLogger.log_at_level(
           self.class,
           level: :info,
           message_parts:,
@@ -77,7 +77,7 @@ module Axn
             execute_iteration_without_logging(target, **static_args)
           else
             # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
-            serialized_static_args = Axn::Util::GlobalIdSerialization.serialize(resolved_static)
+            serialized_static_args = Axn::Internal::GlobalIdSerialization.serialize(resolved_static)
 
             # Execute iteration in background via EnqueueAllOrchestrator
             call_async(target_class_name: target.name, static_args: serialized_static_args)
@@ -280,7 +280,7 @@ module Axn
               filter_result = begin
                 config.filter_block.call(item)
               rescue StandardError => e
-                Axn::Internal::Logging.piping_error(
+                Axn::Internal::PipingError.swallow(
                   "filter block for :#{config.field}",
                   exception: e,
                 )
@@ -294,7 +294,7 @@ module Axn
                       begin
                         item.public_send(config.via)
                       rescue StandardError => e
-                        Axn::Internal::Logging.piping_error(
+                        Axn::Internal::PipingError.swallow(
                           "via extraction (:#{config.via}) for :#{config.field}",
                           exception: e,
                         )

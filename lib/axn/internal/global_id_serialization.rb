@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Axn
-  module Util
+  module Internal
     # Utilities for serializing/deserializing objects with GlobalID support.
     # Used by async adapters to convert ActiveRecord objects to GlobalID strings
     # for job serialization, and back to objects when the job runs.
