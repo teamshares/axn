@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "securerandom"
-
 module Axn
   # Executor encapsulates the full execution pipeline for an action.
   # It owns all the wrapper logic that was previously spread across instance methods,
@@ -29,7 +27,7 @@ module Axn
     end
 
     def run
-      Axn::Core::NestingTracking.tracking(@action) do
+      Core::NestingTracking.tracking(@action) do
         with_tracing do
           with_logging do
             with_timing do
@@ -75,9 +73,9 @@ module Axn
 
       if defined?(OpenTelemetry)
         in_span_kwargs = { attributes: { "axn.resource" => resource } }
-        in_span_kwargs[:record_exception] = false if Axn::Internal::Tracing.supports_record_exception_option?
+        in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?
 
-        Axn::Internal::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
+        Internal::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
           instrument_block.call
         ensure
           begin
@@ -163,7 +161,7 @@ module Axn
       return if Axn.config.env.production?
       return if Util::ExecutionContext.background?
       return if Util::ExecutionContext.console?
-      return if Axn::Core::NestingTracking._current_axn_stack.size > 1
+      return if Core::NestingTracking._current_axn_stack.size > 1
 
       "\n------\n"
     end
@@ -173,10 +171,10 @@ module Axn
     # =========================================================================
 
     def with_timing
-      timing_start = Axn::Internal::Timing.now
+      timing_start = Internal::Timing.now
       yield
     ensure
-      elapsed_mils = Axn::Internal::Timing.elapsed_ms(timing_start)
+      elapsed_mils = Internal::Timing.elapsed_ms(timing_start)
       @context.send(:elapsed_time=, elapsed_mils)
     end
 
@@ -276,7 +274,7 @@ module Axn
         subfield = config.field
         parent_value = @context.provided_data[parent_field]
 
-        current_subfield_value = Axn::Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
+        current_subfield_value = Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
         preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::PreprocessingError,
           message: ->(_field, error) { "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{error.message}" },
@@ -359,7 +357,7 @@ module Axn
         subfield = config.field
         parent_value = @context.provided_data[parent_field]
 
-        next if parent_value && !Axn::Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
+        next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
 
         @context.provided_data[parent_field] = {} if parent_value.nil?
 
