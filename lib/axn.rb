@@ -18,7 +18,6 @@ require "axn/internal/memoization"
 require "axn/internal/callable"
 require "axn/internal/call_logger"
 require "axn/internal/piping_error"
-require "axn/util/execution_context"
 require "axn/internal/contract_error_handling"
 require "axn/internal/global_id_serialization"
 require "axn/internal/exception_context"
@@ -27,6 +26,9 @@ require "axn/internal/field_config"
 require "axn/internal/timing"
 require "axn/internal/tracing"
 require "axn/form_object"
+
+# Utilities (possibly useful for downstream users)
+require "axn/util/execution_context"
 
 # Extensions
 require "axn/mountable"
