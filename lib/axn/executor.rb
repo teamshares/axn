@@ -209,7 +209,7 @@ module Axn
 
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
 
-      context = Internal::GlobalExceptionReportingHelpers.build_exception_context(
+      context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
       )

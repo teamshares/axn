@@ -172,7 +172,9 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   describe ".supports_record_exception_option?" do
     before do
       # Clear the cached value
-      Axn::Internal::Tracing.remove_instance_variable(:@supports_record_exception) if Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)
+      if Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)
+        Axn::Internal::Tracing.remove_instance_variable(:@supports_record_exception)
+      end
     end
 
     it "caches the result" do
