@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/internal/logging"
+require "axn/internal/piping_error"
 
 require "axn/context"
 

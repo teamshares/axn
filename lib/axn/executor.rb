@@ -64,7 +64,7 @@ module Axn
         payload[:elapsed_time] = result.elapsed_time
         payload[:exception] = result.exception if result.exception
       rescue StandardError => e
-        Internal::Logging.piping_error("updating notification payload while tracing axn.call", action: @action, exception: e)
+        Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
       end
 
       instrument_block = proc do
@@ -91,7 +91,7 @@ module Axn
               span.status = OpenTelemetry::Trace::Status.error(error_message)
             end
           rescue StandardError => e
-            Internal::Logging.piping_error("updating OTel span while tracing axn.call", action: @action, exception: e)
+            Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
           end
         end
       else
@@ -105,7 +105,7 @@ module Axn
           Internal::Callable.call_with_desired_shape(emit_metrics_proc, kwargs: { resource:, result: })
         end
       rescue StandardError => e
-        Internal::Logging.piping_error("calling emit_metrics while tracing axn.call", action: @action, exception: e)
+        Internal::PipingError.swallow("calling emit_metrics while tracing axn.call", action: @action, exception: e)
       end
     end
 
@@ -121,7 +121,7 @@ module Axn
     end
 
     def log_before
-      Internal::LogFormatting.log_at_level(
+      Internal::CallLogger.log_at_level(
         @action_class,
         level: @action_class.log_calls_level,
         message_parts: ["About to execute"],
@@ -145,7 +145,7 @@ module Axn
     end
 
     def log_after_at_level(level)
-      Internal::LogFormatting.log_at_level(
+      Internal::CallLogger.log_at_level(
         @action_class,
         level:,
         message_parts: [
@@ -216,7 +216,7 @@ module Axn
 
       Axn.config.on_exception(exception, action: @action, context:)
     rescue StandardError => e
-      Internal::Logging.piping_error("executing on_exception hooks", action: @action, exception: e)
+      Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
     end
 
     # =========================================================================

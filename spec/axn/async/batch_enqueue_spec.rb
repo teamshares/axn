@@ -781,7 +781,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       it "logs the swallowed error via piping_error" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Internal::Logging).to receive(:piping_error).with(
+        expect(Axn::Internal::PipingError).to receive(:swallow).with(
           "filter block for :number",
           exception: an_instance_of(RuntimeError),
         )
@@ -820,7 +820,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       it "logs the swallowed error via piping_error" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Internal::Logging).to receive(:piping_error).with(
+        expect(Axn::Internal::PipingError).to receive(:swallow).with(
           "via extraction (:id) for :item_id",
           exception: an_instance_of(NoMethodError),
         )

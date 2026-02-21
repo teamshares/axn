@@ -156,12 +156,12 @@ RSpec.describe Axn::Validators::ModelValidator do
         end
       end
 
-      allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
 
       result = action.call(user_id: 123)
       expect(result).not_to be_ok
       expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect(Axn::Internal::Logging).to have_received(:piping_error).with(
+      expect(Axn::Internal::PipingError).to have_received(:swallow).with(
         "finding user with find_by_id",
         exception: an_instance_of(ArgumentError),
       ).at_least(:once)
@@ -228,11 +228,11 @@ RSpec.describe Axn::Validators::ModelValidator do
       end
 
       allow(User).to receive(:find).and_raise(ArgumentError, "Database error")
-      allow(Axn::Internal::Logging).to receive(:piping_error).and_call_original
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
 
       result = action.call(user_id: 1)
       expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect(Axn::Internal::Logging).to have_received(:piping_error).with(
+      expect(Axn::Internal::PipingError).to have_received(:swallow).with(
         "finding user with find",
         exception: an_instance_of(ArgumentError),
       ).at_least(:once)

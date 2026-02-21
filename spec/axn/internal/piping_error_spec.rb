@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Internal::Logging do
-  describe ".piping_error" do
+RSpec.describe Axn::Internal::PipingError do
+  describe ".swallow" do
     let(:exception) { StandardError.new("fail message") }
     let(:backtrace) { ["/foo/bar/baz.rb:42:in `block in call'"] }
     let(:logger) { double(:logger) }
@@ -20,11 +20,11 @@ RSpec.describe Axn::Internal::Logging do
 
       it "logs a concise warning" do
         expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
-        described_class.piping_error("foo", exception:)
+        described_class.swallow("foo", exception:)
       end
 
       it "returns nil" do
-        expect(described_class.piping_error("foo", exception:)).to be_nil
+        expect(described_class.swallow("foo", exception:)).to be_nil
       end
     end
 
@@ -46,11 +46,11 @@ RSpec.describe Axn::Internal::Logging do
           "^" * 30,
         ].join("\n")
         expect(logger).to receive(:warn).with(expected_message)
-        described_class.piping_error("foo", exception:)
+        described_class.swallow("foo", exception:)
       end
 
       it "returns nil" do
-        expect(described_class.piping_error("foo", exception:)).to be_nil
+        expect(described_class.swallow("foo", exception:)).to be_nil
       end
     end
 
@@ -59,7 +59,7 @@ RSpec.describe Axn::Internal::Logging do
       it "uses the action's logger if provided" do
         expect(custom_action).to receive(:warn).with(/Ignoring exception raised while foo/)
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
-        described_class.piping_error("foo", exception:, action: custom_action)
+        described_class.swallow("foo", exception:, action: custom_action)
       end
     end
 
@@ -76,7 +76,7 @@ RSpec.describe Axn::Internal::Logging do
 
         it "raises the exception instead of logging" do
           expect(logger).not_to receive(:warn)
-          expect { described_class.piping_error("foo", exception:) }.to raise_error(StandardError, "fail message")
+          expect { described_class.swallow("foo", exception:) }.to raise_error(StandardError, "fail message")
         end
       end
 
@@ -88,7 +88,7 @@ RSpec.describe Axn::Internal::Logging do
 
         it "logs and does not raise (matches production behavior)" do
           expect(logger).to receive(:warn)
-          expect { described_class.piping_error("foo", exception:) }.not_to raise_error
+          expect { described_class.swallow("foo", exception:) }.not_to raise_error
         end
       end
 
@@ -100,7 +100,7 @@ RSpec.describe Axn::Internal::Logging do
 
         it "logs and does not raise" do
           expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
-          expect { described_class.piping_error("foo", exception:) }.not_to raise_error
+          expect { described_class.swallow("foo", exception:) }.not_to raise_error
         end
       end
     end
@@ -113,7 +113,7 @@ RSpec.describe Axn::Internal::Logging do
 
       it "logs and does not raise" do
         expect(logger).to receive(:warn)
-        expect { described_class.piping_error("foo", exception:) }.not_to raise_error
+        expect { described_class.swallow("foo", exception:) }.not_to raise_error
       end
     end
   end

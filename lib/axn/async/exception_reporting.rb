@@ -31,7 +31,7 @@ module Axn
           # Trigger on_exception
           Axn.config.on_exception(exception, action: proxy_action, context:)
         rescue StandardError => e
-          Axn::Internal::Logging.piping_error("in #{log_prefix}", exception: e)
+          Axn::Internal::PipingError.swallow("in #{log_prefix}", exception: e)
         end
       end
 

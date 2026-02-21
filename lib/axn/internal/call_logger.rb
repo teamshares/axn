@@ -2,7 +2,9 @@
 
 module Axn
   module Internal
-    module LogFormatting
+    # Logs action execution - handles building and emitting structured log
+    # messages for action calls with context formatting and truncation.
+    module CallLogger
       extend self
 
       MAX_CONTEXT_LENGTH = 150
@@ -55,7 +57,7 @@ module Axn
 
         action_class.public_send(level, message, before:, after:, prefix:)
       rescue StandardError => e
-        Axn::Internal::Logging.piping_error(error_context, action: action_class, exception: e)
+        Axn::Internal::PipingError.swallow(error_context, action: action_class, exception: e)
       end
 
       private

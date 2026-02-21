@@ -23,9 +23,9 @@ module Axn
           rescue Axn::Internal::EarlyCompletion, Axn::Failure
             raise if allow_flow_control
 
-            Axn::Internal::Logging.piping_error(operation, action:, exception: $ERROR_INFO)
+            Axn::Internal::PipingError.swallow(operation, action:, exception: $ERROR_INFO)
           rescue StandardError => e
-            Axn::Internal::Logging.piping_error(operation, action:, exception: e)
+            Axn::Internal::PipingError.swallow(operation, action:, exception: e)
           end
 
           private

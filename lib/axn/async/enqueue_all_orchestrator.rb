@@ -39,7 +39,7 @@ module Axn
         message_parts = ["Batch enqueued #{count} jobs for #{target.name}"]
         message_parts << "with explicit args: #{static_args.inspect}" if static_args.any?
 
-        Axn::Internal::LogFormatting.log_at_level(
+        Axn::Internal::CallLogger.log_at_level(
           self.class,
           level: :info,
           message_parts:,
@@ -280,7 +280,7 @@ module Axn
               filter_result = begin
                 config.filter_block.call(item)
               rescue StandardError => e
-                Axn::Internal::Logging.piping_error(
+                Axn::Internal::PipingError.swallow(
                   "filter block for :#{config.field}",
                   exception: e,
                 )
@@ -294,7 +294,7 @@ module Axn
                       begin
                         item.public_send(config.via)
                       rescue StandardError => e
-                        Axn::Internal::Logging.piping_error(
+                        Axn::Internal::PipingError.swallow(
                           "via extraction (:#{config.via}) for :#{config.field}",
                           exception: e,
                         )

@@ -104,11 +104,11 @@ module Axn
         ActiveSupport::Notifications.instrument("axn.call_async", payload)
       rescue StandardError => e
         # Don't raise in notification emission to avoid interfering with async enqueueing
-        Axn::Internal::Logging.piping_error("emitting notification for axn.call_async", action_class: self, exception: e)
+        Axn::Internal::PipingError.swallow("emitting notification for axn.call_async", action_class: self, exception: e)
       end
 
       def _log_async_invocation(kwargs, adapter_name:)
-        Axn::Internal::LogFormatting.log_at_level(
+        Axn::Internal::CallLogger.log_at_level(
           self,
           level: log_calls_level,
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
