@@ -234,8 +234,6 @@ module Axn
           self.class._context_slice(data: @__context.__combined_data, direction: :outbound)
         end
 
-        # _with_contract and _handle_early_completion_if_raised removed - now handled by Axn::Executor
-
         def _build_context_facade(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 

@@ -22,8 +22,6 @@ module Axn
           self.log_errors_level = level.presence
         end
       end
-
-      # InstanceMethods removed - logging is now handled by Axn::Executor
     end
   end
 end

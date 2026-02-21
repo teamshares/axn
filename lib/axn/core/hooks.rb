@@ -64,8 +64,6 @@ module Axn
           hooks.each { |hook| self.after_hooks = [hook] + after_hooks }
         end
       end
-
-      # Instance methods removed - hooks execution is now handled by Axn::Executor
     end
   end
 end
