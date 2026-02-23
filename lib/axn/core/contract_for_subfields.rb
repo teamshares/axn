@@ -5,7 +5,9 @@ require "axn/core/validation/subfields"
 module Axn
   module Core
     module ContractForSubfields
-      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess, :default)
+      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess, :default, :metadata) do
+        def description = metadata[:description]
+      end
 
       def self.included(base)
         base.class_eval do
@@ -26,7 +28,7 @@ module Axn
           default: nil,
           preprocess: nil,
           sensitive: false,
-
+          metadata: {},
           **validations
         )
           unless internal_field_configs.map(&:field).include?(on) || subfield_configs.map(&:field).include?(on)
@@ -37,7 +39,7 @@ module Axn
           raise ArgumentError, "expects does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
 
           _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                           **validations).tap do |configs|
+                                           metadata:, **validations).tap do |configs|
             duplicated = subfield_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -58,6 +60,7 @@ module Axn
           preprocess: nil,
           sensitive: false,
           default: nil,
+          metadata: {},
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -65,7 +68,7 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_subfield_reader(field, on:, validations: parsed_validations) if readers
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:)
+            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:)
           end
         end
 

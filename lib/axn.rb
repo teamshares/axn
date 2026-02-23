@@ -7,6 +7,7 @@ require "active_support/concern"
 require "axn/version"
 require "axn/factory"
 require "axn/configuration"
+require "axn/extension_config"
 require "axn/exceptions"
 
 # The core implementation
@@ -38,6 +39,10 @@ require "axn/async"
 require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 
 module Axn
+  def self.extension_config
+    @extension_config ||= ExtensionConfig.new
+  end
+
   def self.included(base)
     base.class_eval do
       include Core

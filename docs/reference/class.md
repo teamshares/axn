@@ -101,6 +101,16 @@ end
 Defaults work the same way for subfields as they do for top-level fields - they are applied when the subfield is missing or explicitly `nil`, but not for blank values.
 :::
 
+#### Disabling subfield readers
+
+By default, subfields create top-level reader methods (e.g., `random` in the example above). You can disable this with `readers: false`:
+
+```ruby
+expects :data, type: Hash, on: :event, readers: false
+```
+
+This is useful when you have duplicate sub-keys across different parent fields, or when you want to access subfields only through the parent. Note that `readers: false` is only valid for subfields (i.e., when using `on:`) — using it on top-level fields will raise an `ArgumentError`.
+
 #### `preprocess`
 `expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
 
