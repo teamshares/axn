@@ -40,9 +40,7 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          if readers == false && on.nil?
-            raise ArgumentError, "readers: false is only valid for subfields (use with on:)"
-          end
+          raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
 
           validations, metadata = _partition_field_options(fields, **)
 
