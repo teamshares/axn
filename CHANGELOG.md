@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.4.2
 * [FEAT] Add extensible field metadata support for `expects`/`exposes`:
   * **New** `Axn.extension_config` registry for library-facing configuration (separate from app-facing `Axn.config`)
   * **New** `description:` metadata option for field declarations (e.g., `expects :name, description: "The user's name"`)
