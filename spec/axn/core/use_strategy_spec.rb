@@ -67,8 +67,9 @@ RSpec.describe Axn::Core::UseStrategy do
       end
 
       it "calls configure method with config and block" do
+        config = { option1: "value1", option2: "value2" }
         expected = <<~OUTPUT
-          Configure called with config: {:option1=>"value1", :option2=>"value2"}
+          Configure called with config: #{config.inspect}
           Configure called with block: block result
           Configure strategy included!
         OUTPUT
@@ -79,9 +80,10 @@ RSpec.describe Axn::Core::UseStrategy do
       end
 
       it "calls configure method with only config" do
+        config = { option1: "value1" }
         expect do
           test_action.use(:setup_strategy, option1: "value1")
-        end.to output("Configure called with config: {:option1=>\"value1\"}\nConfigure called with block: \nConfigure strategy included!\n").to_stdout
+        end.to output("Configure called with config: #{config.inspect}\nConfigure called with block: \nConfigure strategy included!\n").to_stdout
       end
 
       it "calls configure method with only block" do

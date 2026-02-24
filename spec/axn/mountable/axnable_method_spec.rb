@@ -498,7 +498,7 @@ RSpec.describe Axn do
             test_method # This should raise an error
           end
 
-          expect { client_class.test_with_client_call! }.to raise_error(NameError, /undefined local variable or method `test_method'/)
+          expect { client_class.test_with_client_call! }.to raise_error(NameError, /undefined local variable or method ['`]test_method['`]/)
         end
       end
 
@@ -573,7 +573,7 @@ RSpec.describe Axn do
 
         it "does not have access to target methods by default" do
           client = client_class.send(:new)
-          expect { client.call }.to raise_error(NameError, /undefined local variable or method `test_method'/)
+          expect { client.call }.to raise_error(NameError, /undefined local variable or method ['`]test_method['`]/)
         end
       end
 
@@ -605,7 +605,7 @@ RSpec.describe Axn do
           result = client_class.test_with_client_call
           expect(result).not_to be_ok
           expect(result.exception).to be_a(NameError)
-          expect(result.exception.message).to match(/undefined local variable or method `test_method'/)
+          expect(result.exception.message).to match(/undefined local variable or method ['`]test_method['`]/)
         end
       end
 
@@ -704,7 +704,7 @@ RSpec.describe Axn do
             Module.new do
               include Axn
             end
-          end.to raise_error(NoMethodError, /undefined method `class_attribute' for/)
+          end.to raise_error(NoMethodError, /undefined method ['`]class_attribute['`] for/)
         end
 
         context "with explicit module superclass" do
