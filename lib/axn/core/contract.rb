@@ -19,27 +19,37 @@ module Axn
         end
       end
 
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive)
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata) do
+        def description = metadata[:description]
+      end
 
       module ClassMethods
         def expects(
           *fields,
           on: nil,
+          readers: true,
           allow_blank: false,
           allow_nil: false,
           optional: false,
           default: nil,
           preprocess: nil,
           sensitive: false,
-          **validations
+          **
         )
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations) if on.present?
+          raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, **validations).tap do |configs|
+          validations, metadata = _partition_field_options(fields, **)
+
+          if on.present?
+            return _expects_subfields(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                               **validations)
+          end
+
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -55,13 +65,15 @@ module Axn
           optional: false,
           default: nil,
           sensitive: false,
-          **validations
+          **
         )
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, **validations).tap do |configs|
+          validations, metadata = _partition_field_options(fields, **)
+
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             duplicated = external_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -118,6 +130,33 @@ module Axn
           __action__
         ].freeze
 
+        KNOWN_VALIDATION_KEYS = Set.new(%i[
+                                          absence acceptance comparison confirmation exclusion format
+                                          inclusion length numericality presence uniqueness
+                                          type model validate
+                                          if unless on message strict
+                                        ]).freeze
+
+        def _partition_field_options(fields, **options)
+          metadata_keys = Axn.extension_config.registered_field_metadata_keys
+          metadata = options.slice(*metadata_keys)
+          validations = options.except(*metadata_keys)
+
+          unknown = validations.keys.reject { |k| KNOWN_VALIDATION_KEYS.include?(k) }
+          if unknown.any?
+            raise ArgumentError,
+                  "Unknown key(s) #{unknown.map(&:inspect).join(', ')} in field declaration. " \
+                  "Not a recognized validation or registered field metadata key."
+          end
+
+          if metadata.present? && fields.size > 1
+            raise ArgumentError,
+                  "Field metadata (#{metadata.keys.join(', ')}) can only be provided when declaring a single field"
+          end
+
+          [validations, metadata]
+        end
+
         def _parse_field_configs(
           *fields,
           allow_blank: false,
@@ -126,6 +165,7 @@ module Axn
           default: nil,
           preprocess: nil,
           sensitive: false,
+          metadata: {},
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -133,7 +173,7 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_field_reader(field)
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:)
+            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:)
           end
         end
 

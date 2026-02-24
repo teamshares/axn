@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+* N/A
+
+## 0.1.0-alpha.4.2
+* [FEAT] Add extensible field metadata support for `expects`/`exposes`:
+  * **New** `Axn.extension_config` registry for library-facing configuration (separate from app-facing `Axn.config`)
+  * **New** `description:` metadata option for field declarations (e.g., `expects :name, description: "The user's name"`)
+  * **New** `FieldConfig#metadata` and `SubfieldConfig#metadata` attributes with `#description` accessor
+  * **New** `Axn.extension_config.register_field_metadata_key(:key)` for wrapper gems to register custom metadata keys
+  * **New** Unknown validation keys now raise `ArgumentError` (catches typos like `nummericality:`)
+  * **New** Metadata can only be provided when declaring a single field (multi-field + metadata raises `ArgumentError`)
+* [FEAT] Add `readers:` option validation: `readers: false` now raises `ArgumentError` when used without `on:` (only valid for subfields)
 * [BUGFIX] `set_default_async(:sidekiq)` now properly triggers `AutoConfigure.register!`
 * [BREAKING] Refactored context API for exception reporting and handlers:
   * **Removed** `context_for_logging(direction)` instance method
