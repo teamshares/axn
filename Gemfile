@@ -18,4 +18,5 @@ gem "benchmark-ips", "~> 2.10"
 gem "memory_profiler", "~> 1.0"
 
 gem "rake", "~> 13.0"
+gem "rdoc", "~> 7.2" # Pin to match Ruby default gem and avoid dual-load warnings during release
 gem "rubocop", "~> 1.21"
