@@ -65,19 +65,25 @@ module Axn
       inspection_filter.filter_param(field, inspected_value)
     end
 
-    def inspection_filter = action.class.inspection_filter
+    def inspection_filter
+      @inspection_filter ||= if action.class._has_dynamic_sensitive_fields?
+                               action.class._build_instance_filter(action)
+                             else
+                               action.class.inspection_filter
+                             end
+    end
 
     def sensitive_subfields?(field)
-      action.subfield_configs.any? { |config| config.on == field && config.sensitive }
+      action.subfield_configs.any? do |config|
+        config.on == field && action.class._resolve_sensitive_value(config.sensitive, action)
+      end
     end
 
     def filter_subfields(field, value)
-      # Build a nested structure with subfield paths for filtering
       nested_data = { field => value }
 
-      # Create a filter with the subfield paths
       sensitive_subfield_paths = action.subfield_configs
-                                       .select { |config| config.on == field && config.sensitive }
+                                       .select { |config| config.on == field && action.class._resolve_sensitive_value(config.sensitive, action) }
                                        .map { |config| "#{field}.#{config.field}" }
 
       return value if sensitive_subfield_paths.empty?

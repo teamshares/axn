@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-* N/A
+* [FEAT] Add dynamic `sensitive:` option support for `expects` and `exposes` fields - accepts procs or symbols that are evaluated at runtime against the action instance, allowing conditional sensitivity based on input values (e.g., `exposes :data, sensitive: -> { redact_mode }`)
 
 ## 0.1.0-alpha.4.2
 * [FEAT] Add extensible field metadata support for `expects`/`exposes`:
