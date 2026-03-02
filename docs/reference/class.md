@@ -20,6 +20,58 @@ Both `expects` and `exposes` support the same core options:
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
 | anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model)
 
+### Dynamic `sensitive` fields
+
+The `sensitive` option can accept a proc or symbol in addition to a boolean, allowing you to conditionally filter fields based on runtime values:
+
+```ruby
+class MyAction
+  include Axn
+
+  expects :include_pii, type: :boolean
+  expects :ssn, sensitive: -> { !include_pii }
+
+  exposes :api_response, sensitive: :should_redact?
+
+  def call
+    expose api_response: fetch_data
+  end
+
+  private
+
+  def should_redact?
+    !include_pii || api_response[:contains_secrets]
+  end
+end
+
+# When include_pii is false, ssn is filtered
+MyAction.call(include_pii: false, ssn: "123-45-6789")
+#=> inputs: { ssn: [FILTERED], include_pii: false }
+
+# When include_pii is true, ssn is visible
+MyAction.call(include_pii: true, ssn: "123-45-6789")
+#=> inputs: { ssn: "123-45-6789", include_pii: true }
+```
+
+The callable receives no arguments and is evaluated via `instance_exec`, so it has access to:
+- All `expects` field values (via their reader methods)
+- Exposed values (for `exposes` fields)
+- Any instance methods defined on the action
+
+::: warning Timing: sensitive evaluated before defaults
+For `expects` fields, the `sensitive` callable is evaluated **before** defaults are applied. This means if your sensitivity logic depends on another field's value, that field should either be required or you should handle `nil` explicitly:
+
+```ruby
+# CAUTION: mode may be nil if caller doesn't provide it
+expects :mode, default: "public"
+expects :api_key, sensitive: -> { mode != "debug" }  # mode could be nil here!
+
+# SAFER: handle nil explicitly
+expects :api_key, sensitive: -> { mode.nil? || mode != "debug" }
+```
+
+This is because automatic logging of inputs happens before defaults are applied in the execution flow. For `exposes` fields, this is not a concern since output logging happens after the action completes.
+:::
 
 ### Validation details
 

@@ -87,7 +87,42 @@ module Axn
         end
 
         def sensitive_fields
-          (internal_field_configs + external_field_configs + subfield_configs).select(&:sensitive).map(&:field)
+          _static_sensitive_fields
+        end
+
+        def _static_sensitive_fields
+          (internal_field_configs + external_field_configs + subfield_configs).select { |c| c.sensitive == true }.map(&:field)
+        end
+
+        def _has_dynamic_sensitive_fields?
+          @_has_dynamic_sensitive_fields ||= (internal_field_configs + external_field_configs + subfield_configs).any? do |config|
+            config.sensitive.is_a?(Proc) || config.sensitive.is_a?(Symbol)
+          end
+        end
+
+        def _resolve_sensitive_fields(action_instance)
+          return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
+
+          (internal_field_configs + external_field_configs + subfield_configs).select do |config|
+            _resolve_sensitive_value(config.sensitive, action_instance)
+          end.map(&:field)
+        end
+
+        def _resolve_sensitive_value(sensitive, action_instance)
+          case sensitive
+          when true, false
+            sensitive
+          when Symbol
+            !!action_instance.send(sensitive)
+          when Proc
+            !!action_instance.instance_exec(&sensitive)
+          else
+            !!sensitive
+          end
+        end
+
+        def _build_instance_filter(action_instance)
+          ActiveSupport::ParameterFilter.new(_resolve_sensitive_fields(action_instance))
         end
 
         def _declared_fields(direction)
@@ -104,8 +139,14 @@ module Axn
 
         # Internal method for filtering context data by direction
         # Used by instance methods (inputs_for_logging, outputs_for_logging) and async exception reporting
-        def _context_slice(data:, direction: nil)
-          inspection_filter.filter(data.slice(*_declared_fields(direction)))
+        # When action_instance is provided, dynamic sensitive fields are resolved against that instance.
+        def _context_slice(data:, direction: nil, action_instance: nil)
+          filter = if action_instance && _has_dynamic_sensitive_fields?
+                     _build_instance_filter(action_instance)
+                   else
+                     inspection_filter
+                   end
+          filter.filter(data.slice(*_declared_fields(direction)))
         end
 
         private
@@ -266,12 +307,12 @@ module Axn
 
         # Filtered inbound fields only (no additional context) - used by automatic logging and execution_context
         def inputs_for_logging
-          self.class._context_slice(data: @__context.__combined_data, direction: :inbound)
+          self.class._context_slice(data: @__context.__combined_data, direction: :inbound, action_instance: self)
         end
 
         # Filtered outbound fields only (no additional context) - used by automatic logging and execution_context
         def outputs_for_logging
-          self.class._context_slice(data: @__context.__combined_data, direction: :outbound)
+          self.class._context_slice(data: @__context.__combined_data, direction: :outbound, action_instance: self)
         end
 
         def _build_context_facade(direction)
