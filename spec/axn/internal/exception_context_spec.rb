@@ -162,11 +162,12 @@ RSpec.describe Axn::Internal::ExceptionContext do
           def self.name = "FakeRecord"
 
           def to_global_id
-            raise ::URI::GID::MissingModelIdError, "Unable to create a GlobalID without a model id"
+            raise URI::GID::MissingModelIdError, "Unable to create a GlobalID without a model id"
           end
 
           def id = nil
-          def respond_to?(method, include_private = false)
+
+          def respond_to?(method, include_private: false)
             %i[to_global_id id].include?(method) || super
           end
 
@@ -180,7 +181,8 @@ RSpec.describe Axn::Internal::ExceptionContext do
           define_method(:to_global_id) { fake_gid }
           def id = 42
           def self.name = "FakeRecord"
-          def respond_to?(method, include_private = false)
+
+          def respond_to?(method, include_private: false)
             %i[to_global_id id].include?(method) || super
           end
         end
