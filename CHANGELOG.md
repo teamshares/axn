@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [BUGFIX] `ExceptionContext.build` no longer raises `URI::GID::MissingModelIdError` when an exposed or expected value is an unpersisted ActiveRecord record. The formatter now renders such values as `#<ClassName (unpersisted)>` and the optional retry command falls back to `inspect` instead of generating `Model.find(nil)`.
 * [FEAT] Add dynamic `sensitive:` option support for `expects` and `exposes` fields - accepts procs or symbols that are evaluated at runtime against the action instance, allowing conditional sensitivity based on input values (e.g., `exposes :data, sensitive: -> { redact_mode }`)
 
 ## 0.1.0-alpha.4.2

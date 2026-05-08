@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "globalid"
+
 RSpec.describe Axn::Internal::ExceptionContext do
   describe ".build" do
     it "builds context with formatted inputs and outputs" do
@@ -151,6 +153,112 @@ RSpec.describe Axn::Internal::ExceptionContext do
         expect(result[:retry_command]).to eq("NoExpectationsAction.call()")
       ensure
         Axn.config._include_retry_command_in_exceptions = original_value
+      end
+    end
+
+    context "with unpersisted ActiveRecord-like objects" do
+      let(:unpersisted_class) do
+        Class.new do
+          def self.name = "FakeRecord"
+
+          def to_global_id
+            raise URI::GID::MissingModelIdError, "Unable to create a GlobalID without a model id"
+          end
+
+          def id = nil
+
+          def respond_to?(method, include_private: false)
+            %i[to_global_id id].include?(method) || super
+          end
+
+          def inspect = "#<FakeRecord (new record)>"
+        end
+      end
+
+      let(:persisted_class) do
+        fake_gid = double("GlobalID", to_s: "gid://app/FakeRecord/42")
+        Class.new do
+          define_method(:to_global_id) { fake_gid }
+          def id = 42
+          def self.name = "FakeRecord"
+
+          def respond_to?(method, include_private: false)
+            %i[to_global_id id].include?(method) || super
+          end
+        end
+      end
+
+      it "does not raise when an input is an unpersisted AR-like object" do
+        unpersisted = unpersisted_class.new
+
+        action_class = build_axn do
+          expects :record
+
+          def call; end
+        end
+
+        stub_const("TestAction", action_class)
+        instance = TestAction.new(record: unpersisted)
+
+        expect { described_class.build(action: instance) }.not_to raise_error
+      end
+
+      it "formats an unpersisted AR-like input as an informative string" do
+        unpersisted = unpersisted_class.new
+
+        action_class = build_axn do
+          expects :record
+
+          def call; end
+        end
+
+        stub_const("TestAction", action_class)
+        instance = TestAction.new(record: unpersisted)
+
+        result = described_class.build(action: instance)
+
+        expect(result[:inputs][:record]).to eq("#<FakeRecord (unpersisted)>")
+      end
+
+      it "still serializes a persisted AR-like input as a GID string" do
+        persisted = persisted_class.new
+
+        action_class = build_axn do
+          expects :record
+
+          def call; end
+        end
+
+        stub_const("TestAction", action_class)
+        instance = TestAction.new(record: persisted)
+
+        result = described_class.build(action: instance)
+
+        expect(result[:inputs][:record]).to eq("gid://app/FakeRecord/42")
+      end
+
+      it "generates retry_command using inspect for an unpersisted AR-like input" do
+        unpersisted = unpersisted_class.new
+
+        action_class = build_axn do
+          expects :record
+
+          def call; end
+        end
+
+        stub_const("TestAction", action_class)
+        instance = TestAction.new(record: unpersisted)
+
+        original = Axn.config._include_retry_command_in_exceptions
+        begin
+          Axn.config._include_retry_command_in_exceptions = true
+
+          result = described_class.build(action: instance)
+
+          expect(result[:retry_command]).to eq("TestAction.call(record: #{unpersisted.inspect})")
+        ensure
+          Axn.config._include_retry_command_in_exceptions = original
+        end
       end
     end
 

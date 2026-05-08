@@ -82,7 +82,11 @@ module Axn
         # Format a single non-container value for error tracking.
         def format_single_value(value)
           if value.respond_to?(:to_global_id)
-            value.to_global_id.to_s
+            begin
+              value.to_global_id.to_s
+            rescue ::URI::GID::MissingModelIdError
+              "#<#{value.class.name} (unpersisted)>"
+            end
           elsif defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters)
             format_hash_values(value.to_unsafe_h)
           elsif value.is_a?(Axn::FormObject)
@@ -117,9 +121,11 @@ module Axn
           # Handle ActiveRecord model instances
           if value.respond_to?(:to_global_id) && value.respond_to?(:id) && !value.is_a?(Class)
             begin
-              model_class = value.class.name
               id = value.id
-              return "#{model_class}.find(#{id.inspect})"
+              if id
+                model_class = value.class.name
+                return "#{model_class}.find(#{id.inspect})"
+              end
             rescue StandardError
               # If accessing id fails, fall through to default behavior
             end
