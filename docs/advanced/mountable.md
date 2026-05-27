@@ -17,6 +17,39 @@ When you attach an action to a class, you get multiple ways to access it:
 1. **Direct method calls** on the class (e.g., `SomeClass.foo`), which depend on how you told it to mount
 3. **Namespace method calls** (e.g., `SomeClass::Axns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
 
+## Host Types
+
+### Classes (`include Axn`)
+
+The typical host is a class that also `include Axn`. It gets the full mounting DSL, inheritable descriptors (subclasses receive mounts from their parent), and the `::Axns` namespace:
+
+```ruby
+class UserService
+  include Axn
+
+  mount_axn(:create_user) { |email:| expose :user_id, User.create!(email:).id }
+end
+```
+
+### Plain namespace modules (`include Axn::Mountable`)
+
+If your host is a namespace module — not itself an action — include `Axn::Mountable` directly instead:
+
+```ruby
+module MyGem
+  include Axn::Mountable
+
+  mount_axn :process, MyGem::ProcessAction
+end
+
+MyGem.process(...)     # => Axn::Result
+MyGem.process!(...)    # raises on failure
+MyGem.process_async(...)
+MyGem::Axns.process(...)
+```
+
+Mounting an existing named class on any host preserves the class's original `.name` — it will not be overwritten with the `::Axns::` namespace path.
+
 ## Attachment Strategies
 
 ### `axn` Strategy

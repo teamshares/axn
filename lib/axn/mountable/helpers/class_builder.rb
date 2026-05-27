@@ -67,7 +67,9 @@ module Axn
         end
 
         def configure_class_name_and_constant(axn_klass, name, axn_namespace, target)
-          configure_class_name(axn_klass, name, axn_namespace) if name.present?
+          # Skip renaming when mounting an existing named class — only anonymous (block-built) classes
+          # should have their .name overwritten with the namespace-qualified name.
+          configure_class_name(axn_klass, name, axn_namespace) if name.present? && !named_existing_class?
           register_constant(axn_klass, name, axn_namespace, target) if should_register_constant?(axn_namespace)
         end
 
@@ -78,6 +80,10 @@ module Axn
 
         def should_register_constant?(axn_namespace)
           axn_namespace&.name&.end_with?("::Axns")
+        end
+
+        def named_existing_class?
+          @descriptor.existing_axn_klass&.name.present?
         end
 
         def create_superclass_for_inherit_mode(target, inherit_config)
