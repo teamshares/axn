@@ -27,7 +27,7 @@ The typical host is a class that also `include Axn`. It gets the full mounting D
 class UserService
   include Axn
 
-  mount_axn(:create_user) { |email:| expose :user_id, User.create!(email:).id }
+  mount_axn(:create_user) { |email:| User.create!(email:) }
 end
 ```
 
@@ -162,8 +162,8 @@ class DataProcessor
   async :sidekiq
 
   mount_axn(:process_data, async: :sidekiq) do |data:|
-    # Processing logic
-    expose :processed_count, data.count
+    # Processing logic; return value is auto-exposed as result.value
+    data.count
   end
 end
 
@@ -217,13 +217,12 @@ class UserService
   # Inherits lifecycle (hooks, callbacks, messages, async) but not fields
   mount_axn :create_user do
     # Will run log_start before and track_success after
-    expose :user_id, 123
+    User.create!(email: "example@example.com")
   end
 
   # Completely independent - no inheritance
   step :validate_user do
     # Will NOT run log_start or track_success
-    expose :valid, true
   end
 end
 ```
