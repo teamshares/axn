@@ -17,6 +17,39 @@ When you attach an action to a class, you get multiple ways to access it:
 1. **Direct method calls** on the class (e.g., `SomeClass.foo`), which depend on how you told it to mount
 3. **Namespace method calls** (e.g., `SomeClass::Axns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
 
+## Host Types
+
+### Classes (`include Axn`)
+
+The typical host is a class that also `include Axn`. It gets the full mounting DSL, inheritable descriptors (subclasses receive mounts from their parent), and the `::Axns` namespace:
+
+```ruby
+class UserService
+  include Axn
+
+  mount_axn(:create_user) { |email:| User.create!(email:) }
+end
+```
+
+### Plain namespace modules (`include Axn::Mountable`)
+
+If your host is a namespace module — not itself an action — include `Axn::Mountable` directly instead:
+
+```ruby
+module MyGem
+  include Axn::Mountable
+
+  mount_axn :process, MyGem::ProcessAction
+end
+
+MyGem.process(...)     # => Axn::Result
+MyGem.process!(...)    # raises on failure
+MyGem.process_async(...)
+MyGem::Axns.process(...)
+```
+
+Mounting an existing named class on any host preserves the class's original `.name` — it will not be overwritten with the `::Axns::` namespace path.
+
 ## Attachment Strategies
 
 ### `axn` Strategy
@@ -28,15 +61,14 @@ class UserService
   include Axn
 
   mount_axn(:create_user) do |email:, name:|
-    user = User.create!(email: email, name: name)
-    expose :user_id, user.id
+    User.create!(email: email, name: name)
   end
 end
 
 # Usage
 result = UserService.create_user(email: "user@example.com", name: "John")
 if result.ok?
-  puts "User created with ID: #{result.user_id}"
+  puts "User created: #{result.value.inspect}"
 else
   puts "Error: #{result.error}"
 end
@@ -130,8 +162,8 @@ class DataProcessor
   async :sidekiq
 
   mount_axn(:process_data, async: :sidekiq) do |data:|
-    # Processing logic
-    expose :processed_count, data.count
+    # Processing logic; return value is auto-exposed as result.value
+    data.count
   end
 end
 
@@ -185,13 +217,12 @@ class UserService
   # Inherits lifecycle (hooks, callbacks, messages, async) but not fields
   mount_axn :create_user do
     # Will run log_start before and track_success after
-    expose :user_id, 123
+    User.create!(email: "example@example.com")
   end
 
   # Completely independent - no inheritance
   step :validate_user do
     # Will NOT run log_start or track_success
-    expose :valid, true
   end
 end
 ```
@@ -427,8 +458,7 @@ class UserService
   include Axn
 
   mount_axn(:create) do |email:, name:|
-    user = User.create!(email: email, name: name)
-    expose :user_id, user.id
+    User.create!(email: email, name: name)
   end
 
   mount_axn_method(:find_by_email) do |email:|

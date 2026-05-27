@@ -597,6 +597,32 @@ RSpec.describe Axn do
       end
     end
 
+    describe "existing named class .name preservation" do
+      before do
+        stub_const("MyNamedAction", build_axn do
+          exposes :output
+          def call = expose(output: "ok")
+        end)
+        client.mount_axn :my_action, MyNamedAction
+      end
+
+      it "does not clobber the mounted class's .name" do
+        expect(MyNamedAction.name).to eq("MyNamedAction")
+      end
+
+      it "still registers the constant in the Axns namespace" do
+        expect(client::Axns.const_defined?(:MyAction)).to be(true)
+      end
+
+      it "the Axns constant is the same object as the mounted class" do
+        expect(client::Axns::MyAction).to be(MyNamedAction)
+      end
+
+      it "delegates correctly despite no rename" do
+        expect(client.my_action.output).to eq("ok")
+      end
+    end
+
     describe "__axn_mounted_to__" do
       include_examples "__axn_mounted_to__ behavior", :mount_axn
 
@@ -641,6 +667,71 @@ RSpec.describe Axn do
           inherited_axn = child_class.const_get(:Axns).const_get(:ParentAction)
           expect(inherited_axn.__axn_mounted_to__).to eq(child_class)
         end
+      end
+    end
+  end
+
+  describe "module host (include Axn::Mountable)" do
+    let(:action_class) do
+      stub_const("HostSpec::MyAction", build_axn do
+        exposes :output
+        def call = expose(output: "from action")
+      end)
+    end
+
+    let(:host) { Module.new { include Axn::Mountable } }
+
+    it "succeeds on a plain module" do
+      expect { Module.new { include Axn::Mountable } }.not_to raise_error
+    end
+
+    it "initialises _mounted_axn_descriptors to []" do
+      expect(host._mounted_axn_descriptors).to eq([])
+    end
+
+    context "with an existing named action class" do
+      before { host.mount_axn :my_action, action_class }
+
+      it "defines .my_action on the module" do
+        expect(host).to respond_to(:my_action)
+      end
+
+      it "defines .my_action! on the module" do
+        expect(host).to respond_to(:my_action!)
+      end
+
+      it "defines .my_action_async on the module" do
+        expect(host).to respond_to(:my_action_async)
+      end
+
+      it "delegates .my_action to the class's .call" do
+        result = host.my_action
+        expect(result).to be_ok
+        expect(result.output).to eq("from action")
+      end
+
+      it "delegates .my_action! to the class's .call!" do
+        expect(host.my_action!.output).to eq("from action")
+      end
+
+      it "preserves the mounted class's original .name" do
+        expect(action_class.name).to eq("HostSpec::MyAction")
+      end
+
+      it "registers an Axns namespace on the host" do
+        expect(host.const_defined?(:Axns)).to be(true)
+      end
+
+      it "registers the class under Axns with the correct constant name" do
+        expect(host::Axns.const_defined?(:MyAction)).to be(true)
+      end
+
+      it "the Axns constant is the same object as the mounted class" do
+        expect(host::Axns::MyAction).to be(action_class)
+      end
+
+      it "Axns.my_action also delegates correctly" do
+        expect(host::Axns.my_action.output).to eq("from action")
       end
     end
   end
