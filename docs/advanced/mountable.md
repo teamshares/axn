@@ -61,15 +61,14 @@ class UserService
   include Axn
 
   mount_axn(:create_user) do |email:, name:|
-    user = User.create!(email: email, name: name)
-    expose :user_id, user.id
+    User.create!(email: email, name: name)
   end
 end
 
 # Usage
 result = UserService.create_user(email: "user@example.com", name: "John")
 if result.ok?
-  puts "User created with ID: #{result.user_id}"
+  puts "User created: #{result.value.inspect}"
 else
   puts "Error: #{result.error}"
 end
@@ -460,8 +459,7 @@ class UserService
   include Axn
 
   mount_axn(:create) do |email:, name:|
-    user = User.create!(email: email, name: name)
-    expose :user_id, user.id
+    User.create!(email: email, name: name)
   end
 
   mount_axn_method(:find_by_email) do |email:|
