@@ -599,7 +599,10 @@ RSpec.describe Axn do
 
     describe "existing named class .name preservation" do
       before do
-        stub_const("MyNamedAction", build_axn { exposes :output; def call = expose(output: "ok") })
+        stub_const("MyNamedAction", build_axn do
+          exposes :output
+          def call = expose(output: "ok")
+        end)
         client.mount_axn :my_action, MyNamedAction
       end
 
