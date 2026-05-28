@@ -145,23 +145,27 @@ RSpec.describe Axn do
       end
     end
 
-    context "is accessible on internal context" do
-      let(:action) do
-        build_axn do
+    context "exposed-only fields are not directly accessible on the action instance" do
+      it "raises NoMethodError when accessed bare inside call (use result.field instead)" do
+        action = build_axn do
           exposes :foo, default: "bar"
 
           def call
-            puts "Foo is: #{foo}"
+            foo # no direct reader — intentionally raises
           end
         end
+
+        result = action.call
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(NameError)
       end
 
-      subject { action.call }
+      it "result.foo still returns the default when no explicit expose call is made" do
+        action = build_axn do
+          exposes :foo, default: "bar"
+        end
 
-      it "is accessible" do
-        # TODO: if we apply defaults earlier, this would say bar
-        expect { subject }.to output("Foo is: \n").to_stdout
-        expect(subject).to be_ok
+        expect(action.call.foo).to eq("bar")
       end
     end
 

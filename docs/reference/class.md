@@ -40,7 +40,7 @@ class MyAction
   private
 
   def should_redact?
-    !include_pii || api_response[:contains_secrets]
+    !include_pii || result.api_response[:contains_secrets]
   end
 end
 
@@ -54,8 +54,8 @@ MyAction.call(include_pii: true, ssn: "123-45-6789")
 ```
 
 The callable receives no arguments and is evaluated via `instance_exec`, so it has access to:
-- All `expects` field values (via their reader methods)
-- Exposed values (for `exposes` fields)
+- All `expects` field values (via their reader methods, e.g., `include_pii`)
+- Exposed values via `result.field` (e.g., `result.api_response`) — bare field names are **not** available for `exposes`-only fields
 - Any instance methods defined on the action
 
 ::: warning Timing: sensitive evaluated before defaults

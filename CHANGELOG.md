@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+* [BREAKING] `exposes` no longer defines a direct reader method on the action instance. Exposed fields must be accessed via `result.field` (e.g., `result.greeting`). `expects` readers are unaffected. User-defined methods with the same name as an exposed field are preserved (DefaultCall still calls them). Use `result.field` in `success`/`error` message callables and `sensitive:` procs to access output values.
+* [FEAT] Add boolean predicate readers for `expects` and `exposes`: `expects :enabled, type: :boolean` defines `enabled?` on the action instance; `exposes :enabled, type: :boolean` defines `result.enabled?`.
 * [BUGFIX] `ExceptionContext.build` no longer raises `URI::GID::MissingModelIdError` when an exposed or expected value is an unpersisted ActiveRecord record. The formatter now renders such values as `#<ClassName (unpersisted)>` and the optional retry command falls back to `inspect` instead of generating `Model.find(nil)`.
 * [FEAT] Add dynamic `sensitive:` option support for `expects` and `exposes` fields - accepts procs or symbols that are evaluated at runtime against the action instance, allowing conditional sensitivity based on input values (e.g., `exposes :data, sensitive: -> { redact_mode }`)
 

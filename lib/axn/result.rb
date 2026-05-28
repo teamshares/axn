@@ -109,7 +109,7 @@ module Axn
     def _define_boolean_predicate_readers
       action.external_field_configs.each do |config|
         next unless declared_fields.include?(config.field)
-        next unless _boolean_field?(config.validations)
+        next unless Axn::Internal::FieldConfig.boolean?(config)
 
         _define_boolean_predicate_reader(config.field)
       end
@@ -123,10 +123,6 @@ module Axn
       return if singleton_class.method_defined?(predicate_name)
 
       singleton_class.alias_method predicate_name, field
-    end
-
-    def _boolean_field?(validations)
-      Array(validations.dig(:type, :klass)) == [:boolean]
     end
 
     def _user_provided_success_message
