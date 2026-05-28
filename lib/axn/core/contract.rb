@@ -50,7 +50,7 @@ module Axn
           end
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        predicate_readers: true, **validations).tap do |configs|
+                                        define_readers: true, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -208,22 +208,25 @@ module Axn
           preprocess: nil,
           sensitive: false,
           metadata: {},
-          predicate_readers: false,
+          define_readers: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            _define_field_reader(field)
-            _define_boolean_predicate_reader(field) if predicate_readers && _boolean_field?(parsed_validations)
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:)
+            config = FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:)
+            if define_readers
+              _define_field_reader(field)
+              _define_boolean_predicate_reader(field) if Axn::Internal::FieldConfig.boolean?(config)
+            end
+            config
           end
         end
 
         def _define_field_reader(field)
-          # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
-          # (e.g. to allow success message callable to reference exposed fields)
+          # Allow local access to explicitly-expected fields on the action instance.
+          # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
           define_method(field) { internal_context.public_send(field) }
         end
 
@@ -235,10 +238,6 @@ module Axn
           return if method_defined?(predicate_name)
 
           alias_method predicate_name, field
-        end
-
-        def _boolean_field?(validations)
-          Array(validations.dig(:type, :klass)) == [:boolean]
         end
 
         # This method applies any top-level options to each of the individual validations given.

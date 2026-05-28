@@ -20,6 +20,14 @@ module Axn
         # Check if any validator has allow_blank: true
         validations.values.any? { |v| v.is_a?(Hash) && v[:allow_blank] == true }
       end
+
+      # Determines if a field is declared as boolean type.
+      #
+      # @param config [Object] A field configuration object with a `validations` method
+      # @return [Boolean] true if the field is typed :boolean
+      def boolean?(config)
+        Array(config.validations.dig(:type, :klass)) == [:boolean]
+      end
     end
   end
 end

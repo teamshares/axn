@@ -104,8 +104,8 @@ RSpec.describe Axn do
         end
 
         it { expect(result).to be_ok }
-        it "cannot access exposed vars directly (returns nil/empty)" do
-          is_expected.to eq("Great news: 123 from ")
+        it "raises NoMethodError (no direct reader), which is swallowed and falls back to default success" do
+          is_expected.to eq("Action completed successfully")
         end
       end
 

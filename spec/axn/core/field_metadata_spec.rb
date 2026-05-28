@@ -221,6 +221,51 @@ RSpec.describe "Field metadata" do
     end
   end
 
+  describe "expose action-instance readers" do
+    it "does not define an action-instance reader for exposes-only fields" do
+      action = build_axn do
+        exposes :result_only_field
+      end
+
+      expect(action.method_defined?(:result_only_field)).to be(false)
+    end
+
+    it "result.foo still returns the exposed value" do
+      action = build_axn do
+        exposes :greeting
+
+        def call
+          expose greeting: "hello"
+        end
+      end
+
+      expect(action.call.greeting).to eq("hello")
+    end
+
+    it "expects :foo still defines foo on the action instance" do
+      action = build_axn do
+        expects :name, type: String
+
+        def call; end
+      end
+
+      expect(action.method_defined?(:name)).to be(true)
+    end
+
+    it "an explicit def foo alongside exposes :foo is preserved and DefaultCall exposes it" do
+      action = build_axn do
+        exposes :computed_value, type: Integer
+
+        def computed_value
+          42
+        end
+      end
+
+      # DefaultCall calls the user-defined method and exposes the result
+      expect(action.call.computed_value).to eq(42)
+    end
+  end
+
   describe "boolean predicate readers" do
     it "defines predicate readers for boolean expectations" do
       action = build_axn do
