@@ -215,12 +215,12 @@ module Axn
           allow_blank ||= optional
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            config = FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:)
-            if define_readers
-              _define_field_reader(field)
-              _define_boolean_predicate_reader(field) if Axn::Internal::FieldConfig.boolean?(config)
+            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:).tap do |config|
+              if define_readers
+                _define_field_reader(field)
+                _define_boolean_predicate_reader(field) if Axn::Internal::FieldConfig.boolean?(config)
+              end
             end
-            config
           end
         end
 
