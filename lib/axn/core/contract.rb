@@ -49,7 +49,8 @@ module Axn
                                                **validations)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                        predicate_readers: true, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -207,6 +208,7 @@ module Axn
           preprocess: nil,
           sensitive: false,
           metadata: {},
+          predicate_readers: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -214,6 +216,7 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             _define_field_reader(field)
+            _define_boolean_predicate_reader(field) if predicate_readers && _boolean_field?(parsed_validations)
             FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:)
           end
         end
@@ -222,6 +225,20 @@ module Axn
           # Allow local access to explicitly-expected fields -- even externally-expected needs to be available locally
           # (e.g. to allow success message callable to reference exposed fields)
           define_method(field) { internal_context.public_send(field) }
+        end
+
+        def _define_boolean_predicate_reader(field)
+          field_name = field.to_s
+          return if field_name.end_with?("?") || field_name.include?(".")
+
+          predicate_name = "#{field_name}?"
+          return if method_defined?(predicate_name)
+
+          alias_method predicate_name, field
+        end
+
+        def _boolean_field?(validations)
+          Array(validations.dig(:type, :klass)) == [:boolean]
         end
 
         # This method applies any top-level options to each of the individual validations given.
