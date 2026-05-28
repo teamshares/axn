@@ -220,4 +220,102 @@ RSpec.describe "Field metadata" do
       end.not_to raise_error
     end
   end
+
+  describe "boolean predicate readers" do
+    it "defines predicate readers for boolean expectations" do
+      action = build_axn do
+        expects :enabled, type: :boolean
+        exposes :predicate_value, type: :boolean
+
+        def call
+          expose predicate_value: enabled?
+        end
+      end
+
+      expect(action.call(enabled: true).predicate_value).to be(true)
+      expect(action.call(enabled: false).predicate_value).to be(false)
+    end
+
+    it "does not define predicate readers for non-boolean expectations" do
+      action = build_axn do
+        expects :name, type: String
+      end
+
+      expect(action.method_defined?(:name?)).to be(false)
+    end
+
+    it "defines predicate readers for boolean subfields when readers are enabled" do
+      action = build_axn do
+        expects :settings, type: Hash
+        expects :enabled, on: :settings, type: :boolean
+        exposes :predicate_value, type: :boolean
+
+        def call
+          expose predicate_value: enabled?
+        end
+      end
+
+      expect(action.call(settings: { enabled: true }).predicate_value).to be(true)
+      expect(action.call(settings: { enabled: false }).predicate_value).to be(false)
+    end
+
+    it "does not define predicate readers for boolean subfields when readers are disabled" do
+      action = build_axn do
+        expects :settings, type: Hash
+        expects :enabled, on: :settings, type: :boolean, readers: false
+      end
+
+      expect(action.method_defined?(:enabled?)).to be(false)
+    end
+
+    it "does not overwrite explicitly defined predicate methods" do
+      action = build_axn do
+        expects :enabled, type: :boolean
+        exposes :predicate_value, type: Symbol
+
+        def call
+          expose predicate_value: enabled?
+        end
+
+        def enabled?
+          :explicit_predicate
+        end
+      end
+
+      expect(action.call(enabled: true).predicate_value).to eq(:explicit_predicate)
+    end
+
+    it "defines predicate readers on results for boolean exposures" do
+      action = build_axn do
+        exposes :enabled, type: :boolean
+
+        def call
+          expose enabled: true
+        end
+      end
+      false_action = build_axn do
+        exposes :enabled, type: :boolean
+
+        def call
+          expose enabled: false
+        end
+      end
+
+      expect(action.call.enabled?).to be(true)
+      expect(false_action.call.enabled?).to be(false)
+      expect(action.method_defined?(:enabled?)).to be(false)
+    end
+
+    it "does not define result predicate readers for non-boolean exposures" do
+      action = build_axn do
+        exposes :name, type: String
+
+        def call
+          expose name: "Alice"
+        end
+      end
+
+      expect(action.call.respond_to?(:name?)).to be(false)
+    end
+  end
 end

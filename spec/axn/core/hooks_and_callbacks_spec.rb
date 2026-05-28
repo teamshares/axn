@@ -322,10 +322,6 @@ RSpec.describe Axn do
                 fail!("Custom failure message")
               end
             end
-
-            def should_skip?
-              should_skip
-            end
           end
         end
 

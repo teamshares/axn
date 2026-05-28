@@ -67,7 +67,10 @@ module Axn
           allow_blank ||= optional
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            _define_subfield_reader(field, on:, validations: parsed_validations) if readers
+            if readers
+              _define_subfield_reader(field, on:, validations: parsed_validations)
+              _define_boolean_predicate_reader(field) if _boolean_field?(parsed_validations)
+            end
             SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:)
           end
         end

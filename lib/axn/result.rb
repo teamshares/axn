@@ -6,6 +6,11 @@ require "axn/core/context/facade_inspector"
 module Axn
   # Outbound / External ContextFacade
   class Result < ContextFacade
+    def initialize(...)
+      super
+      _define_boolean_predicate_readers
+    end
+
     # For ease of mocking return results in tests
     class << self
       def ok(msg = nil, **exposures)
@@ -100,6 +105,29 @@ module Axn
     private
 
     def _context_data_source = @context.exposed_data
+
+    def _define_boolean_predicate_readers
+      action.external_field_configs.each do |config|
+        next unless declared_fields.include?(config.field)
+        next unless _boolean_field?(config.validations)
+
+        _define_boolean_predicate_reader(config.field)
+      end
+    end
+
+    def _define_boolean_predicate_reader(field)
+      field_name = field.to_s
+      return if field_name.end_with?("?") || field_name.include?(".")
+
+      predicate_name = "#{field_name}?"
+      return if singleton_class.method_defined?(predicate_name)
+
+      singleton_class.alias_method predicate_name, field
+    end
+
+    def _boolean_field?(validations)
+      Array(validations.dig(:type, :klass)) == [:boolean]
+    end
 
     def _user_provided_success_message
       @context.__early_completion_message.presence
