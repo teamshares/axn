@@ -147,7 +147,7 @@ module Axn
         @action_class,
         level:,
         message_parts: [
-          "Execution completed (with outcome: #{@action.result.outcome}) in #{@action.result.elapsed_time} milliseconds",
+          "Execution completed (with outcome: #{@action.result.outcome}) in #{Internal::Timing.human_duration(@action.result.elapsed_time)}",
         ],
         join_string: ". Set: ",
         after: top_level_separator,

@@ -17,6 +17,20 @@ module Axn
       def self.elapsed_seconds(start_time)
         (now - start_time).round(6)
       end
+
+      # Format a millisecond value as a human-readable duration string
+      def self.human_duration(millis)
+        case millis
+        when 0...1_000
+          "#{millis.round(3)} milliseconds"
+        when 1_000...60_000
+          "#{(millis / 1_000.0).round(3)} seconds"
+        when 60_000...3_600_000
+          "#{(millis / 60_000.0).round(2)} minutes"
+        else
+          "#{(millis / 3_600_000.0).round(2)} hours"
+        end
+      end
     end
   end
 end

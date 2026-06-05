@@ -54,6 +54,30 @@ RSpec.describe Axn::Internal::Timing do
     end
   end
 
+  describe ".human_duration" do
+    it "formats sub-second values as milliseconds" do
+      expect(described_class.human_duration(19.5)).to eq("19.5 milliseconds")
+      expect(described_class.human_duration(999.999)).to eq("999.999 milliseconds")
+    end
+
+    it "formats second-range values as seconds" do
+      expect(described_class.human_duration(1_000)).to eq("1.0 seconds")
+      expect(described_class.human_duration(19_906.883)).to eq("19.907 seconds")
+      expect(described_class.human_duration(59_999)).to eq("59.999 seconds")
+    end
+
+    it "formats minute-range values as minutes" do
+      expect(described_class.human_duration(60_000)).to eq("1.0 minutes")
+      expect(described_class.human_duration(90_000)).to eq("1.5 minutes")
+      expect(described_class.human_duration(3_594_000)).to eq("59.9 minutes")
+    end
+
+    it "formats hour-range values as hours" do
+      expect(described_class.human_duration(3_600_000)).to eq("1.0 hours")
+      expect(described_class.human_duration(5_400_000)).to eq("1.5 hours")
+    end
+  end
+
   describe "InstanceMethods#_with_timing" do
     let(:action) { build_axn }
 

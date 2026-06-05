@@ -151,3 +151,71 @@ Rake::Task["release"].enhance do
   Rake::Task["benchmark:release"].reenable
   Rake::Task["benchmark:release"].invoke
 end
+
+# Downstream gem compatibility check
+DOWNSTREAM_GEMS = {
+  "slack_sender" => File.expand_path("../slack_sender/slack_sender.gemspec", __dir__),
+  "data_shifter" => File.expand_path("../data_shifter/data_shifter.gemspec", __dir__),
+  "axn-mcp" => File.expand_path("../axn-mcp/axn-mcp.gemspec", __dir__),
+  "axn-ruby_llm" => File.expand_path("../axn-ruby_llm/axn-ruby_llm.gemspec", __dir__),
+}.freeze
+
+PARSE_AXN_REQUIREMENT = lambda { |gemspec_path|
+  content = File.read(gemspec_path)
+  match = content.match(/add_dependency\s+["']axn["']\s*,\s*(.+)$/)
+  return nil unless match
+
+  constraints = match[1].scan(/["']([^"']+)["']/).flatten
+  Gem::Requirement.new(constraints)
+}
+
+namespace :downstream do
+  desc "Check whether downstream gems support the current axn version"
+  task :check do
+    require "rubygems"
+    require_relative "lib/axn/version"
+
+    current_version = Gem::Version.new(Axn::VERSION)
+    warnings = []
+
+    puts "Downstream gem compatibility with axn #{current_version}:"
+    puts ""
+
+    DOWNSTREAM_GEMS.each do |name, gemspec_path|
+      unless File.exist?(gemspec_path)
+        puts "  #{name}: gemspec not found at #{gemspec_path}"
+        next
+      end
+
+      requirement = PARSE_AXN_REQUIREMENT.call(gemspec_path)
+
+      unless requirement
+        puts "  #{name}: no axn dependency found in gemspec"
+        next
+      end
+
+      if requirement.satisfied_by?(current_version)
+        puts "  #{name}: OK  (#{requirement})"
+      else
+        puts "  #{name}: NEEDS UPDATE  (#{requirement} excludes #{current_version})"
+        warnings << "  - #{name}: update axn constraint (currently #{requirement}) to include #{current_version}"
+      end
+    end
+
+    puts ""
+
+    if warnings.any?
+      puts "WARNING: These downstream gems need axn version constraint updates before"
+      puts "         they can use axn #{current_version}:"
+      warnings.each { |w| puts w }
+    else
+      puts "All downstream gems support axn #{current_version}."
+    end
+  end
+end
+
+# Warn (but don't block) about downstream gems that need updating before release
+Rake::Task["release"].enhance do
+  Rake::Task["downstream:check"].reenable
+  Rake::Task["downstream:check"].invoke
+end
