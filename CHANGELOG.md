@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+* [FEAT] `exposes`-declared fields that are also `expects`-declared are now auto-copied from the input into the result on **all** outcome paths — success, `done!`, `fail!`, and unhandled exception. Previously, the auto-copy only ran on success/`done!` paths, leaving `result.field` as `nil` after `fail!` or an exception even when the field was provided as input. This is particularly useful for re-exposing mutated ActiveRecord objects (e.g. inspecting `user.errors` after a failed save). Explicit `expose` calls before a failure continue to work and take precedence.
 * [BREAKING] `exposes` no longer defines a direct reader method on the action instance. Exposed fields must be accessed via `result.field` (e.g., `result.greeting`). `expects` readers are unaffected. User-defined methods with the same name as an exposed field are preserved (DefaultCall still calls them). Use `result.field` in `success`/`error` message callables and `sensitive:` procs to access output values.
 * [FEAT] Add boolean predicate readers for `expects` and `exposes`: `expects :enabled, type: :boolean` defines `enabled?` on the action instance; `exposes :enabled, type: :boolean` defines `result.enabled?`.
 * [BUGFIX] `ExceptionContext.build` no longer raises `URI::GID::MissingModelIdError` when an exposed or expected value is an unpersisted ActiveRecord record. The formatter now renders such values as `#<ClassName (unpersisted)>` and the optional retry command falls back to `inspect` instead of generating `Model.find(nil)`.
