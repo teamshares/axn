@@ -153,23 +153,23 @@ Rake::Task["release"].enhance do
 end
 
 # Downstream gem compatibility check
+DOWNSTREAM_GEMS = {
+  "slack_sender" => File.expand_path("../slack_sender/slack_sender.gemspec", __dir__),
+  "data_shifter" => File.expand_path("../data_shifter/data_shifter.gemspec", __dir__),
+  "axn-mcp" => File.expand_path("../axn-mcp/axn-mcp.gemspec", __dir__),
+  "axn-ruby_llm" => File.expand_path("../axn-ruby_llm/axn-ruby_llm.gemspec", __dir__),
+}.freeze
+
+PARSE_AXN_REQUIREMENT = lambda { |gemspec_path|
+  content = File.read(gemspec_path)
+  match = content.match(/add_dependency\s+["']axn["']\s*,\s*(.+)$/)
+  return nil unless match
+
+  constraints = match[1].scan(/["']([^"']+)["']/).flatten
+  Gem::Requirement.new(constraints)
+}
+
 namespace :downstream do
-  DOWNSTREAM_GEMS = {
-    "slack_sender"  => File.expand_path("../slack_sender/slack_sender.gemspec", __dir__),
-    "data_shifter"  => File.expand_path("../data_shifter/data_shifter.gemspec", __dir__),
-    "axn-mcp"       => File.expand_path("../axn-mcp/axn-mcp.gemspec", __dir__),
-    "axn-ruby_llm"  => File.expand_path("../axn-ruby_llm/axn-ruby_llm.gemspec", __dir__),
-  }.freeze
-
-  PARSE_AXN_REQUIREMENT = ->(gemspec_path) do
-    content = File.read(gemspec_path)
-    match = content.match(/add_dependency\s+["']axn["']\s*,\s*(.+)$/)
-    return nil unless match
-
-    constraints = match[1].scan(/["']([^"']+)["']/).flatten
-    Gem::Requirement.new(constraints)
-  end
-
   desc "Check whether downstream gems support the current axn version"
   task :check do
     require "rubygems"
