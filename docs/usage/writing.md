@@ -47,7 +47,7 @@ To abort execution with a specific error message, call `fail!`. You can also pro
 
 To complete execution early with a success result, call `done!` with an optional success message and exposures as keyword arguments.
 
-If you declare that your action `exposes` anything, you need to actually `expose` it.
+If you declare that your action `exposes` anything, you need to actually `expose` it — unless you're re-exposing a field you also `expects`, in which case axn auto-copies it for you (see below).
 
 ```ruby
 class Foo
@@ -66,6 +66,29 @@ end
 ```
 
 See [the reference doc](/reference/instance) for a few more handy helper methods (e.g. `#log`).
+
+### Re-exposing an expected field (auto-copy)
+
+When a field is declared with both `expects` and `exposes`, axn automatically copies it from the input into the result — no manual `expose` call needed. This works on **all outcome paths**: success, `done!`, `fail!`, and unhandled exceptions.
+
+This is particularly useful when an action mutates an ActiveRecord object in-place (e.g. `user.valid?` populates `user.errors`) and the caller needs to inspect the object after a failure:
+
+```ruby
+class UpdateUser
+  include Axn
+
+  expects :user, model: true
+  exposes :user               # auto-copied — no expose call needed
+
+  def call
+    user.assign_attributes(params)
+    fail! unless user.save    # user.errors is available on result.user even on failure
+  end
+end
+
+result = UpdateUser.call(user:, params:)
+result.user.errors.full_messages  # populated on both ok? and !ok?
+```
 
 ### Convenient failure with context
 

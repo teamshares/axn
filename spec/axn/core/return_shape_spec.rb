@@ -94,5 +94,117 @@ RSpec.describe Axn do
         expect(result.preferences.object_id).to eq(preferences.object_id)
       end
     end
+
+    describe "re-exposing an expected kwarg without a manual expose call" do
+      let(:action) do
+        build_axn do
+          expects :preferences, type: Hash
+          exposes :preferences, type: Hash
+
+          def call
+            preferences[:foo] = "mutated"
+            # no expose call — auto-copied from provided_data at outbound contract step
+          end
+        end
+      end
+
+      it "exposes the mutated object without requiring an explicit expose call" do
+        preferences = { foo: "initial" }
+        result = action.call(preferences:)
+        expect(result).to be_ok
+        expect(result.preferences).to eq({ foo: "mutated" })
+        expect(result.preferences.object_id).to eq(preferences.object_id)
+      end
+    end
+  end
+
+  describe "exposures on non-success paths" do
+    # exposes-declared fields that weren't explicitly exposed should still be
+    # auto-copied from provided_data on fail! and exception paths — consistent
+    # with success. nil is worse than a possibly-partial object; callers check
+    # result.ok? before using the data, and withholding it helps no one.
+
+    let(:item) { { value: "original" } }
+
+    shared_examples "exposes expected kwargs" do |outcome_label|
+      it "auto-copies the expected kwarg to the result (#{outcome_label})" do
+        expect(result.item).to eq(item)
+        expect(result.item.object_id).to eq(item.object_id)
+      end
+
+      it "preserves in-place mutations made before the failure (#{outcome_label})" do
+        expect(result.item[:value]).to eq("mutated")
+      end
+    end
+
+    context "when fail! is called" do
+      let(:action) do
+        build_axn do
+          expects :item, type: Hash
+          exposes :item, type: Hash
+
+          def call
+            item[:value] = "mutated"
+            fail!("something went wrong")
+          end
+        end
+      end
+
+      let(:result) { action.call(item:) }
+
+      include_examples "exposes expected kwargs", "fail!"
+
+      it "is not ok" do
+        expect(result).not_to be_ok
+      end
+    end
+
+    context "when an unhandled exception is raised" do
+      let(:action) do
+        build_axn do
+          expects :item, type: Hash
+          exposes :item, type: Hash
+
+          def call
+            item[:value] = "mutated"
+            raise "something exploded"
+          end
+        end
+      end
+
+      let(:result) { action.call(item:) }
+
+      include_examples "exposes expected kwargs", "exception"
+
+      it "is not ok" do
+        expect(result).not_to be_ok
+      end
+    end
+
+    context "when an explicitly exposed field was set before fail!" do
+      let(:action) do
+        build_axn do
+          expects :item, type: Hash
+          exposes :item, type: Hash
+          exposes :extra, optional: true
+
+          def call
+            expose(extra: "set before failure")
+            item[:value] = "mutated"
+            fail!("something went wrong")
+          end
+        end
+      end
+
+      let(:result) { action.call(item:) }
+
+      it "keeps the explicitly exposed value" do
+        expect(result.extra).to eq("set before failure")
+      end
+
+      it "also auto-copies the expected kwarg" do
+        expect(result.item[:value]).to eq("mutated")
+      end
+    end
   end
 end

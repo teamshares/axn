@@ -128,7 +128,7 @@ If neither `optional`, `allow_blank` nor `allow_nil` is specified, a default pre
 
 ### Details specific to `.exposes`
 
-Remember that you'll need [a corresponding `expose` call](/reference/instance#expose) for every variable you declare via `exposes`.
+For fields you declare via `exposes`, you'll need [a corresponding `expose` call](/reference/instance#expose) — unless the field is also declared via `expects`, in which case axn auto-copies it from the input into the result on all outcome paths (success, `fail!`, and exception). See [Re-exposing an expected field](/usage/writing#re-exposing-an-expected-field-auto-copy).
 
 
 ### Details specific to `.expects`

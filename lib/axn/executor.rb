@@ -187,6 +187,12 @@ module Axn
     rescue Internal::EarlyCompletion
       raise
     rescue StandardError => e
+      begin
+        apply_defaults!(:outbound)
+      rescue StandardError => defaults_error
+        Internal::PipingError.swallow("applying outbound defaults on failure", exception: defaults_error, action: @action)
+      end
+
       @context.__record_exception(e)
 
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
