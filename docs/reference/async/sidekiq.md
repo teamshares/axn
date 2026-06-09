@@ -212,6 +212,14 @@ Axn::Async::Adapters::Sidekiq::AutoConfigure.death_handler_registered?
 # => should be true
 ```
 
+### Duplicate error reports from Honeybadger or other error integrations
+
+If you're seeing duplicate faults in your error tracker — for example, both an Axn-authored notice and a raw `RuntimeError` fault with one entry per retry — this is caused by your error monitoring integration reporting the re-raised exception independently of Axn's `on_exception` path.
+
+Axn re-raises unexpected exceptions after reporting so that Sidekiq can retry them. Integrations like Honeybadger's Sidekiq plugin intercept that re-raised exception directly, bypassing your `async_exception_reporting` setting entirely.
+
+See [Suppressing Duplicate Async Error Reports](/recipes/suppressing-duplicate-async-reports) for an explanation and a Honeybadger + Sidekiq filter example.
+
 ### Jobs not retrying on fail!
 
 This is expected behavior. `fail!` indicates a business decision, not a transient error. If you need retries for a specific failure case, raise an exception instead:

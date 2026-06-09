@@ -27,7 +27,7 @@ module Axn
               config_mode = klass.try(:_async_exception_reporting) || Axn.config.async_exception_reporting
               return if config_mode == :every_attempt # Already reported on each attempt
 
-              retry_context = RetryHelpers.build_retry_context(job)
+              retry_context = RetryHelpers.build_retry_context(job, from_death_handler: true)
 
               # For :first_and_exhausted, we need to report now (exhausted)
               # For :only_exhausted, we need to report now (only time)

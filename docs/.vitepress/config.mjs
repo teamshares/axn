@@ -58,6 +58,7 @@ export default defineConfig({
           { text: 'Validating User Input', link: '/recipes/validating-user-input' },
           { text: 'Testing Actions', link: '/recipes/testing' },
           { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
+          { text: 'Suppressing Duplicate Async Reports', link: '/recipes/suppressing-duplicate-async-reports' },
         ]
       },
       {
