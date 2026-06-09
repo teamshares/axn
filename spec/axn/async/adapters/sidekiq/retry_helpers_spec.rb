@@ -95,7 +95,7 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::RetryHelpers do
 
     it "correctly calculates retries_exhausted?" do
       job = {
-        "retry_count" => 4, # attempt 6
+        "retry_count" => 4, # attempt 6 during execution
         "retry" => 5,       # max 5 retries
         "jid" => "ghi789",
       }
@@ -105,6 +105,77 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::RetryHelpers do
       expect(context.attempt).to eq(6)
       expect(context.max_retries).to eq(5)
       expect(context.retries_exhausted?).to be true
+    end
+
+    # Sidekiq increments retry_count before calling death handlers, so the job hash
+    # seen by the death handler has retry_count = last_execution_retry_count + 1.
+    # from_death_handler: true corrects for this off-by-one.
+    describe "from_death_handler: true" do
+      context "with retry: 3 (4 total executions, Sidekiq sets retry_count = 3 before death handler)" do
+        let(:job) { { "retry_count" => 3, "retry" => 3, "jid" => "abc" } }
+
+        it "reports attempt 4, matching the actual final execution" do
+          context = described_class.build_retry_context(job, from_death_handler: true)
+          expect(context.attempt).to eq(4)
+        end
+
+        it "reports retries_exhausted: true" do
+          context = described_class.build_retry_context(job, from_death_handler: true)
+          expect(context.retries_exhausted?).to be true
+        end
+
+        it "without from_death_handler would incorrectly report attempt 5" do
+          context = described_class.build_retry_context(job)
+          expect(context.attempt).to eq(5)
+        end
+      end
+
+      context "with retry: 0 (1 execution, Sidekiq sets retry_count = 0 before death handler)" do
+        let(:job) { { "retry_count" => 0, "retry" => 0, "jid" => "def" } }
+
+        it "reports attempt 1, matching the single actual execution" do
+          context = described_class.build_retry_context(job, from_death_handler: true)
+          expect(context.attempt).to eq(1)
+        end
+      end
+
+      context "with retry: false / no retries (death handler called directly, retry_count absent)" do
+        let(:job) { { "retry" => false, "jid" => "ghi" } }
+
+        # When retry: false, Sidekiq calls death handlers directly without going through
+        # process_retry, so retry_count is never set. No adjustment needed.
+        it "reports attempt 1 (no adjustment since retry_count is nil)" do
+          context = described_class.build_retry_context(job, from_death_handler: true)
+          expect(context.attempt).to eq(1)
+        end
+      end
+
+      context "attempt number across full retry: 3 lifecycle" do
+        # Middleware path: retry_count reflects the running job's state
+        it "middleware attempt 1 has retry_count absent (nil)" do
+          expect(described_class.extract_attempt_number({})).to eq(1)
+        end
+
+        it "middleware attempt 2 has retry_count = 0" do
+          expect(described_class.extract_attempt_number("retry_count" => 0)).to eq(2)
+        end
+
+        it "middleware attempt 3 has retry_count = 1" do
+          expect(described_class.extract_attempt_number("retry_count" => 1)).to eq(3)
+        end
+
+        it "middleware attempt 4 (final) has retry_count = 2" do
+          expect(described_class.extract_attempt_number("retry_count" => 2)).to eq(4)
+        end
+
+        # Death handler path: Sidekiq increments retry_count once more before calling handlers
+        it "death handler after attempt 4 sees retry_count = 3, corrected to attempt 4" do
+          job = { "retry_count" => 3, "retry" => 3 }
+          context = described_class.build_retry_context(job, from_death_handler: true)
+          expect(context.attempt).to eq(4)
+          expect(context.retries_exhausted?).to be true
+        end
+      end
     end
   end
 end

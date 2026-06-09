@@ -43,10 +43,21 @@ module Axn
 
           # Builds an Axn::Async::RetryContext from a Sidekiq job hash.
           # Used by both middleware and death handler to ensure consistent context.
-          def build_retry_context(job)
+          #
+          # @param from_death_handler [Boolean] When true, subtracts 1 from the computed attempt
+          #   because Sidekiq increments retry_count before calling death handlers, so the value
+          #   in the job hash is one higher than the retry_count present during the last execution.
+          def build_retry_context(job, from_death_handler: false)
+            attempt = extract_attempt_number(job)
+            # Sidekiq increments retry_count before calling retries_exhausted/death handlers,
+            # so the job hash has retry_count = last_execution_retry_count + 1. Subtract 1 to
+            # recover the actual last execution's attempt number. Guard on non-nil: when Sidekiq
+            # calls death handlers directly (retry: false), retry_count is absent and attempt is
+            # already correct.
+            attempt -= 1 if from_death_handler && !job["retry_count"].nil?
             RetryContext.new(
               adapter: :sidekiq,
-              attempt: extract_attempt_number(job),
+              attempt:,
               max_retries: extract_max_retries(job),
               job_id: job["jid"],
             )
