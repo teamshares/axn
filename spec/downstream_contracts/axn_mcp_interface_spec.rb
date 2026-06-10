@@ -623,6 +623,124 @@ RSpec.describe "Axn-MCP interface contract" do
     end
   end
 
+  describe "shape contracts — axn-mcp reads config.validations[:shape][:members]" do
+    # A structured field declared with a block exposes its member contracts at
+    # config.validations[:shape][:members]. Each member responds to #field, #validations,
+    # #metadata, and #description — the same surface as a FieldConfig — so axn-mcp can build
+    # nested properties (items.properties for Array, properties for Hash/class) and derive
+    # `required` via Axn::Internal::FieldConfig.optional?. Nesting recurses through the same
+    # member.validations[:shape][:members] path.
+    #
+    # NOTE: schema "enrich" — deriving bare property names from a Data.define's .members for
+    # members the block did NOT annotate — is axn-mcp's responsibility, using
+    # config.validations[:of][:klass]. axn only stores the explicitly-declared members here.
+
+    it "exposes block-declared members on exposes (external_field_configs)" do
+      action = Class.new do
+        include Axn
+        exposes :integrations, type: Array, allow_blank: true do
+          field :source, type: String
+          field :status, type: String, inclusion: { in: %w[connected error] }
+        end
+
+        def call; end
+      end
+
+      config = action.external_field_configs.find { |c| c.field == :integrations }
+      members = config.validations[:shape][:members]
+
+      expect(members.map(&:field)).to eq(%i[source status])
+
+      status = members.find { |m| m.field == :status }
+      expect(status.validations[:type][:klass]).to eq(String)
+      expect(status.validations[:inclusion][:in]).to eq(%w[connected error])
+    end
+
+    it "also works on expects (internal_field_configs)" do
+      action = Class.new do
+        include Axn
+        expects :rows, type: Array do
+          field :id, type: Integer
+        end
+
+        def call; end
+      end
+
+      config = action.internal_field_configs.find { |c| c.field == :rows }
+      expect(config.validations[:shape][:members].first.validations[:type][:klass]).to eq(Integer)
+    end
+
+    it "exposes the declared container so axn-mcp can choose items.properties vs properties" do
+      action = Class.new do
+        include Axn
+        exposes :rows, type: Array, allow_blank: true do
+          field :id, type: Integer
+        end
+        exposes :meta, type: Hash, allow_blank: true do
+          field :total, type: Integer
+        end
+
+        def call; end
+      end
+
+      rows = action.external_field_configs.find { |c| c.field == :rows }
+      meta = action.external_field_configs.find { |c| c.field == :meta }
+      expect(rows.validations[:shape][:container]).to eq(Array)
+      expect(meta.validations[:shape][:container]).to eq(Hash)
+    end
+
+    it "derives required vs optional per member via FieldConfig.optional?" do
+      action = Class.new do
+        include Axn
+        exposes :rows, type: Array, allow_blank: true do
+          field :id, type: Integer
+          field :note, type: String, optional: true
+        end
+
+        def call; end
+      end
+
+      members = action.external_field_configs.find { |c| c.field == :rows }.validations[:shape][:members]
+      id = members.find { |m| m.field == :id }
+      note = members.find { |m| m.field == :note }
+      expect(Axn::Internal::FieldConfig.optional?(id)).to be false
+      expect(Axn::Internal::FieldConfig.optional?(note)).to be true
+    end
+
+    it "nests recursively via member.validations[:shape][:members]" do
+      action = Class.new do
+        include Axn
+        exposes :rows, type: Array, allow_blank: true do
+          field :config, type: Hash do
+            field :region, type: String
+          end
+        end
+
+        def call; end
+      end
+
+      rows = action.external_field_configs.find { |c| c.field == :rows }
+      config_member = rows.validations[:shape][:members].find { |m| m.field == :config }
+      nested = config_member.validations[:shape][:members]
+      expect(nested.map(&:field)).to eq(%i[region])
+      expect(nested.first.validations[:type][:klass]).to eq(String)
+    end
+
+    it "carries member descriptions for schema generation" do
+      action = Class.new do
+        include Axn
+        exposes :rows, type: Array, allow_blank: true do
+          field :status, type: String, description: "normalized connection status"
+        end
+
+        def call; end
+      end
+
+      member = action.external_field_configs.find { |c| c.field == :rows }.validations[:shape][:members].first
+      expect(member.description).to eq("normalized connection status")
+    end
+  end
+
   describe "Axn::Failure exception class" do
     it "exists and is a StandardError" do
       expect(Axn::Failure).to be < StandardError

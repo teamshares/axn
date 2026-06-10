@@ -19,6 +19,7 @@ require "axn/core/validation/validators/model_validator"
 require "axn/core/validation/validators/type_validator"
 require "axn/core/validation/validators/validate_validator"
 require "axn/core/validation/validators/of_validator"
+require "axn/core/validation/validators/shape_validator"
 
 require "axn/core/field_resolvers"
 require "axn/core/contract"

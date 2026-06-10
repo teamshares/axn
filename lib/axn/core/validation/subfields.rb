@@ -12,6 +12,7 @@ module Axn
       TypeValidator = Validators::TypeValidator
       ValidateValidator = Validators::ValidateValidator
       OfValidator = Validators::OfValidator
+      ShapeValidator = Validators::ShapeValidator
 
       def initialize(source)
         @source = source
@@ -28,19 +29,36 @@ module Axn
       end
 
       def self.validate!(field:, validations:, source:, exception_klass:, action: nil)
-        validator = Class.new(self) do
+        errors = collect_errors(field:, validations:, source:, action:)
+        raise exception_klass, errors if errors.any?
+      end
+
+      # Non-raising variant: returns the ActiveModel::Errors (empty if valid).
+      def self.collect_errors(field:, validations:, source:, action: nil)
+        errors_for(validator_class_for(field:, validations:), source:, validations:, action:)
+      end
+
+      # Builds the one-off validator class for a (field, validations) pair. Callers that validate
+      # the same contract repeatedly (e.g. ShapeValidator over array elements) can build this once
+      # and reuse it across sources via .errors_for, avoiding per-call class compilation.
+      def self.validator_class_for(field:, validations:)
+        Class.new(self) do
           def self.name = "Axn::Validation::Subfields::OneOff"
 
           validates field, **validations
-        end.new(source)
+        end
+      end
+
+      # Runs a validator class against a source and returns its ActiveModel::Errors (empty if valid).
+      def self.errors_for(validator_class, source:, validations:, action: nil)
+        validator = validator_class.new(source)
 
         # Set the action context for model field resolution
         validator.instance_variable_set(:@action, action)
         validator.instance_variable_set(:@validations, validations)
 
-        return if validator.valid?
-
-        raise exception_klass, validator.errors
+        validator.valid?
+        validator.errors
       end
     end
   end
