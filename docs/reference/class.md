@@ -183,6 +183,21 @@ end
 Defaults work the same way for subfields as they do for top-level fields - they are applied when the subfield is missing or explicitly `nil`, but not for blank values.
 :::
 
+#### Reaching into nested parents
+
+`on:` accepts a **dotted path** to declare a subfield of a deeply-nested parent, with a clean flat reader named after the field:
+
+```ruby
+expects :address, type: Hash
+expects :zip, on: "address.billing", type: String  # validates address[:billing][:zip]; defines a `zip` reader
+```
+
+The **root** segment (`address`) must be a declared field (or subfield); intermediate segments are assumed to be hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
+
+::: warning
+`default:` and `preprocess:` are **not** supported on a dotted `on:` (they raise at declaration time) — those write into the parent, and writing into an arbitrary nested path isn't supported yet. Use them on a single-key `on:`, or declare the intermediate levels explicitly.
+:::
+
 #### Disabling subfield readers
 
 By default, subfields create top-level reader methods (e.g., `random` in the example above). You can disable this with `readers: false`:

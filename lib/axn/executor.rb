@@ -315,7 +315,7 @@ module Axn
         Axn::Validation::Subfields.validate!(
           field: subfield,
           validations: config.validations,
-          source: @action.public_send(parent_field),
+          source: Axn::Core::ContractForSubfields.resolve_parent(@action, parent_field),
           exception_klass: InboundValidationError,
           action: @action,
         )
