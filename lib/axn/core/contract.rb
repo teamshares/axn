@@ -175,7 +175,7 @@ module Axn
         KNOWN_VALIDATION_KEYS = Set.new(%i[
                                           absence acceptance comparison confirmation exclusion format
                                           inclusion length numericality presence uniqueness
-                                          type model validate
+                                          type model validate of
                                           if unless on message strict
                                         ]).freeze
 
@@ -252,6 +252,14 @@ module Axn
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+
+          if validations.key?(:of)
+            declared_klasses = Array(validations.dig(:type, :klass))
+            raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
+
+            validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
+            raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
+          end
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil

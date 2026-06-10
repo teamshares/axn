@@ -538,6 +538,91 @@ RSpec.describe "Axn-MCP interface contract" do
     end
   end
 
+  describe "of: array-element validation — axn-mcp reads config.validations[:of]" do
+    # The :of hash always contains :klass plus :allow_blank/:allow_nil pushed down
+    # from the field declaration. axn-mcp reads config.validations[:of][:klass].
+
+    it "single class: :klass is the class" do
+      action = Class.new do
+        include Axn
+        exposes :items, type: Array, of: String, allow_blank: true
+
+        def call; end
+      end
+
+      config = action.external_field_configs.find { |c| c.field == :items }
+      expect(config.validations[:of][:klass]).to eq(String)
+    end
+
+    it "union array: :klass is the array of classes" do
+      action = Class.new do
+        include Axn
+        exposes :items, type: Array, of: [String, Integer], allow_blank: true
+
+        def call; end
+      end
+
+      config = action.external_field_configs.find { |c| c.field == :items }
+      expect(config.validations[:of][:klass]).to eq([String, Integer])
+    end
+
+    it "Data.define class: :klass is the Data subclass (klass < Data)" do
+      point_class = Data.define(:x, :y)
+      action = Class.new do
+        include Axn
+        define_method(:initialize) {}
+        exposes :points, type: Array, of: point_class, allow_blank: true
+
+        def call; end
+      end
+
+      config = action.external_field_configs.find { |c| c.field == :points }
+      klass = config.validations[:of][:klass]
+      expect(klass).to eq(point_class)
+      expect(klass < Data).to be true
+      expect(klass.members).to eq(%i[x y])
+    end
+
+    it "symbol type: :klass is the symbol (e.g. :boolean)" do
+      action = Class.new do
+        include Axn
+        exposes :flags, type: Array, of: :boolean, allow_blank: true
+
+        def call; end
+      end
+
+      config = action.external_field_configs.find { |c| c.field == :flags }
+      expect(config.validations[:of][:klass]).to eq(:boolean)
+    end
+
+    it "also works on expects (internal_field_configs)" do
+      action = Class.new do
+        include Axn
+        expects :ids, type: Array, of: Integer
+
+        def call; end
+      end
+
+      config = action.internal_field_configs.find { |c| c.field == :ids }
+      expect(config.validations[:of][:klass]).to eq(Integer)
+    end
+
+    it "optional? still works on a field with of: present" do
+      action = Class.new do
+        include Axn
+        expects :ids, type: Array, of: Integer
+        expects :opt_ids, type: Array, of: Integer, optional: true
+
+        def call; end
+      end
+
+      required_config = action.internal_field_configs.find { |c| c.field == :ids }
+      optional_config = action.internal_field_configs.find { |c| c.field == :opt_ids }
+      expect(Axn::Internal::FieldConfig.optional?(required_config)).to be false
+      expect(Axn::Internal::FieldConfig.optional?(optional_config)).to be true
+    end
+  end
+
   describe "Axn::Failure exception class" do
     it "exists and is a StandardError" do
       expect(Axn::Failure).to be < StandardError

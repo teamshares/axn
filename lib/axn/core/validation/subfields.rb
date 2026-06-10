@@ -11,6 +11,7 @@ module Axn
       ModelValidator = Validators::ModelValidator
       TypeValidator = Validators::TypeValidator
       ValidateValidator = Validators::ValidateValidator
+      OfValidator = Validators::OfValidator
 
       def initialize(source)
         @source = source
