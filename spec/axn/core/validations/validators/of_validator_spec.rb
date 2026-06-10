@@ -9,7 +9,7 @@ RSpec.describe Axn::Validators::OfValidator do
     end
 
     it "passes when all elements are strings" do
-      expect(action.call(items: ["a", "b"])).to be_ok
+      expect(action.call(items: %w[a b])).to be_ok
     end
 
     it "fails when any element is not a string" do
@@ -262,7 +262,7 @@ RSpec.describe Axn::Validators::OfValidator do
     end
 
     it "passes when subfield array elements match" do
-      expect(action.call(payload: { tags: ["a", "b"] })).to be_ok
+      expect(action.call(payload: { tags: %w[a b] })).to be_ok
     end
 
     it "fails when a subfield array element does not match" do
