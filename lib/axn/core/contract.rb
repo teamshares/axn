@@ -258,6 +258,7 @@ module Axn
             raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
 
             validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
+            raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
 
           # Push allow_blank and allow_nil to the individual validations
