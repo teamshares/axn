@@ -20,10 +20,14 @@ module Axn
         return unless value.is_a?(Array)  # TypeValidator owns the non-Array error
 
         klasses = Array(options[:klass])
-        msg = klasses.size == 1 ? "is not a #{klasses.first}" : "is not one of #{klasses.join(", ")}"
+        # A custom message: replaces the type description but the index is always reported —
+        # element position is the locating info that makes a per-element error actionable.
+        msg = options[:message] || (klasses.size == 1 ? "is not a #{klasses.first}" : "is not one of #{klasses.join(", ")}")
 
         value.each_with_index do |el, i|
-          valid = klasses.any? { |k| TypeValidator.value_matches?(el, klass: k, allow_blank: options[:allow_blank]) }
+          # allow_blank governs whether the whole field may be absent (handled above), not whether
+          # individual elements may be blank — so it is intentionally not passed to the matcher.
+          valid = klasses.any? { |k| TypeValidator.value_matches?(el, klass: k) }
           record.errors.add(attribute, "element at index #{i} #{msg}") unless valid
         end
       end

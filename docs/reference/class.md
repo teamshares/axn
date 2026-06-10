@@ -79,12 +79,16 @@ This is because automatic logging of inputs happens before defaults are applied 
 While we _support_ complex interface validations, in practice you usually just want a `type`, if anything.  Remember this is your validation about how the action is called, _not_ pretty user-facing errors (there's [a different pattern for that](/recipes/validating-user-input)).
 :::
 
-In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support four additional custom validators:
+In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support five additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
   * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
     * Boolean `expects` fields also define a predicate reader, so `expects :enabled, type: :boolean` provides both `enabled` and `enabled?` on the action instance. The same applies to subfield readers unless `readers: false` is set. Boolean `exposes` fields provide predicate readers on the result, so `exposes :enabled, type: :boolean` provides `result.enabled?`.
   * Edge case: use `type: :uuid` to handle a confirming given string is a UUID (with or without `-` chars)
   * Edge case: use `type: :params` to accept either a Hash or ActionController::Parameters (Rails-compatible)
+* `of: Foo` - for `type: Array` fields, validates each element (fails unless every element `.is_a?(Foo)`)
+  * Accepts the same forms as `type:`: a single class (`of: String`), a union array (`of: [String, Numeric]` — an element passes if it matches *any*), the `:boolean`/`:uuid`/`:params` symbols, or a `Data.define` class
+  * Only valid alongside `type: Array` (exactly) — using it on any other type, including a union like `type: [Array, String]`, raises `ArgumentError` at declaration time
+  * Error messages report the failing element's index (e.g. `element at index 2 is not a String`). Pass `of: { klass: Foo, message: "..." }` to override the type description while still reporting the index
 * `validate: [callable]` - Support custom validations (fails if any string is returned OR if it raises an exception)
   * Example:
     ```ruby
@@ -119,8 +123,9 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 When you specify `optional: true`, `allow_blank: true`, or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
 
 - **ActiveModel validations** (like `inclusion`, `length`, etc.) will respect these options
-- **Custom validators** (`type`, `validate`, `model`) will also respect these options
+- **Custom validators** (`type`, `validate`, `model`, `of`) will also respect these options
 - **Type validator edge case**: Note passing `allow_blank` is nonsensical for type: :params and type: :boolean
+- **`of` validator note**: these options govern whether the whole Array field may be absent — they do **not** make individual elements optional. A `nil` (or blank) element is still validated against `of:` regardless.
 
 **Recommended approach**: Use `optional: true` instead of `allow_blank: true` for better clarity. The `optional` parameter is equivalent to `allow_blank: true` and makes the intent clearer.
 

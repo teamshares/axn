@@ -70,6 +70,13 @@ RSpec.describe Axn::Validators::OfValidator do
     it "fails for non-UUID strings" do
       expect(action.call(items: ["not-a-uuid"])).not_to be_ok
     end
+
+    it "fails for a blank element even when the field allows blank (allow_blank governs the field, not its elements)" do
+      action = build_axn { expects :items, type: Array, of: :uuid, allow_blank: true }
+      result = action.call(items: [""])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 0/)
+    end
   end
 
   # ─── Union array ──────────────────────────────────────────────────────────────
@@ -134,11 +141,19 @@ RSpec.describe Axn::Validators::OfValidator do
   # ─── Whole-field nil / blank handling ────────────────────────────────────────
 
   describe "whole-value nil/blank handling" do
+    # Each flag governs the *field* (may it be absent?), never its *elements* — a nil
+    # element is still rejected regardless of which whole-field flag is set.
     context "with allow_nil" do
       let(:action) { build_axn { expects :items, type: Array, of: String, allow_nil: true } }
 
       it "skips element validation when value is nil" do
         expect(action.call(items: nil)).to be_ok
+      end
+
+      it "still rejects a nil element inside the array" do
+        result = action.call(items: ["a", nil])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
       end
     end
 
@@ -148,6 +163,12 @@ RSpec.describe Axn::Validators::OfValidator do
       it "skips element validation when value is nil" do
         expect(action.call(items: nil)).to be_ok
       end
+
+      it "still rejects a nil element inside the array" do
+        result = action.call(items: ["a", nil])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
+      end
     end
 
     context "with optional" do
@@ -155,6 +176,12 @@ RSpec.describe Axn::Validators::OfValidator do
 
       it "skips element validation when value is nil" do
         expect(action.call(items: nil)).to be_ok
+      end
+
+      it "still rejects a nil element inside the array" do
+        result = action.call(items: ["a", nil])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
       end
     end
   end
@@ -263,6 +290,13 @@ RSpec.describe Axn::Validators::OfValidator do
     it "includes the index of each failing element" do
       action = build_axn { expects :items, type: Array, of: String, allow_blank: true }
       result = action.call(items: [1, 2, 3])
+      expect(result.exception.message).to match(/element at index 0/)
+    end
+
+    it "honors a custom message: while still reporting the element index" do
+      action = build_axn { expects :items, type: Array, of: { klass: String, message: "must be a string" } }
+      result = action.call(items: [42])
+      expect(result.exception.message).to include("must be a string")
       expect(result.exception.message).to match(/element at index 0/)
     end
   end
