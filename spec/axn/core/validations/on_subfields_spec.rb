@@ -321,6 +321,26 @@ RSpec.describe Axn do
       end
     end
 
+    context "with a subfield name that collides with a Hash/Enumerable method" do
+      let(:action) do
+        build_axn do
+          expects :address, type: Hash
+          expects :zip, on: :address, type: String
+          exposes :echoed
+
+          def call
+            expose :echoed, zip
+          end
+        end
+      end
+
+      it "reads the key rather than calling the method" do
+        result = action.call(address: { zip: "12345" })
+        expect(result).to be_ok
+        expect(result.echoed).to eq("12345")
+      end
+    end
+
     context "sensitive subfields" do
       let(:action) do
         build_axn do
