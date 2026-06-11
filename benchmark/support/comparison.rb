@@ -98,24 +98,21 @@ module Benchmark
         comparison
       end
 
-      # Verdict-oriented report used by benchmark:check and benchmark:compare.
-      # Returns a string; exits non-zero only when called via the gate (caller decides).
+      # Gate-oriented report: allocations only + verdict. Used by benchmark:check.
+      # IPS is omitted — cross-session timing comparisons have too much machine variance
+      # to be reliable, and showing noisy "faster/slower" results erodes trust.
       def format_check_report(comparison_data)
         output = []
-        env_match   = comparison_data[:env_match]
-        b_ver       = comparison_data[:baseline_version]
-        c_ver       = comparison_data[:current_version]
-        b_ruby      = comparison_data[:baseline_ruby]
-        c_ruby      = comparison_data[:current_ruby]
-        b_platform  = comparison_data[:baseline_platform]
-        c_platform  = comparison_data[:current_platform]
+        env_match = comparison_data[:env_match]
+        b_ver     = comparison_data[:baseline_version]
+        b_ruby    = comparison_data[:baseline_ruby]
+        b_platform = comparison_data[:baseline_platform]
 
-        # Header
         output << ""
         output << Colors.bold(Colors.info("📊 Benchmark regression check"))
         output << Colors.dim("=" * 72)
         output << "  #{Colors.info("Baseline:")} #{b_ver}  (Ruby #{b_ruby} / #{b_platform})"
-        output << "  #{Colors.info("Current: ")} #{c_ver}  (Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM})"
+        output << "  #{Colors.info("Current: ")} #{comparison_data[:current_version]}  (Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM})"
 
         unless env_match
           output << ""
@@ -125,47 +122,33 @@ module Benchmark
         end
         output << ""
 
-        # ── Allocation section (the gate) ──────────────────────────────────────
         output << Colors.bold("  🔬 Allocations (#{env_match ? "gate" : "advisory — env mismatch"})")
         output << Colors.dim("  " + "-" * 68)
+        output.concat(format_allocation_lines(comparison_data))
+        output << ""
 
-        regressions  = comparison_data[:memory_changes].select { |_, c| c[:status] == :regression }
-        improvements = comparison_data[:memory_changes].select { |_, c| c[:status] == :improvement }
-        unchanged    = comparison_data[:memory_changes].select { |_, c| c[:status] == :unchanged }
-
-        if regressions.any?
-          # Sort worst-first by objects increase %
-          sorted_regressions = regressions.sort_by { |_, c| -c[:objects_pct] }
-          sorted_regressions.each do |name, c|
-            obj_delta   = delta_str(c[:objects_pct], "obj")
-            bytes_delta = delta_str(c[:bytes_pct],   "bytes")
-            output << Colors.error("  🔴 #{Colors.bold(name)}")
-            output << Colors.error("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{obj_delta})")
-            output << Colors.error("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{bytes_delta})")
-          end
-        end
-
-        if improvements.any?
-          improvements.each do |name, c|
-            obj_delta   = delta_str(c[:objects_pct], "obj")
-            bytes_delta = delta_str(c[:bytes_pct],   "bytes")
-            output << Colors.success("  📉 #{Colors.bold(name)}")
-            output << Colors.success("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{obj_delta})")
-            output << Colors.success("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{bytes_delta})")
-          end
-        end
-
-        clean_count = unchanged.size + (regressions.any? ? 0 : 0)
-        clean_count = unchanged.size + improvements.size
-        # Summarise clean scenarios as one line
-        if unchanged.size.positive? || (regressions.empty? && improvements.empty?)
-          output << Colors.success("  ✅ no allocation regression in #{unchanged.size} scenario(s)")
+        output << Colors.dim("  " + "=" * 68)
+        regressions = comparison_data[:memory_changes].select { |_, c| c[:status] == :regression }
+        if regressions.empty? || !env_match
+          detail = (!env_match && regressions.any?) ? " (#{regressions.size} potential — advisory only, env mismatch)" : nil
+          output << Colors.bold(Colors.success("  VERDICT: ✅  no blocking allocation regressions#{detail}"))
+        else
+          output << Colors.bold(Colors.error("  VERDICT: 🔴  #{regressions.size} allocation regression(s) detected"))
+          output << Colors.error("           Increase blocked — address before releasing.")
         end
         output << ""
 
-        # ── IPS section (advisory) ─────────────────────────────────────────────
+        output.join("\n")
+      end
+
+      # Full report for benchmark:compare: allocations + IPS advisory section.
+      # IPS cross-session comparisons are noisy — treat as curiosity, not signal.
+      def format_comparison(comparison_data)
+        output = [format_check_report(comparison_data).rstrip]
+
         notable_ips = comparison_data[:ips_changes].reject { |_, c| c[:status] == :noise }
-        output << Colors.bold("  ⏱  Timing — advisory (never gates the release)")
+        output << ""
+        output << Colors.bold("  ⏱  Timing — advisory (cross-session noise, never gates release)")
         output << Colors.dim("  " + "-" * 68)
 
         if notable_ips.any?
@@ -177,36 +160,14 @@ module Benchmark
             output << Colors.public_send(color, "  #{icon} #{Colors.bold(name)}: #{pct_str}")
             output << Colors.public_send(color, "       #{c[:baseline].round(1)} → #{c[:current].round(1)} i/s")
           end
+          noise_count = comparison_data[:ips_changes].size - notable_ips.size
+          output << Colors.dim("  ≈  #{noise_count} other scenario(s) within noise band — not shown") if noise_count.positive?
         else
           output << Colors.dim("  ≈  all #{comparison_data[:ips_changes].size} scenarios within noise band")
-        end
-
-        noise_count = comparison_data[:ips_changes].size - notable_ips.size
-        if notable_ips.any? && noise_count.positive?
-          output << Colors.dim("  ≈  #{noise_count} other scenario(s) within noise band — not shown")
-        end
-        output << ""
-
-        # ── Verdict ────────────────────────────────────────────────────────────
-        output << Colors.dim("  " + "=" * 68)
-        if regressions.empty? || !env_match
-          verdict_detail = if !env_match && regressions.any?
-            " (#{regressions.size} potential regression(s) — advisory only, env mismatch)"
-          end
-          output << Colors.bold(Colors.success("  VERDICT: ✅  no blocking allocation regressions#{verdict_detail}"))
-        else
-          output << Colors.bold(Colors.error("  VERDICT: 🔴  #{regressions.size} allocation regression(s) detected"))
-          output << Colors.error("           Increase blocked — address before releasing.")
         end
         output << ""
 
         output.join("\n")
-      end
-
-      # Legacy formatter — kept for backward compatibility, still used by benchmark:compare
-      # before it was upgraded to use format_check_report.
-      def format_comparison(comparison_data)
-        format_check_report(comparison_data)
       end
 
       def regression?(comparison_data)
@@ -229,6 +190,28 @@ module Benchmark
       end
 
       private
+
+      def format_allocation_lines(comparison_data)
+        lines        = []
+        regressions  = comparison_data[:memory_changes].select { |_, c| c[:status] == :regression }
+        improvements = comparison_data[:memory_changes].select { |_, c| c[:status] == :improvement }
+        unchanged    = comparison_data[:memory_changes].select { |_, c| c[:status] == :unchanged }
+
+        regressions.sort_by { |_, c| -c[:objects_pct] }.each do |name, c|
+          lines << Colors.error("  🔴 #{Colors.bold(name)}")
+          lines << Colors.error("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], "obj")})")
+          lines << Colors.error("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct], "bytes")})")
+        end
+
+        improvements.each do |name, c|
+          lines << Colors.success("  📉 #{Colors.bold(name)}")
+          lines << Colors.success("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], "obj")})")
+          lines << Colors.success("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct], "bytes")})")
+        end
+
+        lines << Colors.success("  ✅ no allocation regression in #{unchanged.size} scenario(s)") if unchanged.size.positive?
+        lines
+      end
 
       def env_match?(baseline_data, current_data)
         baseline_data[:ruby_version] == current_data[:ruby_version] &&
