@@ -2,6 +2,12 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: ["github>teamshares/renovate-config:lib.json5"],
+  // The dummy app's Gemfile.lock is gitignored, and it pulls in axn via a local
+  // `path:` dependency, so Renovate's lockfile artifact update (`bundle lock`)
+  // fails (see https://github.com/teamshares/axn/pull/86). It only exists to
+  // exercise axn against a real Rails app, so exclude it from Renovate entirely.
+  // First two entries are Renovate's defaults (preserved since setting ignorePaths overrides them).
+  ignorePaths: ["**/node_modules/**", "**/bower_components/**", "spec_rails/dummy_app/Gemfile"],
   ignoreDeps: [
   ],
   "packageRules": [
