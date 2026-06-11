@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-* [INTERNAL] Namespaced the framework's internal instance variables on the action instance (`@result` → `@__result`, `@internal_context` → `@__internal_context`) and the class-level `@inspection_filter` → `@__inspection_filter`, so a user assigning their own `@result`/`@internal_context` inside an action can no longer clobber exposed-value extraction or message rendering. No public API change — the `result` / `internal_context` methods are unchanged.
+* [INTERNAL] Namespaced the framework's internal instance variables on the action instance (`@result` → `@__result`, `@internal_context` → `@__internal_context`) and the class-level `@inspection_filter` → `@__inspection_filter`, so a user assigning their own `@result`/`@internal_context` inside an action can no longer clobber exposed-value extraction or message rendering. The unrelated `@result` memo on the internal `DiscardedJobAction` proxy was renamed `@discarded_job_result` to avoid conflating it with the facade. No public API change — the `result` / `internal_context` methods are unchanged.
 
 ## 0.1.0-alpha.4.3
 * [FEAT] Plain namespace **modules** can now host mounted actions: `include Axn::Mountable` on a module (not just a class) exposes `mount_axn` / `mount_axn_method` / `step`. Class hosts keep the existing `class_attribute` + `inherited` behavior; module hosts use singleton accessors and skip the `inherited` hook (modules have no subclasses). Also fixes a `.name` clobber so passing an already-named class to `mount_axn` preserves its original name instead of rewriting it to the `Axns` namespace path.
