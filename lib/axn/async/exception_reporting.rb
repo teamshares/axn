@@ -48,7 +48,7 @@ module Axn
         end
 
         def result
-          @result ||= DiscardedJobResult.new(@exception)
+          @discarded_job_result ||= DiscardedJobResult.new(@exception)
         end
 
         def class
