@@ -17,6 +17,18 @@ module Axn
         end
       end
 
+      # Resolves the parent value an `on:` points at. `on:` may be a single field/subfield
+      # (e.g. :address) or a dotted path (e.g. "address.billing") — the root segment is read via
+      # its reader and any remaining segments are dug out via the Extract resolver. Shared by the
+      # subfield reader and the inbound validation runner so both treat paths identically.
+      def self.resolve_parent(source, on)
+        root, *rest = on.to_s.split(".")
+        value = source.public_send(root)
+        return value if rest.empty?
+
+        Axn::Core::FieldResolvers.resolve(type: :extract, field: rest.join("."), provided_data: value)
+      end
+
       module ClassMethods
         def _expects_subfields(
           *fields,
@@ -31,12 +43,21 @@ module Axn
           metadata: {},
           **validations
         )
-          unless internal_field_configs.map(&:field).include?(on) || subfield_configs.map(&:field).include?(on)
+          # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
+          root = on.to_s.split(".").first.to_sym
+          unless internal_field_configs.map(&:field).include?(root) || subfield_configs.map(&:field).include?(root)
             raise ArgumentError,
-                  "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)"
+                  "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{root}`?)"
           end
 
-          raise ArgumentError, "expects does not support expecting fields on nested attributes (i.e. `on` cannot contain periods)" if on.to_s.include?(".")
+          # default:/preprocess: write into the parent, and sensitive: relies on the log filter
+          # matching config.on to a top-level field — none of which support an arbitrary nested
+          # path yet. Reject the combination explicitly rather than silently ignoring it (use
+          # .nil? for default/preprocess so an explicit `default: false`/`nil` is still caught).
+          if on.to_s.include?(".") && (!default.nil? || !preprocess.nil? || sensitive)
+            raise ArgumentError,
+                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested (dotted) `on:` (got on: #{on.inspect})"
+          end
 
           _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, **validations).tap do |configs|
@@ -83,7 +104,7 @@ module Axn
           raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{field}` is already defined)" if method_defined?(field)
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, field) do
-            Axn::Core::FieldResolvers.resolve(type: :extract, field:, provided_data: public_send(on))
+            Axn::Core::FieldResolvers.resolve(type: :extract, field:, provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
           end
 
           _define_subfield_model_reader(field, validations[:model], on:) if validations.key?(:model)
@@ -95,7 +116,7 @@ module Axn
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, field) do
             # Create a data source that contains the subfield data for the resolver
-            subfield_data = public_send(on)
+            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, on)
 
             Axn::Core::FieldResolvers.resolve(
               type: :model,

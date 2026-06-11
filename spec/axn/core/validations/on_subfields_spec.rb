@@ -217,6 +217,96 @@ RSpec.describe Axn do
       end
     end
 
+    context "with a nested (dotted) on: path" do
+      it "validates a field on a nested parent path" do
+        action = build_axn do
+          expects :address, type: Hash
+          expects :postcode, on: "address.billing", type: String
+        end
+
+        expect(action.call(address: { billing: { postcode: "12345" } })).to be_ok
+        expect(action.call(address: { billing: { postcode: 123 } })).not_to be_ok
+      end
+
+      it "defines a clean, dot-free reader named after the subfield" do
+        action = build_axn do
+          expects :address, type: Hash
+          expects :postcode, on: "address.billing", type: String
+          exposes :echoed
+
+          def call
+            expose :echoed, postcode
+          end
+        end
+
+        expect(action.instance_methods).to include(:postcode)
+        expect(action.call(address: { billing: { postcode: "12345" } }).echoed).to eq("12345")
+      end
+
+      it "supports nesting more than one level deep" do
+        action = build_axn do
+          expects :a, type: Hash
+          expects :leaf, on: "a.b.c", type: String
+        end
+
+        expect(action.call(a: { b: { c: { leaf: "ok" } } })).to be_ok
+        expect(action.call(a: { b: { c: { leaf: 9 } } })).not_to be_ok
+      end
+
+      it "supports optional: when the leaf is absent but the parent path exists" do
+        action = build_axn do
+          expects :address, type: Hash
+          expects :postcode, on: "address.billing", type: String, optional: true
+        end
+
+        expect(action.call(address: { billing: {} })).to be_ok
+      end
+
+      it "still raises when the root of the path is not declared" do
+        expect do
+          build_axn do
+            expects :postcode, on: "address.billing", type: String
+          end
+        end.to raise_error(ArgumentError, /no such method|address/)
+      end
+
+      it "rejects default: combined with a nested on:" do
+        expect do
+          build_axn do
+            expects :address, type: Hash
+            expects :postcode, on: "address.billing", default: "00000"
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+
+      it "rejects a falsey default: (e.g. default: false) combined with a nested on:" do
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :enabled, on: "settings.flags", type: :boolean, default: false
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+
+      it "rejects preprocess: combined with a nested on:" do
+        expect do
+          build_axn do
+            expects :address, type: Hash
+            expects :postcode, on: "address.billing", preprocess: ->(_value) { "static" }
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+
+      it "rejects sensitive: combined with a nested on: (the log filter can't redact a nested path)" do
+        expect do
+          build_axn do
+            expects :address, type: Hash
+            expects :ssn, on: "address.billing", sensitive: true
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+    end
+
     context "with objects rather than hashes" do
       let(:action) do
         build_axn do
