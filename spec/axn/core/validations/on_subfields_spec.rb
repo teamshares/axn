@@ -339,6 +339,22 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.echoed).to eq("12345")
       end
+
+      it "also reads the key through a nested (dotted) on: path" do
+        action = build_axn do
+          expects :address, type: Hash
+          expects :zip, on: "address.billing", type: String
+          exposes :echoed
+
+          def call
+            expose :echoed, zip
+          end
+        end
+
+        result = action.call(address: { billing: { zip: "12345" } })
+        expect(result).to be_ok
+        expect(result.echoed).to eq("12345")
+      end
     end
 
     context "sensitive subfields" do
