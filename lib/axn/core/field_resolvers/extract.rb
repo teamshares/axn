@@ -13,14 +13,19 @@ module Axn
         end
 
         def call
-          # Handle method calls if the source responds to the field
+          # Hash-like (named-key) sources: read the key. Checked BEFORE the method branch so a key
+          # whose name collides with a Hash/Enumerable method (e.g. `zip`, `count`, `first`) is read
+          # as a key rather than dispatched as a method call. Arrays respond to #dig too, but only
+          # with integer indices, so they stay on the reader path (e.g. `items.count`).
+          if provided_data.respond_to?(:dig) && !provided_data.is_a?(Array)
+            base = provided_data.respond_to?(:with_indifferent_access) ? provided_data.with_indifferent_access : provided_data
+            return base.dig(*field.to_s.split("."))
+          end
+
+          # Object/Array sources: use the reader method.
           return provided_data.public_send(field) if provided_data.respond_to?(field)
 
-          # For hash-like objects, use digging with indifferent access
-          raise "Unclear how to extract #{field} from #{provided_data.inspect}" unless provided_data.respond_to?(:dig)
-
-          base = provided_data.respond_to?(:with_indifferent_access) ? provided_data.with_indifferent_access : provided_data
-          base.dig(*field.to_s.split("."))
+          raise "Unclear how to extract #{field} from #{provided_data.inspect}"
         end
 
         private
