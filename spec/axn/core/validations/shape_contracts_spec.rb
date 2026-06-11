@@ -185,6 +185,13 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       expect(result.exception.message).to match(/element at index 0/)
     end
 
+    it "preserves the element index for an Array element (Array#dig can't take a name)" do
+      result = array_action.call(items: [%w[a b]])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 0/)
+      expect(result.exception.message).not_to match(/no implicit conversion/)
+    end
+
     it "defers a non-Hash value on a Hash-shaped field to the type error" do
       action = build_axn do
         expects :payload, type: Hash do
@@ -196,6 +203,21 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       expect(result).not_to be_ok
       expect(result.exception.message).not_to match(/Unclear how to extract/)
       expect(result.exception.message).to match(/Hash/)
+    end
+  end
+
+  describe "unsupported member options" do
+    %i[sensitive default preprocess].each do |opt|
+      it "raises when a member declares #{opt}:" do
+        value = opt == :preprocess ? ->(v) { v } : true
+        expect do
+          build_axn do
+            expects :items, type: Array do
+              field :secret, type: String, opt => value
+            end
+          end
+        end.to raise_error(ArgumentError, /does not support/)
+      end
     end
   end
 

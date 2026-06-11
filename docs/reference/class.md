@@ -138,7 +138,7 @@ end
 
 * The block requires a single, **structured** `type:` (Array, Hash, or a class). Declaring it on a scalar type (`String`, `Integer`, `:boolean`, …), a union (`type: [Array, String]`), or with no `type:` raises `ArgumentError` at declaration time.
 * For `type: Array`, each element is validated and errors report the element's index (e.g. `element at index 2: status is not included in the list`). For a `type: Hash`/class, the single value's members are validated directly.
-* Members accept the same options as a top-level field (`type`, `inclusion`, `optional`, `description`, etc.) and **recurse** — a member with its own block validates its nested members at any depth.
+* Members accept validations (`type`, `inclusion`, …), `optional`/`allow_blank`/`allow_nil`, and `description`, and **recurse** — a member with its own block validates its nested members at any depth. Members are validation/schema-only, so `default:`, `preprocess:`, and `sensitive:` are **not** supported on a member (they raise at declaration time).
 * Unlike `expects … on:` subfields, a shape block does **not** define reader methods — there is no single value to bind (an array has many elements). It is a contract on structure only.
 * Composes with `of:`: `of:` checks each element's *class*, while the block describes the element's *fields*. `of:` is optional.
 

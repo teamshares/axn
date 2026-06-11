@@ -54,11 +54,15 @@ module Axn
 
       def members = options[:members] || []
 
-      # Mirrors FieldResolvers::Extract's own logic: a value yields a member only if it responds to
-      # the reader (objects/Data) or to #dig (Hash-like). Guarding here keeps the element index in
-      # the error instead of letting the resolver raise and lose it.
+      # A value can yield a named member only if it responds to the reader (objects/Data) or
+      # supports named-key access (Hash-like). Arrays respond to #dig but only by integer index,
+      # so `Array#dig("status")` would raise a TypeError; excluding them keeps the element index in
+      # the error (e.g. "element at index 0: status could not be read") instead of letting the
+      # resolver raise and lose it. Guarding here mirrors FieldResolvers::Extract's own dispatch.
       def extractable?(source, field)
-        source.respond_to?(field) || source.respond_to?(:dig)
+        return true if source.respond_to?(field)
+
+        source.respond_to?(:dig) && !source.is_a?(Array)
       end
 
       # One validator class per member, built once and reused across every element/value.

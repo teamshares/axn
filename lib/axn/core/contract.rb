@@ -213,8 +213,12 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
-        # Field-level options that govern a member declaration but are not themselves validations.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional default preprocess sensitive].freeze
+        # Field-level options a shape member supports (beyond validations + metadata). Shape members
+        # are validation/schema-only: they have no single value to default/preprocess, and the log
+        # filter can't redact a per-element member, so default:/preprocess:/sensitive: are rejected
+        # rather than silently dropped when converting to a ShapeConfig.
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional].freeze
+        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
@@ -235,6 +239,13 @@ module Axn
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
         def _build_shape_member(name, opts, subblock)
+          unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
+          if unsupported.any?
+            raise ArgumentError,
+                  "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
+                  "(shape blocks declare validation/schema only)"
+          end
+
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
