@@ -276,7 +276,16 @@ RSpec.describe Axn do
             expects :address, type: Hash
             expects :postcode, on: "address.billing", default: "00000"
           end
-        end.to raise_error(ArgumentError, /default.*nested|nested.*on/i)
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+
+      it "rejects a falsey default: (e.g. default: false) combined with a nested on:" do
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :enabled, on: "settings.flags", type: :boolean, default: false
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
       end
 
       it "rejects preprocess: combined with a nested on:" do
@@ -285,7 +294,16 @@ RSpec.describe Axn do
             expects :address, type: Hash
             expects :postcode, on: "address.billing", preprocess: ->(_value) { "static" }
           end
-        end.to raise_error(ArgumentError, /preprocess.*nested|nested.*on/i)
+        end.to raise_error(ArgumentError, /not supported with a nested/)
+      end
+
+      it "rejects sensitive: combined with a nested on: (the log filter can't redact a nested path)" do
+        expect do
+          build_axn do
+            expects :address, type: Hash
+            expects :ssn, on: "address.billing", sensitive: true
+          end
+        end.to raise_error(ArgumentError, /not supported with a nested/)
       end
     end
 

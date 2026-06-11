@@ -50,10 +50,13 @@ module Axn
                   "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{root}`?)"
           end
 
-          # Writing into an arbitrary nested path isn't supported yet — reject the combination
-          # explicitly rather than silently ignoring default:/preprocess: on a nested on:.
-          if on.to_s.include?(".") && (default || preprocess)
-            raise ArgumentError, "`default:`/`preprocess:` are not supported with a nested (dotted) `on:` (got on: #{on.inspect})"
+          # default:/preprocess: write into the parent, and sensitive: relies on the log filter
+          # matching config.on to a top-level field — none of which support an arbitrary nested
+          # path yet. Reject the combination explicitly rather than silently ignoring it (use
+          # .nil? for default/preprocess so an explicit `default: false`/`nil` is still caught).
+          if on.to_s.include?(".") && (!default.nil? || !preprocess.nil? || sensitive)
+            raise ArgumentError,
+                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested (dotted) `on:` (got on: #{on.inspect})"
           end
 
           _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
