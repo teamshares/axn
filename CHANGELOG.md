@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+* [INTERNAL] Namespaced the framework's internal instance variables on the action instance (`@result` → `@__result`, `@internal_context` → `@__internal_context`) and the class-level `@inspection_filter` → `@__inspection_filter`, so a user assigning their own `@result`/`@internal_context` inside an action can no longer clobber exposed-value extraction or message rendering. No public API change — the `result` / `internal_context` methods are unchanged.
+
 ## 0.1.0-alpha.4.3
 * [FEAT] Plain namespace **modules** can now host mounted actions: `include Axn::Mountable` on a module (not just a class) exposes `mount_axn` / `mount_axn_method` / `step`. Class hosts keep the existing `class_attribute` + `inherited` behavior; module hosts use singleton accessors and skip the `inherited` hook (modules have no subclasses). Also fixes a `.name` clobber so passing an already-named class to `mount_axn` preserves its original name instead of rewriting it to the `Axns` namespace path.
 * [BUGFIX] Fixed an off-by-one in `async.attempt` reported from the Sidekiq death handler: Sidekiq increments `retry_count` before invoking death handlers, so an exhausted `retry: 3` job (4 executions) reported attempt `5` instead of `4`. The bug was metadata-only — control flow (`retries_exhausted?`, `first_attempt?`, `should_trigger_on_exception?`) was unaffected. Also documents why framework-native integrations (e.g. Honeybadger's Sidekiq plugin) can produce duplicate async error reports, with a tag-and-filter suppression recipe.

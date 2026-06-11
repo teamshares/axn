@@ -112,7 +112,7 @@ module Axn
         end
 
         def inspection_filter
-          @inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
+          @__inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
         end
 
         def sensitive_fields
@@ -368,8 +368,8 @@ module Axn
       RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs].freeze
 
       module InstanceMethods
-        def internal_context = @internal_context ||= _build_context_facade(:inbound)
-        def result = @result ||= _build_context_facade(:outbound)
+        def internal_context = @__internal_context ||= _build_context_facade(:inbound)
+        def result = @__result ||= _build_context_facade(:outbound)
 
         delegate :default_error, :default_success, to: :internal_context
 
