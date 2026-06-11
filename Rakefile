@@ -133,9 +133,42 @@ namespace :benchmark do
     puts Colors.info("Comparing results...")
     puts ""
 
-    # Compare and display
+    # Compare and display (informational — always exits 0)
     comparison = Benchmark::Comparison.compare(baseline_data, current_data)
-    puts Benchmark::Comparison.format_comparison(comparison)
+    puts Benchmark::Comparison.format_check_report(comparison)
+  end
+
+  desc "Allocation regression gate — exits non-zero on regression (runs automatically before rake release)"
+  task :check do
+    require_relative "benchmark/support/benchmark_runner"
+    require_relative "benchmark/support/storage"
+    require_relative "benchmark/support/comparison"
+    require_relative "lib/axn/version"
+    require_relative "benchmark/support/colors"
+
+    puts Colors.bold(Colors.info("🔬 Running allocation regression gate..."))
+    puts Colors.dim("=" * 72)
+    puts ""
+
+    last_release_version = Benchmark::Storage.get_last_release_version
+    baseline_data        = last_release_version && Benchmark::Storage.load_benchmark(last_release_version)
+
+    if baseline_data.nil?
+      puts Colors.warning("  ⚠️  No baseline available — skipping regression gate.")
+      puts Colors.dim("     (Run 'rake benchmark:release' after a release to create a baseline.)")
+      puts ""
+      next # exit 0 — gate is a no-op on a fresh clone
+    end
+
+    puts Colors.info("  Baseline: #{last_release_version}")
+    puts Colors.info("  Running benchmarks (this takes ~20s)...")
+    puts ""
+
+    current_data = Benchmark::BenchmarkRunner.run_all_scenarios(verbose: false)
+    comparison   = Benchmark::Comparison.compare(baseline_data, current_data)
+    puts Benchmark::Comparison.format_check_report(comparison)
+
+    exit 1 if Benchmark::Comparison.regression?(comparison)
   end
 end
 
@@ -143,7 +176,13 @@ end
 # (from bundler/gem_tasks) depending on "build"; verify runs before build, so before push.
 Rake::Task["build"].enhance([:verify])
 
-# Automatically run benchmark:release after rake release
+# Run the allocation regression gate BEFORE the gem is pushed.
+# Enhancing release:guard_clean (the first prerequisite of release) ensures
+# benchmark:check runs before release:source_control_push and release:rubygem_push.
+# benchmark:check exits 1 on regression, aborting the release before any push.
+Rake::Task["release:guard_clean"].enhance([:"benchmark:check"])
+
+# Automatically run benchmark:release after rake release (saves snapshot + bumps .last_release)
 Rake::Task["release"].enhance do
   require_relative "benchmark/support/colors"
   puts ""
