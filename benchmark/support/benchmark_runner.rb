@@ -23,9 +23,7 @@ module Benchmark
         memory_results = {}
 
         AxnScenarios.all_scenarios.each do |scenario_name|
-          if verbose
-            print Colors.info("Running #{scenario_name}...")
-          end
+          print Colors.info("Running #{scenario_name}...") if verbose
 
           ips_result = benchmark_scenario(scenario_name, quiet: !verbose)
           stddev_percentage = ips_result.ips.positive? ? (ips_result.ips_sd / ips_result.ips * 100).round(2) : 0.0
@@ -39,9 +37,7 @@ module Benchmark
             time: time_seconds,
           }
 
-          if verbose
-            puts Colors.success(" ✓ completed")
-          end
+          puts Colors.success(" ✓ completed") if verbose
         end
 
         if verbose
