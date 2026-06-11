@@ -17,27 +17,41 @@ require_relative "colors"
 
 module Benchmark
   module BenchmarkRunner
+    # Warmup iterations run before memory profiling. Both benchmark:check and
+    # benchmark:release use this so baselines and checks share identical heap-warmup
+    # state. Pass warmup_iterations: nil to run full timed IPS instead (bin/benchmark).
+    WARMUP_ITERATIONS = 2_000
+
     class << self
-      def run_all_scenarios(verbose: true)
+      def run_all_scenarios(verbose: true, warmup_iterations: WARMUP_ITERATIONS)
         ips_results = []
         memory_results = {}
 
-        AxnScenarios.all_scenarios.each do |scenario_name|
-          print Colors.info("Running #{scenario_name}...") if verbose
+        if warmup_iterations
+          if verbose
+            puts Colors.info("Warming up (#{warmup_iterations} iterations per scenario)...")
+          end
+          AxnScenarios.all_scenarios.each do |scenario_name|
+            warmup_iterations.times { AxnScenarios.run_scenario(scenario_name, **sample_data_for_scenario(scenario_name)) }
+          end
+        else
+          AxnScenarios.all_scenarios.each do |scenario_name|
+            print Colors.info("Running #{scenario_name}...") if verbose
 
-          ips_result = benchmark_scenario(scenario_name, quiet: !verbose)
-          stddev_percentage = ips_result.ips.positive? ? (ips_result.ips_sd / ips_result.ips * 100).round(2) : 0.0
-          time_seconds = ips_result.ips.positive? ? (ips_result.iterations.to_f / ips_result.ips).round(3) : 0.0
+            ips_result = benchmark_scenario(scenario_name, quiet: !verbose)
+            stddev_percentage = ips_result.ips.positive? ? (ips_result.ips_sd / ips_result.ips * 100).round(2) : 0.0
+            time_seconds = ips_result.ips.positive? ? (ips_result.iterations.to_f / ips_result.ips).round(3) : 0.0
 
-          ips_results << {
-            name: scenario_name.to_s,
-            ips: ips_result.ips,
-            stddev: stddev_percentage,
-            iterations: ips_result.iterations,
-            time: time_seconds,
-          }
+            ips_results << {
+              name: scenario_name.to_s,
+              ips: ips_result.ips,
+              stddev: stddev_percentage,
+              iterations: ips_result.iterations,
+              time: time_seconds,
+            }
 
-          puts Colors.success(" ✓ completed") if verbose
+            puts Colors.success(" ✓ completed") if verbose
+          end
         end
 
         if verbose
@@ -46,9 +60,7 @@ module Benchmark
         end
 
         AxnScenarios.all_scenarios.each do |scenario_name|
-          if verbose
-            print Colors.info("Analyzing memory for #{scenario_name}...")
-          end
+          print Colors.info("Analyzing memory for #{scenario_name}...") if verbose
 
           memory_result = benchmark_memory(scenario_name)
           memory_results[scenario_name.to_s] = {

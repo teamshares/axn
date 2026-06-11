@@ -161,7 +161,7 @@ namespace :benchmark do
     end
 
     puts Colors.info("  Baseline: #{last_release_version}")
-    puts Colors.info("  Running benchmarks (this takes ~60s)...")
+    puts Colors.info("  Running benchmarks (this takes ~20s)...")
     puts ""
 
     current_data = Benchmark::BenchmarkRunner.run_all_scenarios(verbose: false)
