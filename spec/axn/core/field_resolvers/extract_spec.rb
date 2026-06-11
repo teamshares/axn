@@ -27,6 +27,16 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
     end
   end
 
+  describe "Array sources" do
+    # Arrays respond to #dig but only with integer indices, so a field named after an Array
+    # method must use the reader method, not dig.
+    it "uses the reader method rather than digging by name" do
+      expect(extract(:count, [1, 2, 3])).to eq(3)
+      expect(extract(:first, %w[a b])).to eq("a")
+      expect(extract(:length, [1, 2])).to eq(2)
+    end
+  end
+
   describe "object sources (non-diggable)" do
     it "uses the reader method" do
       obj = Data.define(:zip).new(zip: "v")
