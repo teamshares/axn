@@ -23,6 +23,26 @@ module Axn
         def description = metadata[:description]
       end
 
+      # One member declared inside a structured field's block (`field :name, ...`).
+      # Nested members live in validations[:shape][:members], so the tree is uniform
+      # at every depth and walked by both ShapeValidator (runtime) and axn-mcp (schema).
+      ShapeConfig = Data.define(:field, :validations, :metadata) do
+        def description = metadata[:description]
+      end
+
+      # Collector for the `field ...` calls inside a structured field's block.
+      class ShapeBuilder
+        attr_reader :declarations
+
+        def initialize
+          @declarations = []
+        end
+
+        def field(name, **opts, &block)
+          @declarations << [name, opts, block]
+        end
+      end
+
       module ClassMethods
         def expects(
           *fields,
@@ -34,7 +54,8 @@ module Axn
           default: nil,
           preprocess: nil,
           sensitive: false,
-          **
+          **,
+          &block
         )
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
@@ -45,9 +66,13 @@ module Axn
           validations, metadata = _partition_field_options(fields, **)
 
           if on.present?
+            raise ArgumentError, "a shape block is not supported with `on:`" if block
+
             return _expects_subfields(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                **validations)
           end
+
+          validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         define_readers: true, **validations).tap do |configs|
@@ -66,13 +91,16 @@ module Axn
           optional: false,
           default: nil,
           sensitive: false,
-          **
+          **,
+          &block
         )
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
 
           validations, metadata = _partition_field_options(fields, **)
+
+          validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             duplicated = external_field_configs.map(&:field) & configs.map(&:field)
@@ -175,9 +203,69 @@ module Axn
         KNOWN_VALIDATION_KEYS = Set.new(%i[
                                           absence acceptance comparison confirmation exclusion format
                                           inclusion length numericality presence uniqueness
-                                          type model validate of
+                                          type model validate of shape
                                           if unless on message strict
                                         ]).freeze
+
+        # Types for which a shape block is meaningless — the block describes the members of a
+        # structured value (Array elements, Hash keys, or a class's readers), not a scalar.
+        SHAPE_INCOMPATIBLE_TYPES = [String, Integer, Float, Numeric, TrueClass, FalseClass, Symbol, NilClass,
+                                    Date, Time, DateTime,
+                                    :boolean, :uuid, :params].freeze
+
+        # Field-level options a shape member supports (beyond validations + metadata). Shape members
+        # are validation/schema-only: they have no single value to default/preprocess, and the log
+        # filter can't redact a per-element member, so default:/preprocess:/sensitive: are rejected
+        # rather than silently dropped when converting to a ShapeConfig.
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional].freeze
+        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
+
+        # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
+        # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
+        # trying to extract members from the wrong kind of value).
+        def _build_shape(fields, validations: nil, &)
+          raise ArgumentError, "a shape block can only be declared on a single field" if fields.size > 1
+
+          container = _shape_compatible_type!(validations)
+
+          builder = ShapeBuilder.new
+          builder.instance_exec(&)
+
+          members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock) }
+
+          { members:, container: }
+        end
+
+        # A member reuses the same option handling as a top-level field (optional/allow_blank/
+        # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
+        def _build_shape_member(name, opts, subblock)
+          unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
+          if unsupported.any?
+            raise ArgumentError,
+                  "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
+                  "(shape blocks declare validation/schema only)"
+          end
+
+          field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
+          field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
+
+          field_validations[:shape] = _build_shape([name], validations: field_validations, &subblock) if subblock
+
+          config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
+          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata)
+        end
+
+        # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.
+        # Returns the structured klass (Array, Hash, or a member-bearing class).
+        def _shape_compatible_type!(validations)
+          type = validations&.dig(:type)
+          klass = type.is_a?(Hash) ? type[:klass] : type
+          klasses = Array(klass)
+          return klasses.first if klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
+
+          raise ArgumentError,
+                "a shape block requires a single structured type: (Array, Hash, or a class) — got #{klasses.inspect}"
+        end
 
         def _partition_field_options(fields, **options)
           metadata_keys = Axn.extension_config.registered_field_metadata_keys

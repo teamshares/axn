@@ -10,6 +10,7 @@ module Axn
       TypeValidator = Validators::TypeValidator
       ValidateValidator = Validators::ValidateValidator
       OfValidator = Validators::OfValidator
+      ShapeValidator = Validators::ShapeValidator
 
       def initialize(context)
         @context = context
