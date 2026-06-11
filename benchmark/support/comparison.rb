@@ -47,7 +47,7 @@ module Benchmark
           # Combined stddev noise band: sqrt(b_sd² + c_sd²), floor at IPS_MIN_MOVE_PCT.
           b_sd    = baseline_result[:stddev].to_f
           c_sd    = current_result[:stddev].to_f
-          noise   = Math.sqrt(b_sd**2 + c_sd**2)
+          noise   = Math.sqrt((b_sd**2) + (c_sd**2))
           band    = [noise, IPS_MIN_MOVE_PCT].max
           status  = classify_ips(change_percent, band)
 
@@ -82,14 +82,14 @@ module Benchmark
 
           comparison[:memory_changes][scenario_name] = {
             baseline_allocated: baseline_mem[:allocated],
-            current_allocated:  current_mem[:allocated],
-            baseline_retained:  baseline_mem[:retained],
-            current_retained:   current_mem[:retained],
-            baseline_objects:   baseline_mem[:objects],
-            current_objects:    current_mem[:objects],
+            current_allocated: current_mem[:allocated],
+            baseline_retained: baseline_mem[:retained],
+            current_retained: current_mem[:retained],
+            baseline_objects: baseline_mem[:objects],
+            current_objects: current_mem[:objects],
             objects_pct:,
             bytes_pct:,
-            change_percent: bytes_pct,   # kept for backward compat with existing callers
+            change_percent: bytes_pct, # kept for backward compat with existing callers
             more_efficient: bytes_pct.negative?,
             status:,
           }
@@ -111,8 +111,8 @@ module Benchmark
         output << ""
         output << Colors.bold(Colors.info("📊 Benchmark regression check"))
         output << Colors.dim("=" * 72)
-        output << "  #{Colors.info("Baseline:")} #{b_ver}  (Ruby #{b_ruby} / #{b_platform})"
-        output << "  #{Colors.info("Current: ")} #{comparison_data[:current_version]}  (Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM})"
+        output << "  #{Colors.info('Baseline:')} #{b_ver}  (Ruby #{b_ruby} / #{b_platform})"
+        output << "  #{Colors.info('Current: ')} #{comparison_data[:current_version]}  (Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM})"
 
         unless env_match
           output << ""
@@ -122,15 +122,15 @@ module Benchmark
         end
         output << ""
 
-        output << Colors.bold("  🔬 Allocations (#{env_match ? "gate" : "advisory — env mismatch"})")
-        output << Colors.dim("  " + "-" * 68)
+        output << Colors.bold("  🔬 Allocations (#{env_match ? 'gate' : 'advisory — env mismatch'})")
+        output << Colors.dim("  #{'-' * 68}")
         output.concat(format_allocation_lines(comparison_data))
         output << ""
 
-        output << Colors.dim("  " + "=" * 68)
+        output << Colors.dim("  #{'=' * 68}")
         regressions = comparison_data[:memory_changes].select { |_, c| c[:status] == :regression }
         if regressions.empty? || !env_match
-          detail = (!env_match && regressions.any?) ? " (#{regressions.size} potential — advisory only, env mismatch)" : nil
+          detail = !env_match && regressions.any? ? " (#{regressions.size} potential — advisory only, env mismatch)" : nil
           output << Colors.bold(Colors.success("  VERDICT: ✅  no blocking allocation regressions#{detail}"))
         else
           output << Colors.bold(Colors.error("  VERDICT: 🔴  #{regressions.size} allocation regression(s) detected"))
@@ -149,7 +149,7 @@ module Benchmark
         notable_ips = comparison_data[:ips_changes].reject { |_, c| c[:status] == :noise }
         output << ""
         output << Colors.bold("  ⏱  Timing — advisory (cross-session noise, never gates release)")
-        output << Colors.dim("  " + "-" * 68)
+        output << Colors.dim("  #{'-' * 68}")
 
         if notable_ips.any?
           notable_ips.sort_by { |_, c| c[:change_percent] }.each do |name, c|
@@ -199,14 +199,16 @@ module Benchmark
 
         regressions.sort_by { |_, c| -c[:objects_pct] }.each do |name, c|
           lines << Colors.error("  🔴 #{Colors.bold(name)}")
-          lines << Colors.error("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], "obj")})")
-          lines << Colors.error("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct], "bytes")})")
+          lines << Colors.error("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], 'obj')})")
+          lines << Colors.error("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct],
+                                                                                                                                               'bytes')})")
         end
 
         improvements.each do |name, c|
           lines << Colors.success("  📉 #{Colors.bold(name)}")
-          lines << Colors.success("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], "obj")})")
-          lines << Colors.success("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct], "bytes")})")
+          lines << Colors.success("       objects: #{c[:baseline_objects]} → #{c[:current_objects]} (#{delta_str(c[:objects_pct], 'obj')})")
+          lines << Colors.success("       bytes:   #{format_bytes(c[:baseline_allocated])} → #{format_bytes(c[:current_allocated])} (#{delta_str(c[:bytes_pct],
+                                                                                                                                                 'bytes')})")
         end
 
         lines << Colors.success("  ✅ no allocation regression in #{unchanged.size} scenario(s)") if unchanged.size.positive?
@@ -239,7 +241,7 @@ module Benchmark
       end
 
       def delta_str(pct, unit)
-        sign  = pct >= 0 ? "+" : ""
+        sign = pct >= 0 ? "+" : ""
         "#{sign}#{pct.round(1)}% #{unit}"
       end
     end

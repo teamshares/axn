@@ -168,9 +168,7 @@ namespace :benchmark do
     comparison   = Benchmark::Comparison.compare(baseline_data, current_data)
     puts Benchmark::Comparison.format_check_report(comparison)
 
-    if Benchmark::Comparison.regression?(comparison)
-      exit 1
-    end
+    exit 1 if Benchmark::Comparison.regression?(comparison)
   end
 end
 

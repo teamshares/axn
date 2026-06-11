@@ -28,9 +28,7 @@ module Benchmark
         memory_results = {}
 
         if warmup_iterations
-          if verbose
-            puts Colors.info("Warming up (#{warmup_iterations} iterations per scenario)...")
-          end
+          puts Colors.info("Warming up (#{warmup_iterations} iterations per scenario)...") if verbose
           AxnScenarios.all_scenarios.each do |scenario_name|
             warmup_iterations.times { AxnScenarios.run_scenario(scenario_name, **sample_data_for_scenario(scenario_name)) }
           end
@@ -55,7 +53,7 @@ module Benchmark
         end
 
         if verbose
-          puts "\n#{Colors.bold(Colors.highlight("💾 Memory Usage Analysis"))}"
+          puts "\n#{Colors.bold(Colors.highlight('💾 Memory Usage Analysis'))}"
           puts Colors.dim("-" * 40)
         end
 
@@ -70,11 +68,11 @@ module Benchmark
             retained_objects: memory_result.total_retained,
           }
 
-          if verbose
-            allocated = Colors.highlight(format_bytes(memory_result.total_allocated_memsize))
-            retained = Colors.highlight(format_bytes(memory_result.total_retained_memsize))
-            puts Colors.success(" ✓ #{allocated} allocated, #{retained} retained")
-          end
+          next unless verbose
+
+          allocated = Colors.highlight(format_bytes(memory_result.total_allocated_memsize))
+          retained = Colors.highlight(format_bytes(memory_result.total_retained_memsize))
+          puts Colors.success(" ✓ #{allocated} allocated, #{retained} retained")
         end
 
         {
@@ -164,4 +162,3 @@ module Benchmark
     end
   end
 end
-
