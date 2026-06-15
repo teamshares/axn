@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_record"
+require "action_controller"
 
 RSpec.describe "use :model strategy" do
   before(:all) do
@@ -172,6 +173,16 @@ RSpec.describe "use :model strategy" do
     it "merges injected context fields into model_params" do
       expect(action.call(params: { name: "X" }).widget.category).to eq("premium")
     end
+
+    it "lets an explicit model_params key win over an injected one on collision" do
+      action = build_axn do
+        use :model, create: Widget, as: :widget, inject: [:category]
+
+        def model_params = { name: "X", category: "from_params" }
+        def category = "from_inject"
+      end
+      expect(action.call(params: {}).widget.category).to eq("from_params")
+    end
   end
 
   describe "respecting a pre-declared model field" do
@@ -187,6 +198,62 @@ RSpec.describe "use :model strategy" do
     it "works without conflicting on the duplicate declaration" do
       existing = Widget.create!(name: "Old")
       expect(action.call(widget: existing, params: { name: "New" })).to be_ok
+    end
+
+    it "raises if the model field is re-declared AFTER use :model (declare custom options before)" do
+      expect do
+        build_axn do
+          use :model, update: :widget
+          expects :widget, model: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /widget/)
+    end
+  end
+
+  describe "strong parameters" do
+    let(:action) do
+      build_axn do
+        use :model, create: Widget, as: :widget
+      end
+    end
+
+    it "accepts permitted ActionController::Parameters" do
+      permitted = ActionController::Parameters.new(name: "Permitted").permit(:name)
+      result = action.call(params: permitted)
+      expect(result).to be_ok
+      expect(result.widget.name).to eq("Permitted")
+    end
+
+    it "raises an actionable error for unpermitted ActionController::Parameters (rather than a cryptic UnfilteredParameters)" do
+      unpermitted = ActionController::Parameters.new(name: "Nope")
+      result = action.call(params: unpermitted)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(ArgumentError)
+      # Assert on our specific guidance — `UnfilteredParameters` is itself an ArgumentError whose
+      # message also says "unpermitted parameters", so we must match the actionable wording.
+      expect(result.exception.message).to include("use :model").and include("override `model_params`")
+    end
+  end
+
+  describe "message resolution for an unrelated failure" do
+    it "does not build the model (no model_params side effects) when the failure is unrelated" do
+      calls = []
+      action = build_axn do
+        before { raise "boom before the model is built" }
+        use :model, create: Widget, as: :widget
+
+        define_method(:model_params) do
+          calls << :called
+          { name: "X" }
+        end
+      end
+
+      result = action.call(params: {})
+      expect(result.outcome).to be_exception
+      result.error # force message resolution (where the error matcher runs)
+
+      # The matcher must not construct the record during message resolution.
+      expect(calls).to be_empty
     end
   end
 

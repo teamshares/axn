@@ -73,7 +73,7 @@ You can force a mode at a call-site where only one is valid with `persist: :crea
 The strategy declares the contract for you — you don't write `expects :params` or `expects :widget`:
 
 - `expects :params` (override the key with `expect:`).
-- The model field (`update:`/`as:`) as a `model: true` input — **required** for `update`, optional for `upsert`. If you've already declared that field yourself (e.g. with a custom `finder:`), the strategy respects your declaration.
+- The model field (`update:`/`as:`) as a `model: true` input — **required** for `update`, optional for `upsert`. If you need custom options on that field (e.g. a custom `finder:`), declare it **before** `use :model` and the strategy will respect your declaration. (Declaring it *after* `use :model` raises `DuplicateFieldError` — the strategy has already declared it.)
 
 The record is exposed under the field name, or — when no field is named (create mode without `as:`) — as `result.model`. Pass `as:` to choose the exposure name explicitly.
 
@@ -89,12 +89,18 @@ def model_params
 end
 ```
 
-For the common "merge a context field" case, `inject:` is sugar that merges named fields on top of `model_params` (whether or not you override it):
+For the common "merge a context field" case, `inject:` is sugar that merges named context fields into the attributes — regardless of whether you override `model_params`:
 
 ```ruby
 use :model, create: Widget, inject: [:company]
-# model_params is merged with { company: company }
+# attributes include { company: company }
 ```
+
+If an injected field collides with a key your `model_params` already sets, the explicit `model_params` value wins. (`inject:` is meant for scalar/model context fields like `Current.user` — don't inject a raw params object.)
+
+::: warning Strong parameters
+`model_params` must return a plain `Hash` or **permitted** `ActionController::Parameters`. The default returns `params` as-is, which is fine for a plain Hash or already-permitted params — but raw, unpermitted controller params raise an actionable error directing you to permit them (`params.permit(...)`) or override `model_params`. This preserves Rails' mass-assignment protection rather than silently bypassing it.
+:::
 
 ## Messages
 

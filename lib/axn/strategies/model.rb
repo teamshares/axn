@@ -92,12 +92,23 @@ module Axn
           # Default attribute source; override with `def model_params` in the action.
           define_method(:model_params) { public_send(expect_attr) } unless method_defined?(:model_params) || private_method_defined?(:model_params)
 
-          # Final attributes: model_params (default or overridden) + injected context fields.
-          # Injection applies regardless of whether model_params is overridden.
+          # Final attributes: injected context fields, with model_params layered on top.
+          # Injection applies regardless of whether model_params is overridden; an explicit
+          # model_params key wins over an injected one (model_params is the more direct intent).
           define_method(:__axn_attributes) do
             attrs = model_params || {}
+
+            # Fail loudly (and actionably) on unpermitted strong params rather than letting
+            # `.to_h` raise a cryptic UnfilteredParameters / assign_attributes raise ForbiddenAttributes.
+            if attrs.respond_to?(:permitted?) && !attrs.permitted?
+              raise ArgumentError,
+                    "use :model received unpermitted parameters from `model_params`; permit them " \
+                    "(e.g. `params.permit(...)`/`.slice(...)`) or override `model_params` to return a Hash"
+            end
+
             attrs = attrs.to_h if attrs.respond_to?(:to_h)
-            inject_attrs.each_with_object(attrs.dup) { |key, h| h[key] = public_send(key) }
+            injected = inject_attrs.to_h { |key| [key, public_send(key)] }
+            injected.merge(attrs)
           end
           private :__axn_attributes
 
@@ -127,8 +138,10 @@ module Axn
 
         base.class_eval do
           # Clean validation body (NOT exception.message). Matched when the record is invalid.
-          error(if: -> { __axn_model.errors.any? }, prefix: configured_prefix) do
-            __axn_model.errors.full_messages.to_sentence
+          # Guard on the memoized ivar so an *unrelated* failure (one where the model was never
+          # built) doesn't construct it — with side effects — during message resolution.
+          error(if: -> { instance_variable_defined?(:@__axn_model) && @__axn_model && @__axn_model.errors.any? }, prefix: configured_prefix) do
+            @__axn_model.errors.full_messages.to_sentence
           end
 
           if configured_success
