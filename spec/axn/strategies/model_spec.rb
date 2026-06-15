@@ -266,12 +266,24 @@ RSpec.describe "use :model strategy" do
       expect(action.call(params: {}).error).to eq("Couldn't save: Name can't be blank")
     end
 
-    it "honors a success: override" do
+    it "honors a success declared after use :model (later declarations win)" do
       action = build_axn do
-        use :model, create: Widget, as: :widget, success: "Done!"
+        use :model, create: Widget, as: :widget
+        success "Done!"
+
         def model_params = { name: "X" }
       end
       expect(action.call(params: {}).success).to eq("Done!")
+    end
+
+    it "honors an error declared after use :model (later declarations win)" do
+      action = build_axn do
+        use :model, create: Widget, as: :widget
+        error "Could not save the widget"
+
+        def model_params = { name: "" }
+      end
+      expect(action.call(params: {}).error).to eq("Could not save the widget")
     end
   end
 
@@ -291,6 +303,71 @@ RSpec.describe "use :model strategy" do
       result = action.call(widget: existing, params: {})
       expect(result.outcome).to be_failure
       expect(Axn.config).not_to have_received(:on_exception)
+    end
+  end
+
+  describe "safety-net message for a RecordInvalid on a different record" do
+    let(:action) do
+      build_axn do
+        use :model, update: :widget
+
+        def model_params = { name: "Valid" }
+        # raises RecordInvalid on a DIFFERENT record than the one we built/loaded
+        def call = Widget.create!(name: "")
+      end
+    end
+
+    it "uses the raised record's clean validation message (not the raw exception.message)" do
+      existing = Widget.create!(name: "Old")
+      result = action.call(widget: existing, params: {})
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Name can't be blank")
+    end
+  end
+
+  describe "expect: custom params key" do
+    let(:action) do
+      build_axn do
+        use :model, create: Widget, as: :widget, expect: :widget_params
+      end
+    end
+
+    it "reads the default model_params from the named field instead of :params" do
+      result = action.call(widget_params: { name: "Custom" })
+      expect(result).to be_ok
+      expect(result.widget.name).to eq("Custom")
+    end
+  end
+
+  describe "persist: override" do
+    it "persist: :update makes the (otherwise-optional) upsert field required" do
+      action = build_axn do
+        use :model, as: :widget, persist: :update
+
+        def model_params = { name: params[:name] }
+      end
+
+      # upsert would build a fresh record; forcing :update requires the field be supplied
+      expect(action.call(params: { name: "X" })).not_to be_ok
+    end
+  end
+
+  describe "composing with use :transaction" do
+    let(:action) do
+      build_axn do
+        use :model, create: Widget, as: :widget
+        use :transaction
+
+        def model_params = { name: params[:name] }
+        def call = fail!("post-save boom")
+      end
+    end
+
+    it "rolls back the persisted record when post-save call fails" do
+      result = action.call(params: { name: "Sprocket" })
+      expect(result).not_to be_ok
+      expect(result.error).to eq("post-save boom")
+      expect(Widget.count).to eq(0)
     end
   end
 end

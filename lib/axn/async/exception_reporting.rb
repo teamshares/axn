@@ -16,6 +16,9 @@ module Axn
         # @param extra_context [Hash] additional context to merge (e.g., discarded: true, _job_metadata)
         # @param log_prefix [String] prefix for error logging (e.g., "Sidekiq death handler")
         def trigger_on_exception(exception:, action_class:, retry_context:, job_args:, extra_context: {}, log_prefix: "async")
+          # Skip the global report for exceptions the action reclassifies as failures (fails_on).
+          return if action_class.respond_to?(:_fails_on?) && action_class._fails_on?(exception)
+
           # Filter sensitive values using the action class's internal _context_slice
           filtered_context = action_class._context_slice(data: job_args, direction: :inbound)
 
@@ -24,9 +27,6 @@ module Axn
           context = filtered_context.merge(
             async: retry_context.to_h.merge(async_extra),
           ).merge(extra_context.except(:async))
-
-          # Skip the global report for exceptions the action reclassifies as failures (fails_on).
-          return if action_class.respond_to?(:_fails_on?) && action_class._fails_on?(exception)
 
           # Create proxy action for the on_exception interface
           proxy_action = DiscardedJobAction.new(action_class, exception)

@@ -66,7 +66,6 @@ You can force a mode at a call-site where only one is valid with `persist: :crea
 | `persist` | inferred | Force `:create` or `:update` |
 | `inject` | `nil` | Context field(s) merged into `model_params` |
 | `error_prefix` | `nil` | Prefix prepended to the validation-error message |
-| `success` | mode-aware | Override the success message |
 
 ### Automatic contract
 
@@ -109,20 +108,20 @@ The strategy ships sensible defaults, resolved through the normal [message DSL](
 - **Success** (mode-aware): `"Created <Model>"` / `"Updated <Model>"`.
 - **Error**: the model's `errors.full_messages.to_sentence` (clean — not the raw `"Validation failed: …"`).
 
-Override just the prefix while keeping the validation body:
+Override just the prefix while keeping the validation body — this is what `error_prefix:` is for, and it's the one override the message DSL can't express in a line (a bare `error(prefix:)` would fall back to the raw `exception.message`):
 
 ```ruby
 use :model, update: :user, error_prefix: "Unable to update profile: "
 # => "Unable to update profile: Name can't be blank"
 ```
 
-Override the success string:
+For any other override — a custom success string, a full error message, or [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) — declare it with the normal DSL **after** `use :model` (later declarations win):
 
 ```ruby
-use :model, create: Widget, success: "Your widget is ready!"
+use :model, create: Widget
+success "Your widget is ready!"
+error "Could not save the widget"
 ```
-
-For a full override, declare your own `success` / `error` / [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) **after** `use :model` — later declarations win.
 
 ## Validation failures are failures, not exceptions
 

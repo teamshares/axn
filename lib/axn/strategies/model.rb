@@ -13,7 +13,7 @@ module Axn
     # The action supplies attributes via an overridable `model_params` (defaults to `params`).
     module Model
       Config = Struct.new(
-        :build_class, :field, :mode, :exposed_as, :expect_attr, :inject_attrs, :error_prefix, :success,
+        :build_class, :field, :mode, :exposed_as, :expect_attr, :inject_attrs, :error_prefix,
         keyword_init: true
       )
 
@@ -23,10 +23,13 @@ module Axn
       # @param expect [Symbol] the params field name (default :params)
       # @param persist [Symbol, nil] force :create or :update (overrides inference)
       # @param error_prefix [String, nil] prefix prepended to the validation-error message
-      # @param success [String, nil] override the default mode-aware success message
       # @param inject [Symbol, Array<Symbol>] context fields merged into model_params
+      #
+      # To override the success or full error message, declare your own `success`/`error`
+      # after `use :model` (later declarations win) — only the prefix-while-keeping-the-
+      # validation-body case needs the dedicated `error_prefix:` kwarg.
       def self.configure(create: nil, update: nil, as: nil, expect: :params, persist: nil,
-                         error_prefix: nil, success: nil, inject: nil, &block)
+                         error_prefix: nil, inject: nil, &block)
         raise ArgumentError, "model strategy: does not accept a block" if block
 
         build_class, field, mode = resolve_mode(create:, update:, as:, persist:)
@@ -34,7 +37,7 @@ module Axn
           build_class:, field:, mode:,
           exposed_as: (as || field || :model).to_sym,
           expect_attr: expect, inject_attrs: Array(inject).freeze,
-          error_prefix:, success:
+          error_prefix:
         )
 
         Module.new do
@@ -134,21 +137,29 @@ module Axn
 
       def self.install_messages!(base, config)
         configured_prefix = config.error_prefix
-        configured_success = config.success
 
         base.class_eval do
-          # Clean validation body (NOT exception.message). Matched when the record is invalid.
-          # Guard on the memoized ivar so an *unrelated* failure (one where the model was never
-          # built) doesn't construct it — with side effects — during message resolution.
-          error(if: -> { instance_variable_defined?(:@__axn_model) && @__axn_model && @__axn_model.errors.any? }, prefix: configured_prefix) do
-            @__axn_model.errors.full_messages.to_sentence
+          # The record carrying the validation errors. A *raised* RecordInvalid names its own
+          # record (handles association autosave / a nested `save!` on a *different* record than
+          # the one we built); otherwise the gated save failed on our built/loaded model. Guard on
+          # the memoized ivar so an *unrelated* failure (model never built) doesn't construct it —
+          # with side effects — during message resolution.
+          define_method(:__axn_invalid_record) do |exception = nil|
+            if defined?(ActiveRecord::RecordInvalid) && exception.is_a?(ActiveRecord::RecordInvalid) && exception.record
+              exception.record
+            elsif instance_variable_defined?(:@__axn_model)
+              @__axn_model
+            end
+          end
+          private :__axn_invalid_record
+
+          # Clean validation body (NOT exception.message). Matched when the invalid record is known.
+          error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }, prefix: configured_prefix) do |exception = nil|
+            __axn_invalid_record(exception).errors.full_messages.to_sentence
           end
 
-          if configured_success
-            success configured_success
-          else
-            success { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
-          end
+          # Default mode-aware success; override by declaring `success` after `use :model`.
+          success { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 
           # Safety net for a *raised* RecordInvalid (save!, association autosave, validate!, nested).
           fails_on(ActiveRecord::RecordInvalid) if defined?(ActiveRecord::RecordInvalid)
