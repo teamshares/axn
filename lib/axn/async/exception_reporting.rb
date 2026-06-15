@@ -25,6 +25,9 @@ module Axn
             async: retry_context.to_h.merge(async_extra),
           ).merge(extra_context.except(:async))
 
+          # Skip the global report for exceptions the action reclassifies as failures (fails_on).
+          return if action_class.respond_to?(:_fails_on?) && action_class._fails_on?(exception)
+
           # Create proxy action for the on_exception interface
           proxy_action = DiscardedJobAction.new(action_class, exception)
 

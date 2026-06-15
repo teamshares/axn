@@ -197,7 +197,7 @@ module Axn
 
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-      if e.is_a?(Failure)
+      if e.is_a?(Failure) || @action_class._fails_on?(e)
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
       else
         trigger_on_exception(e)

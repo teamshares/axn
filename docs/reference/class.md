@@ -677,3 +677,22 @@ If multiple `on_exception` handlers are provided, ALL that match the raised exce
 
 The _global_ handler will be triggered _after_ all class-specific handlers.
 
+## `.fails_on`
+
+`fails_on` reclassifies the listed exception classes from the **exception** outcome into the **failure** outcome: a matching raised exception settles as a failed result (firing `on_failure`, **not** `on_exception`, and skipping the global `on_exception` report) while the original exception is preserved on `result.exception` so the normal `error` message resolution still applies. It does not wrap the exception in `Axn::Failure`.
+
+```ruby
+class SubmitOrder
+  include Axn
+
+  fails_on ActiveRecord::RecordInvalid                       # default message
+  # fails_on ActiveRecord::RecordInvalid, "Unable to submit" # positional string
+  # fails_on(ActiveRecord::RecordInvalid) { |e| e.message }  # block (receives the exception)
+  # fails_on [RecordInvalid, RecordNotUnique], "Couldn't save"
+
+  def call = order.save!
+end
+```
+
+Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with `prefix:` and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
+

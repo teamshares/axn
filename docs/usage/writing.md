@@ -280,6 +280,47 @@ end
 ```
 :::
 
+## Reclassifying exceptions as failures
+
+Axn sorts every non-success outcome into one of two buckets:
+
+- **failure** — from `fail!`. Expected and user-facing. Fires `on_failure`, sets `result.error`, and is **not** reported to the global handler (`Axn.config.on_exception`).
+- **exception** — any other raised error. Unexpected. Fires `on_exception` and **is** reported globally (e.g. to Honeybadger).
+
+Some exception classes are really expected failure modes, not bugs — `ActiveRecord::RecordInvalid` from a validation, say. `fails_on` moves the listed exception classes from the **exception** bucket into the **failure** bucket: a matching raised exception settles as a failed result (firing `on_failure`, skipping `on_exception` and the global report) while the original exception is preserved on `result.exception` and the usual message resolution still applies.
+
+```ruby
+class SubmitOrder
+  include Axn
+
+  fails_on ActiveRecord::RecordInvalid
+
+  def call
+    order.save!   # raises RecordInvalid on validation failure
+  end
+end
+
+result = SubmitOrder.call(order:)
+result.ok?              # => false
+result.outcome.failure? # => true   (not .exception?)
+result.exception        # => the original ActiveRecord::RecordInvalid
+# Axn.config.on_exception was NOT called
+```
+
+`fails_on` rides the same muscle memory as `fail!` and `error` — pass a message positionally or as a block (which receives the exception), or omit it to fall back to the default/your own `error` declaration:
+
+```ruby
+fails_on ActiveRecord::RecordInvalid, "Unable to submit"
+fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sentence }
+fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
+```
+
+The message integrates with the standard message DSL (`prefix:`, ordering, etc.), so it composes with — and can be overridden by — your other `error` declarations.
+
+::: tip
+For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
+:::
+
 ## Lifecycle methods
 
 In addition to `#call`, there are a few additional pieces to be aware of:

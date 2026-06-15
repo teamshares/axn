@@ -94,5 +94,44 @@ RSpec.describe Axn::Async::ExceptionReporting do
 
       expect(received[:_job_metadata]).to eq({ jid: "jid-456" })
     end
+
+    context "when the action reclassifies the exception via fails_on" do
+      let(:action_class) do
+        build_axn do
+          expects :name
+          fails_on ArgumentError
+        end
+      end
+
+      it "skips the global on_exception report for a reclassified exception" do
+        allow(Axn.config).to receive(:on_exception)
+
+        described_class.trigger_on_exception(
+          exception: ArgumentError.new("expected failure"),
+          action_class:,
+          retry_context:,
+          job_args:,
+          extra_context: {},
+          log_prefix: "test",
+        )
+
+        expect(Axn.config).not_to have_received(:on_exception)
+      end
+
+      it "still reports an exception class that is NOT reclassified" do
+        allow(Axn.config).to receive(:on_exception)
+
+        described_class.trigger_on_exception(
+          exception: StandardError.new("real bug"),
+          action_class:,
+          retry_context:,
+          job_args:,
+          extra_context: {},
+          log_prefix: "test",
+        )
+
+        expect(Axn.config).to have_received(:on_exception)
+      end
+    end
   end
 end
