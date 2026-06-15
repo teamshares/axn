@@ -368,6 +368,58 @@ RSpec.describe "use :model strategy" do
       # upsert would build a fresh record; forcing :update requires the field be supplied
       expect(action.call(params: { name: "X" })).not_to be_ok
     end
+
+    it "persist: :create forces a fresh insert even when a record is in context (does not update it)" do
+      existing = User.create!(name: "Old")
+      action = build_axn do
+        use :model, as: :user, persist: :create
+
+        def model_params = { name: params[:name] }
+      end
+
+      result = action.call(user: existing, params: { name: "New" })
+      expect(result).to be_ok
+      expect(User.count).to eq(2)                  # a NEW row was inserted
+      expect(existing.reload.name).to eq("Old")    # provided record left untouched
+      expect(result.success).to eq("Created User")
+      expect(result.user).to be_persisted
+      expect(result.user.id).not_to eq(existing.id) # exposed record is the freshly-built one
+    end
+  end
+
+  describe "prepare_model (imperative pre-save hook)" do
+    it "runs after attribute assignment and before the save, mutating the record" do
+      action = build_axn do
+        use :model, create: User, as: :user
+
+        def model_params = { name: params[:name] }
+
+        # derive a field imperatively from the assigned attributes (the kind of tweak that
+        # doesn't fit a flat model_params hash)
+        def prepare_model(user)
+          user.email = "#{user.name.parameterize}@example.com"
+        end
+      end
+
+      result = action.call(params: { name: "Ada Lovelace" })
+      expect(result).to be_ok
+      expect(result.user.email).to eq("ada-lovelace@example.com")
+      expect(result.user).to be_persisted
+    end
+
+    it "can fix up a record so an otherwise-invalid save succeeds (proving it runs before save)" do
+      action = build_axn do
+        use :model, create: User, as: :user
+
+        # invalid as-assigned; prepare_model fixes it up before the save
+        def model_params = { name: "" }
+        def prepare_model(user) = user.name = "Backfilled"
+      end
+
+      result = action.call(params: {})
+      expect(result).to be_ok
+      expect(result.user.name).to eq("Backfilled")
+    end
   end
 
   describe "composing with use :transaction" do

@@ -105,6 +105,25 @@ If an injected field collides with a key your `model_params` already sets, the e
 `model_params` must return a plain `Hash` or **permitted** `ActionController::Parameters`. The default returns `params` as-is, which is fine for a plain Hash or already-permitted params — but raw, unpermitted controller params raise an actionable error directing you to permit them (`params.permit(...)`) or override `model_params`. This preserves Rails' mass-assignment protection rather than silently bypassing it.
 :::
 
+## Imperative pre-save tweaks: `prepare_model`
+
+`model_params` is for the *declarative* attributes hash. For tweaks that don't fit a flat hash — mutating a nested association, deriving one field from another, conditional assignment — define `prepare_model(record)`. It runs once, after `model_params` is assigned and always **before** the save (so it can fix the record up), with the record passed in:
+
+```ruby
+use :model, update: :company
+
+def model_params = params.slice(:closed_at, :display_name)
+
+def prepare_model(company)
+  return if company.initial_valuation.blank?
+
+  company.initial_valuation.valuation_type ||= Valuation::FLOOR_VALUATION_TYPE
+  company.initial_valuation.effective_at = company.closed_at
+end
+```
+
+Use it for record-level manipulation; keep plain attribute assignment in `model_params`. (For post-**save** work — notifications, sub-actions, state transitions — use `call`, which runs after the record is persisted.)
+
 ## Messages
 
 The strategy ships sensible defaults, resolved through the normal [message DSL](/usage/writing#customizing-messages):

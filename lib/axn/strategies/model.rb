@@ -81,8 +81,11 @@ module Axn
         base.class_eval do
           expects config.expect_attr, default: {}, allow_blank: true
 
-          # Declare the model field unless the action already declared it (custom finder/options).
-          expects field, model: true, optional: (mode != :update) if field && internal_field_configs.none? { |fc| fc.field == field }
+          # Declare the model field as an INPUT for update/upsert (skipped if the action already
+          # declared it, e.g. a custom finder/options). NOT in create mode: a forced create
+          # (`as: X, persist: :create`) must ignore any provided record/`_id` and build fresh, and
+          # a `model: true` field would otherwise resolve that input as the exposed record.
+          expects field, model: true, optional: (mode != :update) if field && mode != :create && internal_field_configs.none? { |fc| fc.field == field }
 
           exposes config.exposed_as
         end
@@ -120,23 +123,37 @@ module Axn
           end
           private :__axn_attributes
 
-          # Resolve + assign the record (memoized): existing for update, freshly built for create.
-          # Reads the input field via its contract reader (`public_send(field)`); we must NOT
-          # shadow that reader, or we'd recurse when exposed_as == field.
+          # Resolve + assign the record (memoized), driven by mode:
+          #   :create — always build a fresh record (ignore any provided/found input, even when an
+          #             `as:` field could resolve one — `persist: :create` means force an insert).
+          #   :update — use the provided/found record (the contract requires it).
+          #   :upsert — use the provided/found record if present, otherwise build a fresh one.
+          # Reads the input field via its contract reader (`public_send(field)`); we must NOT shadow
+          # that reader, or we'd recurse when exposed_as == field.
           define_method(:__axn_model) do
             @__axn_model ||= begin
-              existing = field ? public_send(field) : nil
-              record = existing || build_class&.new
+              existing = field && mode != :create ? public_send(field) : nil
+              record = existing || (build_class&.new if mode != :update)
               raise ArgumentError, "model strategy: no record to #{mode} (field #{field.inspect} was blank)" if record.nil?
 
               record.assign_attributes(__axn_attributes)
+
+              # Optional imperative seam for tweaks that don't fit a flat attributes hash — mutating a
+              # nested association, deriving a field from another, etc. Runs once, after attribute
+              # assignment and always before the gated save (it's part of building the record, so hook
+              # ordering can't get between it and the save). The record is passed in: the exposed
+              # reader isn't usable here yet (it routes back through this still-memoizing method).
+              prepare_model(record) if respond_to?(:prepare_model, true)
+
               record
             end
           end
           private :__axn_model
 
-          # Expose under `exposed_as`. Provide a reader unless the input field already supplies one.
-          define_method(exposed_as) { __axn_model } unless exposed_as == field
+          # Reader for the exposed record. Skip it only when the input contract already supplies one
+          # (an `expects` reader for update/upsert) — otherwise we'd shadow it and recurse. In create
+          # mode the field is exposure-only (no input reader), so we define it here.
+          define_method(exposed_as) { __axn_model } unless method_defined?(exposed_as) || private_method_defined?(exposed_as)
         end
       end
 
