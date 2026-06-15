@@ -16,6 +16,15 @@ module Axn
         # @param extra_context [Hash] additional context to merge (e.g., discarded: true, _job_metadata)
         # @param log_prefix [String] prefix for error logging (e.g., "Sidekiq death handler")
         def trigger_on_exception(exception:, action_class:, retry_context:, job_args:, extra_context: {}, log_prefix: "async")
+          # NOTE: deliberately NOT guarded by `_fails_on?`. This is the discard/death-handler path,
+          # which only fires after a job exhausts retries or is discarded. A `fails_on` exception
+          # settles as `outcome.failure?` and is never re-raised by the adapter (see the
+          # `raise … if result.outcome.exception?` gate in the Sidekiq/ActiveJob `perform`), so it
+          # never reaches here. Anything that does reach here either was a genuine `exception`
+          # outcome (so `_fails_on?` is necessarily false) or bypassed the executor entirely (job
+          # deserialization / proxy errors) — and a broad declaration like `fails_on StandardError`
+          # must NOT suppress the only global report for those.
+
           # Filter sensitive values using the action class's internal _context_slice
           filtered_context = action_class._context_slice(data: job_args, direction: :inbound)
 

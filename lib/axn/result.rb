@@ -72,7 +72,7 @@ module Axn
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
-                OUTCOME_EXCEPTION
+                action.class._fails_on?(exception) ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS
               end

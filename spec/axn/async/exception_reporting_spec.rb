@@ -94,5 +94,35 @@ RSpec.describe Axn::Async::ExceptionReporting do
 
       expect(received[:_job_metadata]).to eq({ jid: "jid-456" })
     end
+
+    context "when the exception class matches a fails_on declaration (discard/death-handler path)" do
+      # This helper is the discard path: it only fires after retries are exhausted or a job is
+      # discarded. A `fails_on` exception settles as `outcome.failure?` and is never re-raised by
+      # the adapter, so it never reaches here — anything that does is a genuine exhausted exception
+      # or one that bypassed the executor (deserialization / proxy errors). It must report
+      # regardless of `fails_on`, or a broad `fails_on StandardError` would drop the only report
+      # for a real infra error.
+      let(:action_class) do
+        build_axn do
+          expects :name
+          fails_on StandardError
+        end
+      end
+
+      it "still reports rather than letting fails_on suppress the only global report" do
+        allow(Axn.config).to receive(:on_exception)
+
+        described_class.trigger_on_exception(
+          exception: StandardError.new("bypassed-executor infra error"),
+          action_class:,
+          retry_context:,
+          job_args:,
+          extra_context: {},
+          log_prefix: "test",
+        )
+
+        expect(Axn.config).to have_received(:on_exception)
+      end
+    end
   end
 end

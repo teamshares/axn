@@ -2,6 +2,7 @@
 
 require "axn/core/flow/messages"
 require "axn/core/flow/callbacks"
+require "axn/core/flow/fails_on"
 
 module Axn
   module Core
@@ -10,6 +11,7 @@ module Axn
         base.class_eval do
           include Messages
           include Callbacks
+          include FailsOn
         end
       end
     end

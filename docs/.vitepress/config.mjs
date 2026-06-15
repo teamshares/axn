@@ -48,6 +48,7 @@ export default defineConfig({
           { text: 'Overview', link: '/strategies/index' },
           { text: 'Transaction', link: '/strategies/transaction' },
           { text: 'Form', link: '/strategies/form' },
+          { text: 'Model', link: '/strategies/model' },
           { text: 'Client', link: '/strategies/client' },
         ]
       },
