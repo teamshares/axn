@@ -317,6 +317,10 @@ fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't
 
 The message integrates with the standard message DSL (`prefix:`, ordering, etc.), so it composes with — and can be overridden by — your other `error` declarations.
 
+::: tip Callbacks receive the original exception
+Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.
+:::
+
 ::: tip
 For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
 :::
