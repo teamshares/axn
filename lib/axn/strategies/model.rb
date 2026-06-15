@@ -30,6 +30,11 @@ module Axn
       # validation-body case needs the dedicated `error_prefix:` kwarg.
       def self.configure(create: nil, update: nil, as: nil, expect: :params, persist: nil,
                          error_prefix: nil, inject: nil, &block)
+        # The strategy is built on ActiveRecord persistence (`.save`, `previously_new_record?`,
+        # the `model: true` `.find` resolver, `ActiveRecord::RecordInvalid`) — not just ActiveModel
+        # conventions — so fail fast at declaration rather than with a confusing runtime error.
+        # Mirrors `use :transaction`.
+        raise NotImplementedError, "Model strategy requires ActiveRecord" unless defined?(ActiveRecord)
         raise ArgumentError, "model strategy: does not accept a block" if block
 
         build_class, field, mode = resolve_mode(create:, update:, as:, persist:)
@@ -145,7 +150,7 @@ module Axn
           # the memoized ivar so an *unrelated* failure (model never built) doesn't construct it —
           # with side effects — during message resolution.
           define_method(:__axn_invalid_record) do |exception = nil|
-            if defined?(ActiveRecord::RecordInvalid) && exception.is_a?(ActiveRecord::RecordInvalid) && exception.record
+            if exception.is_a?(ActiveRecord::RecordInvalid) && exception.record
               exception.record
             elsif instance_variable_defined?(:@__axn_model)
               @__axn_model
@@ -162,7 +167,7 @@ module Axn
           success { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 
           # Safety net for a *raised* RecordInvalid (save!, association autosave, validate!, nested).
-          fails_on(ActiveRecord::RecordInvalid) if defined?(ActiveRecord::RecordInvalid)
+          fails_on(ActiveRecord::RecordInvalid)
         end
       end
 

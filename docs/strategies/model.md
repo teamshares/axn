@@ -6,6 +6,10 @@ The `model` strategy standardizes the common "build or find an ActiveRecord mode
 Use the model strategy for create/update actions backed by a single ActiveRecord model. Validation failures become clean, user-facing failures (with `record.errors`) instead of exceptions reported to your global handler.
 :::
 
+::: warning Requires ActiveRecord
+The strategy is built on ActiveRecord persistence (`save`, `previously_new_record?`, the `model: true` finder, `ActiveRecord::RecordInvalid`), so `use :model` raises `NotImplementedError` at declaration time if ActiveRecord isn't loaded — same as [`use :transaction`](/strategies/transaction).
+:::
+
 ## Basic Usage
 
 ```ruby
