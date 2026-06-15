@@ -139,6 +139,14 @@ RSpec.describe "use :model strategy" do
       expect(result.user).to eq(existing)
       expect(existing.reload.name).to eq("New")
     end
+
+    it "surfaces a supplied-but-unresolvable *_id* instead of silently creating a second record" do
+      result = action.call(user_id: 999_999, params: { name: "New" })
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to include("could not be resolved")
+      expect(User.count).to eq(0) # did NOT build a new record
+    end
   end
 
   describe "as: is optional (defaults to result.model)" do

@@ -321,6 +321,10 @@ The message integrates with the standard message DSL (`prefix:`, ordering, etc.)
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.
 :::
 
+::: warning Async: a reclassified exception is terminal (no retry)
+When an action runs as a background job, a `fails_on` exception is treated exactly like `fail!` — it settles as a **failure**, so the adapter does **not** re-raise it and the job is **not** retried (retries are for *unexpected* errors). That's usually what you want: a `RecordInvalid` won't pass on a retry. Only reclassify exception classes that are **deterministic / non-transient** — don't `fails_on` something genuinely transient (a lock timeout, a rate limit) or you'll forfeit the retry that would have recovered it.
+:::
+
 ::: tip
 For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
 :::

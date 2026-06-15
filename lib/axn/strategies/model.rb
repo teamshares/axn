@@ -71,6 +71,7 @@ module Axn
       def self.install!(base, config)
         install_contract!(base, config)
         install_attributes!(base, config)
+        install_resolution!(base, config)
         install_messages!(base, config)
         install_hooks!(base, config)
       end
@@ -94,10 +95,6 @@ module Axn
       def self.install_attributes!(base, config)
         expect_attr = config.expect_attr
         inject_attrs = config.inject_attrs
-        field = config.field
-        build_class = config.build_class
-        mode = config.mode
-        exposed_as = config.exposed_as
 
         base.class_eval do
           # Default attribute source; override with `def model_params` in the action.
@@ -122,6 +119,26 @@ module Axn
             injected.merge(attrs)
           end
           private :__axn_attributes
+        end
+      end
+
+      def self.install_resolution!(base, config)
+        field = config.field
+        build_class = config.build_class
+        mode = config.mode
+        exposed_as = config.exposed_as
+
+        base.class_eval do
+          # Whether a record or its `<field>_id` was actually provided in the inbound context
+          # (mirrors how the `model: true` resolver decides there's something to resolve). Used to
+          # tell "stale/unknown id" apart from "nothing supplied" in upsert mode.
+          define_method(:__axn_field_supplied?) do
+            return false unless field
+
+            provided = @__context.provided_data
+            provided[field].present? || provided[:"#{field}_id"].present?
+          end
+          private :__axn_field_supplied?
 
           # Resolve + assign the record (memoized), driven by mode:
           #   :create — always build a fresh record (ignore any provided/found input, even when an
@@ -133,6 +150,18 @@ module Axn
           define_method(:__axn_model) do
             @__axn_model ||= begin
               existing = field && mode != :create ? public_send(field) : nil
+
+              # Upsert with a supplied-but-unresolvable record/`_id`: the `model: true` reader
+              # swallows finder misses and returns nil, which is otherwise indistinguishable from
+              # "nothing supplied" — and we'd silently build a *second* record. Surface the bad
+              # reference instead of creating. (Update mode already rejects this via the required
+              # contract; create mode ignores the input entirely.)
+              if existing.nil? && mode == :upsert && __axn_field_supplied?
+                raise ArgumentError,
+                      "model strategy: #{field.inspect} was supplied but could not be resolved " \
+                      "(stale or unknown id?) — refusing to create a new record in upsert mode"
+              end
+
               record = existing || (build_class&.new if mode != :update)
               raise ArgumentError, "model strategy: no record to #{mode} (field #{field.inspect} was blank)" if record.nil?
 
