@@ -145,28 +145,13 @@ module Axn
           _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
         end
 
-        # The subfield analog of `_define_model_id_reader`: a `<reader>_id` reader meaning "the
-        # record's primary key", reading the id from the `on:` parent (and reusing the memoized
-        # record for non-id-based finders).
+        # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
+        # parent and otherwise shares the top-level reader's semantics via `_define_model_id_reader_from`.
         def _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
-          id_reader = :"#{reader}_id"
-          return unless _reader_name_available?(id_reader, kind: "model id")
-
-          id_key = :"#{source_field}_id"
           by_primary_key = processed_options[:finder] == :find
-
-          define_method(id_reader) do
+          _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
             parent = Axn::Core::ContractForSubfields.resolve_parent(self, on)
-            raw = Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
-            # A blank id is treated as absent (matching the resolver/consistency check), so fall
-            # through to the record's `.id` rather than exposing "".
-            next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
-
-            record = public_send(reader)
-            # No resolved record means there's no primary key to expose. Don't fall back to the raw
-            # `<field>_id` input: for a custom finder that value is a lookup token (not a pk), and a
-            # by-primary-key id was already returned above when present. Mirrors _define_model_id_reader.
-            record.respond_to?(:id) ? record.id : nil
+            Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
           end
         end
       end

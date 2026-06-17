@@ -402,28 +402,34 @@ module Axn
           false
         end
 
-        # `model:` fields get a `<reader>_id` reader whose single meaning is "the primary key of the
-        # record". For the default (id-based `:find`) finder a directly-supplied id IS the pk, so it's
-        # returned without resolving; otherwise (a record was passed, or a custom finder is in play)
-        # it reads the resolved — and memoized — record's `.id`, so it never triggers a second lookup.
+        # `model:` fields get a `<reader>_id` reader meaning "the primary key of the resolved
+        # record", reading the raw id from the inbound context. The subfield contract defines the
+        # same reader against an `on:` parent — both share `_define_model_id_reader_from`.
         def _define_model_id_reader(reader, source_field, model_options)
+          by_primary_key = model_options.is_a?(Hash) && model_options[:finder] == :find
+          _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
+            @__context.provided_data[id_key]
+          end
+        end
+
+        # Defines the `<reader>_id` reader shared by the top-level and subfield `model:` contracts.
+        # For the default (id-based `:find`) finder a directly-supplied, non-blank id IS the pk, so
+        # it's returned without resolving the record; otherwise (a record was passed, the id was
+        # blank, or a custom finder is in play) it reads the resolved — and memoized — record's `.id`,
+        # so it never triggers a second lookup. A blank id is treated as absent (matching the
+        # resolver/consistency check), and a missing record yields nil rather than the raw input —
+        # which for a custom finder is a lookup token, not a primary key. `raw_reader` yields the raw
+        # `<field>_id` value for the caller's context (top-level provided_data vs. the `on:` parent).
+        def _define_model_id_reader_from(reader:, source_field:, by_primary_key:, &raw_reader)
           id_reader = :"#{reader}_id"
           return unless _reader_name_available?(id_reader, kind: "model id")
 
           id_key = :"#{source_field}_id"
-          by_primary_key = model_options.is_a?(Hash) && model_options[:finder] == :find
-
           define_method(id_reader) do
-            raw = @__context.provided_data[id_key]
-            # A blank id is treated as absent (matching the resolver/consistency check), so fall
-            # through to the record's `.id` rather than exposing "" — e.g. a record passed alongside
-            # `<field>_id: ""` from form params.
+            raw = instance_exec(id_key, &raw_reader)
             next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
 
             record = public_send(reader)
-            # No resolved record means there's no primary key to expose. Don't fall back to the raw
-            # `<field>_id` input: for a custom finder that value is a lookup token (not a pk), and a
-            # by-primary-key id was already returned above when present.
             record.respond_to?(:id) ? record.id : nil
           end
         end
