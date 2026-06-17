@@ -5,4 +5,7 @@ set -vx
 
 bundle install
 
+# Route git hooks to the tracked .githooks/ directory (pre-commit RuboCop lint).
+git config core.hooksPath .githooks
+
 # Do any other automated setup that you need to do here
