@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# Lint staged Ruby files with RuboCop before each commit.
+# Fast by design (staged files only); CI runs the full suite (rake rubocop + specs).
+# Installed via `git config core.hooksPath .githooks` — see bin/setup.
+#
+# Skip once with `git commit --no-verify` when you really need to.
+set -euo pipefail
+
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(rb|rake|gemspec)$' || true)
+[ -z "$files" ] && exit 0
+
+echo "[pre-commit] RuboCop on staged Ruby files…"
+# --force-exclusion so files passed explicitly still honor the .rubocop.yml Exclude list.
+echo "$files" | xargs bundle exec rubocop --force-exclusion
