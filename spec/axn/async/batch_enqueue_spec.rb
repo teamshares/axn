@@ -916,9 +916,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       captured = []
       action_class = build_axn do
         expects :number
-        enqueues_each :number, from: -> { [1, 2, 3, 4] } do |n|
-          n.even?
-        end
+        enqueues_each :number, from: -> { [1, 2, 3, 4] }, &:even?
       end.tap { |klass| enable_async_on(klass) }
       action_class.on_enqueue_all { |count:| captured << count }
 
@@ -981,7 +979,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       action_class = build_axn do
         expects :company, type: cc
         define_method(:call) { company.name }
-        enqueues_each :company, from: -> { resolve_calls += 1; cc.all }
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          cc.all
+        }
       end.tap { |klass| enable_async_on(klass) }
 
       allow(action_class).to receive(:call_async)
@@ -1036,7 +1037,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         enqueues_each :user, from: -> { uc.all }
         enqueues_each :company, from: -> { cc.active }
       end.tap { |klass| enable_async_on(klass) }
-      action_class.on_enqueue_all { |sources:, count:| captured[:sources] = sources; captured[:count] = count }
+      action_class.on_enqueue_all do |sources:, count:|
+        captured[:sources] = sources
+        captured[:count] = count
+      end
 
       allow(action_class).to receive(:call_async)
       action_class.enqueue_all
