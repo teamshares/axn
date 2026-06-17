@@ -126,6 +126,32 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(channel: { sub: 42 }).got).to eq(42)
     end
 
+    it "applies a subfield default into the wire-key parent (not the alias)" do
+      # The default-mutation path writes into provided_data, which is keyed by the wire key
+      # (`channel`), even though `on:` references the parent's alias (`raw_channel`).
+      action = build_axn do
+        expects :channel, type: Hash, as: :raw_channel
+        expects :token, on: :raw_channel, default: "x"
+        exposes :got
+
+        def call = expose(got: token)
+      end
+
+      expect(action.call(channel: {}).got).to eq("x")
+    end
+
+    it "applies subfield preprocessing through an aliased parent" do
+      action = build_axn do
+        expects :channel, type: Hash, as: :raw_channel
+        expects :token, on: :raw_channel, preprocess: ->(v) { v.to_s.upcase }
+        exposes :got
+
+        def call = expose(got: token)
+      end
+
+      expect(action.call(channel: { token: "abc" }).got).to eq("ABC")
+    end
+
     it "rejects referencing the parent by its (reader-less) wire key" do
       expect do
         build_axn do
@@ -180,6 +206,17 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
           expects :b, as: :shared
         end
       end.to raise_error(ArgumentError, /shared/)
+    end
+
+    it "rejects a plain field whose name an earlier alias already claimed" do
+      # Reverse order of the alias-vs-alias case: an alias takes `foo`, then a plain `expects :foo`
+      # would silently clobber the first field's reader. Caught regardless of declaration order.
+      expect do
+        build_axn do
+          expects :bar, as: :foo
+          expects :foo
+        end
+      end.to raise_error(ArgumentError, /collision/i)
     end
   end
 end

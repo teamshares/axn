@@ -155,7 +155,9 @@ module Axn
           define_method(id_reader) do
             parent = Axn::Core::ContractForSubfields.resolve_parent(self, on)
             raw = Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
-            next raw if by_primary_key && !raw.nil?
+            # A blank id is treated as absent (matching the resolver/consistency check), so fall
+            # through to the record's `.id` rather than exposing "".
+            next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
 
             record = public_send(reader)
             record.respond_to?(:id) ? record.id : raw

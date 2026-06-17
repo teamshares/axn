@@ -276,7 +276,7 @@ module Axn
       @action_class.send(:subfield_configs).each do |config|
         next unless config.preprocess
 
-        parent_field = config.on
+        parent_field = _wire_parent_key(config.on)
         subfield = config.field
         parent_value = @context.provided_data[parent_field]
 
@@ -405,7 +405,7 @@ module Axn
       @action_class.send(:subfield_configs).each do |config|
         next unless config.default
 
-        parent_field = config.on
+        parent_field = _wire_parent_key(config.on)
         subfield = config.field
         parent_value = @context.provided_data[parent_field]
 
@@ -476,6 +476,17 @@ module Axn
     # =========================================================================
     # SUBFIELD HELPERS
     # =========================================================================
+
+    # `on:` references the parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
+    # provided_data (which the default/preprocess mutation paths read & write directly) is keyed by
+    # the caller-facing *wire* key. Translate the root segment back to its wire key so mutations land
+    # on the key the caller actually supplied. Identity for non-aliased parents (reader_as == field).
+    def _wire_parent_key(on)
+      root, *rest = on.to_s.split(".")
+      config = (@action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs)).find { |c| c.reader_as.to_s == root }
+      wire_root = config ? config.field : root.to_sym
+      rest.empty? ? wire_root : :"#{wire_root}.#{rest.join('.')}"
+    end
 
     def update_subfield_value(parent_field, subfield, new_value)
       parent_value = @context.provided_data[parent_field]

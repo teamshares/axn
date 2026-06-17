@@ -41,6 +41,12 @@ RSpec.describe "model: id reader and consistency" do
     it "returns the record's id when a record is given" do
       expect(action.call(company: co_class.new(7)).cid).to eq(7)
     end
+
+    it "treats a blank id as absent, returning the record's pk (form-params case)" do
+      # A record alongside `company_id: ""` (common from form params): the blank id is not the pk,
+      # so the reader must fall through to the record's id rather than exposing "".
+      expect(action.call(company: co_class.new(7), company_id: "").cid).to eq(7)
+    end
   end
 
   describe "`<field>_id` reader — custom finder (still the pk, via the resolved record)" do

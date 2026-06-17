@@ -214,20 +214,24 @@ module Axn
           end
         end
 
-        # Renamed readers must clear the same reserved-name bar as wire keys, and may not collide
-        # with an already-declared reader or with each other. Identity readers are skipped here:
-        # their reserved/duplicate handling already runs against the wire key.
+        # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
+        # already reserved-checked against their wire key in `expects`), and no two declarations may
+        # resolve to the same reader name.
         def _validate_reader_names!(reader_names)
-          aliases = reader_names.reject { |field, reader| field == reader }.values
-          return if aliases.empty?
-
-          aliases.each do |reader|
+          reader_names.reject { |field, reader| field == reader }.each_value do |reader|
             raise ContractViolation::ReservedAttributeError, reader if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(reader.to_s)
           end
 
-          existing = (internal_field_configs + subfield_configs).map(&:reader_as)
-          collisions = ((existing & aliases) | aliases.tally.select { |_, count| count > 1 }.keys).uniq
-          raise ArgumentError, "Reader name collision: #{collisions.join(', ')}" if collisions.any?
+          # A collision is a *new* reader name already claimed by an existing config under a different
+          # wire key. A same-wire-key clash is a genuine duplicate field, reported downstream with a
+          # clearer DuplicateFieldError, so it's excluded here. Checking every new reader (not just
+          # aliases) catches alias-vs-plain clashes in either declaration order — e.g.
+          # `expects :bar, as: :foo` then `expects :foo`, which would otherwise silently clobber the
+          # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
+          existing = (internal_field_configs + subfield_configs).to_h { |c| [c.reader_as, c.field] }
+          collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
+          collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
+          raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?
         end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -389,7 +393,10 @@ module Axn
 
           define_method(id_reader) do
             raw = @__context.provided_data[id_key]
-            next raw if by_primary_key && !raw.nil?
+            # A blank id is treated as absent (matching the resolver/consistency check), so fall
+            # through to the record's `.id` rather than exposing "" — e.g. a record passed alongside
+            # `<field>_id: ""` from form params.
+            next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
 
             record = public_send(reader)
             record.respond_to?(:id) ? record.id : raw
