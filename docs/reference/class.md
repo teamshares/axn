@@ -107,8 +107,9 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
       * `user_id` is provided (automatically derived from field name)
       * `User.find(user_id)` (or custom finder) returns a record
 
-    And, when used on `expects`, will create a reader method for you:
+    And, when used on `expects`, will create reader methods for you:
       * `user` (the auto-found record)
+      * `user_id` (the record's primary key) — see below
 
     ::: info NOTES
     * The system automatically looks for `#{field}_id` (e.g., `:user` → `:user_id`)
@@ -117,6 +118,18 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * This works with any class that has a finder method (e.g., `User.find`, `ApiService.find_by_id`, etc.)
     * For external APIs, you can pass a `Method` object as the finder
     :::
+
+    **The `<field>_id` reader.** Alongside `user`, a `model:` field defines a `user_id` reader whose one meaning is *the primary key of the record* — regardless of whether you were called with `user:` or `user_id:`:
+
+    ```ruby
+    expects :user, model: true
+    # called with user_id: 5  → user_id == 5,         user resolves the record
+    # called with user: <rec> → user_id == rec.id,    user is that record
+    ```
+
+    It never triggers an extra lookup: for the default `:find` finder a supplied id *is* the pk and is returned as-is; otherwise it reads the (memoized) record's `.id`, reusing the same resolution `user` already does. So it's meaningful even with a custom finder — where the `user_id` *key* holds a finder-specific token, `user_id` still returns the resolved record's actual primary key. The reader is alias-aware (`as: :raw_user` → `raw_user_id`) and silently defers (with a debug-level log) to any same-named method you've already declared. (Composite primary keys are not supported by the singular `<field>_id` convention.)
+
+    **Record / id consistency.** For the default `:find` finder, passing **both** a record and a `<field>_id` that disagree (`user: <rec id=5>, user_id: 9`) raises `InboundValidationError` rather than silently preferring one — contradictory input is a developer error. Passing just one, or both in agreement, is fine. The check is skipped for custom finders, where the `<field>_id` value is a lookup token, not a primary key, so a record-vs-id comparison would be meaningless.
 
 #### Describing the shape of structured fields (block syntax)
 
@@ -195,7 +208,7 @@ expects :zip, on: "address.billing", type: String  # validates address[:billing]
 The **root** segment (`address`) must be a declared field (or subfield); intermediate segments are assumed to be hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
 
 ::: warning
-`default:`, `preprocess:`, and `sensitive:` are **not** supported on a dotted `on:` (they raise at declaration time) — `default:`/`preprocess:` write into the parent, and `sensitive:` relies on the log filter matching a top-level field, neither of which handles an arbitrary nested path yet. Use them on a single-key `on:`, or declare the intermediate levels explicitly.
+`default:`, `preprocess:`, and `sensitive:` are **not** supported on a **nested** parent (they raise at declaration time) — `default:`/`preprocess:` write into the parent, and `sensitive:` relies on the log filter matching a top-level field, neither of which handles a nested path yet. A parent is nested whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield (whose value lives inside *its* parent). Use them on a subfield of a top-level field, or declare the intermediate levels explicitly.
 :::
 
 #### Disabling subfield readers
@@ -207,6 +220,34 @@ expects :data, type: Hash, on: :event, readers: false
 ```
 
 This is useful when you have duplicate sub-keys across different parent fields, or when you want to access subfields only through the parent. Note that `readers: false` is only valid for subfields (i.e., when using `on:`) — using it on top-level fields will raise an `ArgumentError`.
+
+#### Renaming the reader (`as:` / `prefix:`)
+
+By default the generated reader is named after the field — `expects :channel` defines a `channel` reader. Use `as:` to give the reader a different name while keeping `channel` as the caller-facing contract. The most common motivation is freeing the field's name so you can define your own method on top of the raw input:
+
+```ruby
+expects :channel, as: :raw_channel              # caller still passes `channel:`
+def channel = @channel ||= Channel.find(raw_channel)
+```
+
+The wire key stays canonical everywhere caller-facing — validation messages, required-inputs, logging, and sensitive-field filtering all still key off `channel`. Only the in-action reader (and its `?` predicate) is renamed.
+
+`as:` applies to a single field. For subfields it's especially handy to disambiguate or namespace unwrapped values; `prefix:` is sugar that renames several at once (literal concatenation, so you supply the separator):
+
+```ruby
+expects :event_params, type: Hash
+expects :id, on: :event_params, as: :event_id           # reader: event_id (extracts `id`)
+expects :id, :type, on: :event_params, prefix: :event_  # readers: event_id, event_type
+```
+
+`as:`/`prefix:` cannot be combined, can't be used with `readers: false`, and can't rename a dotted `on:` path (which generates no reader) — each raises at declaration time. A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader.
+
+When you declare subfields `on:` a renamed parent, reference it by its **reader name** (the alias), not the wire key — `on:` is resolved by calling the parent's reader:
+
+```ruby
+expects :channel, type: Hash, as: :raw_channel
+expects :id, on: :raw_channel    # ✅ reader name;  on: :channel would raise (no `channel` reader)
+```
 
 #### `preprocess`
 `expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
