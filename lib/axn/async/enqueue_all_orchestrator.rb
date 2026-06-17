@@ -110,11 +110,18 @@ module Axn
         private
 
         # Fire any registered on_enqueue_all callbacks once, after the fan-out completes.
-        # Resolves the per-field sources hash only when callbacks exist, so actions
-        # without the hook pay no extra source resolution.
+        # Callbacks live in the shared callbacks registry (event_type :enqueue_all), so they
+        # reuse the on_* family's registration, validation, if:/unless: matching, and
+        # last-defined-wins ordering. Execution stays bespoke here because the shared Invoker
+        # is exception-shaped and cannot carry the sources:/count: payload.
+        #
+        # Resolves the per-field sources hash only when an applicable callback exists, so
+        # actions without the hook (or whose if:/unless: all fail) pay no extra source resolution.
         def fire_enqueue_all_callbacks(target:, configs:, count:)
-          callbacks = target._enqueue_all_callbacks
-          return if callbacks.empty?
+          # NOTE: matchers (if:/unless:) are exception-shaped; pass exception: nil. They can
+          # condition on class-level state but cannot observe sources/count.
+          descriptors = target._callbacks_registry.for(:enqueue_all).select { |d| d.matches?(action: target, exception: nil) }
+          return if descriptors.empty?
 
           # NOTE: deliberately re-resolves each source (a second, un-materialized resolution
           # distinct from iterate's). Keep it lazy/un-materialized — do not cache iterate's
@@ -123,14 +130,26 @@ module Axn
             hash[config.field] = config.resolve_source(target:)
           end
 
-          callbacks.each { |callback| invoke_enqueue_all_callback(target:, callback:, sources:, count:) }
+          descriptors.each { |descriptor| invoke_enqueue_all_callback(target:, handler: descriptor.handler, sources:, count:) }
         end
 
-        # Invoke a single callback in the target class context with arity-filtered kwargs.
-        # A raise is swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
-        def invoke_enqueue_all_callback(target:, callback:, sources:, count:)
-          args, kwargs = Axn::Internal::Callable.only_requested_params(callback, kwargs: { sources:, count: })
-          target.instance_exec(*args, **kwargs, &callback)
+        # Invoke a single callback handler in the target class context with arity-filtered
+        # kwargs. A Symbol handler resolves to a class method on the target; a callable is
+        # instance_exec'd on the class. A raise is swallowed (mirrors on_success / filter_block)
+        # so the fan-out is never aborted.
+        def invoke_enqueue_all_callback(target:, handler:, sources:, count:)
+          if handler.is_a?(Symbol)
+            unless target.respond_to?(handler, true)
+              target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
+              return
+            end
+
+            args, kwargs = Axn::Internal::Callable.only_requested_params(target.method(handler), kwargs: { sources:, count: })
+            target.send(handler, *args, **kwargs)
+          else
+            args, kwargs = Axn::Internal::Callable.only_requested_params(handler, kwargs: { sources:, count: })
+            target.instance_exec(*args, **kwargs, &handler)
+          end
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("on_enqueue_all callback for #{target.name}", exception: e)
         end

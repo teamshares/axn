@@ -114,43 +114,62 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
   end
 
   describe "on_enqueue_all DSL registration" do
-    it "registers a callback block" do
+    def enqueue_all_callbacks_for(klass) = klass._callbacks_registry.for(:enqueue_all)
+
+    it "registers a callback block in the shared callbacks registry" do
       action_class = build_axn do
         on_enqueue_all { |count:| count }
       end
 
-      expect(action_class._enqueue_all_callbacks.size).to eq(1)
-      expect(action_class._enqueue_all_callbacks.first).to be_a(Proc)
+      expect(enqueue_all_callbacks_for(action_class).size).to eq(1)
+      expect(enqueue_all_callbacks_for(action_class).first.handler).to be_a(Proc)
     end
 
-    it "defaults to an empty array" do
+    it "registers a Symbol handler" do
+      action_class = build_axn do
+        def self.summarize(count:) = count
+        on_enqueue_all :summarize
+      end
+
+      expect(enqueue_all_callbacks_for(action_class).size).to eq(1)
+      expect(enqueue_all_callbacks_for(action_class).first.handler).to eq(:summarize)
+    end
+
+    it "defaults to no registered callbacks" do
       action_class = build_axn {}
 
-      expect(action_class._enqueue_all_callbacks).to eq([])
+      expect(enqueue_all_callbacks_for(action_class)).to eq([])
     end
 
-    it "allows multiple callbacks, preserving declaration order" do
+    it "registers multiple callbacks (registry orders them last-defined-first)" do
       action_class = build_axn do
         on_enqueue_all { |count:| "first #{count}" }
         on_enqueue_all { |count:| "second #{count}" }
       end
 
-      expect(action_class._enqueue_all_callbacks.size).to eq(2)
-      expect(action_class._enqueue_all_callbacks.map { |cb| cb.call(count: 5) }).to eq(["first 5", "second 5"])
+      handlers = enqueue_all_callbacks_for(action_class).map(&:handler)
+      expect(handlers.size).to eq(2)
+      expect(handlers.map { |cb| cb.call(count: 5) }).to eq(["second 5", "first 5"])
     end
 
-    it "raises ArgumentError when called without a block" do
+    it "raises ArgumentError when called with neither a block nor a handler" do
       expect do
         build_axn { on_enqueue_all }
-      end.to raise_error(ArgumentError, /on_enqueue_all requires a block/)
+      end.to raise_error(ArgumentError, /on_enqueue_all must be called with a block or symbol/)
+    end
+
+    it "raises ArgumentError when called with both a block and a handler" do
+      expect do
+        build_axn { on_enqueue_all(:summarize) { |count:| count } }
+      end.to raise_error(ArgumentError, /on_enqueue_all cannot be called with both a block and a handler/)
     end
 
     it "does not leak callbacks across sibling classes" do
       parent = build_axn { on_enqueue_all { |count:| count } }
       sibling = build_axn {}
 
-      expect(parent._enqueue_all_callbacks.size).to eq(1)
-      expect(sibling._enqueue_all_callbacks).to eq([])
+      expect(enqueue_all_callbacks_for(parent).size).to eq(1)
+      expect(enqueue_all_callbacks_for(sibling)).to eq([])
     end
   end
 
@@ -956,7 +975,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       expect { action_class.enqueue_all }.not_to raise_error
     end
 
-    it "fires each registered callback in declaration order" do
+    it "fires each registered callback, most-recent-first (last-defined wins)" do
       order = []
       cc = company_class
       action_class = build_axn do
@@ -970,7 +989,57 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       allow(action_class).to receive(:call_async)
       action_class.enqueue_all
 
-      expect(order).to eq(%i[first second])
+      expect(order).to eq(%i[second first])
+    end
+
+    it "invokes a Symbol handler as a class method with arity-filtered kwargs" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        def self.captured = @captured ||= {}
+        def self.record_summary(count:) = captured[:count] = count
+        on_enqueue_all :record_summary
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(action_class.captured[:count]).to eq(3)
+    end
+
+    it "warns and skips a Symbol handler the class does not respond to" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        on_enqueue_all :missing_method
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      expect(action_class).to receive(:warn).with(/Ignoring apparently-invalid on_enqueue_all symbol :missing_method/)
+
+      expect { action_class.enqueue_all }.not_to raise_error
+    end
+
+    it "respects if:/unless: conditions" do
+      fired = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        def self.should_summarize? = true
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all(if: :should_summarize?) { fired << :if_true }
+      action_class.on_enqueue_all(unless: :should_summarize?) { fired << :unless_true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(fired).to eq([:if_true])
     end
 
     it "does not fire when no callbacks are registered (no extra source resolution)" do

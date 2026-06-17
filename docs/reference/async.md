@@ -387,6 +387,10 @@ completes — useful for posting a summary, emitting a metric, or logging a hear
 hand-rolling a parent wrapper action. It runs inside the orchestrator (off the clock thread),
 in the context of your action class, so class-level `log`/`info`/`warn` are available.
 
+Like the other `on_*` callbacks, it accepts either a block or a Symbol method name (a Symbol
+resolves to a **class** method, since no action instance exists during enqueueing), and
+supports `if:`/`unless:` conditions.
+
 ```ruby
 class StockCertificate::EoyTaxReminder
   include Axn
@@ -406,7 +410,7 @@ class StockCertificate::EoyTaxReminder
 end
 ```
 
-The block may declare any subset of these keyword arguments (or none):
+The handler may declare any subset of these keyword arguments (or none):
 
 - **`count:`** — the exact number of jobs enqueued (post-filter). Always available, including
   for cross-product runs.
@@ -416,16 +420,23 @@ The block may declare any subset of these keyword arguments (or none):
   `.partition`), and reflect any kwarg overrides passed to `enqueue_all`.
 
 ```ruby
-# Count-only heartbeat:
-on_enqueue_all { |count:| info "Found #{count} events" }
+# Count-only heartbeat via a class method:
+on_enqueue_all :log_summary
+def self.log_summary(count:) = info "Found #{count} events"
+
+# Conditional summary:
+on_enqueue_all(if: :summary_enabled?) { |count:| info "Found #{count} events" }
 ```
 
-Multiple `on_enqueue_all` declarations are allowed and fire in declaration order.
+Multiple `on_enqueue_all` declarations are allowed; like the rest of the `on_*` family they
+fire **most-recent-first** (last-defined wins). `if:`/`unless:` conditions are evaluated the
+same way as the other callbacks' matchers (against the action, with no exception), so they can
+condition on class-level state but **cannot** observe `sources`/`count`.
 
-**Error handling:** a raise inside the block is swallowed (logged; re-raised in development
+**Error handling:** a raise inside the handler is swallowed (logged; re-raised in development
 only when `Axn.config.raise_piping_errors_in_dev` is set) and cannot change the enqueue
 outcome — the fan-out has already completed. This matches `on_success` semantics; rescue
-inside your block if you need stronger guarantees.
+inside your handler if you need stronger guarantees.
 
 **When it fires:** on any run that goes through the fan-out (the async path and the foreground
 path used when an iterable kwarg can't be serialized). It does **not** fire for an action with
