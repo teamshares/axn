@@ -1004,4 +1004,96 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       expect(fired).to be(false)
     end
   end
+
+  describe "on_enqueue_all sources and arity" do
+    before { with_synchronous_enqueue_all }
+
+    it "passes a single-entry sources hash for a single config" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| captured[:sources] = sources }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:sources].keys).to eq([:company])
+      expect(captured[:sources][:company]).to match_array(company_class._records)
+    end
+
+    it "passes an entry per field for a cross-product, with the product count" do
+      captured = {}
+      cc = company_class
+      uc = user_class
+      action_class = build_axn do
+        expects :company, type: cc
+        expects :user, type: uc
+        define_method(:call) { "#{user.name} @ #{company.name}" }
+        enqueues_each :user, from: -> { uc.all }
+        enqueues_each :company, from: -> { cc.active }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:, count:| captured[:sources] = sources; captured[:count] = count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:sources].keys).to match_array(%i[user company])
+      expect(captured[:sources][:user]).to match_array(user_class._records)
+      expect(captured[:sources][:company]).to match_array(company_class._records.select(&:active?))
+      expect(captured[:count]).to eq(4) # 2 users × 2 active companies
+    end
+
+    it "reflects a kwarg source override in the sources hash" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| captured[:sources] = sources }
+
+      allow(action_class).to receive(:call_async)
+      override = [company_class._records.first]
+      action_class.enqueue_all(company: override)
+
+      expect(captured[:sources][:company]).to eq(override)
+    end
+
+    it "invokes a no-argument block" do
+      fired = false
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { fired = true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(fired).to be(true)
+    end
+
+    it "invokes a block that only requests count:" do
+      captured = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([3])
+    end
+  end
 end
