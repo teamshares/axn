@@ -86,7 +86,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
 
       # Handle no-expects case
-      return target.call_async(**static_args) if target.internal_field_configs.empty?
+      next target.call_async(**static_args) if target.internal_field_configs.empty?
 
       # Use the real resolve_configs method to get configs and resolved static args
       configs, resolved_static = Axn::Async::EnqueueAllOrchestrator.send(:resolve_configs, target, static_args:)
@@ -110,6 +110,66 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
 
       expect(action_class).to respond_to(:enqueue_all)
+    end
+  end
+
+  describe "on_enqueue_all DSL registration" do
+    def enqueue_all_callbacks_for(klass) = klass._callbacks_registry.for(:enqueue_all)
+
+    it "registers a callback block in the shared callbacks registry" do
+      action_class = build_axn do
+        on_enqueue_all { |count:| count }
+      end
+
+      expect(enqueue_all_callbacks_for(action_class).size).to eq(1)
+      expect(enqueue_all_callbacks_for(action_class).first.handler).to be_a(Proc)
+    end
+
+    it "registers a Symbol handler" do
+      action_class = build_axn do
+        def self.summarize(count:) = count
+        on_enqueue_all :summarize
+      end
+
+      expect(enqueue_all_callbacks_for(action_class).size).to eq(1)
+      expect(enqueue_all_callbacks_for(action_class).first.handler).to eq(:summarize)
+    end
+
+    it "defaults to no registered callbacks" do
+      action_class = build_axn {}
+
+      expect(enqueue_all_callbacks_for(action_class)).to eq([])
+    end
+
+    it "registers multiple callbacks (registry orders them last-defined-first)" do
+      action_class = build_axn do
+        on_enqueue_all { |count:| "first #{count}" }
+        on_enqueue_all { |count:| "second #{count}" }
+      end
+
+      handlers = enqueue_all_callbacks_for(action_class).map(&:handler)
+      expect(handlers.size).to eq(2)
+      expect(handlers.map { |cb| cb.call(count: 5) }).to eq(["second 5", "first 5"])
+    end
+
+    it "raises ArgumentError when called with neither a block nor a handler" do
+      expect do
+        build_axn { on_enqueue_all }
+      end.to raise_error(ArgumentError, /on_enqueue_all must be called with a block or symbol/)
+    end
+
+    it "raises ArgumentError when called with both a block and a handler" do
+      expect do
+        build_axn { on_enqueue_all(:summarize) { |count:| count } }
+      end.to raise_error(ArgumentError, /on_enqueue_all cannot be called with both a block and a handler/)
+    end
+
+    it "does not leak callbacks across sibling classes" do
+      parent = build_axn { on_enqueue_all { |count:| count } }
+      sibling = build_axn {}
+
+      expect(enqueue_all_callbacks_for(parent).size).to eq(1)
+      expect(enqueue_all_callbacks_for(sibling)).to eq([])
     end
   end
 
@@ -849,6 +909,360 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         expect(progress_calls).to include(a_hash_including(stage: :iterating, field: :company))
         expect(progress_calls.last).to include(stage: :enqueueing)
       end
+    end
+  end
+
+  describe "on_enqueue_all firing" do
+    before { with_synchronous_enqueue_all }
+
+    it "fires once after the fan-out with the exact enqueued count" do
+      captured = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([3]) # 3 company records, fired once
+    end
+
+    it "reflects the post-filter count when a filter block skips items" do
+      captured = []
+      action_class = build_axn do
+        expects :number
+        enqueues_each :number, from: -> { [1, 2, 3, 4] }, &:even?
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([2]) # only 2 and 4 pass the filter
+    end
+
+    it "evaluates the block in the target action class context" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { captured[:context] = self }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:context]).to eq(action_class)
+    end
+
+    it "exposes class-level logging (info) inside the block without raising" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| info "enqueued #{count}" }
+
+      allow(action_class).to receive(:call_async)
+
+      expect { action_class.enqueue_all }.not_to raise_error
+    end
+
+    it "fires each registered callback, most-recent-first (last-defined wins)" do
+      order = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { order << :first }
+      action_class.on_enqueue_all { order << :second }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(order).to eq(%i[second first])
+    end
+
+    it "invokes a Symbol handler as a class method with arity-filtered kwargs" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        def self.captured = @captured ||= {}
+        def self.record_summary(count:) = captured[:count] = count
+        on_enqueue_all :record_summary
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(action_class.captured[:count]).to eq(3)
+    end
+
+    it "warns and skips a Symbol handler the class does not respond to" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        on_enqueue_all :missing_method
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      expect(action_class).to receive(:warn).with(/Ignoring apparently-invalid on_enqueue_all symbol :missing_method/)
+
+      expect { action_class.enqueue_all }.not_to raise_error
+    end
+
+    it "respects if:/unless: conditions" do
+      fired = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+        def self.should_summarize? = true
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all(if: :should_summarize?) { fired << :if_true }
+      action_class.on_enqueue_all(unless: :should_summarize?) { fired << :unless_true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(fired).to eq([:if_true])
+    end
+
+    it "does not fire when no callbacks are registered (no extra source resolution)" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          cc.all
+        }
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      # Source resolved once for iteration only; the hook adds no extra resolution.
+      expect(resolve_calls).to eq(1)
+    end
+
+    it "does not re-resolve sources for a count-only callback" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          cc.all
+        }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| count } # never requests sources:
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      # Iteration resolves once; a count-only callback triggers no second resolution.
+      expect(resolve_calls).to eq(1)
+    end
+
+    it "swallows a failed post-fan-out source re-resolution without aborting the fan-out" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        # Succeeds during iteration (call 1); raises on the hook's second resolution (call 2).
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          raise "transient source failure" if resolve_calls > 1
+
+          cc.all
+        }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| sources[:company].to_a } # requests sources -> triggers re-resolution
+
+      enqueued = []
+      allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
+        a_string_including("on_enqueue_all callback"),
+        exception: an_instance_of(RuntimeError),
+      )
+
+      # Must not propagate: a raise here would fail the orchestrator and retry/duplicate the batch.
+      expect { action_class.enqueue_all }.not_to raise_error
+      expect(enqueued.length).to eq(3) # all jobs still enqueued
+    end
+
+    it "does not fire on the no-expects single-job path" do
+      fired = false
+      action_class = build_axn do
+        define_method(:call) { "noop" }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { fired = true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all # no expects -> enqueue_for short-circuits to call_async, bypassing the orchestrator
+
+      expect(fired).to be(false)
+    end
+  end
+
+  describe "on_enqueue_all sources and arity" do
+    before { with_synchronous_enqueue_all }
+
+    it "passes a single-entry sources hash for a single config" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| captured[:sources] = sources }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:sources].keys).to eq([:company])
+      expect(captured[:sources][:company]).to match_array(company_class._records)
+    end
+
+    it "passes an entry per field for a cross-product, with the product count" do
+      captured = {}
+      cc = company_class
+      uc = user_class
+      action_class = build_axn do
+        expects :company, type: cc
+        expects :user, type: uc
+        define_method(:call) { "#{user.name} @ #{company.name}" }
+        enqueues_each :user, from: -> { uc.all }
+        enqueues_each :company, from: -> { cc.active }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all do |sources:, count:|
+        captured[:sources] = sources
+        captured[:count] = count
+      end
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:sources].keys).to match_array(%i[user company])
+      expect(captured[:sources][:user]).to match_array(user_class._records)
+      expect(captured[:sources][:company]).to match_array(company_class._records.select(&:active?))
+      expect(captured[:count]).to eq(4) # 2 users × 2 active companies
+    end
+
+    it "reflects a kwarg source override in the sources hash" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| captured[:sources] = sources }
+
+      allow(action_class).to receive(:call_async)
+      override = [company_class._records.first]
+      action_class.enqueue_all(company: override)
+
+      expect(captured).to have_key(:sources)
+      expect(captured[:sources][:company]).to eq(override)
+    end
+
+    it "invokes a no-argument block" do
+      fired = false
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { fired = true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(fired).to be(true)
+    end
+
+    it "invokes a block that only requests count:" do
+      captured = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([3])
+    end
+  end
+
+  describe "on_enqueue_all error isolation" do
+    before { with_synchronous_enqueue_all }
+
+    let(:action_class) do
+      cc = company_class
+      build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+    end
+
+    it "does not abort the fan-out when a callback raises" do
+      action_class.on_enqueue_all { raise "summary exploded" }
+      enqueued = []
+      allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+
+      expect { action_class.enqueue_all }.not_to raise_error
+      expect(enqueued.length).to eq(3) # all jobs still enqueued
+    end
+
+    it "swallows the error via PipingError" do
+      action_class.on_enqueue_all { raise "summary exploded" }
+      allow(action_class).to receive(:call_async)
+
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
+        a_string_including("on_enqueue_all callback"),
+        exception: an_instance_of(RuntimeError),
+      )
+
+      action_class.enqueue_all
+    end
+
+    it "still fires later callbacks after an earlier one raises" do
+      fired = []
+      action_class.on_enqueue_all { raise "boom" }
+      action_class.on_enqueue_all { fired << :second }
+      allow(action_class).to receive(:call_async)
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+
+      action_class.enqueue_all
+
+      expect(fired).to eq([:second])
     end
   end
 end

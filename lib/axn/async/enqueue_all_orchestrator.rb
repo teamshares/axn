@@ -94,6 +94,7 @@ module Axn
           configs, resolved_static = resolve_configs(target, static_args:)
           count = { value: 0 }
           iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:, on_progress:)
+          fire_enqueue_all_callbacks(target:, configs:, count: count[:value])
           count[:value]
         end
 
@@ -107,6 +108,76 @@ module Axn
         end
 
         private
+
+        # Fire any registered on_enqueue_all callbacks once, after the fan-out completes.
+        # Callbacks live in the shared callbacks registry (event_type :enqueue_all), so they
+        # reuse the on_* family's registration, validation, if:/unless: matching, and
+        # last-defined-wins ordering. Execution stays bespoke here because the shared Invoker
+        # is exception-shaped and cannot carry the sources:/count: payload.
+        #
+        # Resolves the per-field sources hash only when an applicable callback exists, so
+        # actions without the hook (or whose if:/unless: all fail) pay no extra source resolution.
+        def fire_enqueue_all_callbacks(target:, configs:, count:)
+          # NOTE: matchers (if:/unless:) are exception-shaped; pass exception: nil. They can
+          # condition on class-level state but cannot observe sources/count.
+          descriptors = target._callbacks_registry.for(:enqueue_all).select { |d| d.matches?(action: target, exception: nil) }
+          return if descriptors.empty?
+
+          # Lazy + memoized: resolve the sources hash only when a callback actually requests
+          # `sources:` (count-only callbacks skip it entirely), and only once across callbacks.
+          # The thunk is invoked INSIDE invoke_enqueue_all_callback's rescue so a failed second
+          # resolution (non-repeatable source / transient DB or API error) is swallowed like any
+          # other hook error — it must never propagate out of execute_iteration after the fan-out
+          # has already enqueued, which would fail the orchestrator and retry/duplicate the batch.
+          #
+          # NOTE: deliberately re-resolves each source (a second, un-materialized resolution
+          # distinct from iterate's). Keep it un-materialized — do not cache iterate's source
+          # here, or the hook would force materialization and break the relation contract.
+          sources = nil
+          resolve_sources = lambda do
+            sources ||= configs.each_with_object({}) do |config, hash|
+              hash[config.field] = config.resolve_source(target:)
+            end
+          end
+
+          descriptors.each { |descriptor| invoke_enqueue_all_callback(target:, handler: descriptor.handler, resolve_sources:, count:) }
+        end
+
+        # Invoke a single callback handler in the target class context with arity-filtered
+        # kwargs. A Symbol handler resolves to a class method on the target; a callable is
+        # instance_exec'd on the class. The sources hash is resolved (via resolve_sources) only
+        # if the handler requests it. A raise — from the handler OR from resolving sources — is
+        # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
+        def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
+          if handler.is_a?(Symbol)
+            unless target.respond_to?(handler, true)
+              target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
+              return
+            end
+            callable = target.method(handler)
+          else
+            callable = handler
+          end
+
+          available = { count: }
+          available[:sources] = resolve_sources.call if requests_param?(callable, :sources)
+          args, kwargs = Axn::Internal::Callable.only_requested_params(callable, kwargs: available)
+
+          if handler.is_a?(Symbol)
+            target.send(handler, *args, **kwargs)
+          else
+            target.instance_exec(*args, **kwargs, &handler)
+          end
+        rescue StandardError => e
+          Axn::Internal::PipingError.swallow("on_enqueue_all callback for #{target.name}", exception: e)
+        end
+
+        # Whether a callable accepts a given keyword (directly or via **kwargs / keyrest).
+        def requests_param?(callable, name)
+          callable.parameters.any? do |type, param_name|
+            type == :keyrest || (%i[key keyreq].include?(type) && param_name == name)
+          end
+        end
 
         # Builds iteration sources and resolves static args from kwargs
         #

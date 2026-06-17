@@ -93,6 +93,38 @@ module Axn
         def enqueues_each(field, from: nil, via: nil, &filter_block)
           self._batch_enqueue_configs += [Config.new(field:, from:, via:, filter_block:)]
         end
+
+        # Register a once-per-run callback that fires after the batch fan-out completes.
+        #
+        # Runs inside EnqueueAllOrchestrator (off the clock thread), after all jobs are
+        # enqueued. The handler is evaluated in the context of this action class, so it has
+        # access to class-level `log`/`info`/`warn` (a Symbol handler resolves to a class
+        # method). Like the other `on_*` callbacks, this accepts a block or a Symbol method
+        # name, supports `if:`/`unless:`, and — when multiple are declared — fires them
+        # most-recent-first (last-defined wins).
+        #
+        # The handler may declare any subset of these keyword arguments (or none):
+        # @yieldparam count [Integer] exact number of jobs enqueued (post-filter)
+        # @yieldparam sources [Hash{Symbol => Object}] resolved (un-materialized) source per
+        #   iterated field, e.g. { tax_profile: <relation> } or { user: <rel>, company: <rel> }
+        #
+        # Note: `if:`/`unless:` conditions are evaluated like the other callbacks' matchers
+        # (against the action with no exception); they cannot observe `sources`/`count`.
+        #
+        # A raise inside the handler is swallowed (logged; re-raised in dev only when
+        # `Axn.config.raise_piping_errors_in_dev` is set) and cannot change the enqueue
+        # outcome — rescue inside your handler if you need stronger guarantees.
+        #
+        # @example Post a run summary to Slack
+        #   on_enqueue_all do |sources:, count:|
+        #     active, inactive = sources[:tax_profile].partition { _1.user.active? }
+        #     SlackSender.call(channel: :eng_ops, text: "#{active.size} active, #{inactive.size} deactivated (#{count} enqueued)")
+        #   end
+        #
+        # @example Count-only heartbeat via a class method
+        #   on_enqueue_all :log_summary
+        #   def self.log_summary(count:) = info "Found #{count} events"
+        def on_enqueue_all(handler = nil, **, &block) = _add_callback(:enqueue_all, handler:, **, block:)
       end
     end
   end
