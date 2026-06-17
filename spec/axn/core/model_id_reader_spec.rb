@@ -186,5 +186,23 @@ RSpec.describe "model: id reader and consistency" do
     it "returns the id from the parent" do
       expect(action.call(payload: { company_id: 11 }).cid).to eq(11)
     end
+
+    it "returns nil, not the unmatched lookup token, for a custom finder with no match" do
+      # Subfield analog of the top-level custom-finder case: an unmatched token must not be exposed
+      # as the record's primary key.
+      klass = co_class
+      dir = directory_class
+      action = build_axn do
+        expects :payload
+        expects :company, on: :payload, model: { klass:, finder: dir.method(:find_by_token) }, allow_nil: true
+        exposes :cid, allow_nil: true
+
+        def call = expose(cid: company_id)
+      end
+
+      result = action.call(payload: { company_id: "xyz" })
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
   end
 end

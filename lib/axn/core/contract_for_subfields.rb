@@ -163,7 +163,10 @@ module Axn
             next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
 
             record = public_send(reader)
-            record.respond_to?(:id) ? record.id : raw
+            # No resolved record means there's no primary key to expose. Don't fall back to the raw
+            # `<field>_id` input: for a custom finder that value is a lookup token (not a pk), and a
+            # by-primary-key id was already returned above when present. Mirrors _define_model_id_reader.
+            record.respond_to?(:id) ? record.id : nil
           end
         end
       end
