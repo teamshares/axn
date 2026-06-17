@@ -113,6 +113,47 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
     end
   end
 
+  describe "on_enqueue_all DSL registration" do
+    it "registers a callback block" do
+      action_class = build_axn do
+        on_enqueue_all { |count:| count }
+      end
+
+      expect(action_class._enqueue_all_callbacks.size).to eq(1)
+      expect(action_class._enqueue_all_callbacks.first).to be_a(Proc)
+    end
+
+    it "defaults to an empty array" do
+      action_class = build_axn {}
+
+      expect(action_class._enqueue_all_callbacks).to eq([])
+    end
+
+    it "allows multiple callbacks, preserving declaration order" do
+      action_class = build_axn do
+        on_enqueue_all { |count:| "first #{count}" }
+        on_enqueue_all { |count:| "second #{count}" }
+      end
+
+      expect(action_class._enqueue_all_callbacks.size).to eq(2)
+      expect(action_class._enqueue_all_callbacks.map { |cb| cb.call(count: 5) }).to eq(["first 5", "second 5"])
+    end
+
+    it "raises ArgumentError when called without a block" do
+      expect do
+        build_axn { on_enqueue_all }
+      end.to raise_error(ArgumentError, /on_enqueue_all requires a block/)
+    end
+
+    it "does not leak callbacks across sibling classes" do
+      parent = build_axn { on_enqueue_all { |count:| count } }
+      sibling = build_axn {}
+
+      expect(parent._enqueue_all_callbacks.size).to eq(1)
+      expect(sibling._enqueue_all_callbacks).to eq([])
+    end
+  end
+
   describe "single field iteration" do
     describe "with explicit from:" do
       let(:action_class) do
