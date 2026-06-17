@@ -1061,6 +1061,54 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       expect(resolve_calls).to eq(1)
     end
 
+    it "does not re-resolve sources for a count-only callback" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          cc.all
+        }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| count } # never requests sources:
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      # Iteration resolves once; a count-only callback triggers no second resolution.
+      expect(resolve_calls).to eq(1)
+    end
+
+    it "swallows a failed post-fan-out source re-resolution without aborting the fan-out" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        # Succeeds during iteration (call 1); raises on the hook's second resolution (call 2).
+        enqueues_each :company, from: lambda {
+          resolve_calls += 1
+          raise "transient source failure" if resolve_calls > 1
+
+          cc.all
+        }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |sources:| sources[:company].to_a } # requests sources -> triggers re-resolution
+
+      enqueued = []
+      allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
+        a_string_including("on_enqueue_all callback"),
+        exception: an_instance_of(RuntimeError),
+      )
+
+      # Must not propagate: a raise here would fail the orchestrator and retry/duplicate the batch.
+      expect { action_class.enqueue_all }.not_to raise_error
+      expect(enqueued.length).to eq(3) # all jobs still enqueued
+    end
+
     it "does not fire on the no-expects single-job path" do
       fired = false
       action_class = build_axn do

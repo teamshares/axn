@@ -123,35 +123,60 @@ module Axn
           descriptors = target._callbacks_registry.for(:enqueue_all).select { |d| d.matches?(action: target, exception: nil) }
           return if descriptors.empty?
 
+          # Lazy + memoized: resolve the sources hash only when a callback actually requests
+          # `sources:` (count-only callbacks skip it entirely), and only once across callbacks.
+          # The thunk is invoked INSIDE invoke_enqueue_all_callback's rescue so a failed second
+          # resolution (non-repeatable source / transient DB or API error) is swallowed like any
+          # other hook error — it must never propagate out of execute_iteration after the fan-out
+          # has already enqueued, which would fail the orchestrator and retry/duplicate the batch.
+          #
           # NOTE: deliberately re-resolves each source (a second, un-materialized resolution
-          # distinct from iterate's). Keep it lazy/un-materialized — do not cache iterate's
-          # source here, or the hook would force materialization and break the relation contract.
-          sources = configs.each_with_object({}) do |config, hash|
-            hash[config.field] = config.resolve_source(target:)
+          # distinct from iterate's). Keep it un-materialized — do not cache iterate's source
+          # here, or the hook would force materialization and break the relation contract.
+          sources = nil
+          resolve_sources = lambda do
+            sources ||= configs.each_with_object({}) do |config, hash|
+              hash[config.field] = config.resolve_source(target:)
+            end
           end
 
-          descriptors.each { |descriptor| invoke_enqueue_all_callback(target:, handler: descriptor.handler, sources:, count:) }
+          descriptors.each { |descriptor| invoke_enqueue_all_callback(target:, handler: descriptor.handler, resolve_sources:, count:) }
         end
 
         # Invoke a single callback handler in the target class context with arity-filtered
         # kwargs. A Symbol handler resolves to a class method on the target; a callable is
-        # instance_exec'd on the class. A raise is swallowed (mirrors on_success / filter_block)
-        # so the fan-out is never aborted.
-        def invoke_enqueue_all_callback(target:, handler:, sources:, count:)
+        # instance_exec'd on the class. The sources hash is resolved (via resolve_sources) only
+        # if the handler requests it. A raise — from the handler OR from resolving sources — is
+        # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
+        def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
           if handler.is_a?(Symbol)
             unless target.respond_to?(handler, true)
               target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
               return
             end
+            callable = target.method(handler)
+          else
+            callable = handler
+          end
 
-            args, kwargs = Axn::Internal::Callable.only_requested_params(target.method(handler), kwargs: { sources:, count: })
+          available = { count: }
+          available[:sources] = resolve_sources.call if requests_param?(callable, :sources)
+          args, kwargs = Axn::Internal::Callable.only_requested_params(callable, kwargs: available)
+
+          if handler.is_a?(Symbol)
             target.send(handler, *args, **kwargs)
           else
-            args, kwargs = Axn::Internal::Callable.only_requested_params(handler, kwargs: { sources:, count: })
             target.instance_exec(*args, **kwargs, &handler)
           end
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("on_enqueue_all callback for #{target.name}", exception: e)
+        end
+
+        # Whether a callable accepts a given keyword (directly or via **kwargs / keyrest).
+        def requests_param?(callable, name)
+          callable.parameters.any? do |type, param_name|
+            type == :keyrest || (%i[key keyreq].include?(type) && param_name == name)
+          end
         end
 
         # Builds iteration sources and resolves static args from kwargs
