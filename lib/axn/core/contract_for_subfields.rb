@@ -60,11 +60,14 @@ module Axn
 
           # default:/preprocess: write into the parent, and sensitive: relies on the log filter
           # matching config.on to a top-level field — none of which support an arbitrary nested
-          # path yet. Reject the combination explicitly rather than silently ignoring it (use
-          # .nil? for default/preprocess so an explicit `default: false`/`nil` is still caught).
-          if on.to_s.include?(".") && (!default.nil? || !preprocess.nil? || sensitive)
+          # path yet. A parent is nested whether reached via a dotted path ("address.billing") or by
+          # pointing `on:` at another subfield (whose value lives inside its own parent, not at the
+          # top level). Reject the combination explicitly rather than silently ignoring it (use .nil?
+          # for default/preprocess so an explicit `default: false`/`nil` is still caught).
+          nested_parent = on.to_s.include?(".") || subfield_configs.map(&:reader_as).include?(root)
+          if nested_parent && (!default.nil? || !preprocess.nil? || sensitive)
             raise ArgumentError,
-                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested (dotted) `on:` (got on: #{on.inspect})"
+                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested `on:` (got on: #{on.inspect})"
           end
 
           _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,

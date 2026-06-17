@@ -160,6 +160,33 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
         end
       end.to raise_error(ArgumentError, /no such reader|:channel/)
     end
+
+    it "reads (without default) through an aliased subfield parent" do
+      # No default/preprocess, so the nested-parent restriction doesn't apply: a subfield `on:` an
+      # aliased subfield parent resolves through the reader chain.
+      action = build_axn do
+        expects :payload
+        expects :settings, on: :payload, as: :raw_settings
+        expects :enabled, on: :raw_settings
+        exposes :got
+
+        def call = expose(got: enabled)
+      end
+
+      expect(action.call(payload: { settings: { enabled: true } }).got).to be(true)
+    end
+
+    it "rejects a default on a subfield declared `on:` an aliased subfield parent (nested write)" do
+      # The parent (`raw_settings`) is itself a subfield, so its value lives nested inside `payload`
+      # — the single-level mutation machinery can't write there, same as a dotted `on:` path.
+      expect do
+        build_axn do
+          expects :payload
+          expects :settings, on: :payload, as: :raw_settings
+          expects :enabled, on: :raw_settings, default: true
+        end
+      end.to raise_error(ArgumentError, /not supported with a nested/)
+    end
   end
 
   describe "guards" do

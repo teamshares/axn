@@ -479,13 +479,15 @@ module Axn
 
     # `on:` references the parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
     # provided_data (which the default/preprocess mutation paths read & write directly) is keyed by
-    # the caller-facing *wire* key. Translate the root segment back to its wire key so mutations land
-    # on the key the caller actually supplied. Identity for non-aliased parents (reader_as == field).
+    # the caller-facing *wire* key. Translate an aliased top-level parent back to its wire key so the
+    # mutation lands on the key the caller actually supplied. Identity for non-aliased parents
+    # (reader_as == field). Only top-level parents are consulted: a nested/subfield parent can't be
+    # written through this single-level machinery and is rejected at declaration when combined with
+    # default:/preprocess:/sensitive: (see ContractForSubfields#_expects_subfields), so it never
+    # reaches here.
     def _wire_parent_key(on)
-      root, *rest = on.to_s.split(".")
-      config = (@action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs)).find { |c| c.reader_as.to_s == root }
-      wire_root = config ? config.field : root.to_sym
-      rest.empty? ? wire_root : :"#{wire_root}.#{rest.join('.')}"
+      config = @action_class.send(:internal_field_configs).find { |c| c.reader_as.to_s == on.to_s }
+      config ? config.field : on.to_sym
     end
 
     def update_subfield_value(parent_field, subfield, new_value)
