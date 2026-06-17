@@ -86,7 +86,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end
 
       # Handle no-expects case
-      return target.call_async(**static_args) if target.internal_field_configs.empty?
+      next target.call_async(**static_args) if target.internal_field_configs.empty?
 
       # Use the real resolve_configs method to get configs and resolved static args
       configs, resolved_static = Axn::Async::EnqueueAllOrchestrator.send(:resolve_configs, target, static_args:)
@@ -890,6 +890,118 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         expect(progress_calls).to include(a_hash_including(stage: :iterating, field: :company))
         expect(progress_calls.last).to include(stage: :enqueueing)
       end
+    end
+  end
+
+  describe "on_enqueue_all firing" do
+    before { with_synchronous_enqueue_all }
+
+    it "fires once after the fan-out with the exact enqueued count" do
+      captured = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([3]) # 3 company records, fired once
+    end
+
+    it "reflects the post-filter count when a filter block skips items" do
+      captured = []
+      action_class = build_axn do
+        expects :number
+        enqueues_each :number, from: -> { [1, 2, 3, 4] } do |n|
+          n.even?
+        end
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| captured << count }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured).to eq([2]) # only 2 and 4 pass the filter
+    end
+
+    it "evaluates the block in the target action class context" do
+      captured = {}
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { captured[:context] = self }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(captured[:context]).to eq(action_class)
+    end
+
+    it "exposes class-level logging (info) inside the block without raising" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| info "enqueued #{count}" }
+
+      allow(action_class).to receive(:call_async)
+
+      expect { action_class.enqueue_all }.not_to raise_error
+    end
+
+    it "fires each registered callback in declaration order" do
+      order = []
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { order << :first }
+      action_class.on_enqueue_all { order << :second }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      expect(order).to eq(%i[first second])
+    end
+
+    it "does not fire when no callbacks are registered (no extra source resolution)" do
+      cc = company_class
+      resolve_calls = 0
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { resolve_calls += 1; cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all
+
+      # Source resolved once for iteration only; the hook adds no extra resolution.
+      expect(resolve_calls).to eq(1)
+    end
+
+    it "does not fire on the no-expects single-job path" do
+      fired = false
+      action_class = build_axn do
+        define_method(:call) { "noop" }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { fired = true }
+
+      allow(action_class).to receive(:call_async)
+      action_class.enqueue_all # no expects -> enqueue_for short-circuits to call_async, bypassing the orchestrator
+
+      expect(fired).to be(false)
     end
   end
 end

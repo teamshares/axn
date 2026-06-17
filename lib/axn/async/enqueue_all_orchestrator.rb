@@ -94,6 +94,7 @@ module Axn
           configs, resolved_static = resolve_configs(target, static_args:)
           count = { value: 0 }
           iterate(target:, configs:, index: 0, accumulated: {}, static_args: resolved_static, count:, on_progress:)
+          fire_enqueue_all_callbacks(target:, configs:, count: count[:value])
           count[:value]
         end
 
@@ -107,6 +108,29 @@ module Axn
         end
 
         private
+
+        # Fire any registered on_enqueue_all callbacks once, after the fan-out completes.
+        # Resolves the per-field sources hash only when callbacks exist, so actions
+        # without the hook pay no extra source resolution.
+        def fire_enqueue_all_callbacks(target:, configs:, count:)
+          callbacks = target._enqueue_all_callbacks
+          return if callbacks.empty?
+
+          sources = configs.each_with_object({}) do |config, hash|
+            hash[config.field] = config.resolve_source(target:)
+          end
+
+          callbacks.each { |callback| invoke_enqueue_all_callback(target:, callback:, sources:, count:) }
+        end
+
+        # Invoke a single callback in the target class context with arity-filtered kwargs.
+        # A raise is swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
+        def invoke_enqueue_all_callback(target:, callback:, sources:, count:)
+          args, kwargs = Axn::Internal::Callable.only_requested_params(callback, kwargs: { sources:, count: })
+          target.instance_exec(*args, **kwargs, &callback)
+        rescue StandardError => e
+          Axn::Internal::PipingError.swallow("on_enqueue_all callback for #{target.name}", exception: e)
+        end
 
         # Builds iteration sources and resolves static args from kwargs
         #
