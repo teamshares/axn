@@ -1096,4 +1096,51 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       expect(captured).to eq([3])
     end
   end
+
+  describe "on_enqueue_all error isolation" do
+    before { with_synchronous_enqueue_all }
+
+    let(:action_class) do
+      cc = company_class
+      build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+    end
+
+    it "does not abort the fan-out when a callback raises" do
+      action_class.on_enqueue_all { raise "summary exploded" }
+      enqueued = []
+      allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+
+      expect { action_class.enqueue_all }.not_to raise_error
+      expect(enqueued.length).to eq(3) # all jobs still enqueued
+    end
+
+    it "swallows the error via PipingError" do
+      action_class.on_enqueue_all { raise "summary exploded" }
+      allow(action_class).to receive(:call_async)
+
+      expect(Axn::Internal::PipingError).to receive(:swallow).with(
+        a_string_including("on_enqueue_all callback"),
+        exception: an_instance_of(RuntimeError),
+      )
+
+      action_class.enqueue_all
+    end
+
+    it "still fires later callbacks after an earlier one raises" do
+      fired = []
+      action_class.on_enqueue_all { raise "boom" }
+      action_class.on_enqueue_all { fired << :second }
+      allow(action_class).to receive(:call_async)
+      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+
+      action_class.enqueue_all
+
+      expect(fired).to eq([:second])
+    end
+  end
 end
