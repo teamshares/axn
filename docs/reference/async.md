@@ -380,6 +380,57 @@ end
 SyncWithMode.enqueue_all(sync_mode: :full)
 ```
 
+### Run summary with `on_enqueue_all`
+
+`on_enqueue_all` registers a once-per-run callback that fires **after** the batch fan-out
+completes — useful for posting a summary, emitting a metric, or logging a heartbeat without
+hand-rolling a parent wrapper action. It runs inside the orchestrator (off the clock thread),
+in the context of your action class, so class-level `log`/`info`/`warn` are available.
+
+```ruby
+class StockCertificate::EoyTaxReminder
+  include Axn
+  async :sidekiq
+
+  expects :tax_profile, model: TaxProfile
+  enqueues_each :tax_profile, from: -> { TaxProfile.needs_address_validation }
+
+  on_enqueue_all do |sources:, count:|
+    active, inactive = sources[:tax_profile].partition { _1.user.active? }
+    SlackSender.call(channel: :eng_ops, text: "#{active.size} active, #{inactive.size} deactivated (#{count} enqueued)")
+  end
+
+  def call
+    # per-tax-profile work
+  end
+end
+```
+
+The block may declare any subset of these keyword arguments (or none):
+
+- **`count:`** — the exact number of jobs enqueued (post-filter). Always available, including
+  for cross-product runs.
+- **`sources:`** — a hash of `{ field => resolved_source }` for each iterated field, e.g.
+  `{ tax_profile: <relation> }` or, for a cross-product, `{ user: <rel>, company: <rel> }`.
+  Sources are the resolved-but-un-materialized relations (run your own `.count` / `.group` /
+  `.partition`), and reflect any kwarg overrides passed to `enqueue_all`.
+
+```ruby
+# Count-only heartbeat:
+on_enqueue_all { |count:| info "Found #{count} events" }
+```
+
+Multiple `on_enqueue_all` declarations are allowed and fire in declaration order.
+
+**Error handling:** a raise inside the block is swallowed (logged; re-raised in development
+only when `Axn.config.raise_piping_errors_in_dev` is set) and cannot change the enqueue
+outcome — the fan-out has already completed. This matches `on_success` semantics; rescue
+inside your block if you need stronger guarantees.
+
+**When it fires:** on any run that goes through the fan-out (the async path and the foreground
+path used when an iterable kwarg can't be serialized). It does **not** fire for an action with
+no `expects`, which enqueues a single job directly without fanning out.
+
 ### Memory Efficiency
 
 For optimal memory usage, model-based configs (using `find_each`) are automatically processed first in nested iterations. This ensures ActiveRecord-style batch processing happens before loading potentially large enumerables into memory.
