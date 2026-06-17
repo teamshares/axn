@@ -138,6 +138,28 @@ module Axn
               provided_data: subfield_data,
             )
           end
+
+          _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
+        end
+
+        # The subfield analog of `_define_model_id_reader`: a `<reader>_id` reader meaning "the
+        # record's primary key", reading the id from the `on:` parent (and reusing the memoized
+        # record for non-id-based finders).
+        def _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
+          id_reader = :"#{reader}_id"
+          return unless _reader_name_available?(id_reader, kind: "model id")
+
+          id_key = :"#{source_field}_id"
+          by_primary_key = processed_options[:finder] == :find
+
+          define_method(id_reader) do
+            parent = Axn::Core::ContractForSubfields.resolve_parent(self, on)
+            raw = Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
+            next raw if by_primary_key && !raw.nil?
+
+            record = public_send(reader)
+            record.respond_to?(:id) ? record.id : raw
+          end
         end
       end
     end

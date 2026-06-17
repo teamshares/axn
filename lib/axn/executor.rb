@@ -304,7 +304,52 @@ module Axn
 
       Axn::Validation::Fields.validate!(validations:, context:, exception_klass:)
 
-      validate_subfields_contract! if direction == :inbound
+      return unless direction == :inbound
+
+      validate_subfields_contract!
+      validate_model_consistency!
+    end
+
+    # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
+    # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
+    # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
+    # a primary key and a record-vs-id comparison would be meaningless.
+    def validate_model_consistency!
+      mismatches = []
+
+      @action_class.send(:internal_field_configs).each do |config|
+        next unless _id_based_model?(config)
+
+        msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field)
+        mismatches << msg if msg
+      end
+
+      @action_class.send(:subfield_configs).each do |config|
+        next unless _id_based_model?(config)
+
+        parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
+        msg = _model_record_id_mismatch(source: parent, field: config.field)
+        mismatches << msg if msg
+      end
+
+      raise InboundValidationError, mismatches.join("; ") if mismatches.any?
+    end
+
+    def _id_based_model?(config)
+      model = config.validations[:model]
+      model.is_a?(Hash) && model[:finder] == :find
+    end
+
+    def _model_record_id_mismatch(source:, field:)
+      return nil if source.nil?
+
+      record = Core::FieldResolvers.resolve(type: :extract, field:, provided_data: source)
+      raw_id = Core::FieldResolvers.resolve(type: :extract, field: :"#{field}_id", provided_data: source)
+      return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
+      return nil unless record.respond_to?(:id)
+      return nil if record.id.to_s == raw_id.to_s
+
+      "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
     end
 
     def validate_subfields_contract!

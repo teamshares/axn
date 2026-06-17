@@ -107,8 +107,9 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
       * `user_id` is provided (automatically derived from field name)
       * `User.find(user_id)` (or custom finder) returns a record
 
-    And, when used on `expects`, will create a reader method for you:
+    And, when used on `expects`, will create reader methods for you:
       * `user` (the auto-found record)
+      * `user_id` (the record's primary key) — see below
 
     ::: info NOTES
     * The system automatically looks for `#{field}_id` (e.g., `:user` → `:user_id`)
@@ -117,6 +118,18 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * This works with any class that has a finder method (e.g., `User.find`, `ApiService.find_by_id`, etc.)
     * For external APIs, you can pass a `Method` object as the finder
     :::
+
+    **The `<field>_id` reader.** Alongside `user`, a `model:` field defines a `user_id` reader whose one meaning is *the primary key of the record* — regardless of whether you were called with `user:` or `user_id:`:
+
+    ```ruby
+    expects :user, model: true
+    # called with user_id: 5  → user_id == 5,         user resolves the record
+    # called with user: <rec> → user_id == rec.id,    user is that record
+    ```
+
+    It never triggers an extra lookup: for the default `:find` finder a supplied id *is* the pk and is returned as-is; otherwise it reads the (memoized) record's `.id`, reusing the same resolution `user` already does. So it's meaningful even with a custom finder — where the `user_id` *key* holds a finder-specific token, `user_id` still returns the resolved record's actual primary key. The reader is alias-aware (`as: :raw_user` → `raw_user_id`) and silently defers (with a debug-level log) to any same-named method you've already declared. (Composite primary keys are not supported by the singular `<field>_id` convention.)
+
+    **Record / id consistency.** For the default `:find` finder, passing **both** a record and a `<field>_id` that disagree (`user: <rec id=5>, user_id: 9`) raises `InboundValidationError` rather than silently preferring one — contradictory input is a developer error. Passing just one, or both in agreement, is fine. The check is skipped for custom finders, where the `<field>_id` value is a lookup token, not a primary key, so a record-vs-id comparison would be meaningless.
 
 #### Describing the shape of structured fields (block syntax)
 

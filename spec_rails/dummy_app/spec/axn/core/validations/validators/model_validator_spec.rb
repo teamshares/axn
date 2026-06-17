@@ -39,11 +39,17 @@ RSpec.describe Axn::Validators::ModelValidator do
       expect(result.the_user).to eq(user)
     end
 
-    it "prefers user object over user_id when both provided" do
-      other_user = User.create!(name: "Other User")
-      result = action.call(user:, user_id: other_user.id)
+    it "uses the record when a record and a matching user_id are both provided" do
+      result = action.call(user:, user_id: user.id)
       expect(result).to be_ok
       expect(result.the_user).to eq(user)
+    end
+
+    it "raises InboundValidationError when the record and user_id disagree" do
+      other_user = User.create!(name: "Other User")
+      result = action.call(user:, user_id: other_user.id)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
     end
 
     it "validates user object type" do
@@ -316,7 +322,7 @@ RSpec.describe Axn::Validators::ModelValidator do
       end
     end
 
-    it "prefers user object over user_id when both provided in nested data" do
+    it "raises InboundValidationError when the nested record and user_id disagree" do
       other_user = User.create!(name: "Other User")
       action = build_axn do
         expects :data
@@ -329,8 +335,8 @@ RSpec.describe Axn::Validators::ModelValidator do
       end
 
       result = action.call(data: { user:, user_id: other_user.id })
-      expect(result).to be_ok
-      expect(result.the_user).to eq(user)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
     end
 
     it "validates user object type in nested data" do

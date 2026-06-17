@@ -359,8 +359,40 @@ module Axn
               if define_readers
                 _define_field_reader(reader, field)
                 _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
+                _define_model_id_reader(reader, field, parsed_validations[:model]) if parsed_validations.key?(:model)
               end
             end
+          end
+        end
+
+        # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
+        # pre-existing method of the same name rather than clobbering it — but, unlike a silent skip,
+        # leaves a debug-level breadcrumb so a surprising shadow is discoverable. Returns true when
+        # the name is free (caller should define it), false when it's taken (already logged).
+        def _reader_name_available?(name, kind:)
+          return true unless method_defined?(name) || private_method_defined?(name)
+
+          Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
+          false
+        end
+
+        # `model:` fields get a `<reader>_id` reader whose single meaning is "the primary key of the
+        # record". For the default (id-based `:find`) finder a directly-supplied id IS the pk, so it's
+        # returned without resolving; otherwise (a record was passed, or a custom finder is in play)
+        # it reads the resolved — and memoized — record's `.id`, so it never triggers a second lookup.
+        def _define_model_id_reader(reader, source_field, model_options)
+          id_reader = :"#{reader}_id"
+          return unless _reader_name_available?(id_reader, kind: "model id")
+
+          id_key = :"#{source_field}_id"
+          by_primary_key = model_options.is_a?(Hash) && model_options[:finder] == :find
+
+          define_method(id_reader) do
+            raw = @__context.provided_data[id_key]
+            next raw if by_primary_key && !raw.nil?
+
+            record = public_send(reader)
+            record.respond_to?(:id) ? record.id : raw
           end
         end
 
@@ -377,7 +409,7 @@ module Axn
           return if field_name.end_with?("?") || field_name.include?(".")
 
           predicate_name = "#{field_name}?"
-          return if method_defined?(predicate_name)
+          return unless _reader_name_available?(predicate_name, kind: "boolean predicate")
 
           alias_method predicate_name, field
         end
