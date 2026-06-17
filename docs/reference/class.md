@@ -208,7 +208,7 @@ expects :zip, on: "address.billing", type: String  # validates address[:billing]
 The **root** segment (`address`) must be a declared field (or subfield); intermediate segments are assumed to be hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
 
 ::: warning
-`default:`, `preprocess:`, and `sensitive:` are **not** supported on a dotted `on:` (they raise at declaration time) — `default:`/`preprocess:` write into the parent, and `sensitive:` relies on the log filter matching a top-level field, neither of which handles an arbitrary nested path yet. Use them on a single-key `on:`, or declare the intermediate levels explicitly.
+`default:`, `preprocess:`, and `sensitive:` are **not** supported on a **nested** parent (they raise at declaration time) — `default:`/`preprocess:` write into the parent, and `sensitive:` relies on the log filter matching a top-level field, neither of which handles a nested path yet. A parent is nested whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield (whose value lives inside *its* parent). Use them on a subfield of a top-level field, or declare the intermediate levels explicitly.
 :::
 
 #### Disabling subfield readers
