@@ -68,6 +68,27 @@ RSpec.describe "model: id reader and consistency" do
     end
   end
 
+  describe "`<field>_id` reader — custom finder with no match" do
+    let(:action) do
+      klass = co_class
+      dir = directory_class
+      build_axn do
+        expects :company, model: { klass:, finder: dir.method(:find_by_token) }, allow_nil: true
+        exposes :cid, allow_nil: true
+
+        def call = expose(cid: company_id)
+      end
+    end
+
+    it "returns nil, not the unmatched lookup token, when no record resolves" do
+      # The token "xyz" matches nothing, so the record is nil — `<field>_id` means "the record's
+      # primary key", so it must be nil rather than leaking the (non-pk) lookup token.
+      result = action.call(company_id: "xyz")
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+  end
+
   describe "`<field>_id` reader — alias aware" do
     let(:action) do
       klass = co_class

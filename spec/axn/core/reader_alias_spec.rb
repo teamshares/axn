@@ -277,5 +277,21 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
 
       expect(action.call(payload: { id: 1 }, raw_id: 99).got).to eq(99)
     end
+
+    it "lets a readerless subfield reuse an existing alias name (reverse order)" do
+      # Reverse of the above: the alias claims `:id` first, then a readerless subfield names the
+      # same wire key. `readers: false` defines no reader, so this is not a collision in either
+      # order — the escape hatch must not be declaration-order dependent.
+      action = build_axn do
+        expects :payload
+        expects :raw_id, as: :id
+        expects :id, on: :payload, readers: false
+        exposes :got
+
+        def call = expose(got: id)
+      end
+
+      expect(action.call(payload: { id: 1 }, raw_id: 99).got).to eq(99)
+    end
   end
 end

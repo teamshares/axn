@@ -72,7 +72,10 @@ module Axn
           raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
 
           reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
-          _validate_reader_names!(reader_names)
+          # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
+          # with an existing reader — skip validation entirely so the escape hatch holds regardless of
+          # declaration order (e.g. `expects :raw_id, as: :id` then `expects :id, on:, readers: false`).
+          _validate_reader_names!(reader_names) if readers
 
           validations, metadata = _partition_field_options(fields, **)
 
@@ -418,7 +421,10 @@ module Axn
             next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
 
             record = public_send(reader)
-            record.respond_to?(:id) ? record.id : raw
+            # No resolved record means there's no primary key to expose. Don't fall back to the raw
+            # `<field>_id` input: for a custom finder that value is a lookup token (not a pk), and a
+            # by-primary-key id was already returned above when present.
+            record.respond_to?(:id) ? record.id : nil
           end
         end
 
