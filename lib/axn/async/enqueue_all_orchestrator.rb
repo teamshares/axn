@@ -116,6 +116,9 @@ module Axn
           callbacks = target._enqueue_all_callbacks
           return if callbacks.empty?
 
+          # NOTE: deliberately re-resolves each source (a second, un-materialized resolution
+          # distinct from iterate's). Keep it lazy/un-materialized — do not cache iterate's
+          # source here, or the hook would force materialization and break the relation contract.
           sources = configs.each_with_object({}) do |config, hash|
             hash[config.field] = config.resolve_source(target:)
           end

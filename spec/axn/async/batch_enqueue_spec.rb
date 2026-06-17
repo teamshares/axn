@@ -1065,6 +1065,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       override = [company_class._records.first]
       action_class.enqueue_all(company: override)
 
+      expect(captured).to have_key(:sources)
       expect(captured[:sources][:company]).to eq(override)
     end
 
