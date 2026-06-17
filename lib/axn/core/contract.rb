@@ -241,7 +241,13 @@ module Axn
           # aliases) catches alias-vs-plain clashes in either declaration order — e.g.
           # `expects :bar, as: :foo` then `expects :foo`, which would otherwise silently clobber the
           # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
-          existing = (internal_field_configs + subfield_configs).to_h { |c| [c.reader_as, c.field] }
+          # Only configs that actually generated a reader can be collided with. A subfield declared
+          # `readers: false` (the documented escape hatch) — or a dotted-key subfield — defines no
+          # method, so its name stays free; consult the method table rather than every config so
+          # those readerless declarations don't manufacture phantom collisions.
+          existing = (internal_field_configs + subfield_configs)
+                     .select { |c| method_defined?(c.reader_as) }
+                     .to_h { |c| [c.reader_as, c.field] }
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
           raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?

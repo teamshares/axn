@@ -262,5 +262,20 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
         end
       end.to raise_error(ArgumentError, /collision/i)
     end
+
+    it "lets a later alias claim a readerless subfield's name (escape hatch)" do
+      # `readers: false` intentionally generates no `:id` reader, so the name stays free for a
+      # later alias to claim — it must not register a phantom collision.
+      action = build_axn do
+        expects :payload
+        expects :id, on: :payload, readers: false
+        expects :raw_id, as: :id
+        exposes :got
+
+        def call = expose(got: id)
+      end
+
+      expect(action.call(payload: { id: 1 }, raw_id: 99).got).to eq(99)
+    end
   end
 end
