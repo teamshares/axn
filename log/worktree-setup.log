@@ -1,0 +1,6 @@
+[91mCould not determine base test database name from config/database.yml — skipping.[0m
+
+[34m[1m -- Cloning node_modules (copy-on-write) -- [0m[0m
+[32m✅ node_modules cloned successfully.[0m
+
+[32m[1mWorktree setup complete.[0m[0m

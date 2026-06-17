@@ -477,18 +477,10 @@ module Axn
     # SUBFIELD HELPERS
     # =========================================================================
 
-    # `on:` references the parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
-    # provided_data (which the default/preprocess mutation paths read & write directly) is keyed by
-    # the caller-facing *wire* key. Translate an aliased top-level parent back to its wire key so the
-    # mutation lands on the key the caller actually supplied. Identity for non-aliased parents
-    # (reader_as == field). Only top-level parents are consulted: a nested/subfield parent can't be
-    # written through this single-level machinery and is rejected at declaration when combined with
-    # default:/preprocess:/sensitive: (see ContractForSubfields#_expects_subfields), so it never
-    # reaches here.
-    def _wire_parent_key(on)
-      config = @action_class.send(:internal_field_configs).find { |c| c.reader_as.to_s == on.to_s }
-      config ? config.field : on.to_sym
-    end
+    # Translate an aliased top-level `on:` parent back to its wire key (see
+    # Contract::ClassMethods#_wire_parent_key) so the default/preprocess mutation paths land on the
+    # caller-supplied provided_data key.
+    def _wire_parent_key(on) = @action_class._wire_parent_key(on)
 
     def update_subfield_value(parent_field, subfield, new_value)
       parent_value = @context.provided_data[parent_field]

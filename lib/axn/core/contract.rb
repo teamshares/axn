@@ -166,6 +166,19 @@ module Axn
           ActiveSupport::ParameterFilter.new(_resolve_sensitive_fields(action_instance))
         end
 
+        # `on:` references a parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
+        # provided_data and the inspector's subfield filtering are keyed by the caller-facing *wire*
+        # key. Translate an aliased top-level parent back to its wire key. Identity for non-aliased
+        # parents (reader_as == field) and for names that match no top-level reader. Only top-level
+        # parents are consulted: a nested/subfield parent can't be written through the single-level
+        # mutation machinery and is rejected at declaration when combined with
+        # default:/preprocess:/sensitive: (see ContractForSubfields#_expects_subfields), so it never
+        # reaches the mutation or sensitive-filtering paths.
+        def _wire_parent_key(on)
+          config = internal_field_configs.find { |c| c.reader_as.to_s == on.to_s }
+          config ? config.field : on.to_sym
+        end
+
         def _declared_fields(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
 

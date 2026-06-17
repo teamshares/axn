@@ -152,6 +152,23 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(channel: { token: "abc" }).got).to eq("ABC")
     end
 
+    it "filters a sensitive subfield declared on an aliased parent" do
+      # `config.on` is the parent's reader alias (`raw_channel`), but the inspector keys subfield
+      # filtering by the wire key (`channel`) — it must normalize the alias before comparing, or the
+      # sensitive value leaks into inspect output.
+      action = build_axn do
+        expects :channel, type: Hash, as: :raw_channel
+        expects :token, on: :raw_channel, sensitive: true
+        exposes :internal_ctx
+
+        def call = expose(internal_ctx: internal_context)
+      end
+
+      inspected = action.call(channel: { token: "secret123" }).internal_ctx.inspect
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("secret123")
+    end
+
     it "rejects referencing the parent by its (reader-less) wire key" do
       expect do
         build_axn do
