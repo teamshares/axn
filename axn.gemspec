@@ -32,7 +32,7 @@ Gem::Specification.new do |spec|
       (File.expand_path(f) == __FILE__) ||
         f.start_with?(*%w[
                         bin/ test/ spec/ spec_rubocop/ spec_rails/ features/ examples/ benchmark/
-                        internal-docs/
+                        internal-docs/ log/
                         .git .github appveyor Gemfile Gemfile.lock yarn.lock .rspec_status pkg/
                         node_modules/ tmp/ .rspec .rubocop .tool-versions package.json
                       ])
