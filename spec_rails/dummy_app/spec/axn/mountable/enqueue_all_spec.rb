@@ -186,4 +186,71 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       expect(result).to eq("job-id")
     end
   end
+
+  describe "on_enqueue_all with a real ActiveRecord relation" do
+    before do
+      Profile.delete_all
+      User.delete_all
+      User.create!(name: "Active A", email: "a@example.com")
+      User.create!(name: "Active B", email: "b@example.com")
+      User.create!(name: "Deactivated", email: nil)
+    end
+
+    after do
+      Profile.delete_all
+      User.delete_all
+    end
+
+    it "hands the block an un-materialized relation supporting efficient aggregation" do
+      captured = {}
+      action_class = Class.new do
+        include Axn
+        async :sidekiq
+        expects :user, model: User
+        def call; end
+        enqueues_each :user, from: -> { User.all }
+      end
+      action_class.on_enqueue_all do |sources:, count:|
+        relation = sources[:user]
+        captured[:is_relation] = relation.is_a?(ActiveRecord::Relation)
+        captured[:loaded_before_use] = relation.loaded? # must be false: un-materialized contract
+        captured[:db_count] = relation.count            # aggregate COUNT query, no full load
+        active, inactive = relation.partition { |u| u.email.present? }
+        captured[:active] = active.size
+        captured[:inactive] = inactive.size
+        captured[:count] = count
+      end
+
+      allow(action_class).to receive(:call_async)
+      Axn::Async::EnqueueAllOrchestrator.execute_iteration(action_class)
+
+      expect(captured[:is_relation]).to be(true)
+      expect(captured[:loaded_before_use]).to be(false)
+      expect(captured[:db_count]).to eq(3)
+      expect(captured[:active]).to eq(2)
+      expect(captured[:inactive]).to eq(1)
+      expect(captured[:count]).to eq(3) # exact enqueued count via find_each
+    end
+
+    it "reflects a scoped-relation kwarg override in the sources hash" do
+      captured = {}
+      action_class = Class.new do
+        include Axn
+        async :sidekiq
+        expects :user, model: User
+        def call; end
+        enqueues_each :user, from: -> { User.all }
+      end
+      action_class.on_enqueue_all do |sources:, count:|
+        captured[:emails] = sources[:user].pluck(:email)
+        captured[:count] = count
+      end
+
+      allow(action_class).to receive(:call_async)
+      Axn::Async::EnqueueAllOrchestrator.execute_iteration(action_class, user: User.where.not(email: nil))
+
+      expect(captured[:emails]).to contain_exactly("a@example.com", "b@example.com")
+      expect(captured[:count]).to eq(2)
+    end
+  end
 end
