@@ -275,6 +275,47 @@ RSpec.describe Axn::Validators::ModelValidator do
       expect(result.the_user).to eq(user)
     end
 
+    context "with an aliased reader (as:)" do
+      it "resolves the model under the alias when the object is provided directly" do
+        action = build_axn do
+          expects :data
+          expects :user, model: { klass: User }, on: :data, as: :event_user
+          exposes :the_user
+
+          def call = expose(:the_user, event_user)
+        end
+
+        result = action.call(data: { user: })
+        expect(result).to be_ok
+        expect(result.the_user).to eq(user)
+      end
+
+      it "resolves the model under the alias from the wire-key _id" do
+        action = build_axn do
+          expects :data
+          expects :user, model: { klass: User }, on: :data, as: :event_user
+          exposes :the_user
+
+          def call = expose(:the_user, event_user)
+        end
+
+        result = action.call(data: { user_id: user.id })
+        expect(result).to be_ok
+        expect(result.the_user).to eq(user)
+      end
+
+      it "fails validation (under the wire key) when the aliased model can't be resolved" do
+        action = build_axn do
+          expects :data
+          expects :user, model: { klass: User }, on: :data, as: :event_user
+        end
+
+        result = action.call(data: { user_id: 99_999 })
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::InboundValidationError)
+      end
+    end
+
     it "prefers user object over user_id when both provided in nested data" do
       other_user = User.create!(name: "Other User")
       action = build_axn do

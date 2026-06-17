@@ -318,6 +318,7 @@ module Axn
           source: Axn::Core::ContractForSubfields.resolve_parent(@action, parent_field),
           exception_klass: InboundValidationError,
           action: @action,
+          reader: config.reader_as,
         )
       end
     end

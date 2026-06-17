@@ -208,6 +208,34 @@ expects :data, type: Hash, on: :event, readers: false
 
 This is useful when you have duplicate sub-keys across different parent fields, or when you want to access subfields only through the parent. Note that `readers: false` is only valid for subfields (i.e., when using `on:`) — using it on top-level fields will raise an `ArgumentError`.
 
+#### Renaming the reader (`as:` / `prefix:`)
+
+By default the generated reader is named after the field — `expects :channel` defines a `channel` reader. Use `as:` to give the reader a different name while keeping `channel` as the caller-facing contract. The most common motivation is freeing the field's name so you can define your own method on top of the raw input:
+
+```ruby
+expects :channel, as: :raw_channel              # caller still passes `channel:`
+def channel = @channel ||= Channel.find(raw_channel)
+```
+
+The wire key stays canonical everywhere caller-facing — validation messages, required-inputs, logging, and sensitive-field filtering all still key off `channel`. Only the in-action reader (and its `?` predicate) is renamed.
+
+`as:` applies to a single field. For subfields it's especially handy to disambiguate or namespace unwrapped values; `prefix:` is sugar that renames several at once (literal concatenation, so you supply the separator):
+
+```ruby
+expects :event_params, type: Hash
+expects :id, on: :event_params, as: :event_id           # reader: event_id (extracts `id`)
+expects :id, :type, on: :event_params, prefix: :event_  # readers: event_id, event_type
+```
+
+`as:`/`prefix:` cannot be combined, can't be used with `readers: false`, and can't rename a dotted `on:` path (which generates no reader) — each raises at declaration time. A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader.
+
+When you declare subfields `on:` a renamed parent, reference it by its **reader name** (the alias), not the wire key — `on:` is resolved by calling the parent's reader:
+
+```ruby
+expects :channel, type: Hash, as: :raw_channel
+expects :id, on: :raw_channel    # ✅ reader name;  on: :channel would raise (no `channel` reader)
+```
+
 #### `preprocess`
 `expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
 

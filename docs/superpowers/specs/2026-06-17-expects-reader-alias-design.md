@@ -93,6 +93,19 @@ All in `lib/axn/core/contract.rb` and `lib/axn/core/contract_for_subfields.rb`:
      resolver still extracts the wire-key `field` from the parent.
 4. **Guards** (raise sites) for the API rules above, placed in `expects` / `_expects_subfields`
    before parsing.
+5. **`on:` resolution against an aliased parent** (`contract_for_subfields.rb`): `on:` is resolved
+   by calling the parent's reader (`resolve_parent` → `public_send(root)`), so when the parent is
+   renamed, `on:` must reference the **reader name** (alias), not the wire key. The declaration-time
+   root check is keyed off `reader_as` (was `field`) to match — referencing the reader-less wire key
+   raises. For non-aliased fields `reader_as == field`, so existing behavior is unchanged (only the
+   error message wording changed: "no such reader" / "field — or alias").
+6. **Subfield `model:` validation** (`validation/subfields.rb` + `executor.rb`): subfield model
+   validation resolves the record by calling the action's reader, looked up today by the wire key.
+   When the reader is aliased that lookup misses and silently falls back to a raw extract (so a
+   record supplied via `<field>_id` fails to resolve). Thread `reader: config.reader_as` from
+   `validate_subfields_contract!` into `Subfields.validate!` and consult it in
+   `read_attribute_for_validation`. (Top-level `model:` is unaffected — it resolves through the
+   context facade by wire key, independent of the reader name.)
 
 ## Testing
 

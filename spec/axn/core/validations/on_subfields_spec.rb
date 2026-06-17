@@ -6,7 +6,8 @@ RSpec.describe Axn do
       it "raises" do
         expect { action }.to raise_error(
           ArgumentError,
-          "expects called with `on: #{on}`, but no such method exists (are you sure you've declared `expects :#{on}`?)",
+          "expects called with `on: #{on}`, but no such reader exists " \
+          "(are you sure you've declared a field — or alias — named :#{on}?)",
         )
       end
     end

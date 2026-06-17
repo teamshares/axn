@@ -21,7 +21,10 @@ module Axn
         end
       end
 
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata) do
+      # `reader_as` is the name of the generated accessor method. It defaults to `field` (the wire
+      # key), but `expects ..., as:`/`prefix:` decouple them so the caller-facing contract stays
+      # `field` while the in-action reader gets its own name.
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as) do
         def description = metadata[:description]
       end
 
@@ -46,6 +49,7 @@ module Axn
       end
 
       module ClassMethods
+        # rubocop:disable Metrics/ParameterLists
         def expects(
           *fields,
           on: nil,
@@ -56,6 +60,8 @@ module Axn
           default: nil,
           preprocess: nil,
           sensitive: false,
+          as: nil,
+          prefix: nil,
           **,
           &block
         )
@@ -65,19 +71,22 @@ module Axn
 
           raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
 
+          reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
+          _validate_reader_names!(reader_names)
+
           validations, metadata = _partition_field_options(fields, **)
 
           if on.present?
             raise ArgumentError, "a shape block is not supported with `on:`" if block
 
             return _expects_subfields(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                               **validations)
+                                               reader_names:, **validations)
           end
 
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        define_readers: true, **validations).tap do |configs|
+                                        reader_names:, define_readers: true, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -85,6 +94,7 @@ module Axn
             self.internal_field_configs += configs
           end
         end
+        # rubocop:enable Metrics/ParameterLists
 
         def exposes(
           *fields,
@@ -181,6 +191,44 @@ module Axn
         end
 
         private
+
+        # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
+        # reader is named for the wire key (identity). `as:` renames a single field's reader;
+        # `prefix:` is sugar that prepends to every field's reader (literal concatenation, so the
+        # caller supplies the separator). The wire key (`field`) stays canonical regardless.
+        def _resolve_reader_names(fields, as:, prefix:, readers:)
+          return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
+
+          raise ArgumentError, "`as:` and `prefix:` cannot be combined" if as && prefix
+          raise ArgumentError, "`as:`/`prefix:` require a reader (incompatible with readers: false)" unless readers
+          if fields.any? { |f| f.to_s.include?(".") }
+            raise ArgumentError, "`as:`/`prefix:` are not supported for a dotted subfield key (it generates no reader)"
+          end
+
+          if as
+            raise ArgumentError, "`as:` can only be provided when declaring a single field (use prefix: for several)" if fields.size > 1
+
+            { fields.first => as.to_sym }
+          else
+            fields.to_h { |f| [f, :"#{prefix}#{f}"] }
+          end
+        end
+
+        # Renamed readers must clear the same reserved-name bar as wire keys, and may not collide
+        # with an already-declared reader or with each other. Identity readers are skipped here:
+        # their reserved/duplicate handling already runs against the wire key.
+        def _validate_reader_names!(reader_names)
+          aliases = reader_names.reject { |field, reader| field == reader }.values
+          return if aliases.empty?
+
+          aliases.each do |reader|
+            raise ContractViolation::ReservedAttributeError, reader if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(reader.to_s)
+          end
+
+          existing = (internal_field_configs + subfield_configs).map(&:reader_as)
+          collisions = ((existing & aliases) | aliases.tally.select { |_, count| count > 1 }.keys).uniq
+          raise ArgumentError, "Reader name collision: #{collisions.join(', ')}" if collisions.any?
+        end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
           fail! ok?
@@ -298,6 +346,7 @@ module Axn
           preprocess: nil,
           sensitive: false,
           metadata: {},
+          reader_names: {},
           define_readers: false,
           **validations
         )
@@ -305,19 +354,22 @@ module Axn
           allow_blank ||= optional
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:).tap do |config|
+            reader = reader_names[field] || field
+            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader).tap do |config|
               if define_readers
-                _define_field_reader(field)
-                _define_boolean_predicate_reader(field) if Axn::Internal::FieldConfig.boolean?(config)
+                _define_field_reader(reader, field)
+                _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
               end
             end
           end
         end
 
-        def _define_field_reader(field)
+        def _define_field_reader(reader, source = reader)
           # Allow local access to explicitly-expected fields on the action instance.
           # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
-          define_method(field) { internal_context.public_send(field) }
+          # `reader` is the method name (may be aliased via as:/prefix:); `source` is the wire key
+          # the value actually lives under in the inbound context.
+          define_method(reader) { internal_context.public_send(source) }
         end
 
         def _define_boolean_predicate_reader(field)
