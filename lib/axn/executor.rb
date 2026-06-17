@@ -332,7 +332,15 @@ module Axn
         mismatches << msg if msg
       end
 
-      raise InboundValidationError, mismatches.join("; ") if mismatches.any?
+      return if mismatches.empty?
+
+      # InboundValidationError (a ValidationError) renders its message via errors.full_messages, so
+      # it must be raised with an ActiveModel::Errors object — a plain String would NoMethodError the
+      # moment anything reads result.error/message. Mismatches carry their own field prefix, so add
+      # them on :base (full_messages returns base messages verbatim, no attribute prefix).
+      errors = ActiveModel::Errors.new(@action)
+      mismatches.each { |msg| errors.add(:base, msg) }
+      raise InboundValidationError, errors
     end
 
     def _id_based_model?(config)

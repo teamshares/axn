@@ -121,6 +121,14 @@ RSpec.describe "model: id reader and consistency" do
       expect(result.exception).to be_a(Axn::InboundValidationError)
     end
 
+    it "renders the mismatch as the exception message (errors object, not a raw String)" do
+      # ValidationError#message reads errors.full_messages, so raising with a String would
+      # NoMethodError the moment anything renders the message (result.error, inspect, call!).
+      result = action.call(company: co_class.new(5), company_id: 9)
+      expect { result.exception.message }.not_to raise_error
+      expect(result.exception.message).to match(/conflicts with company_id=9/)
+    end
+
     it "passes when only a record is supplied" do
       expect(action.call(company: co_class.new(5))).to be_ok
     end
