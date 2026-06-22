@@ -44,7 +44,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
     it "converts GlobalID objects during execution" do
       expect_any_instance_of(global_id_action).to receive(:perform).with(
-        hash_including("name" => "World", "user" => hash_including("_aj_globalid" => a_string_matching(%r{\Agid://}))),
+        hash_including("name" => "World", "user" => hash_including("_aj_globalid" => a_string_matching(%r{\Agid://[^/]+/User/\d+\z}))),
       ).and_call_original
 
       expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/)

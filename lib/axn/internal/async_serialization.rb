@@ -47,7 +47,7 @@ module Axn
           Axn::Internal::GlobalIdSerialization.deserialize(params)
         end
 
-        def _active_job_available? = defined?(::ActiveJob::Arguments) ? true : false
+        def _active_job_available? = !!defined?(::ActiveJob::Arguments)
 
         # Fallback (no ActiveJob) can only round-trip JSON-native scalars, top-level
         # GlobalID-able objects, and Arrays/Hashes of JSON-native scalars. Everything
