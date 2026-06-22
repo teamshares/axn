@@ -48,7 +48,8 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       # Verify the job is the shared EnqueueAllOrchestrator
       job = Sidekiq::Queues["default"].first
       expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
-      expect(job["args"]).to eq([{ "target_class_name" => "Actions::EnqueueAll::Tester", "static_args" => {} }])
+      expect(job["args"].first).to include("target_class_name" => "Actions::EnqueueAll::Tester")
+      expect(job["args"].first["static_args"]).to be_empty.or eq("_aj_symbol_keys" => [])
     end
 
     it "iterates and enqueues individual jobs when processed inline" do

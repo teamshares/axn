@@ -35,18 +35,16 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
   end
 
   describe "GlobalID integration" do
-    let(:user) { double("User", to_global_id: double("GlobalID", to_s: "gid://test/User/123")) }
+    let(:user) { User.create!(name: "Test User") }
     let(:global_id_action) { Actions::Async::TestActionSidekiqGlobalId }
 
-    before do
-      allow(GlobalID::Locator).to receive(:locate).with("gid://test/User/123").and_return(user)
-    end
+    after { User.delete_all }
 
     it { expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/) }
 
     it "converts GlobalID objects during execution" do
       expect_any_instance_of(global_id_action).to receive(:perform).with(
-        hash_including("name" => "World", "user_as_global_id" => "gid://test/User/123"),
+        hash_including("name" => "World", "user" => hash_including("_aj_globalid" => a_string_matching(%r{\Agid://}))),
       ).and_call_original
 
       expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/)
@@ -169,8 +167,8 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
       after { Sidekiq.strict_args!(false) }
 
-      it { expect { test_action.call_async(name: "Test", age: 25, unserializable: unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize") }
-      it { expect { test_action.call_async(name: "Test", age: 25, complex: unserializable_object) }.to raise_error(RuntimeError, "Cannot serialize") }
+      it { expect { test_action.call_async(name: "Test", age: 25, unserializable: unserializable_object) }.to raise_error(Axn::Async::UnserializableArgument) }
+      it { expect { test_action.call_async(name: "Test", age: 25, complex: unserializable_object) }.to raise_error(Axn::Async::UnserializableArgument) }
     end
   end
 
