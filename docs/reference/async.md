@@ -85,6 +85,30 @@ Disables async execution entirely. The action will raise a `NotImplementedError`
 async false
 ```
 
+## Argument Serialization
+
+Arguments passed to `call_async` are serialized to the backing job queue and rehydrated before your action runs on the worker. What survives that round trip depends on whether ActiveJob is loaded in your app — but it is the same across every adapter within a given deployment, so a `Time` argument behaves identically whether you run on Sidekiq or ActiveJob.
+
+- **With ActiveJob loaded** (typical Rails apps): arguments are serialized via `ActiveJob::Arguments`, so a rich set of types round-trips losslessly — `String`, `Integer`, `Float`, `true`/`false`/`nil`, `Symbol`, `Date`, `Time`, `DateTime`, `ActiveSupport::TimeWithZone`, `ActiveSupport::Duration`, `BigDecimal`, `Range`, and `Array`/`Hash` of those. ActiveRecord records and ActiveStorage attachments travel as compact GlobalID references (not copied into the payload) and are re-located on the worker.
+- **Without ActiveJob**: only JSON-native values (`String`, `Integer`, `Float`, `true`/`false`/`nil`, and `Array`/`Hash` of those with string keys) and GlobalID-able objects (e.g. ActiveRecord records) are supported.
+
+Anything that can't be serialized cleanly raises `Axn::Async::UnserializableArgument` **at enqueue time** — naming the offending field and how to fix it — rather than silently corrupting the value on the round trip (the previous behavior, where e.g. a `Time` could arrive on the worker as a `String`):
+
+```ruby
+class SendReport
+  include Axn
+  async :sidekiq
+  expects :occurred_at, type: Time
+
+  def call = # …
+end
+
+SendReport.call_async(occurred_at: Time.current)        # ✅ arrives as a Time on the worker
+SendReport.call_async(occurred_at: Tempfile.new("rpt")) # ✗ raises Axn::Async::UnserializableArgument
+```
+
+The same rules apply to the static arguments passed to [`enqueue_all`](#batch-enqueueing-with-enqueues_each).
+
 ## Delayed Execution
 
 All async adapters support delayed execution using the `_async` parameter in `call_async`. This allows you to schedule actions to run at specific future times without changing the interface.
