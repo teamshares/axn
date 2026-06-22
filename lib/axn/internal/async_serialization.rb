@@ -47,6 +47,17 @@ module Axn
           Axn::Internal::GlobalIdSerialization.deserialize(params)
         end
 
+        # Validate that every arg will serialize for async, raising a field-aware
+        # UnserializableArgument otherwise — without keeping the result. Lets an adapter
+        # that serializes natively (the ActiveJob adapter, via perform_later) surface the
+        # same enqueue-time contract as the Sidekiq path instead of leaking
+        # ActiveJob::SerializationError. The throwaway serialize is a cold-path cost; the
+        # adapter still serializes the real payload exactly once (no double-encoding).
+        def assert_serializable!(params)
+          serialize(params)
+          nil
+        end
+
         # A value that rides nested inside another payload which an adapter will itself
         # serialize needs path-specific handling. On the ActiveJob path the adapter's
         # serializer recurses into nested hashes AND is not idempotent over its own tags,

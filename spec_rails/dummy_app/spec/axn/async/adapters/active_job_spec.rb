@@ -73,6 +73,12 @@ RSpec.describe "Axn::Async with ActiveJob adapter" do
       expect { perform_enqueued_jobs }.not_to raise_error
     }
 
+    it "raises a field-aware UnserializableArgument (not ActiveJob::SerializationError) at enqueue for an unserializable arg" do
+      require "tempfile"
+      expect { test_action.call_async(name: "World", age: Tempfile.new("x")) }
+        .to raise_error(Axn::Async::UnserializableArgument, /`age`/)
+    end
+
     it "logs action execution details" do
       test_action.call_async(name: "World", age: 25)
       expect { perform_enqueued_jobs }.not_to raise_error
