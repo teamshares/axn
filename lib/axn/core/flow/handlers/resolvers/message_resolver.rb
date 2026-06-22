@@ -43,10 +43,11 @@ module Axn
             def base_descriptor
               return @base_descriptor if defined?(@base_descriptor)
 
-              # A static unconditional entry (prefixed: false) is the base headline.
-              # This applies to both :error and :success events; conditional or dynamic entries
-              # become prefixed reasons against this base.
-              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler }
+              # The base headline is a static (unconditional), non-prefixed entry with a LITERAL
+              # handler. A dynamic handler (block/symbol) is always a reason — even unconditional
+              # and even with prefixed: false — so it must not be mistaken for the base.
+              # Applies to both :error and :success events.
+              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler && !d.dynamic_handler? }
             end
 
             def base?(descriptor) = base_descriptor && descriptor.equal?(base_descriptor)
@@ -59,8 +60,9 @@ module Axn
               return false if base?(descriptor)
               return true unless base_descriptor
 
-              # With a base declared, exclude secondary plain-static non-prefixed entries.
-              descriptor.prefixed? || !descriptor.static?
+              # With a base declared, a reason is any prefixed, conditional, or dynamic entry.
+              # Only secondary plain-static *literal* non-prefixed entries (extra headlines) are excluded.
+              descriptor.prefixed? || !descriptor.static? || descriptor.dynamic_handler?
             end
 
             # NOTE: no `.presence` — an explicit `delimiter: ""` is honored (join with no separator);

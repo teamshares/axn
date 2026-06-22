@@ -68,6 +68,42 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user: boom") }
   end
 
+  context "prebuilt conditional descriptor is prefixed by the base (like the DSL)" do
+    let(:action) do
+      prebuilt = Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "invalid", if: ArgumentError)
+      build_axn do
+        error "Base"
+        error prebuilt # closure-captured
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Base: invalid") }
+  end
+
+  context "an unconditional dynamic message is a reason, never the base" do
+    # The literal `error "Import failed"` is the base; the dynamic entry with prefixed: false opts
+    # out of the prefix and must not be mis-selected as the base.
+    let(:action) do
+      build_axn do
+        error "Import failed"
+        error(prefixed: false, &:message)
+        def call = raise "raw boom"
+      end
+    end
+    it { is_expected.to eq("raw boom") } # dynamic reason renders standalone (opted out), base correctly ignored
+  end
+
+  context "an unconditional dynamic message IS prefixed by the base when not opted out" do
+    let(:action) do
+      build_axn do
+        error "Import failed"
+        error(&:message)
+        def call = raise "raw boom"
+      end
+    end
+    it { is_expected.to eq("Import failed: raw boom") }
+  end
+
   context "no reason matches → base shown alone" do
     let(:action) do
       build_axn do
