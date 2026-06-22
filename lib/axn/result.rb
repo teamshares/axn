@@ -59,7 +59,10 @@ module Axn
     def success
       return unless ok?
 
-      _user_provided_success_message || _msg_resolver(:success, exception: nil).resolve_message
+      reason = _user_provided_success_message
+      return _msg_resolver(:success, exception: nil).resolve_message unless reason
+
+      @context.__early_completion_prefixed ? _msg_resolver(:success, exception: nil).with_base_prefix(reason) : reason
     end
 
     def message = exception ? error : success

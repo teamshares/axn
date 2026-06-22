@@ -3,7 +3,14 @@
 module Axn
   module Internal
     # Internal only -- rescued before Axn::Result is returned
-    class EarlyCompletion < StandardError; end
+    class EarlyCompletion < StandardError
+      attr_reader :prefixed
+
+      def initialize(message = nil, prefixed: true)
+        @prefixed = prefixed
+        super(message)
+      end
+    end
   end
 
   # Raised when fail! is called

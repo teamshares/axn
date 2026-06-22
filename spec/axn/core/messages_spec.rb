@@ -216,7 +216,9 @@ RSpec.describe Axn do
         it "falls back to conditional success message when condition is true" do
           result = action.call(trigger: true)
           expect(result).to be_ok
-          expect(result.success).to eq("Conditional fallback")
+          # "Final fallback" is the static base; "Conditional fallback" is a conditional reason
+          # so it gains the base prefix under A4 success-parity semantics.
+          expect(result.success).to eq("Final fallback: Conditional fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,
@@ -246,7 +248,9 @@ RSpec.describe Axn do
         it "falls back to next non-failing success message" do
           result = action.call
           expect(result).to be_ok
-          expect(result.success).to eq("Method fallback")
+          # "Final fallback" is the static base; :fallback_method is a dynamic reason
+          # so it gains the base prefix under A4 success-parity semantics.
+          expect(result.success).to eq("Final fallback: Method fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,

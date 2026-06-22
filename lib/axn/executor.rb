@@ -250,7 +250,7 @@ module Axn
       yield
       false
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message)
+      @context.__record_early_completion(e.message, prefixed: e.prefixed)
       trigger_on_success
       true
     end
@@ -489,7 +489,7 @@ module Axn
     def respecting_early_completion
       yield
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message)
+      @context.__record_early_completion(e.message, prefixed: e.prefixed)
       raise e
     end
 

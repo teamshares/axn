@@ -43,9 +43,11 @@ module Axn
             def base_descriptor
               return @base_descriptor if defined?(@base_descriptor)
 
-              # Base-prefix only applies to error messages; success messages have no base concept.
-              @base_descriptor =
-                (candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler } if event_type == :error)
+              # A static unconditional entry (prefixed: false, no legacy prefix:) is the base headline.
+              # This applies to both :error and :success events; conditional or dynamic entries
+              # become prefixed reasons against this base.
+              # Entries with a legacy prefix: are Phase A/B coexistence entries, not new-style bases.
+              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler && !d.prefix }
             end
 
             def base?(descriptor) = base_descriptor && descriptor.equal?(base_descriptor)
@@ -89,7 +91,12 @@ module Axn
             def default_static_handler
               return @default_static_handler if defined?(@default_static_handler)
 
-              @default_static_handler = candidate_entries.detect { |d| d.static? && d.handler && !d.equal?(base_descriptor) }&.handler
+              # For Phase A/B prefix-only entries, find content from any static handler. When a base
+              # exists as the only static entry, allow using it as the content source so that prefix:
+              # still applies its prefix to the declared message.
+              @default_static_handler =
+                candidate_entries.detect { |d| d.static? && d.handler && !d.equal?(base_descriptor) }&.handler ||
+                base_descriptor&.handler
             end
 
             def resolved_prefix(descriptor)

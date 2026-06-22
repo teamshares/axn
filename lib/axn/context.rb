@@ -37,13 +37,17 @@ module Axn
       @finalized = true
     end
 
-    def __record_early_completion(message)
-      @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
+    def __record_early_completion(message, prefixed: true)
+      unless message == Axn::Internal::EarlyCompletion.new.message
+        @early_completion_message = message
+        @early_completion_prefixed = prefixed
+      end
       @early_completion = true
       @finalized = true
     end
 
     def __early_completion_message = @early_completion_message.presence
+    def __early_completion_prefixed = @early_completion_prefixed.nil? ? true : @early_completion_prefixed
 
     def __finalize!
       @finalized = true

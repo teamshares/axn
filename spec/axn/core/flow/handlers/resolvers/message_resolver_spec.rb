@@ -84,11 +84,11 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
         expect(error_resolver.send(:base_descriptor)).to eq(base_d)
       end
 
-      it "returns nil for success event_type (no base concept for success)" do
+      it "returns the static descriptor for success event_type (base concept now applies to success too)" do
         success_resolver = described_class.new(registry, :success, action:, exception:)
         static = build_descriptor(handler: "static")
         allow(success_resolver).to receive(:candidate_entries).and_return([static])
-        expect(success_resolver.send(:base_descriptor)).to be_nil
+        expect(success_resolver.send(:base_descriptor)).to eq(static)
       end
     end
   end

@@ -75,9 +75,9 @@ module Axn
       raise Axn::Failure.new(message, prefixed: prefixed.nil? ? true : prefixed)
     end
 
-    def done!(message = nil, **exposures)
+    def done!(message = nil, prefixed: nil, **exposures)
       expose(**exposures) if exposures.any?
-      raise Axn::Internal::EarlyCompletion, message
+      raise Axn::Internal::EarlyCompletion.new(message, prefixed: prefixed.nil? ? true : prefixed)
     end
 
     private

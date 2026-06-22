@@ -100,6 +100,42 @@ RSpec.describe "Axn error_prefix on fail!" do
   end
 end
 
+RSpec.describe "Axn success prefixing parity" do
+  subject(:success) { action.call.success }
+
+  context "done! prefixed by base success" do
+    let(:action) do
+      build_axn do
+        success "User synced"
+        def call = done!("from cache")
+      end
+    end
+    it { is_expected.to eq("User synced: from cache") }
+  end
+
+  context "done! opting out" do
+    let(:action) do
+      build_axn do
+        success "User synced"
+        def call = done!("Already current.", prefixed: false)
+      end
+    end
+    it { is_expected.to eq("Already current.") }
+  end
+
+  context "conditional success reason prefixed" do
+    let(:action) do
+      build_axn do
+        expects :n, type: Integer
+        success "Computed"
+        success "via fast path", if: -> { n.zero? }
+        def call = nil
+      end
+    end
+    it { expect(action.call(n: 0).success).to eq("Computed: via fast path") }
+  end
+end
+
 RSpec.describe "Axn error_prefix DSL" do
   describe "declaration validation" do
     it "raises when prefixed: true on a static unconditional error" do
