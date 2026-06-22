@@ -121,6 +121,20 @@ RSpec.describe "Axn::Async with Sidekiq adapter" do
     end
   end
 
+  describe "argument serialization seam" do
+    it "serializes enqueue kwargs through AsyncSerialization" do
+      expect(Axn::Internal::AsyncSerialization).to receive(:serialize)
+        .with(hash_including(name: "World", age: 25)).and_call_original
+      action_class.call_async(name: "World", age: 25)
+    end
+
+    it "deserializes job args through AsyncSerialization in #perform" do
+      expect(Axn::Internal::AsyncSerialization).to receive(:deserialize)
+        .with(hash_including("name" => "World", "age" => 25)).and_call_original
+      action_class.new.perform("name" => "World", "age" => 25)
+    end
+  end
+
   describe "kwargs configuration" do
     let(:action_class_with_kwargs) do
       stub_const("Sidekiq", Module.new)

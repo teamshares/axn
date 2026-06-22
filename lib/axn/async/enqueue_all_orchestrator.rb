@@ -27,8 +27,7 @@ module Axn
       def call
         target = target_class_name.constantize
 
-        # Deserialize static_args (convert GlobalID strings back to objects)
-        deserialized_static_args = Axn::Internal::GlobalIdSerialization.deserialize(static_args)
+        deserialized_static_args = Axn::Internal::AsyncSerialization.restore_nested_payload(static_args)
 
         count = self.class.execute_iteration(
           target,
@@ -76,11 +75,9 @@ module Axn
             info "[enqueue_all] Running in foreground: kwargs #{kwarg_fields.join(', ')} cannot be serialized for background execution"
             execute_iteration_without_logging(target, **static_args)
           else
-            # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
-            serialized_static_args = Axn::Internal::GlobalIdSerialization.serialize(resolved_static)
-
-            # Execute iteration in background via EnqueueAllOrchestrator
-            call_async(target_class_name: target.name, static_args: serialized_static_args)
+            # static_args ride nested inside this job's own payload; see AsyncSerialization#prepare_nested_payload.
+            static_args_payload = Axn::Internal::AsyncSerialization.prepare_nested_payload(resolved_static)
+            call_async(target_class_name: target.name, static_args: static_args_payload)
           end
         end
 

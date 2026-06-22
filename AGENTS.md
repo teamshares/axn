@@ -88,6 +88,13 @@ explains the problem **and** the fix (see `UnknownExposure`). New messages meet 
 - **Comments explain *why*, not *what*** — justify the non-obvious choice; skip comments that restate
   the code.
 
+## Docs & planning artifacts
+
+`docs/` is the **published VitePress site** (CI deploys it — see `.github/workflows/docs.yml`), so
+nothing internal belongs there. Brainstorming specs and implementation plans — including anything the
+`superpowers` skills generate — go in `internal-docs/specs/` and `internal-docs/plans/`, **never**
+under `docs/`. (This is the location preference the `writing-plans` / `brainstorming` skills defer to.)
+
 ## Review feedback
 
 Fresh-context, adversarial review catches real base-layer bugs. Verify each point against the code —

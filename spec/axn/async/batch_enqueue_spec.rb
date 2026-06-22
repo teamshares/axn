@@ -1219,6 +1219,40 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
     end
   end
 
+  describe "static_args serialization seam" do
+    # This (non-Rails) suite has neither ActiveJob nor Sidekiq loaded, so enqueue_for
+    # always takes the top-level-only FALLBACK serialization path. On that path the
+    # double pass (here, then again inside the adapter's call_async) is harmless: the
+    # fallback serializer only touches top-level GlobalID-able values and leaves the
+    # already-flattened, all-string static_args hash untouched on the adapter's pass.
+    #
+    # The harmful case is the ActiveJob path, where the adapter recurses into the
+    # already-`_aj_*`-tagged hash and raises. That path can only be exercised with
+    # ActiveJob loaded, so its end-to-end (real call_async, no stubbing) regression
+    # coverage lives in the Rails suite:
+    #   spec_rails/dummy_app/spec/axn/mountable/enqueue_all_spec.rb
+    #   ("rich-type static_args round-trip through the real call_async").
+    it "serializes resolved static args through the fallback serializer (non-kwarg-iteration branch)" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        expects :label
+        enqueues_each :company, from: -> { cc.all }
+        define_method(:call) { nil }
+      end.tap { |klass| enable_async_on(klass) }
+
+      # Capture what enqueue_for hands to call_async so we can assert the static_args were
+      # flattened (string keys) by the fallback serializer before the adapter pass.
+      forwarded = nil
+      allow(Axn::Async::EnqueueAllOrchestrator).to receive(:call_async) { |**kwargs| forwarded = kwargs }
+      expect(Axn::Internal::AsyncSerialization).to receive(:serialize).and_call_original
+
+      Axn::Async::EnqueueAllOrchestrator.enqueue_for(action_class, label: "batch")
+
+      expect(forwarded[:static_args]).to eq("label" => "batch")
+    end
+  end
+
   describe "on_enqueue_all error isolation" do
     before { with_synchronous_enqueue_all }
 

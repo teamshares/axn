@@ -90,6 +90,11 @@ module Axn
               end
             end
 
+            # Surface a field-aware UnserializableArgument at enqueue (consistent with the
+            # Sidekiq path) instead of leaking ActiveJob's own SerializationError. perform_later
+            # still does the real serialization — this is a separate validation pass.
+            Axn::Internal::AsyncSerialization.assert_serializable!(kwargs)
+
             job.perform_later(kwargs)
           end
 
