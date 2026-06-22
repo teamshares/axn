@@ -1219,6 +1219,25 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
     end
   end
 
+  describe "static_args serialization seam" do
+    it "serializes resolved static args through AsyncSerialization (non-kwarg-iteration branch)" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        expects :label
+        enqueues_each :company, from: -> { cc.all }
+        define_method(:call) { nil }
+      end.tap { |klass| enable_async_on(klass) }
+
+      # Stub call_async on the orchestrator so no real enqueueing happens;
+      # the non-kwarg-iteration branch should serialize static args before calling it.
+      allow(Axn::Async::EnqueueAllOrchestrator).to receive(:call_async)
+      expect(Axn::Internal::AsyncSerialization).to receive(:serialize).and_call_original
+
+      Axn::Async::EnqueueAllOrchestrator.enqueue_for(action_class, label: "batch")
+    end
+  end
+
   describe "on_enqueue_all error isolation" do
     before { with_synchronous_enqueue_all }
 
