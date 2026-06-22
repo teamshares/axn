@@ -448,14 +448,10 @@ Reach for an explicit `call` + `fail!` only when the base headline isn't enough 
   end
   ```
 
-- **Absorbing an unhandled child exception** into a parent *failure* rather than letting it stay an exception. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!`, so the parent settles as an `exception` outcome whose `result.error` is just the parent's headline (the child's message isn't woven in). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a `failure` outcome whose message carries the child's error. Either way the exception is [reported only once](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions) — so this choice is about the **outcome and message**, not about avoiding duplicate reports.
+- **Absorbing an unhandled child exception** into a parent *failure* rather than letting it stay an exception. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!`, so the parent settles as an `exception` outcome whose `result.error` is just the parent's headline (the child's message isn't woven in). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a `failure` outcome whose message carries the child's error. Either way the exception is [reported once](/usage/writing#reporting-a-nested-bug-once) — so this choice is about the **outcome and message**.
 
 ::: tip Suppressing reports for expected failures
 If an inner action raises an exception that is an expected business outcome (not a bug), declare `fails_on ExceptionClass` on the **inner** action to reclassify it into the failure bucket — it fires `on_failure`, skips `Axn.config.on_exception`, and preserves the original exception on `result.exception`. See [Suppressing reports for expected failures](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions).
-:::
-
-::: info `error from:` was removed
-`error from:` and the per-message `prefix:` option were removed in the current release. The nested `call!` no longer wraps child failures in a new `Axn::Failure` — it re-raises the original exception identically to a top-level `call!`. `Axn::Failure` now means exactly "`fail!` was called" everywhere. Passing `from:` or `prefix:` raises `ArgumentError` at declaration with a migration hint.
 :::
 
 ## `.async`

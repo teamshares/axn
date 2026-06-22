@@ -239,7 +239,7 @@ result.error  # => "Couldn't sync user: email already taken"
 | **`prefixed: true` on static base** | Raises `ArgumentError` at declaration — a plain static entry *is* the base and cannot itself be prefixed |
 
 ```ruby
-# Declaration order matters: last-declared entry is checked first.
+# Reasons are checked last-declared-first.
 class SyncUser
   include Axn
 
@@ -265,17 +265,14 @@ Prefixing is applied when **resolving** `result.error` (or `result.success`) —
 :::
 
 ::: tip Declaration order
-When using conditional messages alongside a base, define the base **first**. Reasons are checked in reverse-declaration order (last declared = highest priority), so define the most-specific reasons last.
+The base is identified by shape (an unconditional literal `error`/`success`), so its position among declarations doesn't matter. When **more than one reason** could match the same failure, the last-declared one wins (reasons are checked in reverse-declaration order) — so declare the most-specific reasons last.
 
 ```ruby
 class Foo
   include Axn
 
-  # Base first — also the fallback when no reason matches
-  error "Default error message"
-
-  # Then reasons (most-specific last → highest priority)
-  error "Special error", if: ArgumentError
+  error "Default error message"             # the base — found by shape, any position
+  error "Special error", if: ArgumentError  # most-specific reasons last → highest priority
 end
 ```
 :::
@@ -371,11 +368,13 @@ Both `fail!` and `fails_on` land in the failure bucket and are never reported. O
 
 **Nested `call!` behaves identically to top-level.** When `SyncUser` above uses `call!` instead of `call`, a `fails_on`-reclassified exception still settles as a failure and re-raises as the **original exception** (e.g. `Faraday::BadRequestError`) — not an `Axn::Failure`. `Axn::Failure` is raised by `call!` only when the failure came from `fail!`. An unhandled exception is re-raised as-is, same as at the top level. There is one consistent mental model regardless of nesting depth: `Axn::Failure` means "`fail!` was called"; anything else re-raises whatever was originally raised.
 
-**An unhandled exception is reported once, not once per level.** Because nested `call!` re-raises the *same* exception object up the stack, the global `Axn.config.on_exception` report fires exactly once — at the innermost action that classifies it as a reportable exception (the first level where it isn't a `fail!` or a `fails_on` match) — rather than once per ancestor. Each action's own `on_exception` callback still fires at its level; only the global report is de-duplicated. So whether a bug bubbles up through `call!` or you absorb it into a parent `fail!` via non-bang `call`, it produces a single report.
-
 ::: tip Place `fails_on` on the action that owns the contract
 The inner action that makes the API call or database write is the right home for `fails_on` — it's the one that knows which exception classes are routine. An outer caller that knows nothing about `Faraday::BadRequestError` doesn't need to suppress it; the inner already has.
 :::
+
+### Reporting a nested bug once
+
+Distinct from `fails_on` (which decides whether an *expected* failure is reported at all): a genuine, unhandled exception is reported to `Axn.config.on_exception` **once** — from the innermost action that treats it as a reportable exception — however deeply it propagates through nested `call!`s. Each action's own `on_exception` callback still fires at its level; the single global report is sent from where the exception first surfaced as a bug. So a bug that bubbles up through `call!`, and one you absorb into a parent `fail!` via non-bang `call`, each produce a single report.
 
 ## Lifecycle methods
 
