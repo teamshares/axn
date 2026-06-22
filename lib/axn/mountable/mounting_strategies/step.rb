@@ -52,11 +52,7 @@ module Axn
               error_prefix = step_descriptor.options[:error_prefix] || "#{step_descriptor.name}: "
 
               step_result = axn.call(**@__context.__combined_data)
-              unless step_result.ok?
-                raise step_result.exception if step_result.outcome.exception?
-
-                fail!("#{error_prefix}#{step_result.error}")
-              end
+              fail!("#{error_prefix}#{step_result.error}") unless step_result.ok?
 
               # Extract exposed fields from step result and update exposed_data
               step_result.declared_fields.each do |field|
