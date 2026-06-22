@@ -84,4 +84,23 @@ module Axn
         "Please submit a Github Issue if you have a real-world need for this functionality."
     end
   end
+
+  module Async
+    # Raised at enqueue when an async argument cannot be serialized for background execution.
+    # Field-aware: names the offending field, its class, and how to fix it. The fix hint is
+    # delegated to the serialization layer (Axn::Internal::AsyncSerialization), resolved at
+    # message time so this stays a pure exception definition.
+    class UnserializableArgument < ArgumentError
+      def initialize(field:, value:)
+        @field = field
+        @value = value
+        super()
+      end
+
+      def message
+        "Cannot serialize argument `#{@field}` (#{@value.class}) for async execution. " \
+          "#{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
+      end
+    end
+  end
 end

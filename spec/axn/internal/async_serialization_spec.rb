@@ -79,17 +79,18 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       expect(described_class.deserialize(payload)).to eq(:decoded)
     end
 
-    it "decodes an ActiveJob-tagged payload with the ActiveJob decoder even when the process check says ActiveJob is absent" do
-      allow(described_class).to receive(:_active_job_available?).and_return(false)
+    it "uses the ActiveJob decoder for a non-fallback payload when ActiveJob is available" do
+      allow(described_class).to receive(:_active_job_available?).and_return(true)
       payload = { "at" => { "_aj_serialized" => "ActiveJob::Serializers::TimeSerializer", "value" => "2026-01-01T00:00:00Z" } }
       expect(described_class).to receive(:_deserialize_via_active_job).with(payload).and_return(:decoded)
       expect(described_class.deserialize(payload)).to eq(:decoded)
     end
 
-    it "detects ActiveJob tags nested inside arrays/hashes" do
+    it "never reaches for the ActiveJob decoder when ActiveJob is unavailable, even for user data with _aj_-prefixed keys (no NameError)" do
       allow(described_class).to receive(:_active_job_available?).and_return(false)
-      payload = { "items" => [{ "_aj_globalid" => "gid://app/User/1" }] }
-      expect(described_class).to receive(:_deserialize_via_active_job).with(payload).and_return(:decoded)
+      payload = { "meta" => { "_aj_version" => 1 } }
+      expect(described_class).not_to receive(:_deserialize_via_active_job)
+      expect(Axn::Internal::GlobalIdSerialization).to receive(:deserialize).with(payload).and_return(:decoded)
       expect(described_class.deserialize(payload)).to eq(:decoded)
     end
 

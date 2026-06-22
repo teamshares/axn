@@ -3,25 +3,6 @@
 require "axn/internal/global_id_serialization"
 
 module Axn
-  module Async
-    # Raised at enqueue when an async argument cannot be serialized for background
-    # execution. Field-aware: names the offending field, its class, and how to fix it.
-    # Lives here (not exceptions.rb) alongside the other Axn::Async errors
-    # (AdapterNotFound, MissingEnqueuesEachError).
-    class UnserializableArgument < ArgumentError
-      def initialize(field:, value:)
-        @field = field
-        @value = value
-        super()
-      end
-
-      def message
-        "Cannot serialize argument `#{@field}` (#{@value.class}) for async execution. " \
-          "#{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
-      end
-    end
-  end
-
   module Internal
     # Dispatcher for async argument serialization. See lib/axn/internal/async_serialization.rb
     # header comment / docs/superpowers/plans for the design.
@@ -43,15 +24,17 @@ module Axn
         def deserialize(params)
           return {} if params.nil? || params.empty?
 
-          # Choose the decoder from the payload's own format markers, not the current
-          # process's loaded constants — a job may be enqueued and performed in processes
-          # that differ in whether ActiveJob is loaded. A fallback payload tags GlobalID
-          # args with the `_as_global_id` key suffix; an ActiveJob payload wraps values in
-          # `_aj_*` hashes. A payload with neither marker is pure JSON-native, where both
-          # decoders agree — so defer to the process check for symmetry (and so a no-ActiveJob
-          # process doesn't reach for a decoder it can't load).
+          # A fallback payload tags GlobalID args with the `_as_global_id` key suffix, and
+          # GlobalIdSerialization can decode that whether or not ActiveJob is loaded — so route
+          # a fallback-encoded payload there by its marker, covering an enqueue-without-ActiveJob
+          # / perform-with-ActiveJob mismatch. Otherwise use the ActiveJob decoder only when
+          # ActiveJob is actually loaded (its `_aj_*` format is undecodable without it anyway);
+          # a marker-free JSON-native payload decodes identically either way. We deliberately do
+          # NOT sniff for `_aj_*` keys to force the ActiveJob decoder: user data can legitimately
+          # contain `_aj_`-prefixed keys, and forcing ActiveJob where it isn't loaded would raise
+          # a NameError on otherwise-valid fallback data.
           return Axn::Internal::GlobalIdSerialization.deserialize(params) if _fallback_encoded?(params)
-          return _deserialize_via_active_job(params) if _active_job_encoded?(params) || _active_job_available?
+          return _deserialize_via_active_job(params) if _active_job_available?
 
           Axn::Internal::GlobalIdSerialization.deserialize(params)
         end
@@ -95,25 +78,11 @@ module Axn
         def _active_job_available? = !!defined?(::ActiveJob::Arguments)
 
         # Fallback-format marker: GlobalIdSerialization tags converted args with the
-        # `_as_global_id` key suffix (top-level, matching how that serializer works).
+        # `_as_global_id` key suffix (top-level, matching how that serializer works). This is
+        # the only payload marker we dispatch on — it's unambiguous (a reserved suffix) and
+        # decodable without ActiveJob loaded.
         def _fallback_encoded?(params)
           params.any? { |key, _v| key.to_s.end_with?(Axn::Internal::GlobalIdSerialization::GLOBAL_ID_SUFFIX) }
-        end
-
-        # ActiveJob-format marker: ActiveJob::Arguments wraps non-native values in hashes
-        # keyed by reserved `_aj_*` keys (e.g. `_aj_globalid`, `_aj_serialized`). These keys
-        # are reserved by ActiveJob — a user hash can't legitimately carry them (AJ raises),
-        # so their presence anywhere in the payload reliably identifies the ActiveJob format.
-        def _active_job_encoded?(params)
-          params.any? { |_k, v| _aj_tagged?(v) }
-        end
-
-        def _aj_tagged?(value)
-          case value
-          when Hash then value.keys.any? { |k| k.to_s.start_with?("_aj_") } || value.values.any? { |v| _aj_tagged?(v) }
-          when Array then value.any? { |v| _aj_tagged?(v) }
-          else false
-          end
         end
 
         # Fallback (no ActiveJob) can only round-trip JSON-native scalars, top-level
