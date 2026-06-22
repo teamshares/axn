@@ -51,7 +51,7 @@ RSpec.describe Axn do
         number_axn = client.const_get(:Axns).const_get(:Number)
         result = number_axn.call(arg: 111)
         expect(result).not_to be_ok
-        expect(result.error).to eq("arg was all 1s")
+        expect(result.error).to eq("badbadbad: arg was all 1s")
         expect(result.exception).to be_a(Axn::Failure)
         expect(result.exception.message).to eq("arg was all 1s")
         expect(result.value).to eq(nil)

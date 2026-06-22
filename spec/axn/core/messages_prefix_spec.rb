@@ -69,6 +69,37 @@ RSpec.describe "Axn error_prefix resolution" do
   end
 end
 
+RSpec.describe "Axn error_prefix on fail!" do
+  subject(:error) { action.call.error }
+
+  context "fail! prefixed by the base by default" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        def call = fail!("email taken")
+      end
+    end
+    it { is_expected.to eq("Couldn't sync user: email taken") }
+  end
+
+  context "fail! opting out with prefixed: false" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        def call = fail!("Account is locked.", prefixed: false)
+      end
+    end
+    it { is_expected.to eq("Account is locked.") }
+  end
+
+  context "fail! with no base declared" do
+    let(:action) do
+      build_axn { def call = fail!("email taken") }
+    end
+    it { is_expected.to eq("email taken") }
+  end
+end
+
 RSpec.describe "Axn error_prefix DSL" do
   describe "declaration validation" do
     it "raises when prefixed: true on a static unconditional error" do

@@ -70,9 +70,9 @@ module Axn
       Axn::Executor.new(self).run
     end
 
-    def fail!(message = nil, **exposures)
+    def fail!(message = nil, prefixed: nil, **exposures)
       expose(**exposures) if exposures.any?
-      raise Axn::Failure, message
+      raise Axn::Failure.new(message, prefixed: prefixed.nil? ? true : prefixed)
     end
 
     def done!(message = nil, **exposures)

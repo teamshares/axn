@@ -38,7 +38,7 @@ module Axn
               @__context.__record_exception(e)
             end
           else
-            fail! msg
+            fail! msg, prefixed: false
           end
         end.call
       end
@@ -50,7 +50,10 @@ module Axn
     def error
       return if ok?
 
-      _user_provided_error_message || _msg_resolver(:error, exception:).resolve_message
+      reason = _user_provided_error_message
+      return _msg_resolver(:error, exception:).resolve_message unless reason
+
+      _fail_prefixed? ? _msg_resolver(:error, exception:).with_base_prefix(reason) : reason
     end
 
     def success
@@ -135,6 +138,10 @@ module Axn
       return if exception.cause # We raised this ourselves from nesting
 
       exception.message.presence
+    end
+
+    def _fail_prefixed?
+      exception.is_a?(Axn::Failure) ? exception.prefixed? : true
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
