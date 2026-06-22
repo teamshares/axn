@@ -15,7 +15,7 @@ RSpec.describe Axn::Internal::AsyncSerialization do
 
     it "gives an IO-specific hint for file-like values" do
       error = described_class.new(field: :doc, value: StringIO.new("x"))
-      expect(error.message).to include("ActiveStorage")
+      expect(error.message).to include("Persist it to ActiveStorage")
     end
   end
 end

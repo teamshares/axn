@@ -44,9 +44,7 @@ module Axn
           end
         end
 
-        def _io_like?(value)
-          value.respond_to?(:read) || (defined?(::Tempfile) && value.is_a?(::Tempfile))
-        end
+        def _io_like?(value) = value.respond_to?(:read)
 
         def _active_storage_proxy?(value)
           return false unless defined?(::ActiveStorage::Attached)
