@@ -15,7 +15,7 @@
 - **CHANGELOG every user-visible change** under `## Unreleased`, tagged `[FEAT]`/`[BREAKING]`/`[BUGFIX]`/`[INTERNAL]`.
 - **Fail at declaration, not runtime** for DSL misuse — `raise` with a message saying how to fix it.
 - **Reuse the seams** — the `_messages_registry`, `MessageDescriptor`, `MessageResolver`, `Invoker`. No parallel paths.
-- Design doc: `docs/superpowers/specs/2026-06-22-nested-error-semantics-design.md`.
+- Design doc: `internal-docs/specs/2026-06-22-nested-error-semantics-design.md`.
 
 ---
 
