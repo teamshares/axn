@@ -448,7 +448,7 @@ Reach for an explicit `call` + `fail!` only when the base headline isn't enough 
   end
   ```
 
-- **Absorbing an unhandled child exception** into a clean parent failure. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!` — it propagates as an exception and is reported again at the parent (the child already reported it). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a reported-once failure carrying the child's message.
+- **Absorbing an unhandled child exception** into a parent *failure* rather than letting it stay an exception. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!`, so the parent settles as an `exception` outcome whose `result.error` is just the parent's headline (the child's message isn't woven in). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a `failure` outcome whose message carries the child's error. Either way the exception is [reported only once](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions) — so this choice is about the **outcome and message**, not about avoiding duplicate reports.
 
 ::: tip Suppressing reports for expected failures
 If an inner action raises an exception that is an expected business outcome (not a bug), declare `fails_on ExceptionClass` on the **inner** action to reclassify it into the failure bucket — it fires `on_failure`, skips `Axn.config.on_exception`, and preserves the original exception on `result.exception`. See [Suppressing reports for expected failures](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions).

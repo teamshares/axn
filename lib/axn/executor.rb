@@ -211,8 +211,14 @@ module Axn
         return unless retry_context.should_trigger_on_exception?(mode)
       end
 
+      # Per-action :exception callbacks fire at each level (an action may legitimately observe its
+      # own failure), but the GLOBAL report is sent only once per exception. A nested `call!`
+      # re-raises the same exception object up the stack; without this, each ancestor executor would
+      # report it again — N duplicate Honeybadger notices for one bug.
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
+      return if _exception_already_reported?(exception)
 
+      _mark_exception_reported!(exception)
       context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
@@ -221,6 +227,15 @@ module Axn
       Axn.config.on_exception(exception, action: @action, context:)
     rescue StandardError => e
       Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
+    end
+
+    def _exception_already_reported?(exception) = exception.instance_variable_defined?(:@__axn_reported)
+
+    def _mark_exception_reported!(exception)
+      exception.instance_variable_set(:@__axn_reported, true)
+    rescue StandardError
+      # Frozen/odd exceptions can't carry the flag; worst case is a duplicate report, never a crash.
+      nil
     end
 
     # =========================================================================
