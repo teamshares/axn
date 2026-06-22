@@ -32,6 +32,51 @@ module Axn
         "ActiveStorage attachments)."
 
       class << self
+        def serialize(params)
+          return {} if params.nil? || params.empty?
+          return _serialize_via_active_job(params) if _active_job_available?
+
+          params.each { |key, value| _assert_fallback_serializable!(key, value) }
+          Axn::Internal::GlobalIdSerialization.serialize(params)
+        end
+
+        def deserialize(params)
+          return {} if params.nil? || params.empty?
+          return _deserialize_via_active_job(params) if _active_job_available?
+
+          Axn::Internal::GlobalIdSerialization.deserialize(params)
+        end
+
+        def _active_job_available? = defined?(::ActiveJob::Arguments) ? true : false
+
+        # Fallback (no ActiveJob) can only round-trip JSON-native scalars, top-level
+        # GlobalID-able objects, and Arrays/Hashes of JSON-native scalars. Everything
+        # else (Symbol, Date, Time, BigDecimal, files, custom objects, nested GIDs)
+        # would corrupt or fail on the JSON round-trip, so it raises instead.
+        def _assert_fallback_serializable!(field, value)
+          raise Axn::Async::UnserializableArgument.new(field:, value:) unless _fallback_serializable?(value)
+        end
+
+        # Serializable iff it's JSON-native through-and-through, OR a top-level GlobalID-able
+        # object (the only non-native value GlobalIdSerialization can convert in the fallback).
+        # Nested GlobalID-ables are NOT supported in the fallback (GlobalIdSerialization only
+        # converts top-level values), so an Array/Hash containing one fails _json_native? and raises.
+        def _fallback_serializable?(value)
+          _json_native?(value) || value.respond_to?(:to_global_id)
+        end
+
+        def _json_native?(value)
+          case value
+          when nil, true, false, Integer, Float, String then true
+          when Array then value.all? { |v| _json_native?(v) }
+          when Hash then value.all? { |k, v| _json_native?(k) && _json_native?(v) }
+          else false
+          end
+        end
+
+        def _serialize_via_active_job(params) = raise(NotImplementedError, "added in Task 3")
+        def _deserialize_via_active_job(params) = raise(NotImplementedError, "added in Task 3")
+
         # Returns a fix hint tailored to common footguns (files/IO, ActiveStorage proxies).
         def _unserializable_hint(value)
           if _io_like?(value)

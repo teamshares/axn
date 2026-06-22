@@ -18,4 +18,44 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       expect(error.message).to include("Persist it to ActiveStorage")
     end
   end
+
+  describe "fallback path (ActiveJob unavailable)" do
+    before { allow(described_class).to receive(:_active_job_available?).and_return(false) }
+
+    it "passes JSON-native values through with stringified keys" do
+      result = described_class.serialize(name: "World", age: 25, ok: true, tags: ["a", 1])
+      expect(result).to eq("name" => "World", "age" => 25, "ok" => true, "tags" => ["a", 1])
+    end
+
+    it "serializes a GlobalID-able value via the _as_global_id suffix" do
+      gid_able = Object.new
+      def gid_able.to_global_id = "gid://app/User/1"
+      result = described_class.serialize(user: gid_able)
+      expect(result).to eq("user_as_global_id" => "gid://app/User/1")
+    end
+
+    it "raises a field-aware error for a Symbol (lossy stringification footgun)" do
+      expect { described_class.serialize(status: :active) }
+        .to raise_error(Axn::Async::UnserializableArgument, /`status`.*Symbol/m)
+    end
+
+    it "raises for a Tempfile with the IO hint" do
+      require "tempfile"
+      expect { described_class.serialize(doc: Tempfile.new("x")) }
+        .to raise_error(Axn::Async::UnserializableArgument, /ActiveStorage/)
+    end
+
+    it "raises for Date/Time/Object (not round-trippable without ActiveJob)" do
+      require "date"
+      [Date.today, Time.now, Object.new].each do |value|
+        expect { described_class.serialize(field: value) }
+          .to raise_error(Axn::Async::UnserializableArgument)
+      end
+    end
+
+    it "deserializes plain values by symbolizing keys" do
+      expect(described_class.deserialize("name" => "World", "age" => 25))
+        .to eq(name: "World", age: 25)
+    end
+  end
 end
