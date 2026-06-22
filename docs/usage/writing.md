@@ -204,6 +204,59 @@ Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
 
+### Prefixing failure reasons
+
+A static unconditional `error "Headline"` acts as a **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every specific failure *reason* declared after it — conditional `error … if:`, dynamic `error` blocks, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+
+```ruby
+class SyncUser
+  include Axn
+
+  error "Couldn't sync user"                      # base — also the fallback
+  error "email already taken", if: ArgumentError  # prefixed reason
+  error "account is locked", if: RuntimeError     # prefixed reason
+
+  def call
+    raise ArgumentError, "duplicate" if email_taken?
+    fail! "missing required field"                # also prefixed
+  end
+end
+
+result = SyncUser.call(...)
+result.error  # => "Couldn't sync user: email already taken"
+              # or "Couldn't sync user: missing required field"
+              # or "Couldn't sync user"  (base alone, when no reason matched)
+```
+
+**Key behaviours:**
+
+| | |
+|---|---|
+| **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
+| **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix |
+| **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`) |
+| **Dynamic unconditional detail** | `error(prefixed: true, &:message)` — `prefixed: true` on a block with no `if:` makes it a detail-always entry prefixed by the base |
+| **`prefixed: true` on static base** | Raises `ArgumentError` at declaration — a plain static entry *is* the base and cannot itself be prefixed |
+
+```ruby
+class SyncUser
+  include Axn
+
+  error "Couldn't sync user", delimiter: " — "    # custom delimiter
+  error "vendor not found", if: ArgumentError, prefixed: false  # never prefixed
+  error(prefixed: true, &:message)                # always prefixed with base
+
+  def call = raise ArgumentError, "boom"
+end
+
+SyncUser.call.error  # => "vendor not found"        (prefixed: false wins)
+                     # => "Couldn't sync user — boom" (dynamic detail, custom delimiter)
+```
+
+::: tip result.error vs Axn::Failure#message
+Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
+:::
+
 ### Advanced Error Message Configuration
 
 You can also use conditional error messages with the `prefix:` keyword and combine them with the `from:` parameter for nested actions:
