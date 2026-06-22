@@ -25,6 +25,19 @@ end
 
 So the transaction is still open until all of the above complete. If any of them raise or call `fail!`, the transaction is rolled back.
 
-**`on_success` runs after the transaction commits.** It is invoked only after the transaction block has finished successfully. Use `on_success` (not `after` hooks) for work that should run outside the transaction—for example, calling an external HTTP service—so the DB transaction can commit and release the connection before that work runs. Putting slow or unreliable external calls inside `call` or `after` keeps the transaction open until they complete and can block the connection.
+**`on_success` runs after the enclosing transaction commits.** It is the place for work
+that must only happen once the DB work is durably persisted—calling an external HTTP
+service, sending email, enqueuing a job. This holds under nesting too: when an action runs
+inside another action's transaction (or any open `ActiveRecord::Base.transaction`), its
+`on_success` is deferred until the **outermost** transaction commits, and is **skipped
+entirely if that transaction rolls back**. With no open transaction it runs immediately.
+
+Ordering follows from this: nested `on_success` callbacks fire in child-first order (inner
+before outer). One consequence to be aware of—because `on_success` waits for the commit, an
+outer action's `after` hooks (which run *inside* the transaction) execute **before** an inner
+action's `on_success`.
+
+Putting slow or unreliable external calls inside `call` or `after` keeps the transaction open
+until they complete and can block the connection—use `on_success` instead.
 
 **Requirements**: Requires ActiveRecord to be available in your application.
