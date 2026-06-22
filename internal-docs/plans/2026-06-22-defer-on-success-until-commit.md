@@ -6,7 +6,7 @@
 
 **Architecture:** Route the success dispatch in `Executor#trigger_on_success` through `ActiveRecord.after_all_transactions_commit` (AR 7.2+), which yields immediately when no transaction is open and registers an `after_commit` hook otherwise. Single method change; both `trigger_on_success` call sites (normal + `done!`) flow through it. Failure/error/exception callbacks are untouched. No config or DSL — this is simply the definition of `on_success`.
 
-**Tech Stack:** Ruby, ActiveRecord 7.2+, RSpec. Design doc: `docs/superpowers/specs/2026-06-22-defer-on-success-until-commit-design.md`.
+**Tech Stack:** Ruby, ActiveRecord 7.2+, RSpec. Design doc: `internal-docs/specs/2026-06-22-defer-on-success-until-commit-design.md`.
 
 ## Global Constraints
 
