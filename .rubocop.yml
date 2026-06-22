@@ -55,7 +55,7 @@ Metrics/ModuleLength:
   Enabled: false
 
 Metrics/ClassLength:
-  Max: 260
+  Max: 250
   Exclude:
     - 'spec_rails/dummy_app/lib/integration/**/*'
 

@@ -47,6 +47,23 @@ module Axn
           Axn::Internal::GlobalIdSerialization.deserialize(params)
         end
 
+        # A value that rides nested inside another payload which an adapter will itself
+        # serialize needs path-specific handling. On the ActiveJob path the adapter's
+        # serializer recurses into nested hashes AND is not idempotent over its own tags,
+        # so pre-serializing here would double-encode and raise — pass it through untouched.
+        # On the fallback path the serializer is top-level-only and can't reach nested
+        # objects, so flatten them now; the resulting all-string hash is left untouched by
+        # the adapter's top-level pass.
+        def prepare_nested_payload(value)
+          _active_job_available? ? value : serialize(value)
+        end
+
+        # Inverse of prepare_nested_payload: on the ActiveJob path the adapter already
+        # restored the nested value recursively; only the fallback path needs a manual pass.
+        def restore_nested_payload(value)
+          _active_job_available? ? value : deserialize(value)
+        end
+
         def _active_job_available? = !!defined?(::ActiveJob::Arguments)
 
         # Fallback (no ActiveJob) can only round-trip JSON-native scalars, top-level
