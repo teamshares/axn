@@ -101,4 +101,30 @@ RSpec.describe "Nested exception reporting (report once)" do
     expect(callbacks).to contain_exactly(:inner, :outer) # per-action callbacks fire at BOTH levels
     expect(reports.size).to eq(1)                        # but the global report fires once
   end
+
+  describe "dedup/classification is scoped to one execution, not stored on the exception forever" do
+    it "reports the same exception object again when re-raised by a later, independent run" do
+      stub_const("SHARED_BUG", RuntimeError.new("shared boom"))
+      stub_const("RaiserA", build_axn { def call = raise SHARED_BUG })
+      stub_const("RaiserB", build_axn { def call = raise SHARED_BUG })
+
+      RaiserA.call
+      RaiserB.call
+      expect(reports.size).to eq(2) # once per independent execution — not deduped across runs
+    end
+
+    it "does not let a stale fails_on classification suppress a later independent run" do
+      stub_const("SHARED_ARGERR", ArgumentError.new("shared"))
+      stub_const("FailsOnReuser", build_axn do
+        fails_on(ArgumentError)
+        def call = raise SHARED_ARGERR
+      end)
+      stub_const("PlainReuser", build_axn { def call = raise SHARED_ARGERR }) # no fails_on
+
+      FailsOnReuser.call # classifies SHARED_ARGERR as a failure (no report) — then its tree clears
+      result = PlainReuser.call # fresh tree: same object is now an unhandled bug
+      expect(result.outcome).to eq("exception")
+      expect(reports.size).to eq(1)
+    end
+  end
 end

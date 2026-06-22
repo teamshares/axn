@@ -78,8 +78,10 @@ module Axn
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
-                # A `fails_on` match — this action's, or one made sticky by a nested action — is a failure.
-                failure = action.class._fails_on?(exception) || Axn::Internal::ExceptionClassification.failure?(exception)
+                # The executor records a failure classification on the context (this action's `fails_on`,
+                # or one a nested action made sticky); read it here so the distinction survives after the
+                # per-execution set is cleared. Fall back to `_fails_on?` defensively.
+                failure = @context.__classified_as_failure? || action.class._fails_on?(exception)
                 failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS
@@ -145,7 +147,12 @@ module Axn
     end
 
     def _fail_prefixed?
-      exception.is_a?(Axn::Failure) ? exception.prefixed? : true
+      return true unless exception.is_a?(Axn::Failure)
+      # `prefixed: false` is scoped to the action that called `fail!`. A bubbled child Failure
+      # resolved at an ancestor still gets the ancestor's base prefix (child opt-out is local).
+      return true unless exception.__originating_action.equal?(action)
+
+      exception.prefixed?
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)

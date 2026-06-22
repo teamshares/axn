@@ -68,7 +68,7 @@ module Axn
 
     def fail!(message = nil, prefixed: nil, **exposures)
       expose(**exposures) if exposures.any?
-      raise Axn::Failure.new(message, prefixed: prefixed.nil? ? true : prefixed)
+      raise Axn::Failure.new(message, prefixed: prefixed.nil? ? true : prefixed, action: self)
     end
 
     def done!(message = nil, prefixed: nil, **exposures)

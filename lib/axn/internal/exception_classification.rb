@@ -2,25 +2,35 @@
 
 module Axn
   module Internal
-    # A `fails_on`-matched exception is classified as a *failure* (an expected outcome, not a bug) by
-    # the action that declared `fails_on`. That classification has to travel with the **specific
-    # exception object** as it propagates through nested `call!`s, so ancestor executors treat it as
-    # a failure too — fire `on_failure`, skip the global report — exactly like `Axn::Failure` (which
-    # is sticky via its class).
+    # Per-execution (per call-tree) record of how exceptions were handled, so a nested `call!` that
+    # re-raises the SAME exception object up the stack doesn't (a) report it more than once, or
+    # (b) lose a `fails_on` classification an inner action made.
     #
-    # Keyed on the object, never the class: an unrelated instance of the same class raised elsewhere
-    # is untagged and remains a reportable exception.
+    # Scoped via IsolatedExecutionState and cleared when the nesting stack empties (see
+    # NestingTracking) — so the same exception object re-raised by a LATER, independent run is
+    # treated fresh, never silently suppressed. Keyed on object_id; the object is alive for the
+    # whole tree, so ids are stable and collision-free within a run.
     module ExceptionClassification
-      IVAR = :@__axn_classified_failure
+      class << self
+        # Global report de-duplication: report once per exception per call tree.
+        def reported?(exception) = _reported.include?(exception.object_id)
+        def mark_reported!(exception) = _reported.add(exception.object_id)
 
-      def self.failure?(exception) = !exception.nil? && exception.instance_variable_defined?(IVAR)
+        # `fails_on` stickiness: a classified failure stays a failure (no report, failure outcome) as
+        # it bubbles up — mirroring how Axn::Failure is sticky via its class.
+        def failure?(exception) = !exception.nil? && _failures.include?(exception.object_id)
+        def mark_failure!(exception) = _failures.add(exception.object_id)
 
-      def self.mark_failure!(exception)
-        exception.instance_variable_set(IVAR, true)
-      rescue StandardError
-        # Frozen/odd exceptions can't carry the flag; worst case the classification isn't sticky for
-        # that object — never a crash.
-        nil
+        # Called by NestingTracking when the outermost action finishes.
+        def reset!
+          ActiveSupport::IsolatedExecutionState[:_axn_reported_exceptions] = nil
+          ActiveSupport::IsolatedExecutionState[:_axn_failure_exceptions] = nil
+        end
+
+        private
+
+        def _reported = (ActiveSupport::IsolatedExecutionState[:_axn_reported_exceptions] ||= Set.new)
+        def _failures = (ActiveSupport::IsolatedExecutionState[:_axn_failure_exceptions] ||= Set.new)
       end
     end
   end

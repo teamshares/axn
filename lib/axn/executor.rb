@@ -198,10 +198,12 @@ module Axn
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
       if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e)
-        # Make a `fails_on` classification sticky to this exception object, so it stays a failure
-        # (fires on_failure, no report) as it propagates through ancestor `call!`s — mirroring how
-        # Axn::Failure is sticky via its class.
+        # Make a `fails_on` classification sticky to this exception object (per call tree), so it stays
+        # a failure (fires on_failure, no report) as it propagates through ancestor `call!`s — mirroring
+        # how Axn::Failure is sticky via its class. Also record it on this result's context so
+        # result.outcome reports `failure` after the per-execution set is cleared.
         Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
+        @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
       else
         trigger_on_exception(e)
@@ -220,9 +222,9 @@ module Axn
       # re-raises the same exception object up the stack; without this, each ancestor executor would
       # report it again — N duplicate Honeybadger notices for one bug.
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
-      return if _exception_already_reported?(exception)
+      return if Internal::ExceptionClassification.reported?(exception)
 
-      _mark_exception_reported!(exception)
+      Internal::ExceptionClassification.mark_reported!(exception)
       context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
@@ -231,15 +233,6 @@ module Axn
       Axn.config.on_exception(exception, action: @action, context:)
     rescue StandardError => e
       Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
-    end
-
-    def _exception_already_reported?(exception) = exception.instance_variable_defined?(:@__axn_reported)
-
-    def _mark_exception_reported!(exception)
-      exception.instance_variable_set(:@__axn_reported, true)
-    rescue StandardError
-      # Frozen/odd exceptions can't carry the flag; worst case is a duplicate report, never a crash.
-      nil
     end
 
     # =========================================================================

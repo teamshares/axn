@@ -17,9 +17,14 @@ module Axn
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    def initialize(message = nil, prefixed: true)
+    # The action whose `fail!` raised this. `prefixed:` is scoped to that action: an ancestor that
+    # catches a bubbled child Failure still applies its OWN base prefix (the child's opt-out is local).
+    attr_reader :__originating_action
+
+    def initialize(message = nil, prefixed: true, action: nil)
       @message = message
       @prefixed = prefixed
+      @__originating_action = action
       super(message)
     end
 

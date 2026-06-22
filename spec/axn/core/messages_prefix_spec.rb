@@ -212,6 +212,26 @@ RSpec.describe "explicit call + fail! child-error composition" do
   end
 end
 
+RSpec.describe "prefixed: false is scoped to the originating action" do
+  it "honors prefixed: false at the action's own level (local opt-out)" do
+    action = build_axn do
+      error "Child base"
+      def call = fail!("card declined", prefixed: false)
+    end
+    expect(action.call.error).to eq("card declined") # the action's own base is not applied
+  end
+
+  it "still applies the PARENT's base to a bubbled child fail!(prefixed: false) via call!" do
+    stub_const("OptOutChild", build_axn { def call = fail!("card declined", prefixed: false) })
+    parent = build_axn do
+      error "Charging failed"
+      def call = OptOutChild.call!
+    end
+    # The child's local opt-out does not disable the caller's base prefix.
+    expect(parent.call.error).to eq("Charging failed: card declined")
+  end
+end
+
 RSpec.describe "removed error options" do
   it "rejects from:" do
     expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, /from: is no longer supported/)

@@ -233,7 +233,7 @@ result.error  # => "Couldn't sync user: email already taken"
 | | |
 |---|---|
 | **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
-| **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix |
+| **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix. Scoped to the action: a bubbled child `fail!(..., prefixed: false)` still receives the *caller's* base prefix |
 | **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`) |
 | **Dynamic unconditional detail** | `error(prefixed: true, &:message)` — `prefixed: true` on a block with no `if:` makes it a detail-always entry prefixed by the base |
 | **`prefixed: true` on static base** | Raises `ArgumentError` at declaration — a plain static entry *is* the base and cannot itself be prefixed |

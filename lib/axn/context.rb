@@ -37,6 +37,12 @@ module Axn
       @finalized = true
     end
 
+    # Recorded by the executor when an exception settles as a *failure* (a `fail!`, a `fails_on` match,
+    # or a nested `fails_on` made sticky) rather than an unhandled exception. result.outcome reads this
+    # so the failure/exception distinction survives after the per-execution classification set is cleared.
+    def __classify_as_failure! = @classified_as_failure = true
+    def __classified_as_failure? = @classified_as_failure || false
+
     def __record_early_completion(message, prefixed: true)
       unless message == Axn::Internal::EarlyCompletion.new.message
         @early_completion_message = message
