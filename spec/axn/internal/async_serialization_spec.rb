@@ -98,4 +98,24 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       expect(described_class.deserialize("name" => "World", "age" => 25)).to eq(name: "World", age: 25)
     end
   end
+
+  # enqueue_all flattens nested static_args at enqueue (the top-level-only fallback serializer
+  # can't reach objects nested inside static_args). restore_nested_payload undoes that — and must
+  # decide from the payload, not the worker's ActiveJob state, so an enqueue-without-AJ /
+  # perform-with-AJ mismatch still restores.
+  describe ".restore_nested_payload" do
+    it "decodes fallback-flattened static_args even on an ActiveJob worker (process mismatch)" do
+      allow(described_class).to receive(:_active_job_available?).and_return(true)
+      flattened = { "user_as_global_id" => "gid://app/User/1", "count" => 3 }
+      expect(Axn::Internal::GlobalIdSerialization).to receive(:deserialize).with(flattened).and_return(user: :located, count: 3)
+      expect(described_class.restore_nested_payload(flattened)).to eq(user: :located, count: 3)
+    end
+
+    it "leaves already-restored (symbol-keyed) static_args untouched on an ActiveJob worker (no re-deserialize of live objects)" do
+      allow(described_class).to receive(:_active_job_available?).and_return(true)
+      record = Object.new
+      expect(described_class).not_to receive(:_deserialize_via_active_job)
+      expect(described_class.restore_nested_payload(user: record, count: 3)).to eq(user: record, count: 3)
+    end
+  end
 end

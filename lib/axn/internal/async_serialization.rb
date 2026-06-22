@@ -78,10 +78,18 @@ module Axn
           _active_job_available? ? value : serialize(value)
         end
 
-        # Inverse of prepare_nested_payload: on the ActiveJob path the adapter already
-        # restored the nested value recursively; only the fallback path needs a manual pass.
+        # Inverse of prepare_nested_payload. Decide what to decode from the payload itself, not
+        # this worker's ActiveJob state, so a fallback enqueue performed on an ActiveJob worker
+        # (or vice versa) still restores. ActiveJob-restored static_args arrive with their
+        # original (symbol) keys and live objects already rebuilt — re-running deserialize on
+        # those makes ActiveJob reject the live records ("can only deserialize primitive
+        # arguments"). Fallback-flattened static_args arrive with String keys (and any
+        # `_as_global_id` suffixes) still needing a decode. So decode only the String-keyed form;
+        # `deserialize` is itself format-aware, so it picks the right decoder for the markers.
         def restore_nested_payload(value)
-          _active_job_available? ? value : deserialize(value)
+          return value unless value.is_a?(Hash) && value.keys.any? { |k| k.is_a?(String) }
+
+          deserialize(value)
         end
 
         def _active_job_available? = !!defined?(::ActiveJob::Arguments)
