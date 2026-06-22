@@ -59,4 +59,59 @@ RSpec.describe "on_success transaction-commit semantics" do
       expect(collector).to be_empty
     end
   end
+
+  describe "ordering when the enclosing transaction commits" do
+    let(:outer) do
+      build_axn do
+        use :transaction
+        expects :collector, allow_blank: true
+        expects :inner
+        after { collector << :outer_after }
+        on_success { collector << :outer_success }
+
+        def call
+          inner.call!(collector:, name: "Nested User")
+        end
+      end
+    end
+
+    it "runs inner on_success before outer on_success, after the outer after-hook" do
+      collector = []
+      expect { outer.call!(collector:, inner:) }.to change(User, :count).by(1)
+      expect(collector).to eq(%i[outer_after inner_success outer_success])
+    end
+  end
+
+  describe "failure-path callbacks are not deferred" do
+    let(:failing_inner) do
+      build_axn do
+        use :transaction
+        expects :collector, allow_blank: true
+        on_failure { collector << :inner_failure }
+
+        def call
+          User.create!(name: "Doomed User")
+          fail!("nope")
+        end
+      end
+    end
+
+    let(:outer) do
+      build_axn do
+        use :transaction
+        expects :collector, allow_blank: true
+        expects :inner
+
+        def call
+          inner.call!(collector:)
+        end
+      end
+    end
+
+    it "fires inner on_failure immediately even though the enclosing transaction rolls back" do
+      collector = []
+      expect { outer.call(collector:, inner: failing_inner) }.not_to change(User, :count)
+      expect(collector).to eq([:inner_failure])
+    end
+  end
 end
