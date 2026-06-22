@@ -421,147 +421,30 @@ end
 You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
 :::
 
-## Error message inheritance with `from:`
+## Composing error messages across actions
 
-The `from:` parameter allows you to customize error messages when an action calls another action that fails. This is particularly useful for adding context or prefixing error messages from child actions.
-
-When using `from:`, the error handler receives the exception from the child action, and you can access the child's error message via `e.message` (which contains the `result.error` from the child action).
-
-### Basic usage
-
-You can use `from:` with a single child action class. The prefix and custom handler are optional:
-
-```ruby
-class InnerAction
-  include Axn
-
-  error "Something went wrong in the inner action"
-
-  def call
-    raise StandardError, "inner action failed"
-  end
-end
-
-class OuterAction
-  include Axn
-
-  # Simply inherit child's error message (no prefix or custom handler needed)
-  error from: InnerAction
-
-  # Or customize the message
-  error from: InnerAction do |e|
-    "Outer action failed: #{e.message}"
-  end
-
-  def call
-    InnerAction.call!
-  end
-end
-```
-
-In this example:
-- When `InnerAction` fails, `OuterAction` will catch the exception
-- The `e.message` contains the error message from `InnerAction`'s result
-- With no handler: the error message will be "Something went wrong in the inner action" (inherited directly)
-- With custom handler: the error message will be "Outer action failed: Something went wrong in the inner action"
-
-### Matching multiple child actions
-
-You can pass an array of child action classes to match multiple children:
+To reshape a child action's error message in a parent, run the child with non-bang `call` and `fail!` with context on failure:
 
 ```ruby
 class OuterAction
   include Axn
 
-  # Match errors from multiple child actions
-  error from: [FirstChildAction, SecondChildAction]
-
-  # Or with custom handler
-  error from: [FirstChildAction, SecondChildAction] do |e|
-    "Parent caught: #{e.message}"
-  end
-
   def call
-    # Calls one of the child actions
+    result = InnerAction.call(...)
+    fail!("Outer context: #{result.error}") unless result.ok?
   end
 end
 ```
 
-You can also mix class references and string class names:
+This is per-call-site (readable without cross-file search), greppable, and lets you distinguish two invocations of the same child class by position. A declared base `error "…"` on the outer action will prefix the `fail!` message by default — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
-```ruby
-error from: [FirstChildAction, "SecondChildAction"]
-```
+::: tip Suppressing reports for expected failures
+If an inner action raises an exception that is an expected business outcome (not a bug), declare `fails_on ExceptionClass` on the **inner** action to reclassify it into the failure bucket — it fires `on_failure`, skips `Axn.config.on_exception`, and preserves the original exception on `result.exception`. See [Suppressing reports for expected failures](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions).
+:::
 
-### Matching any child action
-
-Use `from: true` to match errors from any child action without listing them explicitly:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Match errors from any child action
-  error from: true
-
-  # Or with custom handler
-  error from: true do |e|
-    "Any child failed: #{e.message}"
-  end
-
-  def call
-    # Can call any child action
-  end
-end
-```
-
-This pattern is especially useful for:
-- Adding context to error messages from sub-actions
-- Implementing consistent error message formatting across action hierarchies
-- Providing user-friendly error messages that include details from underlying failures
-
-### Combining `from:` with `prefix:`
-
-You can also combine the `from:` parameter with the `prefix:` keyword to create consistent error message formatting:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Add prefix to error messages from InnerAction
-  error from: InnerAction, prefix: "API Error: " do |e|
-    "Request failed: #{e.message}"
-  end
-
-  # Or use prefix only (falls back to exception message)
-  error from: InnerAction, prefix: "API Error: "
-
-  def call
-    InnerAction.call!
-  end
-end
-```
-
-This results in:
-- With custom message: "API Error: Request failed: Something went wrong in the inner action"
-- With prefix only: "API Error: Something went wrong in the inner action"
-
-### Message ordering with `from:`
-
-When using `from:` with inheritance, the same [message matching order](#message-matching-order) applies. Define your `from:` handlers after your static fallback:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Static fallback first
-  error "Something went wrong"
-
-  # Then from: handlers for specific child actions
-  error from: InnerAction, prefix: "Inner failed: "
-  error from: AnotherAction, prefix: "Another failed: "
-end
-```
+::: info `error from:` was removed
+`error from:` and the per-message `prefix:` option were removed in the current release. The nested `call!` no longer wraps child failures in a new `Axn::Failure` — it re-raises the original exception identically to a top-level `call!`. `Axn::Failure` now means exactly "`fail!` was called" everywhere. Passing `from:` or `prefix:` raises `ArgumentError` at declaration with a migration hint.
+:::
 
 ## `.async`
 

@@ -69,7 +69,6 @@ You can force a mode at a call-site where only one is valid with `persist: :crea
 | `expect` | `:params` | The params field name to read from |
 | `persist` | inferred | Force `:create` or `:update` |
 | `inject` | `nil` | Context field(s) merged into `model_params` |
-| `error_prefix` | `nil` | Prefix prepended to the validation-error message |
 
 ### Automatic contract
 
@@ -131,10 +130,11 @@ The strategy ships sensible defaults, resolved through the normal [message DSL](
 - **Success** (mode-aware): `"Created <Model>"` / `"Updated <Model>"`.
 - **Error**: the model's `errors.full_messages.to_sentence` (clean — not the raw `"Validation failed: …"`).
 
-Override just the prefix while keeping the validation body — this is what `error_prefix:` is for, and it's the one override the message DSL can't express in a line (a bare `error(prefix:)` would fall back to the raw `exception.message`):
+To prefix the validation-error message, declare a base `error` after `use :model` — the strategy's validation body is prefixed automatically:
 
 ```ruby
-use :model, update: :user, error_prefix: "Unable to update profile: "
+use :model, update: :user
+error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 

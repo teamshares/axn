@@ -329,6 +329,52 @@ When an action runs as a background job, a `fails_on` exception is treated exact
 For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
 :::
 
+### Suppressing reports for expected failures in composed actions
+
+When one action calls another, `fails_on` belongs on the **inner** action — the one that knows the exception class is an expected business outcome.
+
+Consider an outer `SyncUser` that calls an inner `CreateZendeskTicket`. The inner action may raise `Faraday::BadRequestError` when the email address is already registered — a predictable, non-bug outcome. Without `fails_on`, that exception lands in the **exception** bucket: `Axn.config.on_exception` fires, and `SyncUser` receives a spurious Honeybadger report even though it handles the failure gracefully.
+
+```ruby
+class CreateZendeskTicket
+  include Axn
+
+  fails_on Faraday::BadRequestError   # "email already used" is expected, not a bug
+
+  def call
+    ZendeskClient.create_ticket(email:)  # raises Faraday::BadRequestError if duplicate
+  end
+end
+
+class SyncUser
+  include Axn
+
+  def call
+    result = CreateZendeskTicket.call(email:)
+    # result.ok? is false; result.outcome.failure? is true
+    # result.exception holds the original Faraday::BadRequestError
+    # Axn.config.on_exception was NOT called — no spurious report
+    fail!("Could not create ticket: #{result.error}") unless result.ok?
+  end
+end
+```
+
+The three outcomes, contrasted:
+
+| How the inner action fails | `on_failure` fires | `on_exception` / global report | `result.exception` |
+|---|---|---|---|
+| `fail!` | yes | **no** | `Axn::Failure` |
+| `fails_on`-matched exception | yes | **no** | original exception |
+| Unhandled exception | no | **yes** | original exception |
+
+Both `fail!` and `fails_on` land in the failure bucket and are never reported. Only an unhandled, unclassified exception reaches `on_exception`.
+
+**Nested `call!` behaves identically to top-level.** When `SyncUser` above uses `call!` instead of `call`, a `fails_on`-reclassified exception still settles as a failure and re-raises as the **original exception** (e.g. `Faraday::BadRequestError`) — not an `Axn::Failure`. `Axn::Failure` is raised by `call!` only when the failure came from `fail!`. An unhandled exception is re-raised as-is, same as at the top level. There is one consistent mental model regardless of nesting depth: `Axn::Failure` means "`fail!` was called"; anything else re-raises whatever was originally raised.
+
+::: tip Place `fails_on` on the action that owns the contract
+The inner action that makes the API call or database write is the right home for `fails_on` — it's the one that knows which exception classes are routine. An outer caller that knows nothing about `Faraday::BadRequestError` doesn't need to suppress it; the inner already has.
+:::
+
 ## Lifecycle methods
 
 In addition to `#call`, there are a few additional pieces to be aware of:
