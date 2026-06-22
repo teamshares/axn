@@ -432,8 +432,19 @@ module Axn
       end
     end
 
+    # on_success is defined to run only once the *enclosing* transaction durably commits
+    # (immediately when none is open), and to be skipped if it rolls back.
+    # ActiveRecord.after_all_transactions_commit (AR 7.2+) yields immediately with no open
+    # transaction, otherwise registers an after_commit hook on the outermost transaction.
+    # Guarded by defined?(ActiveRecord) so non-Rails usage dispatches inline as before.
     def trigger_on_success
-      @action_class._dispatch_callbacks(:success, action: @action, exception: nil)
+      dispatch = -> { @action_class._dispatch_callbacks(:success, action: @action, exception: nil) }
+
+      if defined?(ActiveRecord)
+        ActiveRecord.after_all_transactions_commit(&dispatch)
+      else
+        dispatch.call
+      end
     end
 
     # =========================================================================
