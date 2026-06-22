@@ -40,4 +40,14 @@ action's `on_success`.
 Putting slow or unreliable external calls inside `call` or `after` keeps the transaction open
 until they complete and can block the connection—use `on_success` instead.
 
+> **Non-joinable transactions:** deferral keys off `ActiveRecord.after_all_transactions_commit`,
+> which by design only tracks **joinable** transactions (the default). An action run *directly*
+> inside an explicitly non-joinable transaction (`ActiveRecord::Base.transaction(joinable: false)`,
+> with no ordinary transaction between it and the action) is treated as if no transaction were
+> open—its `on_success` runs immediately. The `transaction` strategy and ordinary
+> `ActiveRecord::Base.transaction` blocks are joinable, so nested actions are unaffected. (This is
+> also why `on_success` fires normally under Rails' transactional test fixtures, whose outer
+> transaction is non-joinable—the callback runs immediately rather than being suppressed by the
+> fixture rollback.)
+
 **Requirements**: Requires ActiveRecord to be available in your application.

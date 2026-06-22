@@ -173,6 +173,20 @@ lets us support external transactions.
 - **No ActiveRecord** → `defined?(ActiveRecord)` is false → always inline (current behavior).
 - **Multi-database transactions** → handled by `after_all_transactions_commit` (fires once all
   commit); noted by Rails as a sharding anti-pattern, no special handling needed here.
+- **Non-joinable enclosing transaction** (`ActiveRecord::Base.transaction(joinable: false)`) →
+  `after_all_transactions_commit` ignores it by design (a non-joinable transaction's
+  `user_transaction` is `NULL_TRANSACTION`, transaction.rb:165), so `all_open_transactions` is
+  empty and the block yields **immediately** (verified empirically). An action run *directly*
+  inside a lone non-joinable transaction therefore fires `on_success` pre-commit — the deferral
+  does **not** apply. This is accepted as a documented limitation rather than fixed: chasing it
+  means poking `connection.current_transaction` internals that Rails deliberately hides (and
+  `ActiveRecord::Base.connection` is on a deprecation path), and loses `after_all_transactions_commit`'s
+  multi-DB coordination. It does not affect axn's purpose: the `:transaction` strategy and
+  ordinary `ActiveRecord::Base.transaction` blocks are joinable, so nested actions defer
+  correctly even when an inner frame is non-joinable (verified: a joinable outer + non-joinable
+  inner still skips on the outer's rollback). It is also why `on_success` fires correctly under
+  transactional test fixtures (whose outer transaction is non-joinable): the callback runs
+  immediately rather than being suppressed by the fixture rollback.
 
 ## Testing strategy
 

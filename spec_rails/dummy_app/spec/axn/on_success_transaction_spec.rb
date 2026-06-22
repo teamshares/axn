@@ -114,4 +114,31 @@ RSpec.describe "on_success transaction-commit semantics" do
       expect(collector).to eq([:inner_failure])
     end
   end
+
+  # Documented limitation: ActiveRecord.after_all_transactions_commit only tracks *joinable*
+  # transactions (a non-joinable transaction's user_transaction is NULL_TRANSACTION), so an
+  # action run directly inside a non-joinable transaction is treated as if none were open and
+  # its on_success runs immediately — even if that transaction later rolls back. axn's
+  # :transaction strategy and ordinary ActiveRecord::Base.transaction blocks are joinable, so
+  # this only affects code that explicitly opens transaction(joinable: false).
+  describe "non-joinable enclosing transaction (deferral does not apply)" do
+    let(:action) do
+      build_axn do
+        expects :collector, allow_blank: true
+        on_success { collector << :success }
+
+        def call; end
+      end
+    end
+
+    it "runs on_success immediately rather than deferring to that transaction" do
+      collector = []
+      ActiveRecord::Base.transaction(joinable: false) do
+        action.call!(collector:)
+        expect(collector).to eq([:success]) # already fired, before this block resolves
+        raise ActiveRecord::Rollback
+      end
+      expect(collector).to eq([:success]) # and was not retroactively undone by the rollback
+    end
+  end
 end
