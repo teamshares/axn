@@ -67,4 +67,35 @@ RSpec.describe Axn::Internal::AsyncSerialization do
         .to eq(name: "World", age: 25)
     end
   end
+
+  # Deserialization must be driven by the payload's own format markers, not the current
+  # process's loaded constants — a job may be enqueued and performed in processes that
+  # differ in whether ActiveJob is loaded.
+  describe "format-aware deserialization" do
+    it "decodes a fallback (_as_global_id) payload with GlobalIdSerialization even when ActiveJob is loaded" do
+      allow(described_class).to receive(:_active_job_available?).and_return(true)
+      payload = { "user_as_global_id" => "gid://app/User/1", "name" => "World" }
+      expect(Axn::Internal::GlobalIdSerialization).to receive(:deserialize).with(payload).and_return(:decoded)
+      expect(described_class.deserialize(payload)).to eq(:decoded)
+    end
+
+    it "decodes an ActiveJob-tagged payload with the ActiveJob decoder even when the process check says ActiveJob is absent" do
+      allow(described_class).to receive(:_active_job_available?).and_return(false)
+      payload = { "at" => { "_aj_serialized" => "ActiveJob::Serializers::TimeSerializer", "value" => "2026-01-01T00:00:00Z" } }
+      expect(described_class).to receive(:_deserialize_via_active_job).with(payload).and_return(:decoded)
+      expect(described_class.deserialize(payload)).to eq(:decoded)
+    end
+
+    it "detects ActiveJob tags nested inside arrays/hashes" do
+      allow(described_class).to receive(:_active_job_available?).and_return(false)
+      payload = { "items" => [{ "_aj_globalid" => "gid://app/User/1" }] }
+      expect(described_class).to receive(:_deserialize_via_active_job).with(payload).and_return(:decoded)
+      expect(described_class.deserialize(payload)).to eq(:decoded)
+    end
+
+    it "decodes a marker-free JSON-native payload by symbolizing keys without needing ActiveJob" do
+      allow(described_class).to receive(:_active_job_available?).and_return(false)
+      expect(described_class.deserialize("name" => "World", "age" => 25)).to eq(name: "World", age: 25)
+    end
+  end
 end
