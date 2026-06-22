@@ -78,7 +78,9 @@ module Axn
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
-                action.class._fails_on?(exception) ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
+                # A `fails_on` match — this action's, or one made sticky by a nested action — is a failure.
+                failure = action.class._fails_on?(exception) || Axn::Internal::ExceptionClassification.failure?(exception)
+                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS
               end

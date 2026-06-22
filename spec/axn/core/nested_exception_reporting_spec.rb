@@ -35,18 +35,54 @@ RSpec.describe "Nested exception reporting (report once)" do
     expect(reports.size).to eq(1)
   end
 
-  it "reports once at the outer when the inner fails_on the exception (no inner report) but the outer does not" do
-    # inner: ArgumentError reclassified to a failure → no report there, original preserved on result.exception.
-    # outer call! re-raises the original ArgumentError → outer is the first level to treat it as a reportable
-    # exception, so it reports exactly once (and tags it).
-    stub_const("FailsOnInner", build_axn do
-      fails_on(ArgumentError)
-      def call = raise(ArgumentError, "expected business error")
-    end)
-    stub_const("OuterNoFailsOn", build_axn { def call = FailsOnInner.call! })
-    expect(OuterNoFailsOn.call).not_to be_ok
-    expect(reports.size).to eq(1)
-    expect(reports.first.last).to eq(OuterNoFailsOn)
+  describe "a fails_on classification is sticky across nested call!" do
+    it "treats a fails_on-reclassified exception as a failure (no report, failure outcome) when bubbled via call!" do
+      stub_const("ExpectedInner", build_axn do
+        fails_on(ArgumentError) # "email already used" style: expected, not a bug
+        def call = raise(ArgumentError, "expected business outcome")
+      end)
+      stub_const("BubblingParent", build_axn { def call = ExpectedInner.call! }) # parent knows nothing of ArgumentError
+
+      result = BubblingParent.call
+      expect(result).not_to be_ok
+      expect(result.outcome).to eq("failure")          # not "exception"
+      expect(result.exception).to be_a(ArgumentError)  # original preserved
+      expect(reports).to be_empty                      # not reported at the parent
+    end
+
+    it "stays sticky through two levels of call!" do
+      stub_const("ExpectedInner3", build_axn do
+        fails_on(ArgumentError)
+        def call = raise(ArgumentError, "expected")
+      end)
+      stub_const("MidPassthrough", build_axn { def call = ExpectedInner3.call! })
+      stub_const("OuterPassthrough", build_axn { def call = MidPassthrough.call! })
+
+      result = OuterPassthrough.call
+      expect(result.outcome).to eq("failure")
+      expect(reports).to be_empty
+    end
+
+    it "does NOT make an unrelated same-class exception a failure (tag is per-object, not per-class)" do
+      # ExpectedOk declares fails_on(ArgumentError) but never raises it; the parent then raises its
+      # OWN ArgumentError. That object was never classified by a fails_on, so it stays an exception.
+      stub_const("ExpectedOk", build_axn do
+        fails_on(ArgumentError)
+        def call = nil
+      end)
+      stub_const("ParentOwnBug", build_axn do
+        def call
+          ExpectedOk.call!
+          raise ArgumentError, "outer's own unrelated bug"
+        end
+      end)
+
+      result = ParentOwnBug.call
+      expect(result).not_to be_ok
+      expect(result.outcome).to eq("exception") # unrelated ArgumentError is still a bug
+      expect(reports.size).to eq(1) # and is reported
+      expect(reports.first.last).to eq(ParentOwnBug)
+    end
   end
 
   it "still fires each action's own on_exception callback at its level (only the global report is deduped)" do

@@ -197,7 +197,11 @@ module Axn
 
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-      if e.is_a?(Failure) || @action_class._fails_on?(e)
+      if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e)
+        # Make a `fails_on` classification sticky to this exception object, so it stays a failure
+        # (fires on_failure, no report) as it propagates through ancestor `call!`s — mirroring how
+        # Axn::Failure is sticky via its class.
+        Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
       else
         trigger_on_exception(e)

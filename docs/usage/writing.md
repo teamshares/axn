@@ -368,6 +368,8 @@ Both `fail!` and `fails_on` land in the failure bucket and are never reported. O
 
 **Nested `call!` behaves identically to top-level.** When `SyncUser` above uses `call!` instead of `call`, a `fails_on`-reclassified exception still settles as a failure and re-raises as the **original exception** (e.g. `Faraday::BadRequestError`) — not an `Axn::Failure`. `Axn::Failure` is raised by `call!` only when the failure came from `fail!`. An unhandled exception is re-raised as-is, same as at the top level. There is one consistent mental model regardless of nesting depth: `Axn::Failure` means "`fail!` was called"; anything else re-raises whatever was originally raised.
 
+**The `fails_on` classification is sticky.** Once an action's `fails_on` reclassifies an exception as an expected failure, that decision travels with the exception object: even bubbled up through `call!` to an ancestor that knows nothing about that exception class, it stays a **failure** (the ancestor fires `on_failure`, not `on_exception`, and its `result.outcome` is `failure`). So `fails_on` suppresses the report whether the caller inspects `result` (via `call`) or lets it raise (via `call!`). This is keyed to the specific exception object — an unrelated exception of the same class raised elsewhere in an ancestor is still a bug (an `exception` outcome, reported).
+
 ::: tip Place `fails_on` on the action that owns the contract
 The inner action that makes the API call or database write is the right home for `fails_on` — it's the one that knows which exception classes are routine. An outer caller that knows nothing about `Faraday::BadRequestError` doesn't need to suppress it; the inner already has.
 :::
