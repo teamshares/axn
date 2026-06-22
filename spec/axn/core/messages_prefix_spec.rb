@@ -136,6 +136,33 @@ RSpec.describe "Axn success prefixing parity" do
   end
 end
 
+RSpec.describe "Nested call! parity" do
+  it "re-raises the inner's original exception (no wrapping, no source)" do
+    inner = build_axn { def call = raise ArgumentError, "boom" }
+    outer = build_axn do
+      expects :inner
+      def call = inner.call!
+    end
+    expect { outer.call!(inner:) }.to raise_error(ArgumentError, "boom")
+  end
+
+  it "composes a child's error via the explicit call + fail! idiom" do
+    inner = build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end
+    outer = build_axn do
+      expects :inner
+      error "Onboarding failed"
+      def call
+        r = inner.call
+        fail!("charging: #{r.error}") unless r.ok?
+      end
+    end
+    expect(outer.call(inner:).error).to eq("Onboarding failed: charging: Charge failed: card declined")
+  end
+end
+
 RSpec.describe "removed error options" do
   it "rejects from:" do
     expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, /from: is no longer supported/)

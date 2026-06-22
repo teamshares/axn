@@ -17,10 +17,7 @@ module Axn
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    attr_reader :source # removed in Phase C
-
-    def initialize(message = nil, source: nil, prefixed: true)
-      @source = source
+    def initialize(message = nil, prefixed: true)
       @message = message
       @prefixed = prefixed
       super(message)

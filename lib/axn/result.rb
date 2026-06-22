@@ -138,7 +138,6 @@ module Axn
     def _user_provided_error_message
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
-      return if exception.cause # We raised this ourselves from nesting
 
       exception.message.presence
     end

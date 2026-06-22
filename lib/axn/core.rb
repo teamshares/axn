@@ -37,10 +37,6 @@ module Axn
         result = call(**)
         return result if result.ok?
 
-        # When we're nested, we want to raise a failure that includes the source action to support
-        # the error message generation's `from` filter
-        raise Axn::Failure.new(result.error, source: result.__action__), cause: result.exception if _nested_in_another_axn?
-
         raise result.exception
       end
     end
@@ -60,7 +56,7 @@ module Axn
         include Core::Memoization
         include Core::DefaultCall
 
-        # Internal: adds _nested_in_another_axn? class method used by call!
+        # Internal: tracks nesting depth for logging and duplicate-log suppression
         include Core::NestingTracking
       end
     end
