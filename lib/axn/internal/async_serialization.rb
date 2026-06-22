@@ -74,8 +74,21 @@ module Axn
           end
         end
 
-        def _serialize_via_active_job(params) = raise(NotImplementedError, "added in Task 3")
-        def _deserialize_via_active_job(params) = raise(NotImplementedError, "added in Task 3")
+        # Serialize value-by-value (keyed by field) so a SerializationError can be
+        # re-raised naming the offending field. Keys are stringified for the backend.
+        def _serialize_via_active_job(params)
+          params.each_with_object({}) do |(key, value), hash|
+            hash[key.to_s] = ::ActiveJob::Arguments.serialize([value]).first
+          rescue ::ActiveJob::SerializationError
+            raise Axn::Async::UnserializableArgument.new(field: key, value:)
+          end
+        end
+
+        def _deserialize_via_active_job(params)
+          params.each_with_object({}) do |(key, value), hash|
+            hash[key.to_sym] = ::ActiveJob::Arguments.deserialize([value]).first
+          end
+        end
 
         # Returns a fix hint tailored to common footguns (files/IO, ActiveStorage proxies).
         def _unserializable_hint(value)
