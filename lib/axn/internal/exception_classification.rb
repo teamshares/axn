@@ -8,8 +8,12 @@ module Axn
     #
     # Scoped via IsolatedExecutionState and cleared when the nesting stack empties (see
     # NestingTracking) — so the same exception object re-raised by a LATER, independent run is
-    # treated fresh, never silently suppressed. Keyed on object_id; the object is alive for the
-    # whole tree, so ids are stable and collision-free within a run.
+    # treated fresh, never silently suppressed.
+    #
+    # INVARIANT: only mark an exception that is live on the current unwinding stack (the one the
+    # executor just caught / is about to re-raise). It is reachable for the whole call tree, so its
+    # object_id is stable and collision-free until `reset!`. Never mark an exception you capture and
+    # discard mid-tree — a freed object_id could be reused and cause a spurious dedup/stickiness hit.
     module ExceptionClassification
       class << self
         # Global report de-duplication: report once per exception per call tree.

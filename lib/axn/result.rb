@@ -91,7 +91,8 @@ module Axn
     end
 
     # Internal accessor for the action instance
-    # TODO: exposed for errors :from support, but should be private if possible
+    # Internal accessor for the underlying action instance (used by introspection/tests); should be
+    # private if possible.
     def __action__ = @action
 
     # Enable pattern matching support for Ruby 3+
