@@ -664,7 +664,7 @@ You cannot use both `if:` and `unless:` for the same callback - this will raise 
 
 ### `on_success`
 
-This is triggered after the Axn completes, if it was successful.  Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
+This is triggered after the Axn completes successfully, once the enclosing database transaction has committed (immediately if none is open); it is skipped if that transaction rolls back. Nested `on_success` callbacks fire child-first (inner before outer). Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
 
 ### `on_error`
 
