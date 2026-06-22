@@ -86,7 +86,10 @@ module Axn
           case value
           when nil, true, false, Integer, Float, String then true
           when Array then value.all? { |v| _json_native?(v) }
-          when Hash then value.all? { |k, v| _json_native?(k) && _json_native?(v) }
+          # Hash keys must be Strings specifically: the JSON round-trip stringifies every key,
+          # so a non-String key (Integer/Symbol/etc.) would silently come back as a String —
+          # the very corruption this guard exists to prevent. Values still need only be JSON-native.
+          when Hash then value.all? { |k, v| k.is_a?(String) && _json_native?(v) }
           else false
           end
         end

@@ -53,6 +53,15 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       end
     end
 
+    it "raises for a nested hash with non-string keys (the JSON round-trip would stringify them)" do
+      expect { described_class.serialize(opts: { 1 => "one" }) }
+        .to raise_error(Axn::Async::UnserializableArgument, /`opts`/)
+    end
+
+    it "accepts a nested hash with string keys" do
+      expect(described_class.serialize(opts: { "k" => "v" })).to eq("opts" => { "k" => "v" })
+    end
+
     it "deserializes plain values by symbolizing keys" do
       expect(described_class.deserialize("name" => "World", "age" => 25))
         .to eq(name: "World", age: 25)
