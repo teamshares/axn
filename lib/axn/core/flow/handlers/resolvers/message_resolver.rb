@@ -63,7 +63,9 @@ module Axn
               descriptor.prefixed? || !descriptor.static?
             end
 
-            def delimiter = base_descriptor&.delimiter.presence || ": "
+            # NOTE: no `.presence` — an explicit `delimiter: ""` is honored (join with no separator);
+            # only an unset (nil) delimiter falls back to the default.
+            def delimiter = base_descriptor&.delimiter || ": "
 
             def body_for(descriptor)
               return nil unless descriptor

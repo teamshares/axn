@@ -46,6 +46,17 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user — is invalid") }
   end
 
+  context "explicit empty delimiter (join with no separator)" do
+    let(:action) do
+      build_axn do
+        error "Failed", delimiter: ""
+        error "reason", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Failedreason") }
+  end
+
   context "unconditional dynamic detail with a base" do
     let(:action) do
       build_axn do

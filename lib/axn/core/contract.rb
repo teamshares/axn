@@ -274,6 +274,7 @@ module Axn
           elapsed_time
           finalized?
           __action__
+          prefixed
         ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
