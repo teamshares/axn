@@ -9,10 +9,9 @@ module Axn
         module Descriptors
           # Data structure for message configuration - no behavior, just data
           class MessageDescriptor < BaseDescriptor
-            attr_reader :prefix, :delimiter
+            attr_reader :delimiter
 
-            def initialize(matcher:, handler:, prefix: nil, prefixed: false, delimiter: nil)
-              @prefix = prefix
+            def initialize(matcher:, handler:, prefixed: false, delimiter: nil)
               @prefixed = prefixed
               @delimiter = delimiter
               super(matcher:, handler:)
@@ -20,48 +19,13 @@ module Axn
 
             def prefixed? = @prefixed
 
-            def self.build(handler: nil, if: nil, unless: nil, prefix: nil, prefixed: false, delimiter: nil, from: nil, **)
+            def self.build(handler: nil, if: nil, unless: nil, prefixed: false, delimiter: nil, **)
               new(
                 handler:,
-                prefix:,
                 prefixed:,
                 delimiter:,
-                matcher: _build_matcher(if:, unless:, from:),
+                matcher: Matcher.build(if:, unless:),
               )
-            end
-
-            def self._build_matcher(if:, unless:, from:)
-              rules = [
-                binding.local_variable_get(:if),
-                binding.local_variable_get(:unless),
-                _build_rule_for_from_condition(from),
-              ].compact
-
-              Axn::Core::Flow::Handlers::Matcher.new(rules, invert: !!binding.local_variable_get(:unless))
-            end
-
-            def self._build_rule_for_from_condition(from_class)
-              return nil unless from_class
-
-              # Special case: `from: true` means "from any child action"
-              return ->(exception:, **) { exception.is_a?(Axn::Failure) && exception.source } if from_class == true
-
-              from_classes = Array(from_class)
-              lambda { |exception:, **|
-                return false unless exception.is_a?(Axn::Failure) && exception.source
-
-                source = exception.source
-                from_classes.any? do |cls|
-                  if cls.is_a?(String)
-                    # rubocop:disable Style/ClassEqualityComparison
-                    # We're comparing class name strings, not classes themselves
-                    source.class.name == cls
-                    # rubocop:enable Style/ClassEqualityComparison
-                  else
-                    source.is_a?(cls)
-                  end
-                end
-              }
             end
           end
         end

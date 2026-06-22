@@ -6,10 +6,9 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
   let(:exception) { nil }
   let(:resolver) { described_class.new(registry, :success, action:, exception:) }
 
-  def build_descriptor(handler:, prefix: nil, prefixed: false, delimiter: nil, if: nil, unless: nil)
+  def build_descriptor(handler:, prefixed: false, delimiter: nil, if: nil, unless: nil)
     Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
       handler:,
-      prefix:,
       prefixed:,
       delimiter:,
       if: binding.local_variable_get(:if),
@@ -118,99 +117,19 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
         result = exception_resolver.send(:body_for, descriptor)
         expect(result).to eq("Handler message")
       end
-
-      it "combines prefix with handler message when prefix exists" do
-        descriptor = build_descriptor(handler: "handler", prefix: "Prefix: ")
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("Prefix: Handler message")
-      end
     end
 
-    context "with no handler and no prefix" do
+    context "with no handler" do
       it "returns exception message when exception exists" do
-        descriptor = double("descriptor", handler: nil, prefix: nil)
+        descriptor = double("descriptor", handler: nil)
         result = exception_resolver.send(:body_for, descriptor)
         expect(result).to eq("Error message")
       end
 
       it "returns nil when no exception exists" do
-        descriptor = double("descriptor", handler: nil, prefix: nil)
+        descriptor = double("descriptor", handler: nil)
         result = resolver.send(:body_for, descriptor)
         expect(result).to be_nil
-      end
-    end
-
-    context "with prefix but no handler (prefix: keyword)" do
-      it "returns prefix + exception message when exception exists" do
-        prefix_only = double("prefix_only", handler: nil, prefix: "Error: ")
-        result = exception_resolver.send(:body_for, prefix_only)
-        expect(result).to eq("Error: Error message")
-      end
-
-      it "returns nil for success messages when no exception exists" do
-        prefix_only = double("prefix_only", handler: nil, prefix: "Success: ")
-        result = resolver.send(:body_for, prefix_only)
-        expect(result).to be_nil
-      end
-    end
-
-    context "with callable prefix:" do
-      let(:exception) { StandardError.new("Test error") }
-      let(:exception_resolver) { described_class.new(registry, :error, action:, exception:) }
-
-      before do
-        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call)
-          .with(hash_including(operation: "determining message callable"))
-          .and_return("Handler message")
-      end
-
-      it "calls the symbol method on the action for symbol prefix" do
-        descriptor = build_descriptor(handler: "handler", prefix: :prefix_method)
-        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call)
-          .with(action:, handler: :prefix_method, exception:, operation: "determining prefix callable")
-          .and_return("Symbol: ")
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("Symbol: Handler message")
-      end
-
-      it "calls the callable with exception keyword" do
-        prefix_callable = ->(exception:) { "Exception #{exception.class}: " }
-        descriptor = build_descriptor(handler: "handler", prefix: prefix_callable)
-        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call)
-          .with(action:, handler: prefix_callable, exception:, operation: "determining prefix callable")
-          .and_return("Exception StandardError: ")
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("Exception StandardError: Handler message")
-      end
-
-      it "treats nil prefix result as no prefix" do
-        prefix_callable = -> {}
-        descriptor = build_descriptor(handler: "handler", prefix: prefix_callable)
-        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call)
-          .with(action:, handler: prefix_callable, exception:, operation: "determining prefix callable")
-          .and_return(nil)
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("Handler message")
-      end
-
-      it "handles prefix resolution errors gracefully" do
-        prefix_callable = -> { raise "Prefix error" }
-        descriptor = build_descriptor(handler: "handler", prefix: prefix_callable)
-        allow(Axn::Core::Flow::Handlers::Invoker).to receive(:call)
-          .with(action:, handler: prefix_callable, exception:, operation: "determining prefix callable")
-          .and_raise("Prefix error")
-        expect { exception_resolver.send(:body_for, descriptor) }.not_to raise_error
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("Handler message")
-      end
-
-      it "uses string prefix directly without invoking" do
-        descriptor = build_descriptor(handler: "handler", prefix: "String: ")
-        result = exception_resolver.send(:body_for, descriptor)
-        expect(result).to eq("String: Handler message")
-        expect(Axn::Core::Flow::Handlers::Invoker).not_to have_received(:call).with(
-          action:, handler: "String: ", exception:, operation: "determining prefix callable",
-        )
       end
     end
   end

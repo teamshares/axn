@@ -818,12 +818,12 @@ RSpec.describe Axn do
       expect(action.call.success).to eq("Success from descriptor")
     end
 
-    it "raises error when combining descriptor with kwargs" do
+    it "raises error when combining descriptor with (removed) prefix: kwarg" do
       expect do
         build_axn do
           success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
         end
-      end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
+      end.to raise_error(ArgumentError, /prefix: is no longer supported/)
     end
   end
 end

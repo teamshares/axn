@@ -136,6 +136,16 @@ RSpec.describe "Axn success prefixing parity" do
   end
 end
 
+RSpec.describe "removed error options" do
+  it "rejects from:" do
+    expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, /from: is no longer supported/)
+  end
+
+  it "rejects per-message prefix:" do
+    expect { build_axn { error "x", prefix: "P: " } }.to raise_error(ArgumentError, /prefix: is no longer supported/)
+  end
+end
+
 RSpec.describe "Axn error_prefix DSL" do
   describe "declaration validation" do
     it "raises when prefixed: true on a static unconditional error" do

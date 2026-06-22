@@ -153,7 +153,7 @@ RSpec.shared_examples "can build Axns from callables" do
     context "with success descriptor" do
       let(:kwargs) do
         {
-          success: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!", prefix: "user"),
+          success: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success!"),
           error: "Default error",
         }
       end

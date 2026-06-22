@@ -43,11 +43,10 @@ module Axn
             def base_descriptor
               return @base_descriptor if defined?(@base_descriptor)
 
-              # A static unconditional entry (prefixed: false, no legacy prefix:) is the base headline.
+              # A static unconditional entry (prefixed: false) is the base headline.
               # This applies to both :error and :success events; conditional or dynamic entries
               # become prefixed reasons against this base.
-              # Entries with a legacy prefix: are Phase A/B coexistence entries, not new-style bases.
-              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler && !d.prefix }
+              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler }
             end
 
             def base?(descriptor) = base_descriptor && descriptor.equal?(base_descriptor)
@@ -69,43 +68,11 @@ module Axn
             def body_for(descriptor)
               return nil unless descriptor
 
-              raw =
-                if descriptor.handler
-                  Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
-                elsif exception
-                  exception.message
-                elsif descriptor.prefix
-                  # For prefix-only messages without an exception, fall back to the default static handler.
-                  # Retained for Phase A/B coexistence; removed in Phase C.
-                  if default_static_handler
-                    Invoker.call(operation: "determining message callable", action:, handler: default_static_handler,
-                                 exception:).presence
-                  end
-                end
-              return nil unless raw.present?
-
-              # Per-message prefix:, retained for Phase A coexistence; removed in Phase C.
-              "#{resolved_prefix(descriptor)}#{raw}"
-            end
-
-            def default_static_handler
-              return @default_static_handler if defined?(@default_static_handler)
-
-              # For Phase A/B prefix-only entries, find content from any static handler. When a base
-              # exists as the only static entry, allow using it as the content source so that prefix:
-              # still applies its prefix to the declared message.
-              @default_static_handler =
-                candidate_entries.detect { |d| d.static? && d.handler && !d.equal?(base_descriptor) }&.handler ||
-                base_descriptor&.handler
-            end
-
-            def resolved_prefix(descriptor)
-              return nil unless descriptor.prefix
-              return descriptor.prefix if descriptor.prefix.is_a?(String)
-
-              Invoker.call(action:, handler: descriptor.prefix, exception:, operation: "determining prefix callable")
-            rescue StandardError
-              nil
+              if descriptor.handler
+                Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
+              elsif exception
+                exception.message.presence
+              end
             end
 
             def fallback_message = event_type == :success ? DEFAULT_SUCCESS : DEFAULT_ERROR

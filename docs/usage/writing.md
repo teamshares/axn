@@ -264,77 +264,17 @@ SyncUser.call.error  # => "vendor not found"
 Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
 :::
 
-### Advanced Error Message Configuration
+::: tip Declaration order
+When using conditional messages alongside a base, define the base **first**. Reasons are checked in reverse-declaration order (last declared = highest priority), so define the most-specific reasons last.
 
-You can also use conditional error messages with the `prefix:` keyword and combine them with the `from:` parameter for nested actions:
-
-```ruby
-class ValidationAction
-  include Axn
-
-  expects :input
-
-  error if: ArgumentError, prefix: "Validation Error: " do |e|
-    "Invalid input: #{e.message}"
-  end
-
-  error if: StandardError, prefix: "System Error: "
-
-  def call
-    raise ArgumentError, "input too short" if input.length < 3
-    raise StandardError, "unexpected error" if input == "error"
-  end
-end
-
-class ApiAction
-  include Axn
-
-  expects :data
-
-  # Simply inherit child's error (prefix and handler are optional)
-  error from: ValidationAction
-
-  # Or combine prefix with from for consistent error formatting
-  error from: ValidationAction, prefix: "API Error: " do |e|
-    "Request validation failed: #{e.message}"
-  end
-
-  # Or use prefix only (falls back to exception message)
-  error from: ValidationAction, prefix: "API Error: "
-
-  # Match multiple child actions
-  error from: [ValidationAction, AnotherAction]
-
-  # Match any child action
-  error from: true
-
-  def call
-    ValidationAction.call!(input: data)
-  end
-end
-```
-
-This configuration provides:
-- Simple error message inheritance without requiring prefix or handler
-- Consistent error message formatting with prefixes
-- Automatic fallback to exception messages when no custom message is provided
-- Proper error message inheritance from nested actions
-- Support for matching multiple child actions or any child action
-
-::: warning Message Ordering
-**Important**: When using conditional messages, always define your static fallback messages **first** in your class, before any conditional messages. This ensures proper fallback behavior.
-
-**Correct order:**
 ```ruby
 class Foo
   include Axn
 
-  # Static fallback messages first
-  success "Default success message"
+  # Base first — also the fallback when no reason matches
   error "Default error message"
 
-  # Then conditional messages
-  success "Special success", if: :special_condition?
+  # Then reasons (most-specific last → highest priority)
   error "Special error", if: ArgumentError
 end
 ```
@@ -375,7 +315,7 @@ fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sen
 fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
 ```
 
-The message integrates with the standard message DSL (`prefix:`, ordering, etc.), so it composes with — and can be overridden by — your other `error` declarations.
+The message integrates with the standard message DSL (ordering, base-prefix semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations.
 
 ::: tip Callbacks receive the original exception
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.

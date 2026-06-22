@@ -21,13 +21,21 @@ module Axn
           private
 
           def _add_message(kind, message:, prefixed: nil, delimiter: nil, **kwargs, &block)
+            if kwargs.key?(:from)
+              raise ArgumentError,
+                    "from: is no longer supported — run the child with `call` and " \
+                    '`fail!("context: #{result.error}") unless result.ok?`'
+            end
+            if kwargs.key?(:prefix)
+              raise ArgumentError,
+                    "prefix: is no longer supported — declare a base `error \"…\"` " \
+                    "(prefixes reasons by default; opt out with prefixed: false)"
+            end
             raise Axn::UnsupportedArgument, "calling #{kind} with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
-            raise Axn::UnsupportedArgument, "Combining from: with if: or unless:" if kwargs.key?(:from) && (kwargs.key?(:if) || kwargs.key?(:unless))
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message, block, or prefix" unless message || block_given? || kwargs[:prefix] || kwargs[:from]
-            raise ArgumentError, "from: only applies to error messages" if kwargs.key?(:from) && kind != :error
+            raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            conditional = kwargs.key?(:if) || kwargs.key?(:unless) || kwargs.key?(:from)
+            conditional = kwargs.key?(:if) || kwargs.key?(:unless)
             dynamic     = block_given? || message.is_a?(Symbol) || message.respond_to?(:call)
             reason      = conditional || dynamic # only "reasons" (not the base headline) may be prefixed
             effective_prefixed = _resolve_prefixed(prefixed, reason:, delimiter:)
