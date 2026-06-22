@@ -145,7 +145,9 @@ RSpec.describe "Nested call! parity" do
     end
     expect { outer.call!(inner:) }.to raise_error(ArgumentError, "boom")
   end
+end
 
+RSpec.describe "explicit call + fail! child-error composition" do
   it "composes a child's error via the explicit call + fail! idiom" do
     inner = build_axn do
       error "Charge failed"

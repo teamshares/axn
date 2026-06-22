@@ -3,18 +3,6 @@
 module Axn
   module Core
     module NestingTracking
-      def self.included(base)
-        base.class_eval do
-          extend ClassMethods
-        end
-      end
-
-      module ClassMethods
-        def _nested_in_another_axn?
-          NestingTracking._current_axn_stack.any?
-        end
-      end
-
       # Shared method for both class and instance access
       def self._current_axn_stack
         ActiveSupport::IsolatedExecutionState[:_axn_stack] ||= []
