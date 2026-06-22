@@ -13,7 +13,7 @@ module Axn
     # The action supplies attributes via an overridable `model_params` (defaults to `params`).
     module Model
       Config = Struct.new(
-        :build_class, :field, :mode, :exposed_as, :expect_attr, :inject_attrs, :error_prefix,
+        :build_class, :field, :mode, :exposed_as, :expect_attr, :inject_attrs,
         keyword_init: true
       )
 
@@ -22,14 +22,13 @@ module Axn
       # @param as [Symbol] upsert-mode: input field; class derived from the name; exposure name
       # @param expect [Symbol] the params field name (default :params)
       # @param persist [Symbol, nil] force :create or :update (overrides inference)
-      # @param error_prefix [String, nil] prefix prepended to the validation-error message
       # @param inject [Symbol, Array<Symbol>] context fields merged into model_params
       #
-      # To override the success or full error message, declare your own `success`/`error`
-      # after `use :model` (later declarations win) — only the prefix-while-keeping-the-
-      # validation-body case needs the dedicated `error_prefix:` kwarg.
+      # To prefix the validation-error body, declare a base `error "…"` after `use :model` —
+      # it renders as `"<base>: <validation body>"`. To override the success or full error
+      # message, declare your own `success`/`error` after `use :model` (later declarations win).
       def self.configure(create: nil, update: nil, as: nil, expect: :params, persist: nil,
-                         error_prefix: nil, inject: nil, &block)
+                         inject: nil, &block)
         # The strategy is built on ActiveRecord persistence (`.save`, `previously_new_record?`,
         # the `model: true` `.find` resolver, `ActiveRecord::RecordInvalid`) — not just ActiveModel
         # conventions — so fail fast at declaration rather than with a confusing runtime error.
@@ -41,8 +40,7 @@ module Axn
         config = Config.new(
           build_class:, field:, mode:,
           exposed_as: (as || field || :model).to_sym,
-          expect_attr: expect, inject_attrs: Array(inject).freeze,
-          error_prefix:
+          expect_attr: expect, inject_attrs: Array(inject).freeze
         )
 
         Module.new do
@@ -186,9 +184,7 @@ module Axn
         end
       end
 
-      def self.install_messages!(base, config)
-        configured_prefix = config.error_prefix
-
+      def self.install_messages!(base, _config)
         base.class_eval do
           # The record carrying the validation errors. A *raised* RecordInvalid names its own
           # record (handles association autosave / a nested `save!` on a *different* record than
@@ -204,8 +200,8 @@ module Axn
           end
           private :__axn_invalid_record
 
-          # Clean validation body (NOT exception.message). Matched when the invalid record is known.
-          error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }, prefix: configured_prefix) do |exception = nil|
+          # Clean validation body, prefixed by the action's base error when one is declared.
+          error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }, prefixed: true) do |exception = nil|
             __axn_invalid_record(exception).errors.full_messages.to_sentence
           end
 
