@@ -21,16 +21,9 @@ module Axn
           private
 
           def _add_message(kind, message:, prefixed: nil, delimiter: nil, **kwargs, &block)
-            if kwargs.key?(:from)
-              raise ArgumentError,
-                    "from: is no longer supported — run the child with `call` and " \
-                    '`fail!("context: #{result.error}") unless result.ok?`'
-            end
-            if kwargs.key?(:prefix)
-              raise ArgumentError,
-                    "prefix: is no longer supported — declare a base `error \"…\"` " \
-                    "(prefixes reasons by default; opt out with prefixed: false)"
-            end
+            # Reject removed options (from:/prefix:) with their migration hint up front — covers the
+            # prebuilt-descriptor path too, which never reaches MessageDescriptor.build.
+            Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.reject_unsupported_options!(kwargs.slice(:from, :prefix))
             raise Axn::UnsupportedArgument, "calling #{kind} with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?

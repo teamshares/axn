@@ -173,6 +173,24 @@ RSpec.describe "removed error options" do
   it "rejects per-message prefix:" do
     expect { build_axn { error "x", prefix: "P: " } }.to raise_error(ArgumentError, /prefix: is no longer supported/)
   end
+
+  # The DSL guard alone leaves the direct/Factory descriptor path able to silently swallow removed
+  # options; MessageDescriptor.build must reject them with the same hint (and reject unknown options too).
+  describe "directly via MessageDescriptor.build (the Factory/prebuilt path)" do
+    let(:descriptor) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
+
+    it "rejects from: with the migration hint" do
+      expect { descriptor.build(handler: "x", from: Object) }.to raise_error(ArgumentError, /from: is no longer supported/)
+    end
+
+    it "rejects prefix: with the migration hint" do
+      expect { descriptor.build(handler: "x", prefix: "P: ") }.to raise_error(ArgumentError, /prefix: is no longer supported/)
+    end
+
+    it "rejects an otherwise-unknown option rather than silently ignoring it" do
+      expect { descriptor.build(handler: "x", bogus: 1) }.to raise_error(ArgumentError, /Unknown :bogus option/)
+    end
+  end
 end
 
 RSpec.describe "Axn error_prefix DSL" do
