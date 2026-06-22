@@ -1,5 +1,74 @@
 # frozen_string_literal: true
 
+RSpec.describe "Axn error_prefix resolution" do
+  subject(:error) { action.call.error }
+
+  context "declared reason with a base (prefixed by default)" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        error "is invalid", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Couldn't sync user: is invalid") }
+  end
+
+  context "reason opted out with prefixed: false" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        error "Vendor not found", if: ArgumentError, prefixed: false
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Vendor not found") }
+  end
+
+  context "no base declared (gate closed)" do
+    let(:action) do
+      build_axn do
+        error "is invalid", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("is invalid") }
+  end
+
+  context "custom delimiter on the base" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user", delimiter: " — "
+        error "is invalid", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Couldn't sync user — is invalid") }
+  end
+
+  context "unconditional dynamic detail with a base" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        error(prefixed: true, &:message)
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Couldn't sync user: boom") }
+  end
+
+  context "no reason matches → base shown alone" do
+    let(:action) do
+      build_axn do
+        error "Couldn't sync user"
+        error "is invalid", if: TypeError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Couldn't sync user") }
+  end
+end
+
 RSpec.describe "Axn error_prefix DSL" do
   describe "declaration validation" do
     it "raises when prefixed: true on a static unconditional error" do

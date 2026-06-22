@@ -328,7 +328,7 @@ RSpec.describe Axn do
           end
 
           it { expect(result).not_to be_ok }
-          it { expect(result.error).to eq("Argument problem") }
+          it { expect(result.error).to eq("Default error: Argument problem") }
         end
 
         context "arity 1 method (receives exception)" do
@@ -397,7 +397,7 @@ RSpec.describe Axn do
           end
 
           it { expect(result).not_to be_ok }
-          it { expect(result.error).to eq("AE") }
+          it { expect(result.error).to eq("Default error: AE") }
         end
 
         context "unless matcher" do
@@ -419,7 +419,7 @@ RSpec.describe Axn do
             end
 
             it "uses custom error when condition is false" do
-              expect(result.error).to eq("Custom error")
+              expect(result.error).to eq("Default error: Custom error")
             end
           end
 
@@ -437,7 +437,7 @@ RSpec.describe Axn do
             end
 
             it { expect(result).not_to be_ok }
-            it { expect(result.error).to eq("Custom error") }
+            it { expect(result.error).to eq("Default error: Custom error") }
 
             context "when condition is true" do
               let(:action) do
@@ -475,7 +475,7 @@ RSpec.describe Axn do
             end
 
             it { expect(result).not_to be_ok }
-            it { expect(result.error).to eq("Custom error") }
+            it { expect(result.error).to eq("Default error: Custom error") }
 
             context "when condition is true" do
               let(:action) do
@@ -754,23 +754,23 @@ RSpec.describe Axn do
       it { expect(result).not_to be_ok }
 
       it "matches by string exception class name" do
-        expect(result.error).to eq("Inbound validation error!")
+        expect(result.error).to eq("Bad news!: Inbound validation error!")
       end
 
       it "matches specific exceptions" do
-        expect(action.call(param: 1).error).to eq("Argument error: bad arg")
+        expect(action.call(param: 1).error).to eq("Bad news!: Argument error: bad arg")
       end
 
       it "matches by callable matcher" do
-        expect(action.call(param: 2).error).to eq("whoa a 2")
+        expect(action.call(param: 2).error).to eq("Bad news!: whoa a 2")
       end
 
       it "can reference instance vars" do
-        expect(action.call(param: 3).error).to eq("whoa: 123")
+        expect(action.call(param: 3).error).to eq("Bad news!: whoa: 123")
       end
 
       it "can reference configured error" do
-        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
+        expect(action.call(param: 4).error).to eq("Bad news!: whoa: Bad news!")
       end
 
       it "falls back correctly" do

@@ -117,7 +117,7 @@ RSpec.describe Axn do
   context "when configured on an action" do
     it "handles handled errors with custom message" do
       expect(outer_action_class.call(type: :handled).error).to eq(
-        "PREFIXED: that wasn't a nice arg (handled)",
+        "PREFIXED: default inner error: that wasn't a nice arg (handled)",
       )
     end
 
@@ -160,7 +160,7 @@ RSpec.describe Axn do
   context "combining prefix with from keyword" do
     it "handles handled errors with custom message" do
       expect(prefix_with_from_action_class.call(type: :handled).error).to eq(
-        "Outer: wrapped: that wasn't a nice arg (handled)",
+        "Outer: wrapped: default inner error: that wasn't a nice arg (handled)",
       )
     end
 
@@ -174,7 +174,7 @@ RSpec.describe Axn do
   context "combining prefix with from keyword (prefix only)" do
     it "handles handled errors with prefix only" do
       expect(prefix_only_from_action_class.call(type: :handled).error).to eq(
-        "Outer: that wasn't a nice arg (handled)",
+        "Outer: default inner error: that wasn't a nice arg (handled)",
       )
     end
 
@@ -213,19 +213,19 @@ RSpec.describe Axn do
 
     it "handles ArgumentError with prefix and custom message" do
       expect(action.call(type: :handled).error).to eq(
-        "Argument Error: Invalid input: bad argument",
+        "Default error message: Argument Error: Invalid input: bad argument",
       )
     end
 
     it "handles StandardError with prefix only" do
       expect(action.call(type: :unhandled).error).to eq(
-        "System Error: system failure",
+        "Default error message: System Error: system failure",
       )
     end
 
     it "handles nested action with prefix and custom message" do
       expect(mixed_prefix_action_class.call(type: :nested).error).to eq(
-        "Nested: Child failed: that wasn't a nice arg (handled)",
+        "Default error message: Nested: Child failed: default inner error: that wasn't a nice arg (handled)",
       )
     end
   end
@@ -521,7 +521,7 @@ RSpec.describe Axn do
 
     it "inherits child's error message when child has error mapping" do
       expect(from_without_handler_action_class.call(type: :handled).error).to eq(
-        "that wasn't a nice arg (handled)",
+        "default inner error: that wasn't a nice arg (handled)",
       )
     end
 
