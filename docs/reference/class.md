@@ -424,20 +424,31 @@ You cannot use both `if:` and `unless:` for the same message - this will raise a
 
 ## Composing error messages across actions
 
-To reshape a child action's error message in a parent, run the child with non-bang `call` and `fail!` with context on failure:
+Most of the time you don't need to do anything special: declare a base `error` on the parent and it prefixes the parent's own failures *and* any child failure surfaced via `call!`. A child that fails via `fail!` re-raises the same `Axn::Failure` (no wrapping), so the base prepends to it automatically — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
 ```ruby
 class OuterAction
   include Axn
+  error "Couldn't onboard"
 
   def call
-    result = InnerAction.call(...)
-    fail!("Outer context: #{result.error}") unless result.ok?
+    InnerAction.call!(...) # inner's fail!("email taken") surfaces as "Couldn't onboard: email taken"
   end
 end
 ```
 
-This is per-call-site (readable without cross-file search), greppable, and lets you distinguish two invocations of the same child class by position. A declared base `error "…"` on the outer action will prefix the `fail!` message by default — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
+Reach for an explicit `call` + `fail!` only when the base headline isn't enough — specifically:
+
+- **Per-call-site context**, when a single class-level headline can't express what you need (e.g. distinguishing two invocations of the same child). Don't also repeat the headline in the `fail!` string — a declared base already prefixes it (`"<base>: validating: …"`).
+
+  ```ruby
+  def call
+    a = StepA.call(...); fail!("validating: #{a.error}") unless a.ok?
+    b = StepB.call(...); fail!("charging: #{b.error}") unless b.ok?
+  end
+  ```
+
+- **Absorbing an unhandled child exception** into a clean parent failure. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!` — it propagates as an exception and is reported again at the parent (the child already reported it). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a reported-once failure carrying the child's message.
 
 ::: tip Suppressing reports for expected failures
 If an inner action raises an exception that is an expected business outcome (not a bug), declare `fails_on ExceptionClass` on the **inner** action to reclassify it into the failure bucket — it fires `on_failure`, skips `Axn.config.on_exception`, and preserves the original exception on `result.exception`. See [Suppressing reports for expected failures](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions).
