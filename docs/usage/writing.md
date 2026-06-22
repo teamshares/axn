@@ -239,18 +239,25 @@ result.error  # => "Couldn't sync user: email already taken"
 | **`prefixed: true` on static base** | Raises `ArgumentError` at declaration — a plain static entry *is* the base and cannot itself be prefixed |
 
 ```ruby
+# Declaration order matters: last-declared entry is checked first.
 class SyncUser
   include Axn
 
-  error "Couldn't sync user", delimiter: " — "    # custom delimiter
-  error "vendor not found", if: ArgumentError, prefixed: false  # never prefixed
-  error(prefixed: true, &:message)                # always prefixed with base
+  error "Couldn't sync user", delimiter: " — "        # base (custom delimiter)
+  error(prefixed: true, &:message)                     # dynamic detail — declared 2nd
+  error "vendor not found", if: ArgumentError, prefixed: false  # opt-out — declared last → highest priority
 
-  def call = raise ArgumentError, "boom"
+  def call
+    raise ArgumentError, "lookup failed"
+  end
 end
 
-SyncUser.call.error  # => "vendor not found"        (prefixed: false wins)
-                     # => "Couldn't sync user — boom" (dynamic detail, custom delimiter)
+# ArgumentError raised — prefixed: false entry wins (declared last → checked first):
+SyncUser.call.error  # => "vendor not found"
+
+# If a non-ArgumentError is raised instead — conditional doesn't match; dynamic detail wins:
+# SyncUser.call.error  # => "Couldn't sync user — <exception.message>"
+# e.g. RuntimeError "timeout" → "Couldn't sync user — timeout"
 ```
 
 ::: tip result.error vs Axn::Failure#message
