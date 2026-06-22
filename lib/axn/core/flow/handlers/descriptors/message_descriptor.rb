@@ -9,17 +9,23 @@ module Axn
         module Descriptors
           # Data structure for message configuration - no behavior, just data
           class MessageDescriptor < BaseDescriptor
-            attr_reader :prefix
+            attr_reader :prefix, :delimiter
 
-            def initialize(matcher:, handler:, prefix: nil)
+            def initialize(matcher:, handler:, prefix: nil, prefixed: false, delimiter: nil)
               @prefix = prefix
+              @prefixed = prefixed
+              @delimiter = delimiter
               super(matcher:, handler:)
             end
 
-            def self.build(handler: nil, if: nil, unless: nil, prefix: nil, from: nil, **)
+            def prefixed? = @prefixed
+
+            def self.build(handler: nil, if: nil, unless: nil, prefix: nil, prefixed: false, delimiter: nil, from: nil, **)
               new(
                 handler:,
                 prefix:,
+                prefixed:,
+                delimiter:,
                 matcher: _build_matcher(if:, unless:, from:),
               )
             end
