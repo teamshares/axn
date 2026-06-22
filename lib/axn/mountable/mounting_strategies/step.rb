@@ -38,12 +38,8 @@ module Axn
         def strategy_specific_kwargs = super + [:error_prefix]
 
         def mount_to_target(descriptor:, target:)
-          error_prefix = descriptor.options[:error_prefix] || "#{descriptor.name}: "
-          axn_klass = descriptor.mounted_axn_for(target:)
-
-          target.error from: axn_klass do |e|
-            "#{error_prefix}#{e.message}"
-          end
+          # Ensure the mounted axn class is registered (e.g. as a constant under target's namespace)
+          descriptor.mounted_axn_for(target:)
 
           # Only define #call method once
           return if target.instance_variable_defined?(:@_axn_call_method_defined_for_steps)
@@ -52,8 +48,15 @@ module Axn
             step_descriptors = self.class._mounted_axn_descriptors.select { |d| d.mount_strategy.key == :step }
 
             step_descriptors.each do |step_descriptor|
-              axn = step_descriptor.mounted_axn_for(target:)
-              step_result = axn.call!(**@__context.__combined_data)
+              axn = step_descriptor.mounted_axn_for(target: self.class)
+              error_prefix = step_descriptor.options[:error_prefix] || "#{step_descriptor.name}: "
+
+              step_result = axn.call(**@__context.__combined_data)
+              unless step_result.ok?
+                raise step_result.exception if step_result.outcome.exception?
+
+                fail!("#{error_prefix}#{step_result.error}")
+              end
 
               # Extract exposed fields from step result and update exposed_data
               step_result.declared_fields.each do |field|

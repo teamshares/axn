@@ -107,6 +107,26 @@ RSpec.describe "Step functionality" do
       expect(result).not_to be_ok
       expect(result.error).to eq("custom_name: Something went wrong")
     end
+
+    it "cascades the parent's base error into a step failure when declared" do
+      failing = build_axn do
+        error "Step boom"
+        def call = fail!("nope")
+      end
+      parent = build_axn do
+        error "Onboarding failed"
+        step "validate", failing
+      end
+      result = parent.call
+      expect(result).not_to be_ok
+      expect(result.error).to eq("Onboarding failed: validate: Step boom: nope")
+    end
+
+    it "renders step failures flat when no parent base error is declared" do
+      failing = build_axn { def call = fail!("nope") }
+      parent = build_axn { step "validate", failing }
+      expect(parent.call.error).to eq("validate: nope")
+    end
   end
 
   describe "steps without labels" do
