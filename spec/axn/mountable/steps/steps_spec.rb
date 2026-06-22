@@ -127,6 +127,19 @@ RSpec.describe "Step functionality" do
       parent = build_axn { step "validate", failing }
       expect(parent.call.error).to eq("validate: nope")
     end
+
+    it "cascades base error into a step child that declares no error and raises an unclassified exception" do
+      # Child declares no error — falls back to "Something went wrong" for unclassified exceptions
+      child = build_axn { def call = raise TypeError, "boom" }
+      parent = build_axn do
+        error "Onboarding failed"
+        step "setup", child
+      end
+      result = parent.call
+      expect(result).not_to be_ok
+      expect(result.outcome).to eq("failure")
+      expect(result.error).to eq("Onboarding failed: setup: Something went wrong")
+    end
   end
 
   describe "steps without labels" do

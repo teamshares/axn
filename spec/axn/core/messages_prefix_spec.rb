@@ -206,5 +206,12 @@ RSpec.describe "Axn error_prefix DSL" do
         build_axn { error "Headline", delimiter: " - " }
       end.not_to raise_error
     end
+
+    it "raises when delimiter: and prefixed: true are combined on a static unconditional error" do
+      # prefixed: true guard fires first (before delimiter: is evaluated) for a static message
+      expect do
+        build_axn { error "x", delimiter: " - ", prefixed: true }
+      end.to raise_error(ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message")
+    end
   end
 end

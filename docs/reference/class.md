@@ -380,9 +380,10 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
 
-# Custom message with prefix (falls back to exception message when no block/message provided)
-error(if: ArgumentError, prefix: "Foo: ") { "bar" }  # Results in "Foo: bar"
-error(if: StandardError, prefix: "Baz: ")            # Results in "Baz: [exception message]"
+# Base error prefixes a conditional reason by default
+error "Foo"                                    # base — never itself shown prefixed
+error("bar", if: ArgumentError)                # Results in "Foo: bar"
+error(if: StandardError, &:message)            # Results in "Foo: [exception message]"
 
 # Custom message with symbol predicate (arity 0)
 error "Transient error, please retry", if: :transient_error?
@@ -618,5 +619,5 @@ class SubmitOrder
 end
 ```
 
-Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with `prefix:` and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
+Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base-error prefixing and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 
