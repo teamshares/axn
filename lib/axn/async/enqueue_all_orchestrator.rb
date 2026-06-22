@@ -27,8 +27,14 @@ module Axn
       def call
         target = target_class_name.constantize
 
-        # Deserialize static_args (convert GlobalID strings back to objects)
-        deserialized_static_args = Axn::Internal::AsyncSerialization.deserialize(static_args)
+        # Mirror enqueue_for: on the ActiveJob path the adapter already deserialized
+        # static_args recursively, so only the fallback path needs a manual deserialize.
+        deserialized_static_args =
+          if Axn::Internal::AsyncSerialization._active_job_available?
+            static_args
+          else
+            Axn::Internal::AsyncSerialization.deserialize(static_args)
+          end
 
         count = self.class.execute_iteration(
           target,
@@ -76,11 +82,20 @@ module Axn
             info "[enqueue_all] Running in foreground: kwargs #{kwarg_fields.join(', ')} cannot be serialized for background execution"
             execute_iteration_without_logging(target, **static_args)
           else
-            # Serialize static_args for Sidekiq (convert GlobalID objects, stringify keys)
-            serialized_static_args = Axn::Internal::AsyncSerialization.serialize(resolved_static)
+            # static_args ride to the worker nested inside the orchestrator's own call_async
+            # kwargs, which the adapter serializes. ActiveJob's serializer recurses into that
+            # nested hash but is NOT idempotent over its own tags, so pre-serializing here would
+            # double-encode and raise. The fallback serializer is top-level-only and can't reach
+            # nested objects, so on that path we must flatten static_args here before the
+            # adapter's pass (safe: the flattened, all-string hash is untouched by pass 2).
+            static_args_payload =
+              if Axn::Internal::AsyncSerialization._active_job_available?
+                resolved_static
+              else
+                Axn::Internal::AsyncSerialization.serialize(resolved_static)
+              end
 
-            # Execute iteration in background via EnqueueAllOrchestrator
-            call_async(target_class_name: target.name, static_args: serialized_static_args)
+            call_async(target_class_name: target.name, static_args: static_args_payload)
           end
         end
 

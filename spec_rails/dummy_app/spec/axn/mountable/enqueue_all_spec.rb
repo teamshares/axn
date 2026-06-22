@@ -48,6 +48,7 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       # Verify the job is the shared EnqueueAllOrchestrator
       job = Sidekiq::Queues["default"].first
       expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
+      expect(job["args"].size).to eq(1) # single kwargs payload, not double-wrapped
       expect(job["args"].first).to include("target_class_name" => "Actions::EnqueueAll::Tester")
       expect(job["args"].first["static_args"]).to be_empty.or eq("_aj_symbol_keys" => [])
     end
@@ -185,6 +186,71 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       expect(simple_action).to receive(:call_async).with(no_args).and_return("job-id")
       result = simple_action.enqueue_all
       expect(result).to eq("job-id")
+    end
+  end
+
+  # Regression: enqueue_all used to serialize static_args manually in enqueue_for AND
+  # again inside the adapter's call_async pass. On the ActiveJob path (which Sidekiq now
+  # uses for arg serialization) the second pass recursed into the already-`_aj_*`-tagged
+  # static_args hash and raised ActiveJob::SerializationError -> UnserializableArgument.
+  # This drives the REAL call_async (no stubbing of call_async or serialization) with rich
+  # static args and asserts it enqueues without raising, then runs the orchestrator job and
+  # asserts the static args deserialize back to their original types.
+  describe "rich-type static_args round-trip through the real call_async" do
+    before do
+      User.delete_all
+    end
+
+    after do
+      User.delete_all
+    end
+
+    let(:user) { User.create!(name: "Static User", email: "static@example.com") }
+
+    let(:action_class) do
+      stub_const("Actions::EnqueueAll::RichStaticArgsTester", Class.new do
+        include Axn
+        async :sidekiq
+
+        def self.captured = @captured ||= []
+
+        expects :number
+        expects :user, model: User
+        expects :scheduled_at, type: Time
+        expects :report_kind
+
+        def call
+          self.class.captured << { user_class: user.class.name, user_id: user.id, scheduled_at:, report_kind: }
+        end
+
+        enqueues_each :number, from: -> { [1, 2] }
+      end)
+    end
+
+    it "enqueues without raising and round-trips GlobalID, Time, and Symbol static args" do
+      scheduled_at = Time.at(1_700_000_000)
+
+      expect do
+        action_class.enqueue_all(user:, scheduled_at:, report_kind: :daily)
+      end.not_to raise_error
+
+      # One orchestrator job enqueued (the fan-out itself happens when it runs).
+      expect(Sidekiq::Queues["default"].size).to eq(1)
+      job = Sidekiq::Queues["default"].first
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
+
+      # Run the orchestrator inline: it deserializes static_args and fans out the per-number jobs,
+      # which (still inline) execute and capture the restored static arg types.
+      Sidekiq::Testing.inline! do
+        job["class"].constantize.send(:new).perform(job["args"].first)
+      end
+
+      captured = action_class.captured
+      expect(captured.size).to eq(2) # numbers 1 and 2
+      expect(captured.map { |c| c[:user_class] }.uniq).to eq(["User"])
+      expect(captured.map { |c| c[:user_id] }.uniq).to eq([user.id])
+      expect(captured.map { |c| c[:scheduled_at] }.uniq).to eq([scheduled_at])
+      expect(captured.map { |c| c[:report_kind] }.uniq).to eq([:daily])
     end
   end
 
