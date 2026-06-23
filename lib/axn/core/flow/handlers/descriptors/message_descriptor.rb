@@ -34,8 +34,14 @@ module Axn
             def self.reject_unsupported_options!(options)
               return if options.empty?
 
-              key = options.keys.first
-              raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(key) { "Unknown #{key.inspect} option for error/success message" }
+              # Prefer a removed-option migration hint (most actionable); otherwise surface ALL unknown
+              # keys at once so the caller fixes them in one pass rather than one error at a time.
+              removed = options.keys & REMOVED_OPTION_MESSAGES.keys
+              raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(removed.first) if removed.any?
+
+              keys = options.keys.map(&:inspect).join(", ")
+              label = options.size == 1 ? "Unknown #{keys} option" : "Unknown options #{keys}"
+              raise ArgumentError, "#{label} for error/success message"
             end
 
             def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, delimiter: nil, **unsupported)

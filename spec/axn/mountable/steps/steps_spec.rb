@@ -140,6 +140,23 @@ RSpec.describe "Step functionality" do
       expect(result.outcome).to eq("failure")
       expect(result.error).to eq("Onboarding failed: setup: Something went wrong")
     end
+
+    it "runs inherited steps when a step-mounting action is subclassed" do
+      # The generated #call resolves each step via mounted_axn_for(target: self.class) at runtime, so a
+      # subclass (whose self.class differs from the class the step was declared on) must still resolve
+      # and run its inherited steps correctly.
+      failing = build_axn do
+        error "Step boom"
+        def call = fail!("nope")
+      end
+      stub_const("BaseStepParent", build_axn do
+        error "Parent failed"
+        step "validate", failing
+      end)
+      stub_const("SubStepParent", Class.new(BaseStepParent))
+
+      expect(SubStepParent.call.error).to eq("Parent failed: validate: Step boom: nope")
+    end
   end
 
   describe "steps without labels" do

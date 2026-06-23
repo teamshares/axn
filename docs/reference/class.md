@@ -363,8 +363,10 @@ error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" 
 
 # Base error prefixes a conditional reason by default
 error "Foo"                                    # base — never itself shown prefixed
-error("bar", if: ArgumentError)                # Results in "Foo: bar"
-error(if: StandardError, &:message)            # Results in "Foo: [exception message]"
+error("bar", if: ArgumentError)                # ArgumentError => "Foo: bar"
+error(if: TypeError, &:message)                # TypeError     => "Foo: <exception.message>"
+# (reasons are checked last-declared-first; if two conditional reasons both match the same
+#  exception, the later-declared one wins — keep their matchers disjoint to avoid surprises)
 
 # Custom message with symbol predicate (arity 0)
 error "Transient error, please retry", if: :transient_error?

@@ -17,8 +17,11 @@ module Axn
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    # The action whose `fail!` raised this. `prefixed:` is scoped to that action: an ancestor that
-    # catches a bubbled child Failure still applies its OWN base prefix (the child's opt-out is local).
+    # The action whose `fail!` raised this. We hold the action OBJECT (compared by identity in
+    # Result#_fail_prefixed?), not its object_id — consistent with ExceptionClassification's
+    # identity keying, which deliberately avoids the freed-then-reused-object_id collision hazard.
+    # `prefixed:` is scoped to that action: an ancestor that catches a bubbled child Failure still
+    # applies its OWN base prefix (the child's opt-out is local).
     # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
     # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
     attr_reader :__originating_action

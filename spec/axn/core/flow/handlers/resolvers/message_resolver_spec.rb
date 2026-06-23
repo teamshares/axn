@@ -21,7 +21,7 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
       descriptor = build_descriptor(handler: "Message 1")
       allow(resolver).to receive(:matching_entries).and_return([descriptor])
       allow(resolver).to receive(:body_for).with(descriptor).and_return("Message 1")
-      allow(resolver).to receive(:base?).and_return(false)
+      allow(resolver).to receive(:reason?).and_return(true) # the descriptor IS a selectable reason
       expect(resolver.resolve_message).to eq("Message 1")
     end
 

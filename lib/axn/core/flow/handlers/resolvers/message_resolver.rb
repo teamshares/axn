@@ -43,8 +43,9 @@ module Axn
 
             # Unconditional, non-prefixed entries with a handler — the headline candidates. The handler
             # kind (literal/block/symbol) is irrelevant; only conditionality + prefixed: decide the role.
-            # Applies to both :error and :success events.
-            def base_candidates = candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
+            # Applies to both :error and :success events. Memoized: a resolver is single-use, and this
+            # is consulted once per matching entry (via reason?/base_descriptor) plus once by resolved_base.
+            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
 
             # The headline that actually resolves, as [descriptor, body]. Headlines form a fallback chain
             # (most-recent first — see Registry): a headline whose block raises or returns blank falls

@@ -22,7 +22,7 @@ module Axn
 
         # `fails_on` stickiness: a classified failure stays a failure (no report, failure outcome) as
         # it bubbles up — mirroring how Axn::Failure is sticky via its class.
-        def failure?(exception) = !exception.nil? && _failures.include?(exception)
+        def failure?(exception) = _failures.include?(exception)
         def mark_failure!(exception) = _failures.add(exception)
 
         # Called by NestingTracking when the outermost action finishes.

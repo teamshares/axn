@@ -119,6 +119,23 @@ RSpec.describe "Nested exception reporting (report once)" do
       expect(reports.size).to eq(1) # and is reported
       expect(reports.first.last).to eq(ParentOwnBug)
     end
+
+    it "keeps an already-reported inner exception reported even when an ancestor's fails_on reclassifies it to failure" do
+      # Mixed outcome (documented sharp edge): classification flows OUTWARD only. The inner action
+      # does not expect ArgumentError → it reports it as a bug. The ancestor's fails_on then
+      # reclassifies the bubbled object to a failure for the *outcome*, but cannot un-send the report
+      # the inner level already emitted. Declare fails_on on the action that RAISES to suppress it.
+      stub_const("InnerReportsBug", build_axn { def call = raise(ArgumentError, "boom") }) # no fails_on
+      stub_const("OuterReclassifies", build_axn do
+        fails_on(ArgumentError) # ancestor treats it as expected — too late to suppress the report
+        def call = InnerReportsBug.call!
+      end)
+
+      result = OuterReclassifies.call
+      expect(result.outcome).to eq("failure") # ancestor's classification wins for the outcome
+      expect(reports.size).to eq(1)           # ...but the inner level already reported it
+      expect(reports.first.last).to eq(InnerReportsBug)
+    end
   end
 
   it "still fires each action's own on_exception callback at its level (only the global report is deduped)" do
@@ -185,6 +202,23 @@ RSpec.describe "Nested exception reporting (report once)" do
 
       OuterEq.call
       expect(reports.size).to eq(2) # both distinct objects reported, not deduped by value
+    end
+
+    # Defensive: the normal lifecycle clears state on the way OUT (when the stack empties). But if a
+    # prior run ever left state behind without draining the stack (e.g. an executor invoked outside
+    # NestingTracking.tracking, or an aborted teardown), a fresh top-level run must NOT inherit a
+    # stale "already reported" mark and silently drop a real report. tracking also resets on the way
+    # IN whenever it opens a fresh (empty-stack) tree.
+    it "does not inherit report-dedup state leaked from a prior run (entry-guard reset)" do
+      leaked = RuntimeError.new("leaked boom")
+      Axn::Internal::ExceptionClassification.mark_reported!(leaked) # simulate leftover state
+      expect(Axn::Internal::ExceptionClassification.reported?(leaked)).to be(true)
+
+      klass = build_axn {}
+      klass.send(:define_method, :call) { raise leaked } # raise the SAME object that was pre-marked
+
+      expect(klass.call).not_to be_ok
+      expect(reports.size).to eq(1) # reported despite the stale mark — entry-guard cleared it
     end
   end
 end

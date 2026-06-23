@@ -54,8 +54,13 @@
 - Produces: `MessageDescriptor#prefixed?` → Boolean, `MessageDescriptor#delimiter` → String|nil.
 - Produces: `error`/`success` accept `prefixed: true|false` and `delimiter: String`.
 - Validation rules (raise `ArgumentError` at declaration):
-  - `prefixed: true` requires a condition (`if:`/`unless:`) **or** a dynamic message (block/Symbol/callable).
-  - `delimiter:` only on a base message (no `if:`/`unless:`, not prefixed, static handler).
+  - ~~`prefixed: true` requires a condition (`if:`/`unless:`) **or** a dynamic message (block/Symbol/callable).~~
+    **Revised during implementation:** `prefixed: true` on a static unconditional message no longer
+    raises — it *promotes* the entry to a prefixed reason. Conditionality sets the default role;
+    `prefixed:` is the explicit override. See the design spec's "`prefixed:` role & validity" and the
+    `messages_prefix_spec` declaration-validation examples (which assert `not_to raise_error`). The
+    Step 1 snippet below reflects the original, superseded rule.
+  - `delimiter:` only on a base message (no `if:`/`unless:`, not prefixed). This rule shipped as-is.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -633,7 +638,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] **Step 1: Add CHANGELOG entry**
 
 ```markdown
-* [FEAT] A declared base `error "…"` now prefixes the action's specific failure *reasons* — conditional `error … if:`, dynamic `error` blocks, and `fail!` messages — rendered as `"<base><delimiter><reason>"`. Prefixing is on by default for reasons (`prefixed: true`) and **gated by a declared base** (no base ⇒ reasons render standalone, unchanged). Opt a single reason out with `prefixed: false` (on the declaration or on `fail!`). The join string is `delimiter:` on the base (default `": "`). `success`/`done!` mirror this. A static unconditional `error` is the base and is never itself prefixed (`prefixed: true` on it raises at declaration); `error(prefixed: true, &:message)` is the unconditional-dynamic detail form.
+* [FEAT] A declared base `error "…"` now prefixes the action's specific failure *reasons* — conditional `error … if:`, dynamic `error` blocks, and `fail!` messages — rendered as `"<base><delimiter><reason>"`. Prefixing is on by default for reasons (`prefixed: true`) and **gated by a declared base** (no base ⇒ reasons render standalone, unchanged). Opt a single reason out with `prefixed: false` (on the declaration or on `fail!`). The join string is `delimiter:` on the base (default `": "`). `success`/`done!` mirror this. A static unconditional `error` is the base headline; `prefixed: true` *promotes* an unconditional entry to a prefixed reason (it does NOT raise — superseded the original "raises at declaration" rule), e.g. `error(prefixed: true, &:message)` is the unconditional-dynamic detail form. (See the shipped CHANGELOG for the authoritative wording.)
 ```
 
 - [ ] **Step 2: Find + update the messages doc**

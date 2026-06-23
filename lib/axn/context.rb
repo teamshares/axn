@@ -45,10 +45,11 @@ module Axn
     def __classified_as_failure? = @classified_as_failure || false
 
     def __record_early_completion(message, prefixed: true)
-      unless message == Axn::Internal::EarlyCompletion.new.message
-        @early_completion_message = message
-        @early_completion_prefixed = prefixed
-      end
+      # Only store a real (non-sentinel) message, but always record the prefixed opt-out so a bare
+      # `done!(prefixed: false)` isn't silently dropped (it's moot when no message resolves, but the
+      # flag must reflect the call rather than retain the default).
+      @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
+      @early_completion_prefixed = prefixed
       @early_completion = true
       @finalized = true
     end

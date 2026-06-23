@@ -129,6 +129,47 @@ RSpec.describe "Axn error_prefix resolution" do
     end
     it { is_expected.to eq("Base: detail") }
   end
+
+  context "a headline block that RAISES falls back to an earlier headline (and that headline's delimiter)" do
+    # The resolver promises "a headline whose block raises or returns blank falls back to an earlier
+    # one" (message_resolver.rb). The blank case is covered above; this locks in the *raises* case,
+    # which depends on body_for → Invoker.call rescuing internally.
+    let(:action) do
+      build_axn do
+        error "Earlier base"
+        error { raise "kaboom in headline" } # newest base raises → must be skipped
+        error "detail", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Earlier base: detail") }
+  end
+
+  context "a declared-but-blank base still gates reasons as prefixed, then drops the empty prefix" do
+    # The base IS declared (so the reason is treated as prefixed), but it resolves blank — so
+    # with_base_prefix must drop the empty prefix rather than render a leading ": ".
+    let(:action) do
+      build_axn do
+        error "" # base declared, resolves blank
+        error "lonely reason", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("lonely reason") }
+  end
+
+  context "when multiple conditional reasons match, the most-recently-declared wins" do
+    # Reasons are checked last-declared-first; both match an ArgumentError, so the later one wins.
+    let(:action) do
+      build_axn do
+        error "Base"
+        error "general", if: StandardError
+        error "specific", if: ArgumentError # declared later → checked first → wins
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Base: specific") }
+  end
 end
 
 RSpec.describe "Axn error_prefix on fail!" do
@@ -183,6 +224,31 @@ RSpec.describe "Axn success prefixing parity" do
       end
     end
     it { is_expected.to eq("Already current.") }
+  end
+
+  context "done!(nil, prefixed: false) — no message, opt-out is moot, base resolves cleanly" do
+    # The prefixed:false flag must be recorded (not silently dropped), but with no message there is
+    # no reason to prefix, so the base headline resolves as usual.
+    let(:action) do
+      build_axn do
+        success "User synced"
+        def call = done!(nil, prefixed: false)
+      end
+    end
+    it { is_expected.to eq("User synced") }
+  end
+
+  context "a child's done!(prefixed: false) does not suppress the PARENT's own success base" do
+    # The success opt-out is read from the context flag (not action-scoped) — safe because a child
+    # early-completion never bubbles through the parent: call! swallows it and returns an ok result.
+    let(:action) do
+      child = build_axn { def call = done!("from cache", prefixed: false) }
+      build_axn do
+        success "User synced"
+        define_method(:call) { child.call! } # child early-completes ok; parent resolves its own base
+      end
+    end
+    it { is_expected.to eq("User synced") }
   end
 
   context "conditional success reason prefixed" do

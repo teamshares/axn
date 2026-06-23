@@ -96,8 +96,10 @@ class Actions::Zendesk::User::Sync
 end
 ```
 
-- **Base `error`**: the unconditional, static `error "…"` declaration. It is the headline / prefix
-  source and the bare-exception fallback. It is never itself prefixed.
+- **Base `error`**: the unconditional `error "…"` declaration — string **or** block; the handler
+  kind carries no meaning, conditionality alone sets the role (revised during implementation, see
+  `prefixed:` validity below). It is the headline / prefix source and the bare-exception fallback.
+  It is never itself prefixed unless explicitly promoted with `prefixed: true`.
 - **`prefixed:`** — boolean, controls whether a given reason receives the base prefix.
   - **Default `true`** (composition is the preferred pattern for downstream context).
   - **Gated by a declared base**: with no base declared, there is nothing to prefix, so reasons
@@ -112,15 +114,24 @@ end
   error "Couldn't sync user", delimiter: " — "   # → "Couldn't sync user — email taken"
   ```
 
-#### `prefixed:` validity (fail at declaration)
+#### `prefixed:` role & validity
 
-- `prefixed: true` requires **either a condition (`if:`/`unless:`) or a dynamic handler
-  (block/symbol)**. A static, unconditional `error "x", prefixed: true` raises `ArgumentError` at
-  declaration — a static unconditional message is a base/headline, not a reason, so prefixing it is
-  nonsensical ("put it in the base").
-- This permits the legitimate **unconditional dynamic detail** — `error(prefixed: true, &:message)`
-  → always `"<base>: <exception.message>"` (replaces the removed `prefix:`-only pattern, see
-  Migration).
+> **Revised during implementation** (commit "Make message base/reason role hinge on conditionality,
+> not literal-vs-block"). The original design rejected `prefixed: true` on a static unconditional
+> message at declaration. The shipped behavior instead lets it *promote*: conditionality alone sets
+> the default role, and `prefixed:` is the explicit override. This is what the CHANGELOG, the
+> `messages_prefix_spec` suite, and `MessageDescriptor.build` all implement.
+
+- **Default role** is set by conditionality, independent of handler kind: an *unconditional*
+  `error`/`success` (string **or** block) is the **base headline**; a *conditional* (`if:`/`unless:`)
+  one is a prefixed **reason**.
+- **`prefixed: true`** is the explicit override: it *promotes* an unconditional entry to a prefixed
+  reason — no `ArgumentError` is raised. This is what enables the **unconditional dynamic detail**
+  form `error(prefixed: true, &:message)` → always `"<base>: <exception.message>"` (replaces the
+  removed `prefix:`-only pattern, see Migration).
+- **`delimiter:` validity still fails at declaration**: `delimiter:` only applies to the base (an
+  unconditional, non-prefixed headline). Combining it with `prefixed: true` or a conditional entry
+  raises `ArgumentError`, since those are reasons, not the base.
 
 #### Resolution order
 
@@ -279,15 +290,17 @@ Non-Rails `spec/` (POROs) plus `spec_rails/dummy_app/` for AR-specific paths (pe
 - **Prefixing**: base + prefixed reason; `prefixed: false` opt-out on `error … if:` and on `fail!`;
   no-base gate (reasons standalone, `"Something went wrong"` fallback); custom `delimiter:`;
   unconditional dynamic detail (`error(prefixed: true, &:message)`); `done!`/success parity.
-- **Declaration-time raises**: `prefixed: true` on a static unconditional `error` raises.
+- **Declaration-time raises**: `delimiter:` on a reason (a conditional entry or one marked
+  `prefixed: true`) raises. (`prefixed: true` on a static unconditional entry does NOT raise — it
+  *promotes* the entry to a prefixed reason; see §"`prefixed:` role & validity".)
 - **Nesting parity**: a nested `call!` failure raises the inner's original exception (same as
   top-level); `Axn::Failure` is never auto-wrapped; no `source`; the explicit `call`+`fail!` idiom
   composes a child's `result.error`.
 - **Honeybadger/`on_exception` shape** (regression for PR-1806): a `fail!` (nested or not) does not
   report; an `Axn::Failure` never appears as a mysterious wrapper.
 - **Migrated strategies**: `step` prefixes child failures with `"#{name}: "` by default and honors
-  `error_prefix:`; `use :model` validation-body output (with and without `error_prefix:`) is
-  byte-identical to today.
+  `error_prefix:`; `use :model` validation-body output renders both standalone and prefixed by a
+  base `error` declared after `use :model` (the strategy's old `error_prefix:` kwarg was removed).
 
 ---
 

@@ -10,6 +10,11 @@ module Axn
 
       # Tracks nesting of axn calls for logging/debugging purposes
       def self.tracking(axn)
+        # Opening a fresh call tree (empty stack): clear any per-execution exception bookkeeping that
+        # a prior run might have left behind without draining the stack (e.g. an executor invoked
+        # outside this wrapper, or an aborted teardown). Defends against a stale "already reported"
+        # mark on a reused thread/fiber silently suppressing a real report.
+        Axn::Internal::ExceptionClassification.reset! if _current_axn_stack.empty?
         _current_axn_stack.push(axn)
         yield
       ensure

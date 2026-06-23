@@ -73,6 +73,10 @@ module Axn
       OUTCOME_EXCEPTION = "exception",
     ].freeze
 
+    # Deliberately NOT memoized (unlike #error/#success): outcome reflects classification state that
+    # can finalize at different points during dispatch (records #2/#3 below), so a value read early —
+    # e.g. by an ancestor's on_error before this level's context flag is set — must not be frozen in.
+    # The recompute is cheap: it short-circuits on the common paths and only allocates a StringInquirer.
     def outcome
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
@@ -94,9 +98,8 @@ module Axn
       ActiveSupport::StringInquirer.new(label)
     end
 
-    # Internal accessor for the action instance
-    # Internal accessor for the underlying action instance (used by introspection/tests); should be
-    # private if possible.
+    # Internal accessor for the underlying action instance (used by introspection and tests). It is a
+    # reserved public field — see reserved_attribute_names_spec — so it stays public.
     def __action__ = @action
 
     # Enable pattern matching support for Ruby 3+
@@ -142,16 +145,21 @@ module Axn
 
     def _resolve_error
       reason = _user_provided_error_message
-      return _msg_resolver(:error, exception:).resolve_message unless reason
+      resolver = _msg_resolver(:error, exception:)
+      return resolver.resolve_message unless reason
 
-      _fail_prefixed? ? _msg_resolver(:error, exception:).with_base_prefix(reason) : reason
+      _fail_prefixed? ? resolver.with_base_prefix(reason) : reason
     end
 
     def _resolve_success
       reason = _user_provided_success_message
-      return _msg_resolver(:success, exception: nil).resolve_message unless reason
+      resolver = _msg_resolver(:success, exception: nil)
+      return resolver.resolve_message unless reason
 
-      @context.__early_completion_prefixed ? _msg_resolver(:success, exception: nil).with_base_prefix(reason) : reason
+      # The prefixed opt-out is read from the context flag (not action-scoped like _fail_prefixed?)
+      # because a child `done!` never bubbles as an EarlyCompletion through a parent — `call!` swallows
+      # it and returns an ok result — so this flag only ever reflects THIS action's own opt-out.
+      @context.__early_completion_prefixed ? resolver.with_base_prefix(reason) : reason
     end
 
     def _user_provided_success_message

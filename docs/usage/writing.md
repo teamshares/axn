@@ -266,6 +266,10 @@ SyncUser.call.error  # => "vendor not found"
 Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
 :::
 
+::: warning Error/success message bodies are not redacted
+Message text is treated as authored, user-facing copy — it is **not** passed through the sensitive-field filtering that protects `inspect` output and the `context:` payload sent to `on_exception`. Because a base now composes with reasons, and a `step` cascade interpolates a child's `result.error` into the parent's failure (`"Parent base: Step 1: child reason"`), any detail you interpolate into an `error`/`success`/`fail!` body propagates outward to every ancestor's `result.error` — and onward to logs and error trackers. **Do not interpolate secrets or PII into message bodies.** Put sensitive values in `expects`/`exposes` fields (which are filterable) instead.
+:::
+
 ::: tip Declaration order
 The base is identified by shape (an unconditional `error`/`success`, literal or block), so a single base's position among declarations doesn't matter. When **more than one reason** could match the same failure — or if you declare more than one unconditional headline — the last-declared one wins (entries are checked in reverse-declaration order), so declare the most-specific reasons last.
 
