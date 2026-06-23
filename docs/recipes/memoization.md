@@ -24,11 +24,11 @@ class GenerateReport
 
   private
 
-  memo def top_products
+  memo def top_products # [!code focus]
     company.products.order(sales_count: :desc).limit(10)
   end
 
-  memo def total_revenue
+  memo def total_revenue # [!code focus]
     company.orders.sum(:total)
   end
 end
@@ -69,7 +69,7 @@ class CalculatePricing
 
   private
 
-  memo def price_for(tier)
+  memo def price_for(tier) # [!code focus]
     # Complex pricing calculation...
     PricingEngine.calculate(product, tier:)
   end
@@ -106,7 +106,7 @@ class SyncUserData
   private
 
   # Called multiple times - only fetches once
-  memo def external_data
+  memo def external_data # [!code focus]
     ExternalApi.fetch_user_data(user.external_id)
   end
 

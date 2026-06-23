@@ -139,7 +139,7 @@ class PaymentAction
 
   def call
     # This will NOT trigger retries - job completes immediately
-    fail! "Card declined" if card_declined?
+    fail! "Card declined" if card_declined? # [!code focus]
   end
 end
 ```
@@ -159,7 +159,7 @@ class SyncAction
 
   def call
     # This WILL trigger retries
-    raise NetworkError, "Connection timeout"
+    raise NetworkError, "Connection timeout" # [!code focus]
   end
 end
 ```

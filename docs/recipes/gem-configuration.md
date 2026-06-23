@@ -8,7 +8,7 @@ If your gem needs its own settings, you can declare them with the same machinery
 module Axn::MCP
   extend Axn::Configurable
 
-  setting :mcp_text_content, default: :structured, one_of: %i[structured message]
+  setting :mcp_text_content, default: :structured, one_of: %i[structured message] # [!code focus]
 end
 ```
 

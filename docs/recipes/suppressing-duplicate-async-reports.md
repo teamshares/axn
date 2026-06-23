@@ -19,7 +19,7 @@ Add a known key when calling your error reporter from `on_exception`:
 Axn.configure do |c|
   c.on_exception = proc do |e, action:, context:|
     # Tag this notice as Axn-authored so we can identify it in before_notify filters
-    Honeybadger.notify(e, context: context.merge(axn: true))
+    Honeybadger.notify(e, context: context.merge(axn: true)) # [!code focus]
   end
 end
 ```

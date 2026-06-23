@@ -208,7 +208,7 @@ class SyncForCompany
   include Axn
   async :sidekiq
 
-  expects :company, model: Company
+  expects :company, model: Company # [!code focus]
 
   def call
     puts "Syncing data for company: #{company.name}"
@@ -238,7 +238,7 @@ class SyncForCompany
   include Axn
   async :sidekiq
 
-  expects :company, model: Company  # Auto-inferred: Company.all
+  expects :company, model: Company  # Auto-inferred: Company.all # [!code focus]
 
   def call
     # ... sync logic
@@ -374,7 +374,7 @@ class SyncForUserAndCompany
     # ... sync logic for user + company combination
   end
 
-  enqueues_each :user, from: -> { User.active }
+  enqueues_each :user, from: -> { User.active } # [!code focus:2]
   enqueues_each :company, from: -> { Company.active }
 end
 
@@ -392,7 +392,7 @@ class SyncWithMode
   include Axn
   async :sidekiq
 
-  expects :company, model: Company  # Auto-inferred, will iterate
+  expects :company, model: Company  # Auto-inferred, will iterate # [!code focus:2]
   expects :sync_mode                 # Static, must be provided
 
   def call
@@ -423,7 +423,7 @@ class StockCertificate::EoyTaxReminder
   expects :tax_profile, model: TaxProfile
   enqueues_each :tax_profile, from: -> { TaxProfile.needs_address_validation }
 
-  on_enqueue_all do |sources:, count:|
+  on_enqueue_all do |sources:, count:| # [!code focus:4]
     active, inactive = sources[:tax_profile].partition { _1.user.active? }
     SlackSender.call(channel: :eng_ops, text: "#{active.size} active, #{inactive.size} deactivated (#{count} enqueued)")
   end

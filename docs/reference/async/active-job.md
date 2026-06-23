@@ -96,7 +96,7 @@ class PaymentAction
 
   def call
     # This will NOT trigger retries - job completes immediately
-    fail! "Card declined" if card_declined?
+    fail! "Card declined" if card_declined? # [!code focus]
   end
 end
 ```
@@ -118,7 +118,7 @@ class SyncAction
 
   def call
     # This WILL trigger retries (if NetworkError)
-    raise NetworkError, "Connection timeout"
+    raise NetworkError, "Connection timeout" # [!code focus]
   end
 end
 ```
@@ -199,7 +199,7 @@ class MyAction
   include Axn
 
   async :active_job do
-    discard_on ValidationError  # Will trigger on_exception when discarded
+    discard_on ValidationError  # Will trigger on_exception when discarded # [!code focus:2]
     retry_on NetworkError, attempts: 3  # Will trigger on_exception when exhausted
   end
 

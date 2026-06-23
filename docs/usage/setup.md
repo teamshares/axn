@@ -29,7 +29,7 @@ When using Axn in a Rails application, you can configure how actions are autoloa
 # config/initializers/axn.rb
 Axn.configure do |c|
   # Use :Actions namespace to differentiate from existing service objects
-  c.rails.app_actions_autoload_namespace = :Actions
+  c.rails.app_actions_autoload_namespace = :Actions # [!code focus]
 end
 ```
 
