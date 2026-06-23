@@ -496,7 +496,7 @@ module Axn
       return false unless failed.include?(_root_wire_field(config.on))
 
       parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
-      !_extractable?(parent, config.field)
+      !_extractable?(config.on, parent, config.field)
     rescue StandardError
       # Resolving the parent itself failed (e.g. a dotted/nested path dug against a missing root) —
       # the subfield can't be evaluated, so its failure is derived from the parent's.
@@ -507,11 +507,32 @@ module Axn
     # Hash-like sources (dig, excluding Array) support named-key access; otherwise the reader must
     # exist. We deliberately don't *call* the reader here — that's the real validation's job, and a
     # reader that raises must surface as a bug, not be misread as "unextractable."
-    def _extractable?(source, field)
+    #
+    # A parent that failed its own declared `type:` is the *wrong shape*: its subfields are derived
+    # from that shape failure, not independent. So check the declared type first — otherwise a value
+    # of the wrong type that happens to answer the subfield's reader (e.g. `Array#count` for a parent
+    # declared `type: Hash`) would look extractable and let a spurious subfield error page, masking
+    # the parent's clean user-facing wrong-shape message.
+    def _extractable?(parent_on, source, field)
       return false if source.nil?
+      return false unless _parent_matches_declared_type?(parent_on, source)
       return true if source.respond_to?(:dig) && !source.is_a?(Array)
 
       source.respond_to?(field)
+    end
+
+    # True unless the parent reader names a declared field/subfield with a `type:` that `source`
+    # violates. Only a single-segment `on:` names a config with its own declared type; a dotted leaf
+    # (`"payload.meta"`) has none of its own, so it can't contradict one — fall through to structural.
+    def _parent_matches_declared_type?(parent_on, source)
+      return true if parent_on.to_s.include?(".")
+
+      config = (@action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs))
+               .find { |c| c.reader_as.to_s == parent_on.to_s }
+      klasses = config&.validations&.dig(:type, :klass)
+      return true if klasses.nil?
+
+      Array(klasses).any? { |klass| Axn::Validators::TypeValidator.value_matches?(source, klass:) }
     end
 
     # Walk a subfield's `on:` reader path back to its ultimate top-level *wire* field — the key

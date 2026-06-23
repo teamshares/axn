@@ -440,6 +440,45 @@ RSpec.describe "expects ..., user_facing:" do
       expect(fired).to contain_exactly(:exception)
     end
 
+    it "treats a wrong-shaped parent as derived even when a coincidental method matches the subfield" do
+      # payload fails its own type: Hash (it's an Array), so it's a clean user-facing wrong-shape
+      # case. Array#count coincidentally answers the :count subfield reader — but the parent is the
+      # wrong shape, so the subfield is derived and must not turn the user-facing failure into a page.
+      fired = []
+      recorder = fired
+      action = build_axn do
+        expects :payload, type: Hash, user_facing: true
+        expects :count, on: :payload, type: String
+
+        on_failure { recorder << :failure }
+        on_exception { recorder << :exception }
+
+        def call = nil
+      end
+      result = action.call(payload: [])
+      expect(result.outcome).to be_failure
+      expect(fired).to contain_exactly(:failure)
+      expect(result.error).to match(/Payload.*Hash/)
+    end
+
+    it "still lets an independent subfield dominate for a valid object parent that failed a custom validation" do
+      # The opposite of the wrong-shape case: :user satisfies its declared type (a real User object)
+      # but failed a custom validate:. Its :name subfield is independently the wrong type, so that
+      # dev-facing violation still dominates — object-source extraction must not be over-skipped.
+      user_klass = Class.new do
+        def self.name = "User"
+        def initialize(name) = @name = name
+        attr_reader :name
+      end
+      action = build_axn do
+        expects :user, type: user_klass, user_facing: true, validate: ->(_u) { "is inactive" }
+        expects :name, on: :user, type: Integer
+        def call = nil
+      end
+      result = action.call(user: user_klass.new("bob"))
+      expect(result.outcome).to be_exception
+    end
+
     it "never invokes a user_facing handler when an extractable parent's subfield dominates" do
       invoked = []
       recorder = invoked

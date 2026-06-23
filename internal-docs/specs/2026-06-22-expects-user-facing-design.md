@@ -78,15 +78,21 @@ Dominance is scoped to *independent* dev-facing violations. A subfield/model che
    rooted at another subfield) back to its top-level wire key — reusing the action's existing
    `_wire_parent_key` for the alias step rather than duplicating that mapping.
 2. **That parent value can't be extracted from** — missing or the wrong shape — so reading the
-   subfield is meaningless. This is tested *structurally* (mirroring the Extract resolver's
+   subfield is meaningless. Extractability is tested *structurally* (mirroring the Extract resolver's
    source-shape branches) **without invoking the reader**: a reader that raises a genuine bug must
    surface as a dev-facing exception via the real validation, never be swallowed into a derived skip.
+   Crucially, the check is **shape-aware**: a parent that failed its own declared `type:` is the
+   wrong shape, so its subfields are derived even if the value coincidentally answers the subfield's
+   reader (e.g. `Array#count` for a parent declared `type: Hash`). Method presence alone doesn't make
+   a wrong-typed value extractable.
 
 So with `expects :payload, type: Hash, user_facing: true` plus `expects :id, on: :payload`, an
-omitted/non-Hash `payload` makes `:id` unextractable → derived → the parent's message surfaces. But a
-`payload` that resolves to a readable container is extractable even if it failed some *other*
-top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash) — its subfield's own
-contract violation (`:id` of the wrong type) is then genuinely independent and still dominates.
+omitted/wrong-shaped `payload` makes `:id` derived → the parent's message surfaces (a caller who sent
+the wrong shape gets the clean user-facing "Payload is not a Hash", not a spurious subfield page). But
+a `payload` that satisfies its declared type and resolves to a readable container is extractable even
+if it failed some *other* top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash,
+or a valid object that failed a custom check) — its subfield's own contract violation (`:id` of the
+wrong type) is then genuinely independent and still dominates.
 
 ## Outcome shape (when all failing fields are user-facing)
 
