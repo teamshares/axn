@@ -56,6 +56,10 @@ OtherTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.con
 
 Overrides are stored per-class and inherited by subclasses, so a gem can set a default for all of its actions through a shared base class. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
 
+::: warning Load order
+`Foo.overrides` only exists once `Foo` has run `extend Axn::Configurable`, and an action captures the override accessors at the moment it runs `include Foo.overrides`. So your namespace's `extend Axn::Configurable` must be evaluated **before** any action that includes its overrides is defined — in practice, declare the module (the `extend` line) above the `require`s that pull in your actions. The order of individual `setting` declarations does not matter: a setting declared after an action includes the overrides is still picked up.
+:::
+
 ## Declaring validated settings on a class
 
 The same kernel powers Axn's own `Axn::Configuration`. If you have a plain class (rather than a singleton namespace) that needs validated settings-with-defaults on its instances, extend `Axn::Configurable::Settings`:
