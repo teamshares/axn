@@ -68,12 +68,16 @@ This preserves the invariant **a real contract bug always pages**. A genuine typ
 never masked behind a friendly "Note can't be blank" — you fix the bug first, and only once the
 contract is otherwise sound does the user-facing message become the thing the caller sees.
 
-Dominance is scoped to *independent* dev-facing violations. A subfield/model check that hangs off a
-failed `user_facing:` parent (e.g. `expects :payload, type: Hash, user_facing: true` plus
-`expects :id, on: :payload`) is **derived** from that parent's failure — extracting `:id` against a
-missing/invalid `payload` can't succeed — so it does **not** dominate; the parent's user-facing
-message surfaces. Only subfield/model violations whose parent validated cleanly are independent
-enough to win.
+Dominance is scoped to *independent* dev-facing violations. The discriminator is **extractability**:
+a subfield/model check is *derived* exactly when its parent value can't be extracted from — missing
+or the wrong shape — so reading the subfield is meaningless. With `expects :payload, type: Hash,
+user_facing: true` plus `expects :id, on: :payload`, an omitted/non-Hash `payload` makes the `:id`
+extraction fail, so that derived check does **not** dominate; the parent's user-facing message
+surfaces. But a parent that resolves to a readable container *is* extractable even if it failed some
+*other* top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash) — its subfield's
+own contract violation (`:id` of the wrong type) is then genuinely independent and still dominates.
+Extractability is tested by attempting the extraction (reusing the Extract resolver), not by matching
+the parent's field name — so aliased (`as:`), dotted, and subfield-rooted `on:` all fall out for free.
 
 ## Outcome shape (when all failing fields are user-facing)
 

@@ -351,11 +351,13 @@ module Axn
 
       # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
       # violation still wins, so run those first and let any such error propagate unreclassified.
-      # A subfield/model check that hangs off one of the *failed* user-facing parents is derived
-      # from that failure (extraction against a broken parent), not independent — skip it so it
-      # can't mask the parent's own user-facing message.
-      validate_subfields_contract!(skip_parents: failing)
-      validate_model_consistency!(skip_fields: failing)
+      # A subfield/model check is *derived* (skipped) only when its parent value can't be extracted
+      # from — missing or the wrong shape — so the check is meaningless and must not mask the
+      # parent's own user-facing message. A parent that resolves to a readable container is
+      # extractable, so its subfield's own contract violation is independent and still dominates,
+      # even if the parent itself failed some other top-level validation (e.g. a custom `validate:`).
+      validate_subfields_contract!(skip_derived: true)
+      validate_model_consistency!(skip_derived: true)
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
       # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
@@ -405,14 +407,17 @@ module Axn
     # field's validation errors — `user_facing:` is configured per field, so its handler must see a
     # field-scoped error (otherwise `e.message` leaks every failing field into each field's part).
     def _field_scoped_error(error, field)
-      field_errors = error.errors.select { |err| err.attribute.to_sym == field }
-      scoped = ActiveModel::Errors.new(field_errors.first.base)
-      field_errors.each { |err| scoped.import(err) }
+      scoped = ActiveModel::Errors.new(error.errors.first.base)
+      _field_errors(error, field).each { |err| scoped.import(err) }
       InboundValidationError.new(scoped)
     end
 
     def _field_validation_messages(error, field)
-      error.errors.select { |err| err.attribute.to_sym == field }.map(&:full_message)
+      _field_errors(error, field).map(&:full_message)
+    end
+
+    def _field_errors(error, field)
+      error.errors.group_by_attribute[field] || []
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
@@ -420,11 +425,11 @@ module Axn
     # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
     # a primary key and a record-vs-id comparison would be meaningless.
     #
-    # `skip_fields` (a failed user-facing field's wire keys) is honored ONLY for subfield checks,
-    # whose parent must be *resolved* and so can be a broken user-facing parent (a derived failure).
-    # The top-level record/id contradiction is computed from raw inputs and is independent of any
+    # `skip_derived` is honored ONLY for subfield checks, whose parent must be *resolved* and so can
+    # be a broken user-facing parent (a derived failure — see `_parent_unextractable?`). The
+    # top-level record/id contradiction is computed from raw inputs and is independent of any
     # validation outcome on the field — it's a real programmer error, so it always runs and dominates.
-    def validate_model_consistency!(skip_fields: [])
+    def validate_model_consistency!(skip_derived: false)
       mismatches = []
 
       @action_class.send(:internal_field_configs).each do |config|
@@ -436,7 +441,7 @@ module Axn
 
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
-        next if skip_fields.include?(_root_wire_field(config.on))
+        next if skip_derived && _parent_unextractable?(config)
 
         parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
         msg = _model_record_id_mismatch(source: parent, field: config.field)
@@ -471,27 +476,28 @@ module Axn
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
     end
 
-    # Normalize a subfield's `on:` back to the ultimate top-level *wire* field — the key ActiveModel
-    # reports in validation errors, and what the skip sets are built from. `on:` names a *reader*,
-    # which may be aliased (`as:`), dotted (`"raw_payload.meta"`), or itself rooted at another
-    # subfield; walk all three back to the top-level field so a derived check against a failed
-    # user-facing parent is skipped no matter how the parent was named.
-    def _root_wire_field(on)
-      root = on.to_s.split(".").first
-      top = @action_class.send(:internal_field_configs).find { |c| c.reader_as.to_s == root }
-      return top.field if top
-
-      sub = @action_class.send(:subfield_configs).find { |c| c.reader_as.to_s == root }
-      return _root_wire_field(sub.on) if sub
-
-      root.to_sym
+    # A subfield/model check is *derived* from its parent's own failure — and so must not mask the
+    # parent's user-facing message — exactly when the parent value can't be extracted from: it's
+    # missing, or the wrong shape, so reading the subfield is meaningless. We test that by actually
+    # attempting the extraction (reusing the Extract resolver), rather than re-deriving "which
+    # parent failed" by matching field names. A parent that resolves to a readable container is
+    # extractable even if it failed some *other* top-level validation, so its subfield's own
+    # contract violation stays an independent dev-facing bug that dominates. Aliased (`as:`), dotted
+    # (`"raw_payload.meta"`), and subfield-rooted `on:` all fall out for free — `resolve_parent`
+    # already walks the reader chain, so there is nothing to normalize back to a wire key.
+    def _parent_unextractable?(config)
+      parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
+      Axn::Core::FieldResolvers.resolve(type: :extract, field: config.field, provided_data: parent)
+      false
+    rescue StandardError
+      true
     end
 
-    def validate_subfields_contract!(skip_parents: [])
+    def validate_subfields_contract!(skip_derived: false)
       @action_class.send(:subfield_configs).each do |config|
         parent_field = config.on
         subfield = config.field
-        next if skip_parents.include?(_root_wire_field(parent_field))
+        next if skip_derived && _parent_unextractable?(config)
 
         Axn::Validation::Subfields.validate!(
           field: subfield,

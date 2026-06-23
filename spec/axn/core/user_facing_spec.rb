@@ -295,9 +295,9 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to include("Payload can't be blank")
     end
 
-    it "normalizes an aliased parent (subfield declared on: the alias) back to the wire key" do
-      # The skip set is built from ActiveModel error attributes (wire keys, :payload), but the
-      # subfield's on: names the reader (:raw_payload) — they must still match.
+    it "resolves an aliased parent (subfield declared on: the alias) directly" do
+      # The subfield's on: names the reader (:raw_payload); resolve_parent reads through that reader,
+      # so a missing aliased parent is detected as unextractable without any wire-key normalization.
       action = build_axn do
         expects :payload, type: Hash, as: :raw_payload, user_facing: true
         expects :id, on: :raw_payload
@@ -308,7 +308,7 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to include("Payload can't be blank")
     end
 
-    it "normalizes a subfield rooted at another subfield of the user-facing parent" do
+    it "resolves a subfield rooted at another subfield of the user-facing parent" do
       action = build_axn do
         expects :payload, type: Hash, user_facing: true
         expects :meta, on: :payload, type: Hash
@@ -318,6 +318,37 @@ RSpec.describe "expects ..., user_facing:" do
       result = action.call
       expect(result.outcome).to be_failure
       expect(result.error).to include("Payload can't be blank")
+    end
+  end
+
+  describe "an extractable user_facing parent still runs its independent subfield checks" do
+    let(:fired) { [] }
+    let(:action) do
+      recorder = fired
+      build_axn do
+        # payload is a valid Hash (so payload.id IS extractable) but fails its own custom validation.
+        # Its subfield :id is the wrong type — an *independent* dev-facing violation, not one derived
+        # from a broken parent — so it must still dominate and page.
+        expects :payload, type: Hash, user_facing: true, validate: ->(_h) { "is not allowed" }
+        expects :id, on: :payload, type: Integer
+
+        on_failure { recorder << :failure }
+        on_exception { recorder << :exception }
+
+        def call = nil
+      end
+    end
+
+    it "lets an independent dev-facing subfield violation dominate the extractable parent's failure" do
+      result = action.call(payload: { id: "x" })
+      expect(result.outcome).to be_exception
+      expect(fired).to contain_exactly(:exception)
+    end
+
+    it "still surfaces the parent's user-facing message when its subfields are clean" do
+      result = action.call(payload: { id: 5 })
+      expect(result.outcome).to be_failure
+      expect(result.error).to include("Payload is not allowed")
     end
   end
 
