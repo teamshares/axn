@@ -826,4 +826,65 @@ RSpec.describe Axn do
       end.to raise_error(ArgumentError, /prefix: is no longer supported/)
     end
   end
+
+  # Regression guard: a `fail!` raised from inside a `rescue` block gets Ruby's implicit `cause`
+  # ($!) attached to the Failure. The user explicitly chose that message, so it must be surfaced.
+  # (A removed `return if exception.cause` guard once suppressed it for the old nesting-wrap path.)
+  context "when fail! is raised from within a rescue block (Failure carries a cause)" do
+    let(:action) do
+      build_axn do
+        def call
+          raise "underlying boom"
+        rescue StandardError
+          fail!("friendly message")
+        end
+      end
+    end
+
+    it "surfaces the user-provided fail! message rather than the underlying cause" do
+      result = action.call
+      expect(result).not_to be_ok
+      expect(result.error).to eq("friendly message")
+      expect(result.exception).to be_a(Axn::Failure)
+      expect(result.exception.cause).to be_a(RuntimeError)
+      expect(result.exception.cause.message).to eq("underlying boom")
+    end
+  end
+
+  # Regression guard: the resolver must invoke the winning message block exactly once (it previously
+  # ran body_for in `detect` then again to capture the reason — double-running side-effecting blocks).
+  context "when a selected dynamic message block has side effects" do
+    it "invokes the winning message block exactly once per resolution" do
+      invocations = []
+      action = build_axn do
+        error "Base"
+        error(if: ArgumentError) do
+          invocations << :called
+          "reason body"
+        end
+        def call = raise ArgumentError, "boom"
+      end
+
+      result = action.call
+      invocations.clear # isolate a single resolution (the result lifecycle may resolve more than once)
+      expect(result.error).to eq("Base: reason body")
+      expect(invocations.size).to eq(1)
+    end
+  end
+
+  describe Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor, ".dynamic_handler?" do
+    let(:described) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
+
+    it "classifies a handler as dynamic iff Invoker would dispatch it (symbol or arity-responding callable)" do
+      expect(described.dynamic_handler?(:some_method)).to be(true)
+      expect(described.dynamic_handler?(-> { "x" })).to be(true)
+      expect(described.dynamic_handler?(proc { "x" })).to be(true)
+      expect(described.dynamic_handler?("literal")).to be(false)
+
+      # Responds to #call but NOT #arity: Invoker treats it as a literal, so it must not be
+      # misclassified as a dynamic reason (the classification and the dispatch have to agree).
+      callable_without_arity = Object.new.tap { |o| def o.call = "x" }
+      expect(described.dynamic_handler?(callable_without_arity)).to be(false)
+    end
+  end
 end

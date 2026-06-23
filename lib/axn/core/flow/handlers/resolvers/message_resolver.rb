@@ -16,10 +16,16 @@ module Axn
               # Candidates are non-base entries that are either prefixed (conditional/dynamic reasons)
               # or conditional (prefixed: false opt-out). Plain static non-prefixed entries are treated
               # as additional bases and excluded here; the declared base wins via base_message.
-              descriptor = matching_entries.detect { |d| reason?(d) && body_for(d).present? }
+              # filter_map captures each body once (body_for invokes the handler block), so the winning
+              # entry's message block runs a single time rather than twice.
+              descriptor, reason = matching_entries.lazy.filter_map do |d|
+                next unless reason?(d)
+
+                body = body_for(d)
+                [d, body] if body.present?
+              end.first
               return base_message || fallback_message unless descriptor
 
-              reason = body_for(descriptor)
               descriptor.prefixed? ? with_base_prefix(reason) : reason
             end
 

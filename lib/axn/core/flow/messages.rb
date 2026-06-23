@@ -29,7 +29,7 @@ module Axn
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
             conditional = kwargs.key?(:if) || kwargs.key?(:unless)
-            dynamic     = block_given? || message.is_a?(Symbol) || message.respond_to?(:call)
+            dynamic     = Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.dynamic_handler?(block_given? ? block : message)
             reason      = conditional || dynamic # only "reasons" (not the base headline) may be prefixed
             effective_prefixed = _resolve_prefixed(prefixed, reason:, delimiter:)
             entry = _build_entry(message, prefixed:, delimiter:, effective_prefixed:, kwargs:, block:, block_given: block_given?)

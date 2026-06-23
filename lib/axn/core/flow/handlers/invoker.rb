@@ -28,6 +28,11 @@ module Axn
             Axn::Internal::PipingError.swallow(operation, action:, exception: e)
           end
 
+          # A handler is "dynamic" when #call dispatches it at runtime (symbol method or callable)
+          # rather than using it as a literal value. Single source of truth so message
+          # classification (base vs reason) can't disagree with how the handler is actually invoked.
+          def dynamic?(handler) = symbol?(handler) || callable?(handler)
+
           private
 
           def symbol?(value) = value.is_a?(Symbol)

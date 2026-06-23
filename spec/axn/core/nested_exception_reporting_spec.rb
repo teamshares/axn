@@ -126,5 +126,29 @@ RSpec.describe "Nested exception reporting (report once)" do
       expect(result.outcome).to eq("exception")
       expect(reports.size).to eq(1)
     end
+
+    # The dedup set keys on object identity (compare_by_identity), not value equality — so an
+    # exception class that overrides ==/eql?/hash can't make two distinct, separately-raised
+    # exceptions collapse into one and silently drop a report.
+    it "dedupes by object identity even when exceptions are value-equal (==/eql?)" do
+      # Every instance claims equality with every other (value equality, not identity).
+      eq_class = Class.new(StandardError) do
+        def eql?(_other) = true
+        def hash = 42
+        alias_method :==, :eql?
+      end
+      stub_const("ValueEqualError", eq_class)
+      stub_const("InnerEq", build_axn { def call = raise ValueEqualError, "inner" })
+      stub_const("OuterEq", build_axn do
+        def call
+          InnerEq.call! # inner raises + reports one instance, then we discard it...
+        rescue ValueEqualError
+          raise ValueEqualError, "outer" # ...and raise a DIFFERENT, value-equal instance
+        end
+      end)
+
+      OuterEq.call
+      expect(reports.size).to eq(2) # both distinct objects reported, not deduped by value
+    end
   end
 end

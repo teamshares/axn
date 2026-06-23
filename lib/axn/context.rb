@@ -10,6 +10,7 @@ module Axn
       @failure = false
       @exception = nil
       @elapsed_time = nil
+      @early_completion_prefixed = true
     end
 
     # Framework state methods
@@ -53,7 +54,7 @@ module Axn
     end
 
     def __early_completion_message = @early_completion_message.presence
-    def __early_completion_prefixed = @early_completion_prefixed.nil? ? true : @early_completion_prefixed
+    def __early_completion_prefixed = @early_completion_prefixed
 
     def __finalize!
       @finalized = true

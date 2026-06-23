@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/base_descriptor"
+require "axn/core/flow/handlers/invoker"
 
 module Axn
   module Core
@@ -33,7 +34,10 @@ module Axn
             # handler is a fixed headline. Used to tell a base ("headline") from a reason.
             def dynamic_handler? = self.class.dynamic_handler?(handler)
 
-            def self.dynamic_handler?(handler) = handler.is_a?(Symbol) || handler.respond_to?(:call)
+            # Delegate to Invoker so "is this a reason vs the base headline?" uses the SAME test as
+            # "how is this handler dispatched?" — a callable that Invoker would treat as a literal
+            # (e.g. responds to #call but not #arity) must not be misclassified as a dynamic reason.
+            def self.dynamic_handler?(handler) = Invoker.dynamic?(handler)
 
             # Raise for any removed option (with its migration hint) or otherwise-unknown option,
             # rather than silently dropping it.
