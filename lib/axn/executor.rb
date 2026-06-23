@@ -427,7 +427,7 @@ module Axn
 
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
-        next if skip_fields.include?(_root_parent(config.on))
+        next if skip_fields.include?(_root_wire_field(config.on))
 
         parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
         msg = _model_record_id_mismatch(source: parent, field: config.field)
@@ -462,16 +462,27 @@ module Axn
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
     end
 
-    # A subfield's root parent — the top-level reader its `on:` path hangs off (`:payload` for both
-    # `on: :payload` and `on: "payload.meta"`). Used to skip subfields derived from a failed
-    # user-facing parent.
-    def _root_parent(on) = on.to_s.split(".").first.to_sym
+    # Normalize a subfield's `on:` back to the ultimate top-level *wire* field — the key ActiveModel
+    # reports in validation errors, and what the skip sets are built from. `on:` names a *reader*,
+    # which may be aliased (`as:`), dotted (`"raw_payload.meta"`), or itself rooted at another
+    # subfield; walk all three back to the top-level field so a derived check against a failed
+    # user-facing parent is skipped no matter how the parent was named.
+    def _root_wire_field(on)
+      root = on.to_s.split(".").first
+      top = @action_class.send(:internal_field_configs).find { |c| c.reader_as.to_s == root }
+      return top.field if top
+
+      sub = @action_class.send(:subfield_configs).find { |c| c.reader_as.to_s == root }
+      return _root_wire_field(sub.on) if sub
+
+      root.to_sym
+    end
 
     def validate_subfields_contract!(skip_parents: [])
       @action_class.send(:subfield_configs).each do |config|
         parent_field = config.on
         subfield = config.field
-        next if skip_parents.include?(_root_parent(parent_field))
+        next if skip_parents.include?(_root_wire_field(parent_field))
 
         Axn::Validation::Subfields.validate!(
           field: subfield,

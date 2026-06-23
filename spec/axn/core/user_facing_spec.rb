@@ -31,6 +31,18 @@ RSpec.describe "expects ..., user_facing:" do
     it "preserves the structured InboundValidationError on result.exception" do
       expect(action.call.exception).to be_a(Axn::InboundValidationError)
     end
+
+    it "reports the failure outcome to an on_error observer (which fires before the context flag is set)" do
+      observed = []
+      recorder = observed
+      action = build_axn do
+        expects :note, user_facing: true
+        on_error { recorder << result.outcome.to_s }
+        def call = nil
+      end
+      action.call
+      expect(observed).to eq(["failure"])
+    end
   end
 
   describe "the field stays required (unlike optional: true)" do
@@ -252,6 +264,31 @@ RSpec.describe "expects ..., user_facing:" do
       result = action.call
       expect(result.outcome).to be_failure
       expect(fired).to contain_exactly(:failure)
+      expect(result.error).to include("Payload can't be blank")
+    end
+
+    it "normalizes an aliased parent (subfield declared on: the alias) back to the wire key" do
+      # The skip set is built from ActiveModel error attributes (wire keys, :payload), but the
+      # subfield's on: names the reader (:raw_payload) — they must still match.
+      action = build_axn do
+        expects :payload, type: Hash, as: :raw_payload, user_facing: true
+        expects :id, on: :raw_payload
+        def call = nil
+      end
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to include("Payload can't be blank")
+    end
+
+    it "normalizes a subfield rooted at another subfield of the user-facing parent" do
+      action = build_axn do
+        expects :payload, type: Hash, user_facing: true
+        expects :meta, on: :payload, type: Hash
+        expects :id, on: :meta # rooted at a subfield, which is itself rooted at the user-facing parent
+        def call = nil
+      end
+      result = action.call
+      expect(result.outcome).to be_failure
       expect(result.error).to include("Payload can't be blank")
     end
   end

@@ -93,7 +93,8 @@ module Axn
                 #   3. `_fails_on?` — defensive recompute.
                 failure = @context.__classified_as_failure? ||
                           Internal::ExceptionClassification.failure?(exception) ||
-                          action.class._fails_on?(exception)
+                          action.class._fails_on?(exception) ||
+                          Axn::ValidationError.user_facing?(exception)
                 failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS
