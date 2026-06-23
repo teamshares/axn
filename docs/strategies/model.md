@@ -138,13 +138,14 @@ error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 
-For any other override — a custom success string, a full error message, or [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) — declare it with the normal DSL **after** `use :model` (later declarations win):
+For a custom `success` string or [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures), declare it with the normal DSL **after** `use :model` (later declarations win):
 
 ```ruby
 use :model, create: Widget
 success "Your widget is ready!"
-error "Could not save the widget"
 ```
+
+A declared `error` is the **base** that *prefixes* the validation body (as shown above), not a replacement. To render a fixed message *without* the validation detail, opt that reason out of prefixing — e.g. `error "Could not save the widget", if: ActiveRecord::RecordInvalid, prefixed: false`.
 
 ## Validation failures are failures, not exceptions
 

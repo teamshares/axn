@@ -19,6 +19,8 @@ module Axn
 
     # The action whose `fail!` raised this. `prefixed:` is scoped to that action: an ancestor that
     # catches a bubbled child Failure still applies its OWN base prefix (the child's opt-out is local).
+    # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
+    # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
     attr_reader :__originating_action
 
     def initialize(message = nil, prefixed: true, action: nil)
