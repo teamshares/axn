@@ -145,7 +145,7 @@ use :model, create: Widget
 success "Your widget is ready!"
 ```
 
-A declared `error` is the **base** that *prefixes* the validation body (as shown above), not a replacement. To render a fixed message *without* the validation detail, opt that reason out of prefixing — e.g. `error "Could not save the widget", if: ActiveRecord::RecordInvalid, prefixed: false`.
+A declared `error` is the **base** that *prefixes* the validation body (as shown above), not a replacement — the model's field-level errors are appended by design (`"Headline: Name can't be blank"`). Suppressing the validation detail entirely is not a simple declaration (the body is part of what `use :model` provides); it's an intentionally narrow escape hatch, so reach for a plain action with your own `error` if you need a fixed, detail-free message.
 
 ## Validation failures are failures, not exceptions
 
