@@ -6,6 +6,7 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
 require "axn/core/validation/fields"
+require "axn/core/flow/handlers/invoker"
 require "axn/result"
 require "axn/core/context/internal"
 
@@ -24,7 +25,7 @@ module Axn
       # `reader_as` is the name of the generated accessor method. It defaults to `field` (the wire
       # key), but `expects ..., as:`/`prefix:` decouple them so the caller-facing contract stays
       # `field` while the in-action reader gets its own name.
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as) do
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing) do
         def description = metadata[:description]
       end
 
@@ -62,6 +63,7 @@ module Axn
           sensitive: false,
           as: nil,
           prefix: nil,
+          user_facing: false,
           **,
           &block
         )
@@ -70,6 +72,9 @@ module Axn
           end
 
           raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
+
+          _validate_user_facing!(user_facing)
+          raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
 
           reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
           # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
@@ -89,7 +94,7 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        reader_names:, define_readers: true, **validations).tap do |configs|
+                                        reader_names:, define_readers: true, user_facing:, **validations).tap do |configs|
             duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -256,6 +261,19 @@ module Axn
           raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?
         end
 
+        # `user_facing:` reclassifies a violation of this field from a dev-facing exception into a
+        # user-facing failure (see Executor). Its value doubles as the surfaced message: `true` uses
+        # the field's own validation message; a String overrides it; a Symbol names an action method
+        # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
+        # handler shape. Anything else is a programmer error, so reject it at declaration.
+        def _validate_user_facing!(user_facing)
+          return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
+                    Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+
+          raise ArgumentError,
+                "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+        end
+
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
           fail! ok?
           inspect default_error
@@ -366,6 +384,7 @@ module Axn
           [validations, metadata]
         end
 
+        # rubocop:disable Metrics/ParameterLists
         def _parse_field_configs(
           *fields,
           allow_blank: false,
@@ -377,6 +396,7 @@ module Axn
           metadata: {},
           reader_names: {},
           define_readers: false,
+          user_facing: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -384,7 +404,8 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader).tap do |config|
+            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader,
+                            user_facing:).tap do |config|
               if define_readers
                 _define_field_reader(reader, field)
                 _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
@@ -393,6 +414,7 @@ module Axn
             end
           end
         end
+        # rubocop:enable Metrics/ParameterLists
 
         # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
         # pre-existing method of the same name rather than clobbering it — but, unlike a silent skip,

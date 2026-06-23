@@ -171,6 +171,10 @@ module Axn
     end
 
     def _user_provided_error_message
+      # A user-facing validation failure (expects ..., user_facing:) surfaces its composed message as
+      # a prefixable reason, so a declared base `error` headlines it exactly like a `fail!` reason.
+      return exception.user_facing_message.presence if Axn::ValidationError.user_facing?(exception)
+
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
 
@@ -178,6 +182,8 @@ module Axn
     end
 
     def _fail_prefixed?
+      # A user-facing validation reason is prefixed-by-default (no per-field opt-out yet — deferred),
+      # so anything that isn't a `fail!` Failure prefixes.
       return true unless exception.is_a?(Axn::Failure)
       # `prefixed: false` is scoped to the action that called `fail!`. A bubbled child Failure
       # resolved at an ancestor still gets the ancestor's base prefix (child opt-out is local).

@@ -175,6 +175,19 @@ For fields you declare via `exposes`, you'll need [a corresponding `expose` call
 
 ### Details specific to `.expects`
 
+#### `user_facing:` — surface a violation to the caller
+
+By default a failed `expects` validation is **dev-facing**: it lands in the exception bucket, pages the global handler, and `result.error` is the generic `"Something went wrong"`. Mark a field `user_facing:` and a violation of it settles as a **failure** instead — firing `on_failure`, skipping the global report, and surfacing a meaningful message on `result.error`:
+
+```ruby
+expects :note, user_facing: true            # surfaces the field's own message ("Note can't be blank")
+expects :note, user_facing: "Add a note"    # override the surfaced message
+expects :note, user_facing: :note_message   # call an action method to compute it
+expects :note, user_facing: ->(e) { ... }   # compute it from the InboundValidationError
+```
+
+The value matches the `error`/`fail!`/`fails_on` handler shape — `true`, a String, a Symbol naming an action method, or a Proc; one that resolves blank falls back to the field's own validation message. The surfaced message is a failure **reason**, so a declared base `error` [prefixes it](/usage/writing#prefixing-failure-reasons) by default (standalone with no base), just like a `fail!` message. The field stays **required** (unlike `optional:`, which removes the check) — `user_facing:` changes who is blamed for a violation, not whether it's validated. In a mixed failure (a `user_facing:` field *and* a plain one both invalid), the dev-facing one dominates and the call still pages. Not supported with `on:` (subfields are always dev-facing). See [the narrative](/usage/writing#user-facing-contract-violations) for the full picture.
+
 #### Nested/Subfield expectations
 
 `expects` is for defining the inbound interface. Usually it's enough to declare the top-level fields you receive, but sometimes you want to make expectations about the shape of that data, and/or to define easy accessor methods for deeply nested fields. `expects` supports the `on` option for this (all the normal attributes can be applied as well):

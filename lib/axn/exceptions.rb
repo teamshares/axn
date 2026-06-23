@@ -84,13 +84,26 @@ module Axn
   class DuplicateFieldError < ContractViolation; end
 
   class ValidationError < ContractViolation
-    attr_reader :errors
+    attr_reader :errors, :user_facing_message
 
-    def initialize(errors)
+    # `user_facing:` marks an inbound validation failure that the Executor has reclassified into the
+    # failure bucket (see `expects ..., user_facing:`). The structured `errors` are preserved on the
+    # exception either way; `user_facing_message` carries the (possibly overridden) message that
+    # surfaces on `result.error` as a prefixable reason — headlined by a declared base `error` just
+    # like a `fail!` reason — leaving the dev-facing `#message` (full validation errors) intact.
+    def initialize(errors, user_facing: false, user_facing_message: nil)
       @errors = errors
-      super
+      @user_facing = user_facing
+      @user_facing_message = user_facing_message
+      super(errors)
     end
 
+    # Single source of truth for "did this (arbitrary) exception settle into the user-facing failure
+    # bucket?" — folds in the `is_a?` guard so the Executor (classification) and Result (outcome +
+    # surfaced reason) ask the question one way and can't drift apart.
+    def self.user_facing?(exception) = exception.is_a?(self) && exception.user_facing?
+
+    def user_facing? = @user_facing
     def message = errors.full_messages.to_sentence
     def to_s = message
   end
