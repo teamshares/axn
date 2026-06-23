@@ -206,7 +206,9 @@ Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life i
 
 ### Prefixing failure reasons
 
-A static unconditional `error "Headline"` acts as a **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every specific failure *reason* declared after it — conditional `error … if:`, dynamic `error` blocks, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every failure *reason* — a conditional `error … if:`/`unless:`, an entry explicitly marked `prefixed: true`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+
+What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `prefixed: true` (which promotes an unconditional entry to a prefixed reason) when you want something prefixed rather than treated as the headline.
 
 ```ruby
 class SyncUser
@@ -234,9 +236,9 @@ result.error  # => "Couldn't sync user: email already taken"
 |---|---|
 | **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
 | **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix. Scoped to the action: a bubbled child `fail!(..., prefixed: false)` still receives the *caller's* base prefix |
-| **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`) |
-| **Dynamic unconditional detail** | `error(prefixed: true, &:message)` — `prefixed: true` on a block with no `if:` makes it a detail-always entry prefixed by the base |
-| **`prefixed: true` on static base** | Raises `ArgumentError` at declaration — a plain static entry *is* the base and cannot itself be prefixed |
+| **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`); only valid on the base (an unprefixed headline) — `delimiter:` on a reason raises at declaration |
+| **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
+| **Promote to an always-on reason** | `error(prefixed: true, &:message)` (or `error "detail", prefixed: true`) — `prefixed: true` makes an otherwise-headline entry a prefixed reason, e.g. an always-on detail rendered under the base |
 
 ```ruby
 # Reasons are checked last-declared-first.
@@ -265,7 +267,7 @@ Prefixing is applied when **resolving** `result.error` (or `result.success`) —
 :::
 
 ::: tip Declaration order
-The base is identified by shape (an unconditional literal `error`/`success`), so a single base's position among declarations doesn't matter. When **more than one reason** could match the same failure — or if you declare more than one unconditional literal — the last-declared one wins (entries are checked in reverse-declaration order), so declare the most-specific reasons last.
+The base is identified by shape (an unconditional `error`/`success`, literal or block), so a single base's position among declarations doesn't matter. When **more than one reason** could match the same failure — or if you declare more than one unconditional headline — the last-declared one wins (entries are checked in reverse-declaration order), so declare the most-specific reasons last.
 
 ```ruby
 class Foo

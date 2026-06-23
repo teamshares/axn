@@ -24,10 +24,10 @@ module Axn
       # @param persist [Symbol, nil] force :create or :update (overrides inference)
       # @param inject [Symbol, Array<Symbol>] context fields merged into model_params
       #
-      # The strategy's mode-aware messages are reasons, so a base/reason rule applies: a STATIC
-      # `error "…"`/`success "…"` after `use :model` becomes the base and *prefixes* them
-      # (`"<base>: <body>"`); declare it DYNAMICALLY (a block/conditional) to *replace* instead.
-      # See docs/strategies/model.md.
+      # The strategy's mode-aware messages are reasons, so a base/reason rule applies: an
+      # UNCONDITIONAL `error "…"`/`success "…"` (string or block) after `use :model` becomes the
+      # base and *prefixes* them (`"<base>: <body>"`); declare a CONDITIONAL one (if:/unless:) to
+      # *replace* instead. See docs/strategies/model.md.
       def self.configure(create: nil, update: nil, as: nil, expect: :params, persist: nil,
                          inject: nil, &block)
         # The strategy is built on ActiveRecord persistence (`.save`, `previously_new_record?`,
@@ -206,8 +206,10 @@ module Axn
             __axn_invalid_record(exception).errors.full_messages.to_sentence
           end
 
-          # Default mode-aware success; override by declaring `success` after `use :model`.
-          success { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
+          # Default mode-aware success, installed as a prefixed *reason* (not a headline) so a base
+          # `success "…"` declared after `use :model` prefixes it ("<base>: Created Widget"), parallel
+          # to the error body above. Declare a conditional/standalone success to replace it instead.
+          success(prefixed: true) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 
           # Safety net for a *raised* RecordInvalid (save!, association autosave, validate!, nested).
           fails_on(ActiveRecord::RecordInvalid)

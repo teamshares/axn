@@ -41,34 +41,37 @@ module Axn
             def base_message
               return @base_message if defined?(@base_message)
 
-              @base_message = base_descriptor ? body_for(base_descriptor) : nil
+              # Headlines form a fallback chain (most-recent first — see Registry): use the first whose
+              # body resolves to something present, so a headline whose block raises or returns blank
+              # falls back to an earlier one rather than to the generic default.
+              @base_message = base_candidates.lazy.filter_map { |d| body_for(d) }.first
             end
 
             private
 
+            # Unconditional, non-prefixed entries with a handler — the headline candidates. The handler
+            # kind (literal/block/symbol) is irrelevant; only conditionality + prefixed: decide the role.
+            # Applies to both :error and :success events.
+            def base_candidates = candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
+
+            # The base headline for delimiter + identity purposes: the most-recently declared one.
             def base_descriptor
               return @base_descriptor if defined?(@base_descriptor)
 
-              # The base headline is a static (unconditional), non-prefixed entry with a LITERAL
-              # handler. A dynamic handler (block/symbol) is always a reason — even unconditional
-              # and even with prefixed: false — so it must not be mistaken for the base.
-              # Applies to both :error and :success events.
-              @base_descriptor = candidate_entries.detect { |d| d.static? && !d.prefixed? && d.handler && !d.dynamic_handler? }
+              @base_descriptor = base_candidates.first
             end
 
             def base?(descriptor) = base_descriptor && descriptor.equal?(base_descriptor)
 
-            # A "reason" is a non-base entry eligible to be selected as the displayed message.
-            # When a base exists: only prefixed? or conditional (non-static) entries qualify —
-            # additional plain-static non-prefixed entries are "secondary bases" and excluded.
-            # When no base exists: all non-base entries qualify (standard fallback behavior).
+            # A "reason" is a non-base entry eligible to be selected as the displayed message: a
+            # conditional entry (if:/unless:) or one explicitly `prefixed:`. When a base exists,
+            # additional unconditional non-prefixed entries are "secondary headlines" and excluded
+            # (the most-recent one is the base). When no base exists, all non-base entries qualify.
             def reason?(descriptor)
               return false if base?(descriptor)
               return true unless base_descriptor
 
-              # With a base declared, a reason is any prefixed, conditional, or dynamic entry.
-              # Only secondary plain-static *literal* non-prefixed entries (extra headlines) are excluded.
-              descriptor.prefixed? || !descriptor.static? || descriptor.dynamic_handler?
+              descriptor.prefixed? || !descriptor.static?
             end
 
             # NOTE: no `.presence` — an explicit `delimiter: ""` is honored (join with no separator);

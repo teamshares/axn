@@ -138,7 +138,7 @@ error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 
-A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so a **static** declaration becomes the **base** and *prefixes* them rather than replacing them:
+A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so an **unconditional** declaration (string **or** block — they behave identically) becomes the **base** and *prefixes* them, symmetrically for success and error:
 
 ```ruby
 use :model, create: Widget
@@ -148,14 +148,14 @@ error "Unable to create the widget"
 # => "Unable to create the widget: Name can't be blank"
 ```
 
-To **replace** the mode-aware message with a fixed string instead, declare it *dynamically* (a block or a conditional) — that registers a reason, and the later reason wins:
+To **replace** the mode-aware message with a fixed string instead, declare it as a *conditional* reason (`if:`/`unless:`) — a matching reason wins and renders standalone:
 
 ```ruby
 use :model, create: Widget
-success { "Your widget is ready!" }   # => "Your widget is ready!"  (replaces, no prefix)
+success "Your widget is ready!", if: -> { true }   # => "Your widget is ready!"  (replaces, no prefix)
 ```
 
-The error side has no equally-clean full replacement: the field-level validation body is part of what `use :model` provides, so suppressing it entirely is an intentionally narrow escape hatch — reach for a plain action with your own `error` if you need a fixed, detail-free error message. Add [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) the same way — a normal declaration after `use :model`.
+Add [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) the same way — a normal declaration after `use :model`.
 
 ## Validation failures are failures, not exceptions
 

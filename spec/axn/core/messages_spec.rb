@@ -248,9 +248,9 @@ RSpec.describe Axn do
         it "falls back to next non-failing success message" do
           result = action.call
           expect(result).to be_ok
-          # "Final fallback" is the static base; :fallback_method is a dynamic reason
-          # so it gains the base prefix under A4 success-parity semantics.
-          expect(result.success).to eq("Final fallback: Method fallback")
+          # All three are unconditional headlines; most-recent-first, the raising lambda is skipped
+          # and :fallback_method wins (replacing — not prefixing — the earlier "Final fallback").
+          expect(result.success).to eq("Method fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,
@@ -612,6 +612,11 @@ RSpec.describe Axn do
         end
 
         context "when fail! is called with custom message" do
+          # SHARP EDGE: an unconditional dynamic `error` is now a *headline* (base), and a fail!
+          # message is a reason the base prefixes. Because this particular headline reads
+          # `e.message` — which, for the Failure, IS the fail! message — the message appears twice.
+          # Realistic patterns avoid this: use a static base headline, or opt the fail! out with
+          # `prefixed: false` (covered below). A raised (non-fail!) exception renders cleanly.
           let(:action) do
             build_axn do
               error ->(e) { "Bad news: #{e.message}" }
@@ -622,8 +627,16 @@ RSpec.describe Axn do
             end
           end
 
-          it "uses the custom message" do
-            is_expected.to eq("Explicitly-set error message")
+          it "prefixes the fail! message with the dynamic headline (which here re-embeds it)" do
+            is_expected.to eq("Bad news: Explicitly-set error message: Explicitly-set error message")
+          end
+
+          it "renders the fail! message standalone when opted out with prefixed: false" do
+            action = build_axn do
+              error ->(e) { "Bad news: #{e.message}" }
+              def call = fail!("Explicitly-set error message", prefixed: false)
+            end
+            expect(action.call.error).to eq("Explicitly-set error message")
           end
         end
 
@@ -875,22 +888,6 @@ RSpec.describe Axn do
       result.error
       result.message
       expect(invocations.size).to eq(1)
-    end
-  end
-
-  describe Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor, ".dynamic_handler?" do
-    let(:described) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
-
-    it "classifies a handler as dynamic iff Invoker would dispatch it (symbol or arity-responding callable)" do
-      expect(described.dynamic_handler?(:some_method)).to be(true)
-      expect(described.dynamic_handler?(-> { "x" })).to be(true)
-      expect(described.dynamic_handler?(proc { "x" })).to be(true)
-      expect(described.dynamic_handler?("literal")).to be(false)
-
-      # Responds to #call but NOT #arity: Invoker treats it as a literal, so it must not be
-      # misclassified as a dynamic reason (the classification and the dispatch have to agree).
-      callable_without_arity = Object.new.tap { |o| def o.call = "x" }
-      expect(described.dynamic_handler?(callable_without_arity)).to be(false)
     end
   end
 end

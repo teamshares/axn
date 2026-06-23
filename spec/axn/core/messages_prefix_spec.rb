@@ -80,24 +80,24 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Base: invalid") }
   end
 
-  context "an unconditional dynamic message is a reason, never the base" do
-    # The literal `error "Import failed"` is the base; the dynamic entry with prefixed: false opts
-    # out of the prefix and must not be mis-selected as the base.
-    let(:action) do
-      build_axn do
-        error "Import failed"
-        error(prefixed: false, &:message)
-        def call = raise "raw boom"
-      end
-    end
-    it { is_expected.to eq("raw boom") } # dynamic reason renders standalone (opted out), base correctly ignored
-  end
-
-  context "an unconditional dynamic message IS prefixed by the base when not opted out" do
+  context "an unconditional dynamic message is a headline by default (handler kind is irrelevant)" do
+    # A block/symbol with no condition is a headline just like a literal — the most-recently
+    # declared headline wins, so this replaces the earlier "Import failed" rather than prefixing it.
     let(:action) do
       build_axn do
         error "Import failed"
         error(&:message)
+        def call = raise "raw boom"
+      end
+    end
+    it { is_expected.to eq("raw boom") }
+  end
+
+  context "an unconditional dynamic message is prefixed only when opted in with prefixed: true" do
+    let(:action) do
+      build_axn do
+        error "Import failed"
+        error(prefixed: true, &:message)
         def call = raise "raw boom"
       end
     end
@@ -262,10 +262,10 @@ end
 
 RSpec.describe "Axn error_prefix DSL" do
   describe "declaration validation" do
-    it "raises when prefixed: true on a static unconditional error" do
+    it "allows prefixed: true on an unconditional message (promotes the headline to a prefixed reason)" do
       expect do
         build_axn { error "Headline", prefixed: true }
-      end.to raise_error(ArgumentError, /prefixed: true requires a condition .* or a dynamic message/)
+      end.not_to raise_error
     end
 
     it "allows prefixed: true with a condition" do
@@ -283,20 +283,19 @@ RSpec.describe "Axn error_prefix DSL" do
     it "raises when delimiter: is given on a conditional reason" do
       expect do
         build_axn { error "x", if: ArgumentError, delimiter: " - " }
-      end.to raise_error(ArgumentError, /delimiter: only applies to a base error/)
+      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
     end
 
-    it "allows delimiter: on a base error" do
+    it "allows delimiter: on a base error (an unconditional headline)" do
       expect do
         build_axn { error "Headline", delimiter: " - " }
       end.not_to raise_error
     end
 
-    it "raises when delimiter: and prefixed: true are combined on a static unconditional error" do
-      # prefixed: true guard fires first (before delimiter: is evaluated) for a static message
+    it "raises when delimiter: is combined with prefixed: true (which makes it a reason, not the base)" do
       expect do
         build_axn { error "x", delimiter: " - ", prefixed: true }
-      end.to raise_error(ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message")
+      end.to raise_error(ArgumentError, "delimiter: only applies to the base (an unprefixed headline)")
     end
 
     # The direct/Factory `MessageDescriptor.build` path (no DSL) must enforce the same validation,
@@ -307,16 +306,14 @@ RSpec.describe "Axn error_prefix DSL" do
       it "raises when delimiter: is given on a conditional reason" do
         expect do
           described.build(handler: "x", if: ArgumentError, delimiter: " - ")
-        end.to raise_error(ArgumentError, /delimiter: only applies to a base error/)
+        end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
       end
 
-      it "raises when prefixed: true is given on a static unconditional headline" do
-        expect do
-          described.build(handler: "Headline", prefixed: true)
-        end.to raise_error(ArgumentError, /prefixed: true requires a condition/)
+      it "allows prefixed: true on an unconditional headline (promotes it to a prefixed reason)" do
+        expect { described.build(handler: "Headline", prefixed: true) }.not_to raise_error
       end
 
-      it "allows delimiter: on a base (static literal) descriptor" do
+      it "allows delimiter: on a base (unconditional headline) descriptor" do
         expect { described.build(handler: "Headline", delimiter: " - ") }.not_to raise_error
       end
     end

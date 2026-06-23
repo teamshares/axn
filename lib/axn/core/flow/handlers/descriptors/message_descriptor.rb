@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/base_descriptor"
-require "axn/core/flow/handlers/invoker"
 
 module Axn
   module Core
@@ -30,15 +29,6 @@ module Axn
 
             def prefixed? = @prefixed
 
-            # A dynamic handler (block/lambda/symbol) resolves a message at runtime; a literal (String)
-            # handler is a fixed headline. Used to tell a base ("headline") from a reason.
-            def dynamic_handler? = self.class.dynamic_handler?(handler)
-
-            # Delegate to Invoker so "is this a reason vs the base headline?" uses the SAME test as
-            # "how is this handler dispatched?" — a callable that Invoker would treat as a literal
-            # (e.g. responds to #call but not #arity) must not be misclassified as a dynamic reason.
-            def self.dynamic_handler?(handler) = Invoker.dynamic?(handler)
-
             # Raise for any removed option (with its migration hint) or otherwise-unknown option,
             # rather than silently dropping it.
             def self.reject_unsupported_options!(options)
@@ -48,25 +38,21 @@ module Axn
               raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(key) { "Unknown #{key.inspect} option for error/success message" }
             end
 
-            # Validate the prefixed:/delimiter: combination against whether this entry is a "reason"
-            # (conditional or dynamic) vs the base headline. Enforced in `build` (the chokepoint) so
-            # the direct/Factory path fails at declaration exactly like the `error`/`success` DSL —
-            # e.g. `delimiter:` on a conditional reason raises instead of being silently ignored.
-            def self.reject_invalid_prefixing!(prefixed:, delimiter:, reason:)
-              raise ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message" if prefixed && !reason
-              raise ArgumentError, "delimiter: only applies to a base error message" if delimiter && reason
-            end
-
             def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, delimiter: nil, **unsupported)
               reject_unsupported_options!(unsupported)
               matcher = Matcher.build(if:, unless:)
 
-              # A "reason" is conditional or dynamic; the base is a static literal. Validate the
-              # prefixing options against that, then default prefixed: to match the DSL ("reasons are
-              # prefixed by default"). Explicit prefixed: still wins.
-              reason = !matcher.static? || dynamic_handler?(handler)
-              reject_invalid_prefixing!(prefixed:, delimiter:, reason:)
-              prefixed = reason if prefixed.nil?
+              # Conditionality picks the default role: a conditional entry (if:/unless:) is a prefixed
+              # *reason*; an unconditional entry is the *headline* (base). `prefixed:` overrides
+              # explicitly — `prefixed: true` promotes an unconditional entry to a prefixed reason.
+              # Whether the handler is a literal, block, or symbol carries no meaning here (a block is
+              # just a headline/reason whose text is computed at runtime).
+              prefixed = !matcher.static? if prefixed.nil?
+
+              # delimiter: is the string a base joins its reasons with, so it only belongs on the
+              # base/headline — never on a reason. Enforced in `build` (the chokepoint) so the
+              # direct/Factory path fails at declaration exactly like the `error`/`success` DSL.
+              raise ArgumentError, "delimiter: only applies to the base (an unprefixed headline)" if delimiter && prefixed
 
               new(handler:, prefixed:, delimiter:, matcher:)
             end
