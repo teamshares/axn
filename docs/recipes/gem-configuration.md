@@ -36,7 +36,7 @@ When migrating an existing config onto `one_of:` or `validate:`, note that the `
 
 ## Per-action overrides
 
-For a setting declared `overridable: true`, individual action classes can override the library default. Include the generated overrides module in your action (or, more commonly, in a base class your gem's actions inherit from):
+For a setting declared `overridable: true`, individual action classes can override the library default. The override accessors come from a generated module — include it **once**, in the base class your gem's actions already inherit from. Action authors then get the accessors for free and never write the include themselves:
 
 ```ruby
 module Axn::MCP
@@ -45,18 +45,22 @@ module Axn::MCP
   setting :mcp_text_content, default: :structured, one_of: %i[structured message], overridable: true
 end
 
-class MyTool
+# Once, in your gem's base class:
+class Axn::MCP::Tool
   include Axn
   include Axn::MCP.overrides
+end
 
+# Action authors just inherit — no extra include:
+class MyTool < Axn::MCP::Tool
   mcp_text_content :message     # class-level override (validated like any assignment)
 end
 
 MyTool.resolved_mcp_text_content    # => :message
-OtherTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.config)
+PlainTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.config)
 ```
 
-Overrides are stored per-class and inherited by subclasses, so a gem can set a default for all of its actions through a shared base class. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
+The explicit include keeps the override accessors opt-in — they appear only on actions that descend from a base that included them, not on every Axn action. Overrides are stored per-class and inherited by subclasses, so setting one on a base class establishes a default for all of its actions. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
 
 `resolved_<name>` (or the no-argument `<name>`) is the supported way to read an overridable setting — it always returns the effective value. There is no public accessor for "the raw class-level override without the config fallback", and the internal storage where overrides are kept is private, so don't reach into it: if your action needs the effective value, use `resolved_<name>`.
 
