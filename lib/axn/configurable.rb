@@ -122,7 +122,7 @@ module Axn
 
             klass = klass.superclass
           end
-          UNSET.equal?(found) ? config_source.config.public_send(name) : found
+          UNSET.equal?(found) ? config_source.config.public_send(name) : setting.resolve(found)
         end
       end
     end

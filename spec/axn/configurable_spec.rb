@@ -124,6 +124,19 @@ RSpec.describe Axn::Configurable do
       expect(klass).not_to respond_to(:resolved_default_model)
     end
 
+    it "resolves a callable override value through Setting#resolve" do
+      mod = Module.new do
+        extend Axn::Configurable
+        setting :enabled, default: true, callable: true, overridable: true
+      end
+      m = mod.overrides
+      klass = Class.new { include m }
+
+      klass.enabled(-> { false })
+
+      expect(klass.resolved_enabled).to eq(false)
+    end
+
     it "picks up overridable settings declared after the action includes overrides" do
       mod = Module.new { extend Axn::Configurable }
       overrides = mod.overrides

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/configurable"
+
 module Axn
   class RailsConfiguration
     attr_accessor :app_actions_autoload_namespace
