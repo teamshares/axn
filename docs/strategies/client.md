@@ -55,7 +55,7 @@ The client strategy automatically configures these middleware:
 class ExternalApiAction
   include Axn
 
-  use :client, name: :api_client, url: "https://api.example.com"
+  use :client, name: :api_client, url: "https://api.example.com" # [!code focus:2]
   use :client, name: :auth_client, url: "https://auth.example.com"
 
   def call
@@ -76,7 +76,7 @@ class SecureApiAction
 
   use :client,
     url: "https://api.example.com",
-    headers: -> { { "Authorization" => "Bearer #{current_token}" } }
+    headers: -> { { "Authorization" => "Bearer #{current_token}" } } # [!code focus]
 
   private
 

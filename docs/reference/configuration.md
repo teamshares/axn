@@ -106,7 +106,7 @@ class ProcessPendingRecords
 
   def call
     pending_records.each do |record|
-      set_execution_context(current_record_id: record.id, batch_index: @index)
+      set_execution_context(current_record_id: record.id, batch_index: @index) # [!code focus]
       # ... process record ...
     end
   end
@@ -128,7 +128,7 @@ class ProcessPendingRecords
 
   private
 
-  def additional_execution_context
+  def additional_execution_context # [!code focus:8]
     return {} unless @current_record
 
     {
@@ -149,7 +149,7 @@ Action-specific `on_exception` handlers can access the full context by calling `
 class ProcessPendingRecords
   include Axn
 
-  on_exception do |exception:|
+  on_exception do |exception:| # [!code focus:3]
     ctx = execution_context
     log "Failed processing. Inputs: #{ctx[:inputs]}, Extra: #{ctx[:current_record_id]}"
     # ... handle exception with context ...
@@ -300,7 +300,7 @@ When using background jobs, you may want different loggers for web requests vs. 
 ```ruby
 Axn.configure do |c|
   # Use Sidekiq's logger when running in Sidekiq workers, otherwise use Rails logger
-  c.logger = (defined?(Sidekiq) && Sidekiq.server?) ? Sidekiq.logger : Rails.logger
+  c.logger = (defined?(Sidekiq) && Sidekiq.server?) ? Sidekiq.logger : Rails.logger # [!code focus]
 end
 ```
 

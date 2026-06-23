@@ -315,7 +315,7 @@ class DataProcessor
   error "Data processing failed"
 
   # Inherit only error messages, nothing else
-  step :validate, inherit: { fields: false, messages: true } do
+  step :validate, inherit: { fields: false, messages: true } do # [!code focus]
     fail! "Invalid data"  # Will use parent's error message format
   end
 end
@@ -335,7 +335,7 @@ class ApiClient
   end
 
   # Inherit hooks but not callbacks
-  mount_axn :fetch_data, inherit: { hooks: true, callbacks: false } do
+  mount_axn :fetch_data, inherit: { hooks: true, callbacks: false } do # [!code focus]
     # Will run authenticate before
     # Will NOT run log_success callback
   end
@@ -351,7 +351,7 @@ class Workflow
   before :setup
 
   # Steps default to :none, but we can override to inherit lifecycle
-  step :special_step, inherit: :lifecycle do
+  step :special_step, inherit: :lifecycle do # [!code focus]
     # Will run setup hook (unusual for a step)
   end
 end

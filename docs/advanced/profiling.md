@@ -47,7 +47,7 @@ class UserCreation
   include Axn
 
   # Always profile this action
-  use :vernier
+  use :vernier # [!code focus]
 
   expects :user_params
 
@@ -73,7 +73,7 @@ class DataProcessing
   include Axn
 
   # Profile only when processing large datasets
-  use :vernier, if: -> { record_count > 1000 }
+  use :vernier, if: -> { record_count > 1000 } # [!code focus]
 
   expects :records, :record_count
 
@@ -90,7 +90,7 @@ class DataProcessing
   include Axn
 
   # Profile using a method
-  use :vernier, if: :should_profile?
+  use :vernier, if: :should_profile? # [!code focus]
 
   expects :records, :record_count, :debug_mode, type: :boolean, default: false
 
@@ -144,7 +144,7 @@ class MyAction
   include Axn
 
   # Custom output directory
-  use :vernier, output_dir: Rails.root.join("tmp", "profiles", Rails.env)
+  use :vernier, output_dir: Rails.root.join("tmp", "profiles", Rails.env) # [!code focus]
 
   def call
     # Action logic
@@ -161,7 +161,7 @@ class ComplexAction
   include Axn
 
   # Profile when debug mode is enabled OR when processing admin users
-  use :vernier, if: -> { debug_mode || user.admin? }
+  use :vernier, if: -> { debug_mode || user.admin? } # [!code focus]
 
   expects :user, :debug_mode, type: :boolean, default: false
 
@@ -257,7 +257,7 @@ class OrderProcessing
   include Axn
 
   # Profile only expensive operations
-  use :vernier, if: -> { order.total > 1000 }
+  use :vernier, if: -> { order.total > 1000 } # [!code focus]
 
   expects :order
 
@@ -332,7 +332,7 @@ class MyAction
   include Axn
 
   # Profiling with custom options
-  use :vernier, sample_rate: 0.1
+  use :vernier, sample_rate: 0.1 # [!code focus]
 
   def call
     # Action logic

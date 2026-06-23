@@ -107,7 +107,7 @@ class UserRegistration
   exposes :user_id, :welcome_message
 
   # Use existing action classes as steps
-  steps(ValidateInput, CreateUser, SendWelcome)
+  steps(ValidateInput, CreateUser, SendWelcome) # [!code focus]
 end
 ```
 

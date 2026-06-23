@@ -6,7 +6,7 @@ The `transaction` strategy wraps your action execution in a database transaction
 class TransferFunds
   include Axn
 
-  use :transaction
+  use :transaction # [!code focus]
 
   expects :from_account, :to_account, :amount
 

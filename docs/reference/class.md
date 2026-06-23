@@ -29,9 +29,9 @@ class MyAction
   include Axn
 
   expects :include_pii, type: :boolean
-  expects :ssn, sensitive: -> { !include_pii }
+  expects :ssn, sensitive: -> { !include_pii } # [!code focus]
 
-  exposes :api_response, sensitive: :should_redact?
+  exposes :api_response, sensitive: :should_redact? # [!code focus]
 
   def call
     expose api_response: fetch_data

@@ -21,7 +21,7 @@ To use a strategy in your action, call the `use` method with the strategy name:
 class CreateUser
   include Axn
 
-  use :transaction
+  use :transaction # [!code focus]
 
   expects :email, :name
 
@@ -41,7 +41,7 @@ Some strategies support configuration options. These strategies have a `configur
 class ProcessPayment
   include Axn
 
-  use :retry, max_attempts: 3, backoff: :exponential
+  use :retry, max_attempts: 3, backoff: :exponential # [!code focus]
 
   expects :amount, :card_token
 
@@ -88,7 +88,7 @@ Now you can use it in your actions:
 class MyAction
   include Axn
 
-  use :my_custom
+  use :my_custom # [!code focus]
 
   def call
     # Your action implementation

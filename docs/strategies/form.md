@@ -97,7 +97,7 @@ class ProcessOrder
   include Axn
 
   # Read from :order_params, expose as :order_form
-  use :form, expect: :order_params, expose: :order_form, type: OrderForm
+  use :form, expect: :order_params, expose: :order_form, type: OrderForm # [!code focus]
 
   def call
     # Access via order_form instead of form
@@ -115,7 +115,7 @@ class UpdateProfile
   include Axn
 
   expects :user, model: User
-  use :form, type: ProfileForm, inject: [:user]
+  use :form, type: ProfileForm, inject: [:user] # [!code focus]
 
   def call
     user.update!(form.to_h)
@@ -191,7 +191,7 @@ class CreateUser
 
   use :form, type: CreateUser::Form
 
-  error { form.errors.full_messages.to_sentence }
+  error { form.errors.full_messages.to_sentence } # [!code focus]
 
   def call
     User.create!(form.to_h)
