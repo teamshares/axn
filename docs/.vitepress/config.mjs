@@ -60,6 +60,7 @@ export default defineConfig({
           { text: 'Testing Actions', link: '/recipes/testing' },
           { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
           { text: 'Suppressing Duplicate Async Reports', link: '/recipes/suppressing-duplicate-async-reports' },
+          { text: 'Configuration for Axn-based Gems', link: '/recipes/gem-configuration' },
         ]
       },
       {

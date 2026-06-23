@@ -6,8 +6,28 @@ module Axn
   end
 
   class Configuration
-    attr_accessor :emit_metrics, :raise_piping_errors_in_dev
-    attr_writer :logger, :env, :on_exception, :additional_includes, :log_level, :rails, :_include_retry_command_in_exceptions
+    extend Axn::Configurable::Settings
+
+    # Simple value settings (defaults + validation) declared via the shared
+    # Configurable kernel. Settings with global side effects, lazy/computed
+    # values, or custom call semantics (env, logger, on_exception, the async
+    # setters, async_exception_reporting, rails) remain hand-written below.
+    setting :emit_metrics
+    setting :raise_piping_errors_in_dev
+    setting :log_level, default: :info
+    setting :additional_includes, default: []
+
+    # Optional override for max retries across all async jobs.
+    # When nil (default), each adapter uses its own default (Sidekiq: 25, ActiveJob: 5).
+    # When explicitly set, this value overrides the adapter's default for retry context tracking.
+    setting :async_max_retries
+
+    # EXPERIMENTAL: When true, automatically generates a retry command in exception context.
+    # This is marked experimental because the retry command generation may not work well
+    # for all action types (e.g., actions with complex object dependencies).
+    setting :_include_retry_command_in_exceptions, default: false
+
+    attr_writer :logger, :env, :on_exception, :rails
 
     # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).
     # Options:
@@ -29,22 +49,6 @@ module Axn
 
       # Auto-register Sidekiq middleware/death handler if needed and Sidekiq is available
       _auto_configure_sidekiq_for_async_exception_reporting(value)
-    end
-
-    # Optional override for max retries across all async jobs.
-    # When nil (default), each adapter uses its own default (Sidekiq: 25, ActiveJob: 5).
-    # When explicitly set, this value overrides the adapter's default for retry context tracking.
-    attr_accessor :async_max_retries
-
-    def log_level = @log_level ||= :info
-
-    def additional_includes = @additional_includes ||= []
-
-    # EXPERIMENTAL: When true, automatically generates a retry command in exception context.
-    # This is marked experimental because the retry command generation may not work well
-    # for all action types (e.g., actions with complex object dependencies).
-    def _include_retry_command_in_exceptions
-      @_include_retry_command_in_exceptions.nil? ? false : @_include_retry_command_in_exceptions
     end
 
     def _default_async_adapter = @default_async_adapter ||= false
