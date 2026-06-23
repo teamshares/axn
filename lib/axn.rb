@@ -6,6 +6,7 @@ require "active_support/concern"
 # Standalone
 require "axn/version"
 require "axn/factory"
+require "axn/configurable"
 require "axn/configuration"
 require "axn/extension_config"
 require "axn/exceptions"
