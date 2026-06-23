@@ -47,22 +47,21 @@ module Axn
     # External interface
     delegate :ok?, :exception, :elapsed_time, :finalized?, to: :context
 
+    # Memoized: a Result is a snapshot of a finalized context, and resolution can invoke
+    # user-supplied message blocks. The lifecycle (logging) and every caller read share the one
+    # memoized `@__result`, so resolving once here means those blocks run a single time total.
     def error
       return if ok?
 
-      reason = _user_provided_error_message
-      return _msg_resolver(:error, exception:).resolve_message unless reason
-
-      _fail_prefixed? ? _msg_resolver(:error, exception:).with_base_prefix(reason) : reason
+      @__resolved_error = _resolve_error unless defined?(@__resolved_error)
+      @__resolved_error
     end
 
     def success
       return unless ok?
 
-      reason = _user_provided_success_message
-      return _msg_resolver(:success, exception: nil).resolve_message unless reason
-
-      @context.__early_completion_prefixed ? _msg_resolver(:success, exception: nil).with_base_prefix(reason) : reason
+      @__resolved_success = _resolve_success unless defined?(@__resolved_success)
+      @__resolved_success
     end
 
     def message = exception ? error : success
@@ -134,6 +133,20 @@ module Axn
       return if singleton_class.method_defined?(predicate_name)
 
       singleton_class.alias_method predicate_name, field
+    end
+
+    def _resolve_error
+      reason = _user_provided_error_message
+      return _msg_resolver(:error, exception:).resolve_message unless reason
+
+      _fail_prefixed? ? _msg_resolver(:error, exception:).with_base_prefix(reason) : reason
+    end
+
+    def _resolve_success
+      reason = _user_provided_success_message
+      return _msg_resolver(:success, exception: nil).resolve_message unless reason
+
+      @context.__early_completion_prefixed ? _msg_resolver(:success, exception: nil).with_base_prefix(reason) : reason
     end
 
     def _user_provided_success_message

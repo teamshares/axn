@@ -737,11 +737,13 @@ RSpec.describe Axn do
           expect(result).not_to be_ok
           expect(result.exception).to be_a(RuntimeError)
           expect(result.error).to eq("Something went wrong")
+          # Resolved once for the whole result (memoized on the Result) — the raising callable is
+          # invoked a single time across the lifecycle log + this read, not once per read.
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,
             error_message: "fail message",
-            times: 2,
+            times: 1,
           )
         end
       end
@@ -851,10 +853,13 @@ RSpec.describe Axn do
     end
   end
 
-  # Regression guard: the resolver must invoke the winning message block exactly once (it previously
-  # ran body_for in `detect` then again to capture the reason — double-running side-effecting blocks).
+  # Regression guard: a winning message block runs exactly once for the whole result lifecycle.
+  # Two ways it could regress: the resolver double-invoking (it once ran body_for in `detect` then
+  # again to capture the reason), or Result re-resolving on every read (it builds a fresh resolver
+  # per call). Memoizing the resolved string on the single Result, plus a single body_for per
+  # resolution, keeps it at one invocation regardless of how many times the message is read.
   context "when a selected dynamic message block has side effects" do
-    it "invokes the winning message block exactly once per resolution" do
+    it "invokes the winning message block exactly once across the lifecycle and repeated reads" do
       invocations = []
       action = build_axn do
         error "Base"
@@ -866,8 +871,9 @@ RSpec.describe Axn do
       end
 
       result = action.call
-      invocations.clear # isolate a single resolution (the result lifecycle may resolve more than once)
       expect(result.error).to eq("Base: reason body")
+      result.error
+      result.message
       expect(invocations.size).to eq(1)
     end
   end
