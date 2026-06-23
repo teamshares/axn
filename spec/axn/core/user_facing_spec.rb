@@ -420,6 +420,24 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.outcome).to be_exception
     end
 
+    it "propagates a real reader bug raised while resolving a dotted subfield path" do
+      # :payload is a valid object (satisfies its type) that failed a custom validation, so it's a
+      # failed user-facing parent. Resolving the dotted on: "payload.meta" invokes payload.meta,
+      # which raises a genuine bug — that must page (dev-facing), not be misread as an unextractable
+      # parent and swallowed into the user-facing failure.
+      klass = Class.new do
+        def self.name = "Payload"
+        def meta = raise("boom from meta reader")
+      end
+      action = build_axn do
+        expects :payload, type: klass, user_facing: true, validate: ->(_p) { "is invalid" }
+        expects :id, on: "payload.meta", type: Integer
+        def call = nil
+      end
+      result = action.call(payload: klass.new)
+      expect(result.outcome).to be_exception
+    end
+
     it "lets an independent subfield violation dominate amid multiple failed user-facing parents" do
       fired = []
       recorder = fired

@@ -84,7 +84,10 @@ Dominance is scoped to *independent* dev-facing violations. A subfield/model che
    Crucially, the check is **shape-aware**: a parent that failed its own declared `type:` is the
    wrong shape, so its subfields are derived even if the value coincidentally answers the subfield's
    reader (e.g. `Array#count` for a parent declared `type: Hash`). Method presence alone doesn't make
-   a wrong-typed value extractable.
+   a wrong-typed value extractable. Resolving a *dotted* `on:` ("payload.meta") does invoke the leaf
+   reader; only the Extract resolver's typed `UnextractableError` ("can't read this shape") is treated
+   as derived there — a reader that exists but raises a genuine bug propagates as a dev-facing
+   exception, so dominance still holds.
 
 So with `expects :payload, type: Hash, user_facing: true` plus `expects :id, on: :payload`, an
 omitted/wrong-shaped `payload` makes `:id` derived → the parent's message surfaces (a caller who sent

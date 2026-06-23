@@ -497,9 +497,11 @@ module Axn
 
       parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
       !_extractable?(config.on, parent, config.field)
-    rescue StandardError
-      # Resolving the parent itself failed (e.g. a dotted/nested path dug against a missing root) —
-      # the subfield can't be evaluated, so its failure is derived from the parent's.
+    rescue Axn::Core::FieldResolvers::UnextractableError
+      # Resolving the parent hit a missing/wrong-shape segment (e.g. a dotted path dug against a
+      # missing root) — the subfield can't be evaluated, so its failure is derived from the parent's.
+      # Only this specific "can't extract" signal is swallowed: a reader that *exists* but raises a
+      # genuine bug propagates, so dev-facing dominance still holds.
       true
     end
 
