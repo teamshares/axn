@@ -63,6 +63,25 @@ RSpec.describe "Nested exception reporting (report once)" do
       expect(reports).to be_empty
     end
 
+    it "reports outcome `failure` to an ancestor's on_error, even though it runs before the context flag is set" do
+      # The ancestor doesn't declare fails_on, so its own _fails_on? is false and the executor only
+      # sets __classify_as_failure! *after* dispatching on_error. The sticky classification (set by
+      # the inner action) must make result.outcome read `failure` at on_error time anyway.
+      observed = []
+      stub_const("StickyInner", build_axn do
+        fails_on(ArgumentError)
+        def call = raise(ArgumentError, "expected")
+      end)
+      stub_const("BubbleParent", build_axn do
+        on_error { observed << result.outcome.to_s }
+        def call = StickyInner.call!
+      end)
+
+      result = BubbleParent.call
+      expect(result.outcome).to eq("failure")
+      expect(observed).to eq(["failure"]) # not "exception"
+    end
+
     it "does NOT make an unrelated same-class exception a failure (tag is per-object, not per-class)" do
       # ExpectedOk declares fails_on(ArgumentError) but never raises it; the parent then raises its
       # OWN ArgumentError. That object was never classified by a fails_on, so it stays an exception.

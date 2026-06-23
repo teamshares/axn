@@ -114,6 +114,21 @@ RSpec.describe "Axn error_prefix resolution" do
     end
     it { is_expected.to eq("Couldn't sync user") }
   end
+
+  context "delimiter comes from the headline that actually resolved, not a blank newer one" do
+    # The newest headline is a block that resolves blank but carries `delimiter: ""`. base_message
+    # falls back to the earlier "Base" headline, so the delimiter must come from "Base" (default
+    # ": "), not the blank block — otherwise we'd render "Basedetail".
+    let(:action) do
+      build_axn do
+        error "Base"
+        error(delimiter: "") { "" }
+        error "detail", if: ArgumentError
+        def call = raise ArgumentError, "boom"
+      end
+    end
+    it { is_expected.to eq("Base: detail") }
+  end
 end
 
 RSpec.describe "Axn error_prefix on fail!" do

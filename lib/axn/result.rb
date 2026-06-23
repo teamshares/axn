@@ -77,10 +77,15 @@ module Axn
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
-                # The executor records a failure classification on the context (this action's `fails_on`,
-                # or one a nested action made sticky); read it here so the distinction survives after the
-                # per-execution set is cleared. Fall back to `_fails_on?` defensively.
-                failure = @context.__classified_as_failure? || action.class._fails_on?(exception)
+                # Three records of "this settled as a failure", in priority order:
+                #   1. context flag — durable; survives after the per-execution set is cleared.
+                #   2. live classification set — set as soon as ANY action (this one or a nested one,
+                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
+                #      reads outcome *before* the executor sets the context flag on this level.
+                #   3. `_fails_on?` — defensive recompute.
+                failure = @context.__classified_as_failure? ||
+                          Internal::ExceptionClassification.failure?(exception) ||
+                          action.class._fails_on?(exception)
                 failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS

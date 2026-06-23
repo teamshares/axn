@@ -37,14 +37,7 @@ module Axn
               "#{base_message}#{delimiter}#{reason}"
             end
 
-            def base_message
-              return @base_message if defined?(@base_message)
-
-              # Headlines form a fallback chain (most-recent first — see Registry): use the first whose
-              # body resolves to something present, so a headline whose block raises or returns blank
-              # falls back to an earlier one rather than to the generic default.
-              @base_message = base_candidates.lazy.filter_map { |d| body_for(d) }.first
-            end
+            def base_message = resolved_base&.last
 
             private
 
@@ -53,12 +46,19 @@ module Axn
             # Applies to both :error and :success events.
             def base_candidates = candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
 
-            # The base headline for delimiter + identity purposes: the most-recently declared one.
-            def base_descriptor
-              return @base_descriptor if defined?(@base_descriptor)
+            # The headline that actually resolves, as [descriptor, body]. Headlines form a fallback chain
+            # (most-recent first — see Registry): a headline whose block raises or returns blank falls
+            # back to an earlier one. The body AND its delimiter both come from this descriptor, so a
+            # blank/raising newer headline can't impose its delimiter on an earlier headline's text.
+            def resolved_base
+              return @resolved_base if defined?(@resolved_base)
 
-              @base_descriptor = base_candidates.first
+              @resolved_base = base_candidates.lazy.filter_map { |d| (body = body_for(d)) && [d, body] }.first
             end
+
+            # Whether a base is *declared* (gates whether reasons are prefixed) — independent of whether
+            # its body resolves to something present (the most-recently declared headline).
+            def base_descriptor = base_candidates.first
 
             # A "reason" is an entry eligible to be selected as the displayed message: a conditional
             # entry (if:/unless:) or one explicitly `prefixed:`. Unconditional non-prefixed entries are
@@ -70,9 +70,10 @@ module Axn
               descriptor.prefixed? || !descriptor.static?
             end
 
-            # NOTE: no `.presence` — an explicit `delimiter: ""` is honored (join with no separator);
-            # only an unset (nil) delimiter falls back to the default.
-            def delimiter = base_descriptor&.delimiter || ": "
+            # The delimiter comes from the headline whose body we're actually showing (resolved_base),
+            # NOT the most-recent declared one. NOTE: no `.presence` — an explicit `delimiter: ""` is
+            # honored (join with no separator); only an unset (nil) delimiter falls back to the default.
+            def delimiter = resolved_base&.first&.delimiter || ": "
 
             def body_for(descriptor)
               return nil unless descriptor
