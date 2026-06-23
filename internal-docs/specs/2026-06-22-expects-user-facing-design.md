@@ -68,34 +68,32 @@ This preserves the invariant **a real contract bug always pages**. A genuine typ
 never masked behind a friendly "Note can't be blank" — you fix the bug first, and only once the
 contract is otherwise sound does the user-facing message become the thing the caller sees.
 
-Dominance is scoped to *independent* dev-facing violations. A subfield/model check is *derived*
-(skipped, so the parent's user-facing message surfaces) only when **both** hold:
+This dominance is between a `user_facing:` top-level field and a *plain top-level* field. The
+subfield/model dimension is kept out of it by a deliberate scoping rule:
 
-1. **Its parent root is one of the failed user-facing fields.** A subfield of any *other* parent —
-   an unrelated absent `optional:` field, say — is not derived from the user-facing failure, so it
-   runs and pages dev-facing exactly as it would with no `user_facing:` field in play. The root is
-   resolved with `_root_wire_field`, which walks an `on:` reader (aliased via `as:`, dotted, or
-   rooted at another subfield) back to its top-level wire key — reusing the action's existing
-   `_wire_parent_key` for the alias step rather than duplicating that mapping.
-2. **That parent value can't be extracted from** — missing or the wrong shape — so reading the
-   subfield is meaningless. Extractability is tested *structurally* (mirroring the Extract resolver's
-   source-shape branches) **without invoking the reader**: a reader that raises a genuine bug must
-   surface as a dev-facing exception via the real validation, never be swallowed into a derived skip.
-   Crucially, the check is **shape-aware**: a parent that failed its own declared `type:` is the
-   wrong shape, so its subfields are derived even if the value coincidentally answers the subfield's
-   reader (e.g. `Array#count` for a parent declared `type: Hash`). Method presence alone doesn't make
-   a wrong-typed value extractable. Resolving a *dotted* `on:` ("payload.meta") does invoke the leaf
-   reader; only the Extract resolver's typed `UnextractableError` ("can't read this shape") is treated
-   as derived there — a reader that exists but raises a genuine bug propagates as a dev-facing
-   exception, so dominance still holds.
+> **`user_facing:` is top-level only.** It cannot be declared on a subfield (`on:`), and it is
+> rejected at declaration on any field that *has* subfields. Subfields and model consistency are
+> always dev-facing.
 
-So with `expects :payload, type: Hash, user_facing: true` plus `expects :id, on: :payload`, an
-omitted/wrong-shaped `payload` makes `:id` derived → the parent's message surfaces (a caller who sent
-the wrong shape gets the clean user-facing "Payload is not a Hash", not a spurious subfield page). But
-a `payload` that satisfies its declared type and resolves to a readable container is extractable even
-if it failed some *other* top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash,
-or a valid object that failed a custom check) — its subfield's own contract violation (`:id` of the
-wrong type) is then genuinely independent and still dominates.
+This is what keeps the feature simple. The genuinely hard case — a subfield hanging off a *failed*
+user-facing parent, where you must decide whether the subfield's failure is "derived" from the
+parent's (so the parent's friendly message should surface) or "independent" (so a real bug should
+page) — **cannot arise**, because a `user_facing:` field is forbidden from having subfields. Every
+remaining subfield/model check necessarily hangs off a plain field, so:
+
+- If that plain parent failed, the call already settled dev-facing (the top-level dominance rule
+  above), and we never reach the subfield stage.
+- If that plain parent validated cleanly, its subfield/model check is unconditionally independent —
+  run it normally; an independent dev-facing violation propagates and pages, exactly as it would
+  with no `user_facing:` field in play.
+
+An earlier draft tried to support `user_facing:` on parents-with-subfields by classifying each
+subfield failure as derived-vs-independent at runtime (root-walking, extractability probing,
+shape-awareness). That distinction proved to have a long tail of sharp edges (aliased/dotted/nested
+roots, coincidental reader methods, reader side effects), each a place to mask a real bug or page on
+a clean user-facing failure. Forbidding the combination removes the entire class of edges. The
+support can be added later — behind real user demand — without breaking anything, since today it's a
+loud declaration error rather than a silent behavior.
 
 ## Outcome shape (when all failing fields are user-facing)
 

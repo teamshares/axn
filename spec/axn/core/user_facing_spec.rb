@@ -271,122 +271,14 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
-  describe "a failed user_facing parent doesn't get masked by its own subfield checks" do
-    let(:fired) { [] }
-    let(:action) do
-      recorder = fired
-      build_axn do
-        expects :payload, type: Hash, user_facing: true
-        expects :id, on: :payload # dev-facing subfield hanging off the user_facing parent
-
-        on_failure { recorder << :failure }
-        on_exception { recorder << :exception }
-
-        def call = nil
-      end
-    end
-
-    it "surfaces the parent's user-facing message rather than a derived subfield blowup" do
-      # :payload omitted — its subfield :id can't resolve against the missing parent, but that
-      # derived failure must not dominate the parent's own user-facing violation.
-      result = action.call
-      expect(result.outcome).to be_failure
-      expect(fired).to contain_exactly(:failure)
-      expect(result.error).to include("Payload can't be blank")
-    end
-
-    it "normalizes an aliased parent (subfield declared on: the alias) back to the wire key" do
-      # The failed-parent set holds wire keys (:payload from the ActiveModel errors), but the
-      # subfield's on: names the reader (:raw_payload) — `_root_wire_field` must map it back so the
-      # derived-skip gate matches and the parent's user-facing message surfaces.
-      action = build_axn do
-        expects :payload, type: Hash, as: :raw_payload, user_facing: true
-        expects :id, on: :raw_payload
-        def call = nil
-      end
-      result = action.call
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("Payload can't be blank")
-    end
-
-    it "normalizes a subfield rooted at another subfield of the user-facing parent" do
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true
-        expects :meta, on: :payload, type: Hash
-        expects :id, on: :meta # rooted at a subfield, which is itself rooted at the user-facing parent
-        def call = nil
-      end
-      result = action.call
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("Payload can't be blank")
-    end
-
-    it "surfaces the parent's message when a present-but-wrong-type parent makes the subfield unextractable" do
-      # Distinct from the omitted-parent (nil) case: payload is present but the wrong shape (a String,
-      # not a Hash), so :id can't be extracted from it. That derived failure must not mask the
-      # parent's own type violation. Exercises the wrong-shape branch of `_extractable?`.
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true
-        expects :id, on: :payload, type: Integer
-        def call = nil
-      end
-      result = action.call(payload: "notahash")
-      expect(result.outcome).to be_failure
-      expect(result.error).to match(/Payload.*Hash/)
-    end
-
-    it "normalizes a dotted on: path rooted at the user-facing parent" do
-      # The covered subfield-rooted case uses on: :meta; this hits the other `_root_wire_field`
-      # branch — a dotted string "payload.meta" split back to the :payload wire key.
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true
-        expects :id, on: "payload.meta", type: Integer
-        def call = nil
-      end
-      result = action.call # payload omitted → "payload.meta" can't resolve (derived)
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("Payload can't be blank")
-    end
-  end
-
-  describe "an extractable user_facing parent still runs its independent subfield checks" do
-    let(:fired) { [] }
-    let(:action) do
-      recorder = fired
-      build_axn do
-        # payload is a valid Hash (so payload.id IS extractable) but fails its own custom validation.
-        # Its subfield :id is the wrong type — an *independent* dev-facing violation, not one derived
-        # from a broken parent — so it must still dominate and page.
-        expects :payload, type: Hash, user_facing: true, validate: ->(_h) { "is not allowed" }
-        expects :id, on: :payload, type: Integer
-
-        on_failure { recorder << :failure }
-        on_exception { recorder << :exception }
-
-        def call = nil
-      end
-    end
-
-    it "lets an independent dev-facing subfield violation dominate the extractable parent's failure" do
-      result = action.call(payload: { id: "x" })
-      expect(result.outcome).to be_exception
-      expect(fired).to contain_exactly(:exception)
-    end
-
-    it "still surfaces the parent's user-facing message when its subfields are clean" do
-      result = action.call(payload: { id: 5 })
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("Payload is not allowed")
-    end
-  end
-
-  describe "the derived-skip is gated to the failed user_facing parent's own subfields" do
-    it "still pages a dev-facing subfield error whose parent is an unrelated absent optional field" do
-      # :note is the (blank) user-facing field; :payload is a *separate* optional field that's absent,
-      # so its required subfield :id can't resolve. That subfield error is independent of the
-      # user-facing :note failure — :payload is not a failed user-facing parent — so it stays
-      # dev-facing (exactly as it would with no user_facing field in play), rather than being
-      # masked into an on_failure result.
+  # Subfields and model consistency are *always* dev-facing (`user_facing:` is rejected on a field
+  # that has subfields — see the "rejected on a field with subfields" group). So a subfield/model
+  # violation is always independent of any user-facing top-level failure, and a real one still pages.
+  describe "an independent dev-facing subfield still dominates a user-facing top-level failure" do
+    it "pages when a subfield of a separate (non-user-facing) parent can't resolve" do
+      # :note is the (blank) user-facing field; :payload is a separate optional field that's absent,
+      # so its required subfield :id can't resolve. That's an independent dev-facing contract error,
+      # so it pages exactly as it would with no user_facing field in play.
       fired = []
       recorder = fired
       action = build_axn do
@@ -404,10 +296,10 @@ RSpec.describe "expects ..., user_facing:" do
       expect(fired).to contain_exactly(:exception)
     end
 
-    it "does not swallow a real error raised by a subfield reader as a derived skip" do
+    it "propagates a real error raised by a subfield reader rather than masking it" do
       # :payload is present and unrelated to the blank user-facing :note, but reading payload.id
-      # raises a genuine bug. That must surface as a dev-facing exception, not be misread as
-      # "unextractable" and skipped behind the user-facing message.
+      # raises a genuine bug. That must surface as a dev-facing exception, not be masked behind the
+      # user-facing message.
       raising = Class.new { def id = raise("boom from reader") }.new
       action = build_axn do
         expects :note, user_facing: true
@@ -419,100 +311,54 @@ RSpec.describe "expects ..., user_facing:" do
       result = action.call(payload: raising) # :note blank (user-facing); payload.id raises
       expect(result.outcome).to be_exception
     end
+  end
 
-    it "propagates a real reader bug raised while resolving a dotted subfield path" do
-      # :payload is a valid object (satisfies its type) that failed a custom validation, so it's a
-      # failed user-facing parent. Resolving the dotted on: "payload.meta" invokes payload.meta,
-      # which raises a genuine bug — that must page (dev-facing), not be misread as an unextractable
-      # parent and swallowed into the user-facing failure.
-      klass = Class.new do
-        def self.name = "Payload"
-        def meta = raise("boom from meta reader")
-      end
-      action = build_axn do
-        expects :payload, type: klass, user_facing: true, validate: ->(_p) { "is invalid" }
-        expects :id, on: "payload.meta", type: Integer
-        def call = nil
-      end
-      result = action.call(payload: klass.new)
-      expect(result.outcome).to be_exception
+  describe "user_facing: is rejected on a field that has subfields (top-level only)" do
+    it "rejects a subfield declared on a user_facing parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, user_facing: true
+          expects :id, on: :payload
+        end
+      end.to raise_error(ArgumentError, /user_facing: is for top-level fields without nested subfield expectations/)
     end
 
-    it "lets an independent subfield violation dominate amid multiple failed user-facing parents" do
-      fired = []
-      recorder = fired
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true, validate: ->(_h) { "bad payload" }
-        expects :extra, type: Hash, user_facing: true # omitted → unextractable user-facing failure
-        expects :id, on: :payload, type: Integer # independent dev-facing subfield
-
-        on_failure { recorder << :failure }
-        on_exception { recorder << :exception }
-
-        def call = nil
-      end
-      # :payload is an extractable Hash with a wrong-type :id; :extra is omitted. The independent
-      # subfield violation dominates even though two user-facing parents also failed.
-      result = action.call(payload: { id: "x" })
-      expect(result.outcome).to be_exception
-      expect(fired).to contain_exactly(:exception)
+    it "rejects a subfield declared on a user_facing parent's alias" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, as: :raw_payload, user_facing: true
+          expects :id, on: :raw_payload
+        end
+      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
     end
 
-    it "treats a wrong-shaped parent as derived even when a coincidental method matches the subfield" do
-      # payload fails its own type: Hash (it's an Array), so it's a clean user-facing wrong-shape
-      # case. Array#count coincidentally answers the :count subfield reader — but the parent is the
-      # wrong shape, so the subfield is derived and must not turn the user-facing failure into a page.
-      fired = []
-      recorder = fired
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true
-        expects :count, on: :payload, type: String
-
-        on_failure { recorder << :failure }
-        on_exception { recorder << :exception }
-
-        def call = nil
-      end
-      result = action.call(payload: [])
-      expect(result.outcome).to be_failure
-      expect(fired).to contain_exactly(:failure)
-      expect(result.error).to match(/Payload.*Hash/)
+    it "rejects a dotted on: path rooted at a user_facing parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, user_facing: true
+          expects :id, on: "payload.meta", type: Integer
+        end
+      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
     end
 
-    it "still lets an independent subfield dominate for a valid object parent that failed a custom validation" do
-      # The opposite of the wrong-shape case: :user satisfies its declared type (a real User object)
-      # but failed a custom validate:. Its :name subfield is independently the wrong type, so that
-      # dev-facing violation still dominates — object-source extraction must not be over-skipped.
-      user_klass = Class.new do
-        def self.name = "User"
-        def initialize(name) = @name = name
-        attr_reader :name
-      end
-      action = build_axn do
-        expects :user, type: user_klass, user_facing: true, validate: ->(_u) { "is inactive" }
-        expects :name, on: :user, type: Integer
-        def call = nil
-      end
-      result = action.call(user: user_klass.new("bob"))
-      expect(result.outcome).to be_exception
+    it "rejects a subfield rooted at another subfield of a user_facing parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, user_facing: true
+          expects :meta, on: :payload, type: Hash
+          expects :id, on: :meta
+        end
+      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
     end
 
-    it "never invokes a user_facing handler when an extractable parent's subfield dominates" do
-      invoked = []
-      recorder = invoked
+    it "still allows subfields on a non-user-facing parent alongside a user_facing top-level field" do
       action = build_axn do
-        expects :payload, type: Hash, validate: ->(_h) { "bad payload" }, user_facing: lambda { |_e|
-          recorder << :invoked
-          "friendly"
-        }
+        expects :note, user_facing: true
+        expects :payload, type: Hash
         expects :id, on: :payload, type: Integer
         def call = nil
       end
-      # :payload is an extractable Hash (fails validate:) with a wrong-type :id → the dev-facing
-      # subfield dominates and discards the user-facing message, so its handler must never run.
-      result = action.call(payload: { id: "x" })
-      expect(result.outcome).to be_exception
-      expect(invoked).to be_empty
+      expect(action.call(note: "hi", payload: { id: 1 }).outcome).to be_success
     end
   end
 

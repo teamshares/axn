@@ -350,16 +350,12 @@ module Axn
       raise fields_error unless failing.any? && failing.all? { |field| user_facing.key?(field) }
 
       # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
-      # violation still wins, so run those first and let any such error propagate unreclassified.
-      # A subfield/model check is *derived* (skipped) only when BOTH hold: its parent root is one of
-      # the failed user-facing fields, AND that parent value can't be extracted from (missing or the
-      # wrong shape) so the check is meaningless. A subfield of any *other* parent — an unrelated
-      # absent optional field, say — is not derived from the user-facing failure, so it runs and
-      # pages dev-facing exactly as it would without `user_facing:` in play. And a failed user-facing
-      # parent that still resolves to a readable container is extractable, so its subfield's own
-      # contract violation is independent and dominates (e.g. a Hash that failed a custom `validate:`).
-      validate_subfields_contract!(skip_derived_of: failing)
-      validate_model_consistency!(skip_derived_of: failing)
+      # violation still wins, so run those checks and let any such error propagate unreclassified
+      # (a real contract bug always pages). They're guaranteed independent here: `user_facing:` is
+      # rejected on any field that has subfields (see ContractForSubfields), so no subfield/model
+      # check hangs off one of these failed parents — each one's own parent validated cleanly.
+      validate_subfields_contract!
+      validate_model_consistency!
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
       # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
@@ -426,13 +422,7 @@ module Axn
     # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
     # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
     # a primary key and a record-vs-id comparison would be meaningless.
-    #
-    # `skip_derived_of` (the failed user-facing fields' wire keys) is honored ONLY for subfield
-    # checks, whose parent must be *resolved* and so can be a broken user-facing parent (a derived
-    # failure — see `_derived_from_failed_parent?`). The top-level record/id contradiction is
-    # computed from raw inputs and is independent of any validation outcome on the field — it's a
-    # real programmer error, so it always runs and dominates.
-    def validate_model_consistency!(skip_derived_of: [])
+    def validate_model_consistency!
       mismatches = []
 
       @action_class.send(:internal_field_configs).each do |config|
@@ -444,7 +434,6 @@ module Axn
 
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
-        next if _derived_from_failed_parent?(config, skip_derived_of)
 
         parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
         msg = _model_record_id_mismatch(source: parent, field: config.field)
@@ -479,81 +468,10 @@ module Axn
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
     end
 
-    # A subfield/model check is *derived* from a failed user-facing parent — and so must not mask the
-    # parent's user-facing message — exactly when BOTH hold:
-    #   1. the check's parent root is one of `failed` (the failed user-facing fields' wire keys), and
-    #   2. that parent value can't be extracted from (missing or the wrong shape), so reading the
-    #      subfield is meaningless.
-    # (1) keeps the skip scoped: a subfield of an *unrelated* parent (e.g. an absent optional field)
-    # is not derived from the user-facing failure and must page dev-facing as usual. (2) is tested
-    # structurally — mirroring the Extract resolver's source-shape branches *without invoking the
-    # reader*, so a reader that raises a genuine bug is NOT swallowed into a skip; it surfaces via the
-    # real validation as a dev-facing exception. A failed user-facing parent that still resolves to a
-    # readable container is extractable, so its subfield's own contract violation stays independent
-    # and dominates.
-    def _derived_from_failed_parent?(config, failed)
-      return false if failed.empty?
-      return false unless failed.include?(_root_wire_field(config.on))
-
-      parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
-      !_extractable?(config.on, parent, config.field)
-    rescue Axn::Core::FieldResolvers::UnextractableError
-      # Resolving the parent hit a missing/wrong-shape segment (e.g. a dotted path dug against a
-      # missing root) — the subfield can't be evaluated, so its failure is derived from the parent's.
-      # Only this specific "can't extract" signal is swallowed: a reader that *exists* but raises a
-      # genuine bug propagates, so dev-facing dominance still holds.
-      true
-    end
-
-    # Does `source` yield the named `field` without invoking its reader? Mirrors Extract's branches:
-    # Hash-like sources (dig, excluding Array) support named-key access; otherwise the reader must
-    # exist. We deliberately don't *call* the reader here — that's the real validation's job, and a
-    # reader that raises must surface as a bug, not be misread as "unextractable."
-    #
-    # A parent that failed its own declared `type:` is the *wrong shape*: its subfields are derived
-    # from that shape failure, not independent. So check the declared type first — otherwise a value
-    # of the wrong type that happens to answer the subfield's reader (e.g. `Array#count` for a parent
-    # declared `type: Hash`) would look extractable and let a spurious subfield error page, masking
-    # the parent's clean user-facing wrong-shape message.
-    def _extractable?(parent_on, source, field)
-      return false if source.nil?
-      return false unless _parent_matches_declared_type?(parent_on, source)
-      return true if source.respond_to?(:dig) && !source.is_a?(Array)
-
-      source.respond_to?(field)
-    end
-
-    # True unless the parent reader names a declared field/subfield with a `type:` that `source`
-    # violates. Only a single-segment `on:` names a config with its own declared type; a dotted leaf
-    # (`"payload.meta"`) has none of its own, so it can't contradict one — fall through to structural.
-    def _parent_matches_declared_type?(parent_on, source)
-      return true if parent_on.to_s.include?(".")
-
-      config = (@action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs))
-               .find { |c| c.reader_as.to_s == parent_on.to_s }
-      klasses = config&.validations&.dig(:type, :klass)
-      return true if klasses.nil?
-
-      Array(klasses).any? { |klass| Axn::Validators::TypeValidator.value_matches?(source, klass:) }
-    end
-
-    # Walk a subfield's `on:` reader path back to its ultimate top-level *wire* field — the key
-    # ActiveModel reports in validation errors, which is what `failed` is built from. The top-level
-    # alias→wire-key step reuses the action class's `_wire_parent_key` (single source of truth for
-    # that mapping); this adds the dotted-path split and subfield-rooted recursion on top.
-    def _root_wire_field(on)
-      root = on.to_s.split(".").first
-      sub = @action_class.send(:subfield_configs).find { |c| c.reader_as.to_s == root }
-      return _root_wire_field(sub.on) if sub
-
-      @action_class.send(:_wire_parent_key, root)
-    end
-
-    def validate_subfields_contract!(skip_derived_of: [])
+    def validate_subfields_contract!
       @action_class.send(:subfield_configs).each do |config|
         parent_field = config.on
         subfield = config.field
-        next if _derived_from_failed_parent?(config, skip_derived_of)
 
         Axn::Validation::Subfields.validate!(
           field: subfield,

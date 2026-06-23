@@ -25,7 +25,7 @@ module Axn
           # Object/Array sources: use the reader method.
           return provided_data.public_send(field) if provided_data.respond_to?(field)
 
-          raise UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+          raise "Unclear how to extract #{field} from #{provided_data.inspect}"
         end
 
         private

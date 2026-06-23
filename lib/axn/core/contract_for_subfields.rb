@@ -58,6 +58,17 @@ module Axn
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
           end
 
+          # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
+          # into a user-facing failure, but subfields are always dev-facing. Declaring a subfield on a
+          # user-facing parent mixes the two — a violation of the parent and an independent subfield
+          # violation can't both settle as one outcome cleanly — so reject it. (A subfield must be
+          # declared after its parent, so checking here catches the combination in either order.)
+          if _on_roots_at_user_facing_field?(on)
+            raise ArgumentError,
+                  "expects called with `on: #{on}`, but :#{root} (or its root) is declared `user_facing:` — " \
+                  "user_facing: is for top-level fields without nested subfield expectations"
+          end
+
           # default:/preprocess: write into the parent, and sensitive: relies on the log filter
           # matching config.on to a top-level field — none of which support an arbitrary nested
           # path yet. A parent is nested whether reached via a dotted path ("address.billing") or by
@@ -81,6 +92,19 @@ module Axn
         end
 
         private
+
+        # Walk an `on:` reader path back to its ultimate top-level field and report whether that field
+        # is declared `user_facing:`. `on:` names a reader, which may be dotted ("payload.meta") or
+        # rooted at another subfield; only top-level fields can carry `user_facing:`, so recurse
+        # through any intervening subfield to the top-level config.
+        def _on_roots_at_user_facing_field?(on)
+          root = on.to_s.split(".").first
+          top = internal_field_configs.find { |c| c.reader_as.to_s == root }
+          return !!top.user_facing if top
+
+          sub = subfield_configs.find { |c| c.reader_as.to_s == root }
+          sub ? _on_roots_at_user_facing_field?(sub.on) : false
+        end
 
         def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists
           *fields,

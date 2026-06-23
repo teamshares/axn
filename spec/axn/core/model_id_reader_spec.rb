@@ -166,21 +166,6 @@ RSpec.describe "model: id reader and consistency" do
       expect(result.outcome).to be_exception
       expect(result.exception.message).to match(/conflicts with company_id=9/)
     end
-
-    it "dominates a subfield mismatch whose parent is an extractable user_facing field" do
-      # The parent (:payload) is an extractable Hash that failed its own user-facing validation, so a
-      # record/id contradiction nested *inside* it is independent (computed from raw inputs) and still
-      # pages — exercising the subfield branch of the consistency check under the derived-skip gate.
-      klass = co_class
-      action = build_axn do
-        expects :payload, type: Hash, user_facing: true, validate: ->(_h) { "is invalid" }
-        expects :company, on: :payload, model: { klass:, finder: :find }
-        def call = nil
-      end
-      result = action.call(payload: { company: co_class.new(5), company_id: 9 })
-      expect(result.outcome).to be_exception
-      expect(result.exception.message).to match(/conflicts with company_id=9/)
-    end
   end
 
   describe "consistency check is skipped for custom finders" do
