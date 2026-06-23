@@ -337,25 +337,31 @@ module Axn
         Axn::Validation::Fields.validate!(validations:, context:, exception_klass: InboundValidationError)
       end
 
-      if fields_error
-        reclassified = _reclassified_user_facing_error(fields_error, configs)
-        # A dev-facing top-level field already failed → it dominates now; preserve the original
-        # behavior (raise immediately, later checks not consulted).
-        raise fields_error if reclassified.equal?(fields_error)
-
-        # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
-        # violation still wins, so run those first and let any such error propagate unreclassified.
-        # A subfield/model check that hangs off one of the *failed* user-facing parents is derived
-        # from that failure (extraction against a broken parent), not independent — skip it so it
-        # can't mask the parent's own user-facing message.
-        failed_fields = fields_error.errors.map { |err| err.attribute.to_sym }.uniq
-        validate_subfields_contract!(skip_parents: failed_fields)
-        validate_model_consistency!(skip_fields: failed_fields)
-        raise reclassified
+      unless fields_error
+        validate_subfields_contract!
+        validate_model_consistency!
+        return
       end
 
-      validate_subfields_contract!
-      validate_model_consistency!
+      user_facing = _user_facing_configs(configs)
+      failing = fields_error.errors.map { |err| err.attribute.to_sym }.uniq
+      # A dev-facing top-level field failed → it dominates; raise immediately (original behavior,
+      # later checks not consulted).
+      raise fields_error unless failing.any? && failing.all? { |field| user_facing.key?(field) }
+
+      # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
+      # violation still wins, so run those first and let any such error propagate unreclassified.
+      # A subfield/model check that hangs off one of the *failed* user-facing parents is derived
+      # from that failure (extraction against a broken parent), not independent — skip it so it
+      # can't mask the parent's own user-facing message.
+      validate_subfields_contract!(skip_parents: failing)
+      validate_model_consistency!(skip_fields: failing)
+
+      # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
+      # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
+      # discarded reclassification never fires an expensive/side-effecting handler for nothing.
+      raise InboundValidationError.new(fields_error.errors, user_facing: true,
+                                                            user_facing_message: _user_facing_message(fields_error, failing, user_facing))
     end
 
     def _capture_inbound_validation_error
@@ -365,14 +371,10 @@ module Axn
       e
     end
 
-    def _reclassified_user_facing_error(error, configs)
-      user_facing = configs.each_with_object({}) do |config, hash|
+    def _user_facing_configs(configs)
+      configs.each_with_object({}) do |config, hash|
         hash[config.field] = config.user_facing if config.user_facing
       end
-      failing = error.errors.map { |err| err.attribute.to_sym }.uniq
-      return error unless failing.any? && failing.all? { |field| user_facing.key?(field) }
-
-      InboundValidationError.new(error.errors, user_facing: true, user_facing_message: _user_facing_message(error, failing, user_facing))
     end
 
     # One message part per failing user-facing field, in failure order, joined like

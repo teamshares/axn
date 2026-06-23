@@ -250,6 +250,25 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.outcome).to be_exception
       expect(fired).to contain_exactly(:exception)
     end
+
+    it "does not invoke the user_facing handler when a dev-facing check dominates" do
+      invoked = []
+      recorder = invoked
+      action = build_axn do
+        expects :note, user_facing: lambda { |_e|
+          recorder << :invoked
+          "msg"
+        }
+        expects :payload
+        expects :id, on: :payload, type: Integer # independent dev-facing subfield
+        def call = nil
+      end
+      # :note omitted (user-facing) AND payload.id wrong type (independent dev-facing) → exception
+      # dominates and discards the user-facing message, so its handler must never run.
+      result = action.call(payload: { id: "x" })
+      expect(result.outcome).to be_exception
+      expect(invoked).to be_empty
+    end
   end
 
   describe "a failed user_facing parent doesn't get masked by its own subfield checks" do
