@@ -138,14 +138,24 @@ error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 
-For a custom `success` string or [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures), declare it with the normal DSL **after** `use :model` (later declarations win):
+A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so a **static** declaration becomes the **base** and *prefixes* them rather than replacing them:
 
 ```ruby
 use :model, create: Widget
 success "Your widget is ready!"
+# => "Your widget is ready!: Created Widget"  (base prefixes the mode-aware body)
+error "Unable to create the widget"
+# => "Unable to create the widget: Name can't be blank"
 ```
 
-A declared `error` is the **base** that *prefixes* the validation body (as shown above), not a replacement — the model's field-level errors are appended by design (`"Headline: Name can't be blank"`). Suppressing the validation detail entirely is not a simple declaration (the body is part of what `use :model` provides); it's an intentionally narrow escape hatch, so reach for a plain action with your own `error` if you need a fixed, detail-free message.
+To **replace** the mode-aware message with a fixed string instead, declare it *dynamically* (a block or a conditional) — that registers a reason, and the later reason wins:
+
+```ruby
+use :model, create: Widget
+success { "Your widget is ready!" }   # => "Your widget is ready!"  (replaces, no prefix)
+```
+
+The error side has no equally-clean full replacement: the field-level validation body is part of what `use :model` provides, so suppressing it entirely is an intentionally narrow escape hatch — reach for a plain action with your own `error` if you need a fixed, detail-free error message. Add [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) the same way — a normal declaration after `use :model`.
 
 ## Validation failures are failures, not exceptions
 

@@ -28,25 +28,15 @@ module Axn
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            conditional = kwargs.key?(:if) || kwargs.key?(:unless)
-            dynamic     = Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.dynamic_handler?(block_given? ? block : message)
-            reason      = conditional || dynamic # only "reasons" (not the base headline) may be prefixed
-            effective_prefixed = _resolve_prefixed(prefixed, reason:, delimiter:)
-            entry = _build_entry(message, prefixed:, delimiter:, effective_prefixed:, kwargs:, block:, block_given: block_given?)
+            # MessageDescriptor.build owns prefixed:/delimiter: validation and defaulting (so the
+            # direct/Factory path is validated identically) — just hand it the raw options.
+            entry = _build_entry(message, prefixed:, delimiter:, kwargs:, block:, block_given: block_given?)
 
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
           end
 
-          def _resolve_prefixed(prefixed, reason:, delimiter:)
-            effective = prefixed.nil? ? reason : prefixed
-            raise ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message" if effective && !reason
-            raise ArgumentError, "delimiter: only applies to a base error message" if delimiter && reason
-
-            effective
-          end
-
-          def _build_entry(message, prefixed:, delimiter:, effective_prefixed:, kwargs:, block:, block_given:)
+          def _build_entry(message, prefixed:, delimiter:, kwargs:, block:, block_given:)
             if message.is_a?(Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
               raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given || !prefixed.nil? || delimiter
 
@@ -55,7 +45,7 @@ module Axn
 
             Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
               handler: block_given ? block : message,
-              prefixed: effective_prefixed,
+              prefixed:,
               delimiter:,
               **kwargs,
             )

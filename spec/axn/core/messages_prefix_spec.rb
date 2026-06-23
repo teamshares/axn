@@ -298,5 +298,27 @@ RSpec.describe "Axn error_prefix DSL" do
         build_axn { error "x", delimiter: " - ", prefixed: true }
       end.to raise_error(ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message")
     end
+
+    # The direct/Factory `MessageDescriptor.build` path (no DSL) must enforce the same validation,
+    # rather than silently ignoring an option that resolution never reads.
+    describe "direct MessageDescriptor.build path" do
+      let(:described) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
+
+      it "raises when delimiter: is given on a conditional reason" do
+        expect do
+          described.build(handler: "x", if: ArgumentError, delimiter: " - ")
+        end.to raise_error(ArgumentError, /delimiter: only applies to a base error/)
+      end
+
+      it "raises when prefixed: true is given on a static unconditional headline" do
+        expect do
+          described.build(handler: "Headline", prefixed: true)
+        end.to raise_error(ArgumentError, /prefixed: true requires a condition/)
+      end
+
+      it "allows delimiter: on a base (static literal) descriptor" do
+        expect { described.build(handler: "Headline", delimiter: " - ") }.not_to raise_error
+      end
+    end
   end
 end

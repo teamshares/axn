@@ -48,13 +48,25 @@ module Axn
               raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(key) { "Unknown #{key.inspect} option for error/success message" }
             end
 
+            # Validate the prefixed:/delimiter: combination against whether this entry is a "reason"
+            # (conditional or dynamic) vs the base headline. Enforced in `build` (the chokepoint) so
+            # the direct/Factory path fails at declaration exactly like the `error`/`success` DSL —
+            # e.g. `delimiter:` on a conditional reason raises instead of being silently ignored.
+            def self.reject_invalid_prefixing!(prefixed:, delimiter:, reason:)
+              raise ArgumentError, "prefixed: true requires a condition (if:/unless:) or a dynamic message" if prefixed && !reason
+              raise ArgumentError, "delimiter: only applies to a base error message" if delimiter && reason
+            end
+
             def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, delimiter: nil, **unsupported)
               reject_unsupported_options!(unsupported)
               matcher = Matcher.build(if:, unless:)
 
-              # Match the DSL default ("conditional/dynamic reasons are prefixed by default") so the
-              # prebuilt/Factory path behaves like `error … if:`. Explicit prefixed: still wins.
-              prefixed = !matcher.static? || dynamic_handler?(handler) if prefixed.nil?
+              # A "reason" is conditional or dynamic; the base is a static literal. Validate the
+              # prefixing options against that, then default prefixed: to match the DSL ("reasons are
+              # prefixed by default"). Explicit prefixed: still wins.
+              reason = !matcher.static? || dynamic_handler?(handler)
+              reject_invalid_prefixing!(prefixed:, delimiter:, reason:)
+              prefixed = reason if prefixed.nil?
 
               new(handler:, prefixed:, delimiter:, matcher:)
             end

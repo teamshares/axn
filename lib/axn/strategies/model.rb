@@ -24,9 +24,10 @@ module Axn
       # @param persist [Symbol, nil] force :create or :update (overrides inference)
       # @param inject [Symbol, Array<Symbol>] context fields merged into model_params
       #
-      # To prefix the validation-error body, declare a base `error "…"` after `use :model` —
-      # it renders as `"<base>: <validation body>"`. To override the success or full error
-      # message, declare your own `success`/`error` after `use :model` (later declarations win).
+      # The strategy's mode-aware messages are reasons, so a base/reason rule applies: a STATIC
+      # `error "…"`/`success "…"` after `use :model` becomes the base and *prefixes* them
+      # (`"<base>: <body>"`); declare it DYNAMICALLY (a block/conditional) to *replace* instead.
+      # See docs/strategies/model.md.
       def self.configure(create: nil, update: nil, as: nil, expect: :params, persist: nil,
                          inject: nil, &block)
         # The strategy is built on ActiveRecord persistence (`.save`, `previously_new_record?`,
