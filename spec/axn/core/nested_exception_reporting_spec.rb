@@ -35,6 +35,23 @@ RSpec.describe "Nested exception reporting (report once)" do
     expect(reports.size).to eq(1)
   end
 
+  it "retries the global report at an ancestor when the innermost attempt raises (never dropped)" do
+    # The exception is marked reported only AFTER a successful report. If the innermost executor's
+    # report raises (and is swallowed), it must NOT be marked — so the ancestor still reports it.
+    attempts = 0
+    failing_then_ok = lambda do |_exception, **|
+      attempts += 1
+      raise "reporter boom" if attempts == 1 # innermost report fails
+    end
+    Axn.config.instance_variable_set(:@on_exception, failing_then_ok)
+
+    stub_const("InnerReportFails", build_axn { def call = raise("kaboom") })
+    stub_const("OuterReporter", build_axn { def call = InnerReportFails.call! })
+
+    expect(OuterReporter.call).not_to be_ok
+    expect(attempts).to eq(2) # inner attempt raised (swallowed, unmarked); ancestor retried → reported
+  end
+
   describe "a fails_on classification is sticky across nested call!" do
     it "treats a fails_on-reclassified exception as a failure (no report, failure outcome) when bubbled via call!" do
       stub_const("ExpectedInner", build_axn do

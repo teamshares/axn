@@ -224,13 +224,17 @@ module Axn
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
       return if Internal::ExceptionClassification.reported?(exception)
 
-      Internal::ExceptionClassification.mark_reported!(exception)
       context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
       )
 
       Axn.config.on_exception(exception, action: @action, context:)
+
+      # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
+      # rescue below swallows it WITHOUT marking — so an ancestor executor still attempts the report
+      # rather than seeing `reported?` and dropping the exception entirely.
+      Internal::ExceptionClassification.mark_reported!(exception)
     rescue StandardError => e
       Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
     end
