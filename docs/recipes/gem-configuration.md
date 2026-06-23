@@ -32,6 +32,8 @@ Axn::MCP.reset_config!                            # discard assigned values — 
 | `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. |
 | `overridable:` | When `true`, individual actions can override the value per-class (see below). |
 
+When migrating an existing config onto `one_of:` or `validate:`, note that the `ArgumentError` raised on an invalid assignment uses the DSL's own wording (e.g. `mode must be one of :a, :b; got :z`) rather than any message your hand-written setter used before — so any tests asserting on the old message text will need updating.
+
 ## Per-action overrides
 
 For a setting declared `overridable: true`, individual action classes can override the library default. Include the generated overrides module in your action (or, more commonly, in a base class your gem's actions inherit from):
@@ -55,6 +57,8 @@ OtherTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.con
 ```
 
 Overrides are stored per-class and inherited by subclasses, so a gem can set a default for all of its actions through a shared base class. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
+
+`resolved_<name>` (or the no-argument `<name>`) is the supported way to read an overridable setting — it always returns the effective value. There is no public accessor for "the raw class-level override without the config fallback", and the internal storage where overrides are kept is private, so don't reach into it: if your action needs the effective value, use `resolved_<name>`.
 
 ::: warning Load order
 `Foo.overrides` only exists once `Foo` has run `extend Axn::Configurable`, and an action captures the override accessors at the moment it runs `include Foo.overrides`. So your namespace's `extend Axn::Configurable` must be evaluated **before** any action that includes its overrides is defined — in practice, declare the module (the `extend` line) above the `require`s that pull in your actions. The order of individual `setting` declarations does not matter: a setting declared after an action includes the overrides is still picked up.
