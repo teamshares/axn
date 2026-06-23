@@ -153,6 +153,19 @@ RSpec.describe "model: id reader and consistency" do
     it "passes when only a record is supplied" do
       expect(action.call(company: co_class.new(5))).to be_ok
     end
+
+    it "still dominates a user_facing field's own validation failure (the mismatch is independent)" do
+      klass = co_class
+      action = build_axn do
+        # user-facing custom validation that rejects the record — but the record/id contradiction is
+        # an independent programmer error computed from raw inputs, so it must still page.
+        expects :company, model: { klass:, finder: :find }, user_facing: true, validate: ->(_rec) { "is not active" }
+        def call = nil
+      end
+      result = action.call(company: co_class.new(5), company_id: 9)
+      expect(result.outcome).to be_exception
+      expect(result.exception.message).to match(/conflicts with company_id=9/)
+    end
   end
 
   describe "consistency check is skipped for custom finders" do

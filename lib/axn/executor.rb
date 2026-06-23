@@ -419,12 +419,16 @@ module Axn
     # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
     # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
     # a primary key and a record-vs-id comparison would be meaningless.
+    #
+    # `skip_fields` (a failed user-facing field's wire keys) is honored ONLY for subfield checks,
+    # whose parent must be *resolved* and so can be a broken user-facing parent (a derived failure).
+    # The top-level record/id contradiction is computed from raw inputs and is independent of any
+    # validation outcome on the field — it's a real programmer error, so it always runs and dominates.
     def validate_model_consistency!(skip_fields: [])
       mismatches = []
 
       @action_class.send(:internal_field_configs).each do |config|
         next unless _id_based_model?(config)
-        next if skip_fields.include?(config.field)
 
         msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field)
         mismatches << msg if msg
