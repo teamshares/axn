@@ -216,8 +216,8 @@ RSpec.describe Axn do
         it "falls back to conditional success message when condition is true" do
           result = action.call(trigger: true)
           expect(result).to be_ok
-          # "Final fallback" is the static base; "Conditional fallback" is a conditional reason
-          # so it gains the base prefix under A4 success-parity semantics.
+          # "Final fallback" is the unconditional headline (base); "Conditional fallback" is a
+          # conditional reason, so it gains the base prefix.
           expect(result.success).to eq("Final fallback: Conditional fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",

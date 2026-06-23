@@ -299,63 +299,44 @@ end
 
 ## Message Matching Order {#message-matching-order}
 
-::: danger Important: Understanding Handler Evaluation Order
-Message handlers are stored in **last-defined-first** order and evaluated in that order until a match is found. This has critical implications for how you structure your message declarations.
-:::
+Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `prefixed: true` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (prefixed by the base), or — when none matches — the base headline, or finally the generic default.
 
 ### How It Works
 
-1. Handlers are registered in reverse definition order (last defined = first evaluated)
-2. The system evaluates handlers one by one until finding one that matches
-3. Static handlers (no `if:` or `unless:` condition) **always match**
-4. Once a match is found, evaluation stops
+1. Entries are stored **last-defined-first** and evaluated in that order.
+2. The displayed message is the first matching **reason** (a conditional or `prefixed: true` entry), prefixed by the base.
+3. If no reason matches, the **base headline** is shown — it's found by shape, so **its declaration position doesn't matter**.
+4. Among multiple reasons that could match (or multiple unconditional headlines), the **most-recently declared wins** — so declare the most-specific reasons last.
 
-### Correct Pattern: Static Fallbacks First
+### The base's position doesn't matter
 
-Because static handlers always match, they must be defined **first** (so they're evaluated **last**):
-
-```ruby
-class MyAction
-  include Axn
-
-  # 1. Define static fallback FIRST (evaluated last, catches anything unmatched)
-  error "Something went wrong"
-
-  # 2. Define conditional handlers AFTER (evaluated first, catch specific cases)
-  error "Invalid input provided", if: ArgumentError
-  error "Record not found", if: ActiveRecord::RecordNotFound
-end
-```
-
-### Incorrect Pattern: Conditional Messages Shadowed
-
-If you define static handlers last, they match first and conditional handlers are never reached:
+Because the base is identified by shape, it prefixes matching reasons no matter where it's declared — there is no "shadowing" to avoid (declaring it last is fine):
 
 ```ruby
 class MyAction
   include Axn
 
-  # These will NEVER be reached!
   error "Invalid input provided", if: ArgumentError
   error "Record not found", if: ActiveRecord::RecordNotFound
-
-  # This static handler is evaluated FIRST and always matches
-  error "Something went wrong"
+  error "Something went wrong"   # the base — position-independent
 end
+
+# ArgumentError raised => "Something went wrong: Invalid input provided"
+# unmatched exception   => "Something went wrong"  (base alone)
 ```
 
 ### With Inheritance
 
-Child class handlers are evaluated before parent class handlers:
+Child class entries are evaluated before parent class entries, so a child's headline (or matching reason) wins over the parent's:
 
 ```ruby
 class ParentAction
   include Axn
-  error "Parent error"  # Evaluated last
+  error "Parent error"
 end
 
 class ChildAction < ParentAction
-  error "Child error"   # Evaluated first
+  error "Child error"   # wins — child is evaluated first
 end
 ```
 

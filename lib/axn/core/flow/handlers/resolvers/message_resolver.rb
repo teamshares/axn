@@ -13,9 +13,8 @@ module Axn
             DEFAULT_SUCCESS = "Action completed successfully"
 
             def resolve_message
-              # Candidates are non-base entries that are either prefixed (conditional/dynamic reasons)
-              # or conditional (prefixed: false opt-out). Plain static non-prefixed entries are treated
-              # as additional bases and excluded here; the declared base wins via base_message.
+              # Pick the winning reason (a conditional or explicitly-prefixed entry); unconditional
+              # non-prefixed entries are headlines, excluded here and surfaced via base_message.
               # filter_map captures each body once (body_for invokes the handler block), so the winning
               # entry's message block runs a single time rather than twice.
               descriptor, reason = matching_entries.lazy.filter_map do |d|
@@ -61,14 +60,11 @@ module Axn
               @base_descriptor = base_candidates.first
             end
 
-            def base?(descriptor) = base_descriptor && descriptor.equal?(base_descriptor)
-
-            # A "reason" is a non-base entry eligible to be selected as the displayed message: a
-            # conditional entry (if:/unless:) or one explicitly `prefixed:`. When a base exists,
-            # additional unconditional non-prefixed entries are "secondary headlines" and excluded
-            # (the most-recent one is the base). When no base exists, all non-base entries qualify.
+            # A "reason" is an entry eligible to be selected as the displayed message: a conditional
+            # entry (if:/unless:) or one explicitly `prefixed:`. Unconditional non-prefixed entries are
+            # headlines (the base + any secondary headlines) — surfaced via base_message, never selected
+            # here. When no base exists, every entry is conditional/prefixed, so all qualify.
             def reason?(descriptor)
-              return false if base?(descriptor)
               return true unless base_descriptor
 
               descriptor.prefixed? || !descriptor.static?
