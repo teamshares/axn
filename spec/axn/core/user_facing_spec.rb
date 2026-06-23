@@ -98,6 +98,15 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.outcome).to be_failure
       expect(result.error).to eq("Note can't be blank")
     end
+
+    it "treats a falsey override (false/nil) as blank, not the literal string" do
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { false }
+        def call = nil
+      end
+      # false means "no message" — must fall back, never surface "false"
+      expect(action.call.error).to eq("Note can't be blank")
+    end
   end
 
   describe "non-presence validations are equally user-facing" do

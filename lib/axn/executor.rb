@@ -392,7 +392,10 @@ module Axn
                                                            exception: _field_scoped_error(error, field),
                                                            operation: "resolving user_facing: message")
                    end
-        Array(override).map { |m| m.to_s.presence }.compact.presence || own
+        # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
+        # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
+        # back to the field's own validation message.
+        Array(override).filter_map { |m| m.presence&.to_s }.presence || own
       end.to_sentence
     end
 
