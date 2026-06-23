@@ -46,7 +46,9 @@ module Axn
 
     def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
       name = name.to_sym
-      _axn_config_settings[name] = Setting.new(name:, default:, one_of:, validate:, callable:, overridable:)
+      setting = Setting.new(name:, default:, one_of:, validate:, callable:, overridable:)
+      _axn_config_settings[name] = setting
+      _define_override_methods(setting) if overridable
       nil
     end
 
@@ -69,49 +71,58 @@ module Axn
     #   <name>(value = UNSET)   # set a class-level override, or read the resolved value
     #   resolved_<name>         # resolve: nearest class override in the ancestry, else library config
     #
-    # Overrides are stored per-class and inherited by subclasses.
+    # Overrides are stored per-class and inherited by subclasses. Declaration
+    # order doesn't matter: the accessors live on a shared module the action
+    # extends, so settings declared after the action includes this still appear.
     def overrides
-      @overrides ||= _build_overrides_module
+      @overrides ||= begin
+        methods_module = _override_methods_module
+        Module.new do
+          define_singleton_method(:included) { |base| base.extend(methods_module) }
+        end
+      end
     end
 
     private
 
-    def _build_overrides_module
+    # A persistent module whose instance methods become class methods on any
+    # action that extends it (via `include overrides`). `setting` adds to it as
+    # overridable settings are declared, and Ruby reflects those additions on
+    # already-extended classes — so it's insensitive to load order.
+    def _override_methods_module
+      @_override_methods_module ||= Module.new
+    end
+
+    def _define_override_methods(setting)
+      name = setting.name
       config_source = self
-      overridable_settings = _axn_config_settings.values.select(&:overridable)
 
-      Module.new do
-        define_singleton_method(:included) do |base|
-          overridable_settings.each do |setting|
-            name = setting.name
-
-            base.define_singleton_method(name) do |value = UNSET|
-              if UNSET.equal?(value)
-                public_send(:"resolved_#{name}")
-              else
-                setting.validate!(value)
-                (@_axn_config_overrides ||= {})[name] = value
-              end
-            end
-
-            base.define_singleton_method(:"resolved_#{name}") do
-              klass = self
-              found = UNSET
-              while klass.is_a?(Module)
-                if klass.instance_variable_defined?(:@_axn_config_overrides)
-                  store = klass.instance_variable_get(:@_axn_config_overrides)
-                  if store.key?(name)
-                    found = store[name]
-                    break
-                  end
-                end
-                break unless klass.is_a?(Class) && klass.superclass
-
-                klass = klass.superclass
-              end
-              UNSET.equal?(found) ? config_source.config.public_send(name) : found
-            end
+      _override_methods_module.module_eval do
+        define_method(name) do |value = UNSET|
+          if UNSET.equal?(value)
+            public_send(:"resolved_#{name}")
+          else
+            setting.validate!(value)
+            (@_axn_config_overrides ||= {})[name] = value
           end
+        end
+
+        define_method(:"resolved_#{name}") do
+          klass = self
+          found = UNSET
+          while klass.is_a?(Module)
+            if klass.instance_variable_defined?(:@_axn_config_overrides)
+              store = klass.instance_variable_get(:@_axn_config_overrides)
+              if store.key?(name)
+                found = store[name]
+                break
+              end
+            end
+            break unless klass.is_a?(Class) && klass.superclass
+
+            klass = klass.superclass
+          end
+          UNSET.equal?(found) ? config_source.config.public_send(name) : found
         end
       end
     end

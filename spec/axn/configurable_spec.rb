@@ -123,6 +123,18 @@ RSpec.describe Axn::Configurable do
       klass = Class.new { include plain.overrides }
       expect(klass).not_to respond_to(:resolved_default_model)
     end
+
+    it "picks up overridable settings declared after the action includes overrides" do
+      mod = Module.new { extend Axn::Configurable }
+      overrides = mod.overrides
+      klass = Class.new { include overrides } # included before the setting exists
+
+      mod.setting :late, default: :x, overridable: true
+
+      expect(klass.resolved_late).to eq(:x)
+      klass.late :y
+      expect(klass.resolved_late).to eq(:y)
+    end
   end
 end
 
