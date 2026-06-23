@@ -197,7 +197,13 @@ module Axn
 
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-      if e.is_a?(Failure) || @action_class._fails_on?(e)
+      if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e)
+        # Make a `fails_on` classification sticky to this exception object (per call tree), so it stays
+        # a failure (fires on_failure, no report) as it propagates through ancestor `call!`s — mirroring
+        # how Axn::Failure is sticky via its class. Also record it on this result's context so
+        # result.outcome reports `failure` after the per-execution set is cleared.
+        Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
+        @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
       else
         trigger_on_exception(e)
@@ -211,7 +217,12 @@ module Axn
         return unless retry_context.should_trigger_on_exception?(mode)
       end
 
+      # Per-action :exception callbacks fire at each level (an action may legitimately observe its
+      # own failure), but the GLOBAL report is sent only once per exception. A nested `call!`
+      # re-raises the same exception object up the stack; without this, each ancestor executor would
+      # report it again — N duplicate Honeybadger notices for one bug.
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
+      return if Internal::ExceptionClassification.reported?(exception)
 
       context = Internal::ExceptionContext.build(
         action: @action,
@@ -219,6 +230,11 @@ module Axn
       )
 
       Axn.config.on_exception(exception, action: @action, context:)
+
+      # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
+      # rescue below swallows it WITHOUT marking — so an ancestor executor still attempts the report
+      # rather than seeing `reported?` and dropping the exception entirely.
+      Internal::ExceptionClassification.mark_reported!(exception)
     rescue StandardError => e
       Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
     end
@@ -250,7 +266,7 @@ module Axn
       yield
       false
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message)
+      @context.__record_early_completion(e.message, prefixed: e.prefixed)
       trigger_on_success
       true
     end
@@ -489,7 +505,7 @@ module Axn
     def respecting_early_completion
       yield
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message)
+      @context.__record_early_completion(e.message, prefixed: e.prefixed)
       raise e
     end
 

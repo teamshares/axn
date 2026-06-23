@@ -29,3 +29,6 @@ Gemfile.lock
 *.gem
 
 .local_design_notes/
+
+# Local Claude Code agent state (worktrees, session files)
+.claude/

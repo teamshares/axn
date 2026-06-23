@@ -51,7 +51,7 @@ RSpec.describe Axn do
         number_axn = client.const_get(:Axns).const_get(:Number)
         result = number_axn.call(arg: 111)
         expect(result).not_to be_ok
-        expect(result.error).to eq("arg was all 1s")
+        expect(result.error).to eq("badbadbad: arg was all 1s")
         expect(result.exception).to be_a(Axn::Failure)
         expect(result.exception.message).to eq("arg was all 1s")
         expect(result.value).to eq(nil)
@@ -573,7 +573,8 @@ RSpec.describe Axn do
 
         it "does not have access to target methods by default" do
           client = client_class.send(:new)
-          expect { client.call }.to raise_error(NameError, /undefined local variable or method ['`]test_method['`]/)
+          # The step converts the child's NameError into a prefixed Axn::Failure (single report, no re-raise)
+          expect { client.call }.to raise_error(Axn::Failure, /test_step:/)
         end
       end
 

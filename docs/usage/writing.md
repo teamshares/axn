@@ -204,78 +204,81 @@ Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
 
-### Advanced Error Message Configuration
+### Prefixing failure reasons
 
-You can also use conditional error messages with the `prefix:` keyword and combine them with the `from:` parameter for nested actions:
+An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every failure *reason* — a conditional `error … if:`/`unless:`, an entry explicitly marked `prefixed: true`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+
+What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `prefixed: true` (which promotes an unconditional entry to a prefixed reason) when you want something prefixed rather than treated as the headline.
 
 ```ruby
-class ValidationAction
+class SyncUser
   include Axn
 
-  expects :input
-
-  error if: ArgumentError, prefix: "Validation Error: " do |e|
-    "Invalid input: #{e.message}"
-  end
-
-  error if: StandardError, prefix: "System Error: "
+  error "Couldn't sync user"                      # base — also the fallback
+  error "email already taken", if: ArgumentError  # prefixed reason
+  error "account is locked", if: RuntimeError     # prefixed reason
 
   def call
-    raise ArgumentError, "input too short" if input.length < 3
-    raise StandardError, "unexpected error" if input == "error"
+    raise ArgumentError, "duplicate" if email_taken?
+    fail! "missing required field"                # also prefixed
   end
 end
 
-class ApiAction
-  include Axn
-
-  expects :data
-
-  # Simply inherit child's error (prefix and handler are optional)
-  error from: ValidationAction
-
-  # Or combine prefix with from for consistent error formatting
-  error from: ValidationAction, prefix: "API Error: " do |e|
-    "Request validation failed: #{e.message}"
-  end
-
-  # Or use prefix only (falls back to exception message)
-  error from: ValidationAction, prefix: "API Error: "
-
-  # Match multiple child actions
-  error from: [ValidationAction, AnotherAction]
-
-  # Match any child action
-  error from: true
-
-  def call
-    ValidationAction.call!(input: data)
-  end
-end
+result = SyncUser.call(...)
+result.error  # => "Couldn't sync user: email already taken"
+              # or "Couldn't sync user: missing required field"
+              # or "Couldn't sync user"  (base alone, when no reason matched)
 ```
 
-This configuration provides:
-- Simple error message inheritance without requiring prefix or handler
-- Consistent error message formatting with prefixes
-- Automatic fallback to exception messages when no custom message is provided
-- Proper error message inheritance from nested actions
-- Support for matching multiple child actions or any child action
+**Key behaviours:**
 
-::: warning Message Ordering
-**Important**: When using conditional messages, always define your static fallback messages **first** in your class, before any conditional messages. This ensures proper fallback behavior.
+| | |
+|---|---|
+| **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
+| **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix. Scoped to the action: a bubbled child `fail!(..., prefixed: false)` still receives the *caller's* base prefix |
+| **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`); only valid on the base (an unprefixed headline) — `delimiter:` on a reason raises at declaration |
+| **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
+| **Promote to an always-on reason** | `error(prefixed: true, &:message)` (or `error "detail", prefixed: true`) — `prefixed: true` makes an otherwise-headline entry a prefixed reason, e.g. an always-on detail rendered under the base |
 
-**Correct order:**
+```ruby
+# Reasons are checked last-declared-first.
+class SyncUser
+  include Axn
+
+  error "Couldn't sync user", delimiter: " — "        # base (custom delimiter)
+  error(prefixed: true, &:message)                     # dynamic detail — declared 2nd
+  error "vendor not found", if: ArgumentError, prefixed: false  # opt-out — declared last → highest priority
+
+  def call
+    raise ArgumentError, "lookup failed"
+  end
+end
+
+# ArgumentError raised — prefixed: false entry wins (declared last → checked first):
+SyncUser.call.error  # => "vendor not found"
+
+# If a non-ArgumentError is raised instead — conditional doesn't match; dynamic detail wins:
+# SyncUser.call.error  # => "Couldn't sync user — <exception.message>"
+# e.g. RuntimeError "timeout" → "Couldn't sync user — timeout"
+```
+
+::: tip result.error vs Axn::Failure#message
+Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
+:::
+
+::: warning Error/success message bodies are not redacted
+Message text is treated as authored, user-facing copy — it is **not** passed through the sensitive-field filtering that protects `inspect` output and the `context:` payload sent to `on_exception`. Because a base now composes with reasons, and a `step` cascade interpolates a child's `result.error` into the parent's failure (`"Parent base: Step 1: child reason"`), any detail you interpolate into an `error`/`success`/`fail!` body propagates outward to every ancestor's `result.error` — and onward to logs and error trackers. **Do not interpolate secrets or PII into message bodies.** Put sensitive values in `expects`/`exposes` fields (which are filterable) instead.
+:::
+
+::: tip Declaration order
+The base is identified by shape (an unconditional `error`/`success`, literal or block), so a single base's position among declarations doesn't matter. When **more than one reason** could match the same failure — or if you declare more than one unconditional headline — the last-declared one wins (entries are checked in reverse-declaration order), so declare the most-specific reasons last.
+
 ```ruby
 class Foo
   include Axn
 
-  # Static fallback messages first
-  success "Default success message"
-  error "Default error message"
-
-  # Then conditional messages
-  success "Special success", if: :special_condition?
-  error "Special error", if: ArgumentError
+  error "Default error message"             # the base — found by shape, any position
+  error "Special error", if: ArgumentError  # most-specific reasons last → highest priority
 end
 ```
 :::
@@ -315,7 +318,7 @@ fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sen
 fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
 ```
 
-The message integrates with the standard message DSL (`prefix:`, ordering, etc.), so it composes with — and can be overridden by — your other `error` declarations.
+The message integrates with the standard message DSL (ordering, base-prefix semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations.
 
 ::: tip Callbacks receive the original exception
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.
@@ -328,6 +331,62 @@ When an action runs as a background job, a `fails_on` exception is treated exact
 ::: tip
 For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
 :::
+
+### Suppressing reports for expected failures in composed actions
+
+When one action calls another, `fails_on` belongs on the **inner** action — the one that knows the exception class is an expected business outcome.
+
+Consider an outer `SyncUser` that calls an inner `CreateZendeskTicket`. The inner action may raise `Faraday::BadRequestError` when the email address is already registered — a predictable, non-bug outcome. Without `fails_on`, that exception lands in the **exception** bucket: `Axn.config.on_exception` fires, and `SyncUser` receives a spurious Honeybadger report even though it handles the failure gracefully.
+
+```ruby
+class CreateZendeskTicket
+  include Axn
+
+  fails_on Faraday::BadRequestError   # "email already used" is expected, not a bug
+
+  def call
+    ZendeskClient.create_ticket(email:)  # raises Faraday::BadRequestError if duplicate
+  end
+end
+
+class SyncUser
+  include Axn
+
+  def call
+    result = CreateZendeskTicket.call(email:)
+    # result.ok? is false; result.outcome.failure? is true
+    # result.exception holds the original Faraday::BadRequestError
+    # Axn.config.on_exception was NOT called — no spurious report
+    fail!("Could not create ticket: #{result.error}") unless result.ok?
+  end
+end
+```
+
+The three outcomes, contrasted:
+
+| How the inner action fails | `on_failure` fires | `on_exception` / global report | `result.exception` |
+|---|---|---|---|
+| `fail!` | yes | **no** | `Axn::Failure` |
+| `fails_on`-matched exception | yes | **no** | original exception |
+| Unhandled exception | no | **yes** | original exception |
+
+Both `fail!` and `fails_on` land in the failure bucket and are never reported. Only an unhandled, unclassified exception reaches `on_exception`.
+
+**Nested `call!` behaves identically to top-level.** When `SyncUser` above uses `call!` instead of `call`, a `fails_on`-reclassified exception still settles as a failure and re-raises as the **original exception** (e.g. `Faraday::BadRequestError`) — not an `Axn::Failure`. `Axn::Failure` is raised by `call!` only when the failure came from `fail!`. An unhandled exception is re-raised as-is, same as at the top level. There is one consistent mental model regardless of nesting depth: `Axn::Failure` means "`fail!` was called"; anything else re-raises whatever was originally raised.
+
+**The `fails_on` classification is sticky.** Once an action's `fails_on` reclassifies an exception as an expected failure, that decision travels with the exception object: even bubbled up through `call!` to an ancestor that knows nothing about that exception class, it stays a **failure** (the ancestor fires `on_failure`, not `on_exception`, and its `result.outcome` is `failure`). So `fails_on` suppresses the report whether the caller inspects `result` (via `call`) or lets it raise (via `call!`). This is keyed to the specific exception object — an unrelated exception of the same class raised elsewhere in an ancestor is still a bug (an `exception` outcome, reported).
+
+**Stickiness flows outward, not inward — `fails_on` must live where the exception is raised.** Each action classifies an exception in its *own* frame, and the global report fires at the *innermost* action that treats the exception as a bug. So `fails_on` on an **ancestor** does **not** suppress a report from an inner action that raised the exception without its own `fails_on`: by the time the exception bubbles up to the ancestor, the inner action has already reported it, and that report can't be un-sent — the ancestor only reclassifies its own `result.outcome` to `failure` from that point upward. The consequence is the sharp edge to watch for: an ancestor whose `result.outcome` is `failure` can still have produced a Honeybadger report from a deeper level. **To suppress the global report, declare `fails_on` on the action that actually raises the exception** (or absorb it with non-bang `call` + `fail!` there) — declaring it only on a caller is too late.
+
+Note the *message* still follows the standard rule: when a `fails_on` failure bubbles up via `call!`, the ancestor's `result.error` is resolved from the ancestor's own declarations (and falls back to `"Something went wrong"` if it declares none) — the inner action's message is **not** woven in. To surface the inner's message at the ancestor, use non-bang `call` and `fail!("context: #{result.error}")`, or declare an `error` on the ancestor.
+
+::: tip Place `fails_on` on the action that owns the contract
+The inner action that makes the API call or database write is the right home for `fails_on` — it's the one that knows which exception classes are routine. An outer caller that knows nothing about `Faraday::BadRequestError` doesn't need to suppress it; the inner already has.
+:::
+
+### Reporting a nested bug once
+
+Distinct from `fails_on` (which decides whether an *expected* failure is reported at all): a genuine, unhandled exception is reported to `Axn.config.on_exception` **once** — from the innermost action that treats it as a reportable exception — however deeply it propagates through nested `call!`s. Each action's own `on_exception` callback still fires at its level; the single global report is sent from where the exception first surfaced as a bug. So a bug that bubbles up through `call!`, and one you absorb into a parent `fail!` via non-bang `call`, each produce a single report.
 
 ## Lifecycle methods
 

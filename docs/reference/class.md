@@ -299,63 +299,44 @@ end
 
 ## Message Matching Order {#message-matching-order}
 
-::: danger Important: Understanding Handler Evaluation Order
-Message handlers are stored in **last-defined-first** order and evaluated in that order until a match is found. This has critical implications for how you structure your message declarations.
-:::
+Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `prefixed: true` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (prefixed by the base), or — when none matches — the base headline, or finally the generic default.
 
 ### How It Works
 
-1. Handlers are registered in reverse definition order (last defined = first evaluated)
-2. The system evaluates handlers one by one until finding one that matches
-3. Static handlers (no `if:` or `unless:` condition) **always match**
-4. Once a match is found, evaluation stops
+1. Entries are stored **last-defined-first** and evaluated in that order.
+2. The displayed message is the first matching **reason** (a conditional or `prefixed: true` entry), prefixed by the base.
+3. If no reason matches, the **base headline** is shown — it's found by shape, so **its declaration position doesn't matter**.
+4. Among multiple reasons that could match (or multiple unconditional headlines), the **most-recently declared wins** — so declare the most-specific reasons last.
 
-### Correct Pattern: Static Fallbacks First
+### The base's position doesn't matter
 
-Because static handlers always match, they must be defined **first** (so they're evaluated **last**):
-
-```ruby
-class MyAction
-  include Axn
-
-  # 1. Define static fallback FIRST (evaluated last, catches anything unmatched)
-  error "Something went wrong"
-
-  # 2. Define conditional handlers AFTER (evaluated first, catch specific cases)
-  error "Invalid input provided", if: ArgumentError
-  error "Record not found", if: ActiveRecord::RecordNotFound
-end
-```
-
-### Incorrect Pattern: Conditional Messages Shadowed
-
-If you define static handlers last, they match first and conditional handlers are never reached:
+Because the base is identified by shape, it prefixes matching reasons no matter where it's declared — there is no "shadowing" to avoid (declaring it last is fine):
 
 ```ruby
 class MyAction
   include Axn
 
-  # These will NEVER be reached!
   error "Invalid input provided", if: ArgumentError
   error "Record not found", if: ActiveRecord::RecordNotFound
-
-  # This static handler is evaluated FIRST and always matches
-  error "Something went wrong"
+  error "Something went wrong"   # the base — position-independent
 end
+
+# ArgumentError raised => "Something went wrong: Invalid input provided"
+# unmatched exception   => "Something went wrong"  (base alone)
 ```
 
 ### With Inheritance
 
-Child class handlers are evaluated before parent class handlers:
+Child class entries are evaluated before parent class entries, so a child's headline (or matching reason) wins over the parent's:
 
 ```ruby
 class ParentAction
   include Axn
-  error "Parent error"  # Evaluated last
+  error "Parent error"
 end
 
 class ChildAction < ParentAction
-  error "Child error"   # Evaluated first
+  error "Child error"   # wins — child is evaluated first
 end
 ```
 
@@ -380,9 +361,12 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
 
-# Custom message with prefix (falls back to exception message when no block/message provided)
-error(if: ArgumentError, prefix: "Foo: ") { "bar" }  # Results in "Foo: bar"
-error(if: StandardError, prefix: "Baz: ")            # Results in "Baz: [exception message]"
+# Base error prefixes a conditional reason by default
+error "Foo"                                    # base — never itself shown prefixed
+error("bar", if: ArgumentError)                # ArgumentError => "Foo: bar"
+error(if: TypeError, &:message)                # TypeError     => "Foo: <exception.message>"
+# (reasons are checked last-declared-first; if two conditional reasons both match the same
+#  exception, the later-declared one wins — keep their matchers disjoint to avoid surprises)
 
 # Custom message with symbol predicate (arity 0)
 error "Transient error, please retry", if: :transient_error?
@@ -421,147 +405,37 @@ end
 You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
 :::
 
-## Error message inheritance with `from:`
+## Composing error messages across actions
 
-The `from:` parameter allows you to customize error messages when an action calls another action that fails. This is particularly useful for adding context or prefixing error messages from child actions.
-
-When using `from:`, the error handler receives the exception from the child action, and you can access the child's error message via `e.message` (which contains the `result.error` from the child action).
-
-### Basic usage
-
-You can use `from:` with a single child action class. The prefix and custom handler are optional:
-
-```ruby
-class InnerAction
-  include Axn
-
-  error "Something went wrong in the inner action"
-
-  def call
-    raise StandardError, "inner action failed"
-  end
-end
-
-class OuterAction
-  include Axn
-
-  # Simply inherit child's error message (no prefix or custom handler needed)
-  error from: InnerAction
-
-  # Or customize the message
-  error from: InnerAction do |e|
-    "Outer action failed: #{e.message}"
-  end
-
-  def call
-    InnerAction.call!
-  end
-end
-```
-
-In this example:
-- When `InnerAction` fails, `OuterAction` will catch the exception
-- The `e.message` contains the error message from `InnerAction`'s result
-- With no handler: the error message will be "Something went wrong in the inner action" (inherited directly)
-- With custom handler: the error message will be "Outer action failed: Something went wrong in the inner action"
-
-### Matching multiple child actions
-
-You can pass an array of child action classes to match multiple children:
+Most of the time you don't need to do anything special: declare a base `error` on the parent and it prefixes the parent's own failures *and* any child failure surfaced via `call!`. A child that fails via `fail!` re-raises the same `Axn::Failure` (no wrapping), so the base prepends to it automatically — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
 ```ruby
 class OuterAction
   include Axn
-
-  # Match errors from multiple child actions
-  error from: [FirstChildAction, SecondChildAction]
-
-  # Or with custom handler
-  error from: [FirstChildAction, SecondChildAction] do |e|
-    "Parent caught: #{e.message}"
-  end
+  error "Couldn't onboard"
 
   def call
-    # Calls one of the child actions
+    InnerAction.call!(...) # inner's fail!("email taken") surfaces as "Couldn't onboard: email taken"
   end
 end
 ```
 
-You can also mix class references and string class names:
+Reach for an explicit `call` + `fail!` only when the base headline isn't enough — specifically:
 
-```ruby
-error from: [FirstChildAction, "SecondChildAction"]
-```
+- **Per-call-site context**, when a single class-level headline can't express what you need (e.g. distinguishing two invocations of the same child). Don't also repeat the headline in the `fail!` string — a declared base already prefixes it (`"<base>: validating: …"`).
 
-### Matching any child action
-
-Use `from: true` to match errors from any child action without listing them explicitly:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Match errors from any child action
-  error from: true
-
-  # Or with custom handler
-  error from: true do |e|
-    "Any child failed: #{e.message}"
-  end
-
+  ```ruby
   def call
-    # Can call any child action
+    a = StepA.call(...); fail!("validating: #{a.error}") unless a.ok?
+    b = StepB.call(...); fail!("charging: #{b.error}") unless b.ok?
   end
-end
-```
+  ```
 
-This pattern is especially useful for:
-- Adding context to error messages from sub-actions
-- Implementing consistent error message formatting across action hierarchies
-- Providing user-friendly error messages that include details from underlying failures
+- **Absorbing an unhandled child exception** into a parent *failure* rather than letting it stay an exception. A child that fails via a raw exception (not `fail!`) re-raises *that exception* through `call!`, so the parent settles as an `exception` outcome whose `result.error` is just the parent's headline (the child's message isn't woven in). Running the child with non-bang `call` and `fail!`ing on `!result.ok?` instead converts it to a `failure` outcome whose message carries the child's error. Either way the exception is [reported once](/usage/writing#reporting-a-nested-bug-once) — so this choice is about the **outcome and message**.
 
-### Combining `from:` with `prefix:`
-
-You can also combine the `from:` parameter with the `prefix:` keyword to create consistent error message formatting:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Add prefix to error messages from InnerAction
-  error from: InnerAction, prefix: "API Error: " do |e|
-    "Request failed: #{e.message}"
-  end
-
-  # Or use prefix only (falls back to exception message)
-  error from: InnerAction, prefix: "API Error: "
-
-  def call
-    InnerAction.call!
-  end
-end
-```
-
-This results in:
-- With custom message: "API Error: Request failed: Something went wrong in the inner action"
-- With prefix only: "API Error: Something went wrong in the inner action"
-
-### Message ordering with `from:`
-
-When using `from:` with inheritance, the same [message matching order](#message-matching-order) applies. Define your `from:` handlers after your static fallback:
-
-```ruby
-class OuterAction
-  include Axn
-
-  # Static fallback first
-  error "Something went wrong"
-
-  # Then from: handlers for specific child actions
-  error from: InnerAction, prefix: "Inner failed: "
-  error from: AnotherAction, prefix: "Another failed: "
-end
-```
+::: tip Suppressing reports for expected failures
+If an inner action raises an exception that is an expected business outcome (not a bug), declare `fails_on ExceptionClass` on the **inner** action to reclassify it into the failure bucket — it fires `on_failure`, skips `Axn.config.on_exception`, and preserves the original exception on `result.exception`. See [Suppressing reports for expected failures](/usage/writing#suppressing-reports-for-expected-failures-in-composed-actions).
+:::
 
 ## `.async`
 
@@ -735,5 +609,5 @@ class SubmitOrder
 end
 ```
 
-Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with `prefix:` and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
+Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base-error prefixing and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 

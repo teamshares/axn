@@ -263,32 +263,41 @@ RSpec.describe "use :model strategy" do
   end
 
   describe "message overrides" do
-    it "prepends error_prefix to the validation message" do
+    it "prefixes the validation body with a base error declared after use :model" do
       action = build_axn do
-        use :model, create: User, as: :user, error_prefix: "Couldn't save: "
+        use :model, create: User, as: :user
+        error "Couldn't save user"
         def model_params = { name: "" }
       end
-      expect(action.call(params: {}).error).to eq("Couldn't save: Name can't be blank")
+      expect(action.call(params: {}).error).to eq("Couldn't save user: Name can't be blank")
     end
 
-    it "honors a success declared after use :model (later declarations win)" do
+    it "renders the validation body standalone when no base error is declared" do
+      action = build_axn do
+        use :model, create: User, as: :user
+        def model_params = { name: "" }
+      end
+      expect(action.call(params: {}).error).to eq("Name can't be blank")
+    end
+
+    it "a static success declared after use :model becomes the base; the strategy's dynamic success is the reason" do
       action = build_axn do
         use :model, create: User, as: :user
         success "Done!"
 
         def model_params = { name: "X" }
       end
-      expect(action.call(params: {}).success).to eq("Done!")
+      expect(action.call(params: {}).success).to eq("Done!: Created User")
     end
 
-    it "honors an error declared after use :model (later declarations win)" do
+    it "a static error declared after use :model becomes the base; the validation body is the reason" do
       action = build_axn do
         use :model, create: User, as: :user
         error "Could not save the user"
 
         def model_params = { name: "" }
       end
-      expect(action.call(params: {}).error).to eq("Could not save the user")
+      expect(action.call(params: {}).error).to eq("Could not save the user: Name can't be blank")
     end
   end
 

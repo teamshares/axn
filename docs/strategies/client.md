@@ -178,9 +178,7 @@ class SyncExternalData
   exposes :synced_records
 
   error "Failed to sync external data"
-  error from: Faraday::BadRequestError do |e|
-    "External API error: #{e.message}"
-  end
+  error(if: Faraday::BadRequestError) { |e| "External API error: #{e.message}" }
 
   def call
     response = external_api.get("/companies/#{company.external_id}/data")

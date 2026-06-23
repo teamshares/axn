@@ -3,27 +3,39 @@
 module Axn
   module Internal
     # Internal only -- rescued before Axn::Result is returned
-    class EarlyCompletion < StandardError; end
+    class EarlyCompletion < StandardError
+      attr_reader :prefixed
+
+      def initialize(message = nil, prefixed: true)
+        @prefixed = prefixed
+        super(message)
+      end
+    end
   end
 
   # Raised when fail! is called
   class Failure < StandardError
     DEFAULT_MESSAGE = "Execution was halted"
 
-    attr_reader :source
+    # The action whose `fail!` raised this. We hold the action OBJECT (compared by identity in
+    # Result#_fail_prefixed?), not its object_id — consistent with ExceptionClassification's
+    # identity keying, which deliberately avoids the freed-then-reused-object_id collision hazard.
+    # `prefixed:` is scoped to that action: an ancestor that catches a bubbled child Failure still
+    # applies its OWN base prefix (the child's opt-out is local).
+    # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
+    # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
+    attr_reader :__originating_action
 
-    def initialize(message = nil, source: nil)
-      @source = source
+    def initialize(message = nil, prefixed: true, action: nil)
       @message = message
+      @prefixed = prefixed
+      @__originating_action = action
       super(message)
     end
 
-    def message
-      @message.presence || DEFAULT_MESSAGE
-    end
-
+    def prefixed? = @prefixed
+    def message = @message.presence || DEFAULT_MESSAGE
     def default_message? = message == DEFAULT_MESSAGE
-
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
 

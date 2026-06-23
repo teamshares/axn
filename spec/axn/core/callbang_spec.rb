@@ -47,7 +47,7 @@ RSpec.describe Axn do
       it "confirming call case" do
         result = action.call
         expect(result).not_to be_ok
-        expect(result.error).to eq("User-facing error")
+        expect(result.error).to eq("|||: User-facing error")
       end
 
       it "call! raises our own Failure class" do

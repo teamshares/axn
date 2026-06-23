@@ -71,7 +71,9 @@ RSpec.describe Axn do
     end
 
     context "with other reserved field names" do
-      %w[outcome exception elapsed_time finalized? __action__].each do |field_name|
+      # `prefixed` is reserved because it is a control kwarg on `fail!`/`done!`; exposing it would let
+      # `fail!("msg", prefixed: value)` silently bind to the option instead of the exposure.
+      %w[outcome exception elapsed_time finalized? __action__ prefixed].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do

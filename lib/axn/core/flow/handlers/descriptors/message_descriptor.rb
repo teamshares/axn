@@ -9,53 +9,61 @@ module Axn
         module Descriptors
           # Data structure for message configuration - no behavior, just data
           class MessageDescriptor < BaseDescriptor
-            attr_reader :prefix
+            # Options removed in the nested-error-semantics change, mapped to the actionable
+            # migration hint. Enforced here (the construction chokepoint) so the direct/Factory
+            # `build` path raises the same hint the `error`/`success` DSL does — never a silent ignore.
+            REMOVED_OPTION_MESSAGES = {
+              from: "from: is no longer supported — run the child with `call` and " \
+                    '`fail!("context: #{result.error}") unless result.ok?`',
+              prefix: "prefix: is no longer supported — declare a base `error \"…\"` " \
+                      "(prefixes reasons by default; opt out with prefixed: false)",
+            }.freeze
 
-            def initialize(matcher:, handler:, prefix: nil)
-              @prefix = prefix
+            attr_reader :delimiter
+
+            def initialize(matcher:, handler:, prefixed: false, delimiter: nil)
+              @prefixed = prefixed
+              @delimiter = delimiter
               super(matcher:, handler:)
             end
 
-            def self.build(handler: nil, if: nil, unless: nil, prefix: nil, from: nil, **)
-              new(
-                handler:,
-                prefix:,
-                matcher: _build_matcher(if:, unless:, from:),
-              )
+            def prefixed? = @prefixed
+
+            # Raise for any removed option (with its migration hint) or otherwise-unknown option,
+            # rather than silently dropping it.
+            def self.reject_unsupported_options!(options)
+              return if options.empty?
+
+              # Prefer a removed-option migration hint (most actionable); otherwise surface ALL unknown
+              # keys at once so the caller fixes them in one pass rather than one error at a time.
+              removed = options.keys & REMOVED_OPTION_MESSAGES.keys
+              raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(removed.first) if removed.any?
+
+              keys = options.keys.map(&:inspect).join(", ")
+              label = options.size == 1 ? "Unknown #{keys} option" : "Unknown options #{keys}"
+              raise ArgumentError, "#{label} for error/success message"
             end
 
-            def self._build_matcher(if:, unless:, from:)
-              rules = [
-                binding.local_variable_get(:if),
-                binding.local_variable_get(:unless),
-                _build_rule_for_from_condition(from),
-              ].compact
+            def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, delimiter: nil, **unsupported)
+              reject_unsupported_options!(unsupported)
+              matcher = Matcher.build(if:, unless:)
 
-              Axn::Core::Flow::Handlers::Matcher.new(rules, invert: !!binding.local_variable_get(:unless))
-            end
+              # Conditionality picks the default role: a conditional entry (if:/unless:) is a prefixed
+              # *reason*; an unconditional entry is the *headline* (base). `prefixed:` overrides
+              # explicitly — `prefixed: true` promotes an unconditional entry to a prefixed reason.
+              # Whether the handler is a literal, block, or symbol carries no meaning here (a block is
+              # just a headline/reason whose text is computed at runtime).
+              prefixed = !matcher.static? if prefixed.nil?
 
-            def self._build_rule_for_from_condition(from_class)
-              return nil unless from_class
+              # delimiter: is the string a base joins its reasons with, so it only belongs on the base
+              # — an unconditional, non-prefixed headline. Anything conditional or prefixed is a reason
+              # (even a conditional with an explicit `prefixed: false` opt-out), so reject delimiter:
+              # there rather than silently ignore it. Enforced in `build` (the chokepoint) so the
+              # direct/Factory path fails at declaration exactly like the `error`/`success` DSL.
+              base = matcher.static? && !prefixed
+              raise ArgumentError, "delimiter: only applies to the base (an unprefixed headline)" if delimiter && !base
 
-              # Special case: `from: true` means "from any child action"
-              return ->(exception:, **) { exception.is_a?(Axn::Failure) && exception.source } if from_class == true
-
-              from_classes = Array(from_class)
-              lambda { |exception:, **|
-                return false unless exception.is_a?(Axn::Failure) && exception.source
-
-                source = exception.source
-                from_classes.any? do |cls|
-                  if cls.is_a?(String)
-                    # rubocop:disable Style/ClassEqualityComparison
-                    # We're comparing class name strings, not classes themselves
-                    source.class.name == cls
-                    # rubocop:enable Style/ClassEqualityComparison
-                  else
-                    source.is_a?(cls)
-                  end
-                end
-              }
+              new(handler:, prefixed:, delimiter:, matcher:)
             end
           end
         end

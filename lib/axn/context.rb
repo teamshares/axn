@@ -10,6 +10,7 @@ module Axn
       @failure = false
       @exception = nil
       @elapsed_time = nil
+      @early_completion_prefixed = true
     end
 
     # Framework state methods
@@ -37,13 +38,24 @@ module Axn
       @finalized = true
     end
 
-    def __record_early_completion(message)
+    # Recorded by the executor when an exception settles as a *failure* (a `fail!`, a `fails_on` match,
+    # or a nested `fails_on` made sticky) rather than an unhandled exception. result.outcome reads this
+    # so the failure/exception distinction survives after the per-execution classification set is cleared.
+    def __classify_as_failure! = @classified_as_failure = true
+    def __classified_as_failure? = @classified_as_failure || false
+
+    def __record_early_completion(message, prefixed: true)
+      # Only store a real (non-sentinel) message, but always record the prefixed opt-out so a bare
+      # `done!(prefixed: false)` isn't silently dropped (it's moot when no message resolves, but the
+      # flag must reflect the call rather than retain the default).
       @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
+      @early_completion_prefixed = prefixed
       @early_completion = true
       @finalized = true
     end
 
     def __early_completion_message = @early_completion_message.presence
+    def __early_completion_prefixed = @early_completion_prefixed
 
     def __finalize!
       @finalized = true

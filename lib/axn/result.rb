@@ -38,7 +38,7 @@ module Axn
               @__context.__record_exception(e)
             end
           else
-            fail! msg
+            fail! msg, prefixed: false
           end
         end.call
       end
@@ -47,16 +47,25 @@ module Axn
     # External interface
     delegate :ok?, :exception, :elapsed_time, :finalized?, to: :context
 
+    # Memoized once the context is finalized, so resolution (which can invoke user-supplied message
+    # blocks) runs a single time across the lifecycle (logging) and every caller read. A Result is the
+    # SAME object during and after the run, so we must NOT cache a pre-finalization read — e.g. a hook
+    # touching `result.success`/`#message` mid-run, where `ok?` is still true but a later `done!`/expose
+    # would change the answer. Pre-finalization reads resolve live; only a finalized result is frozen in.
     def error
-      return if ok?
+      return if ok? # (!ok? implies finalized — a failure sets the finalized flag — but be explicit)
+      return _resolve_error unless finalized?
 
-      _user_provided_error_message || _msg_resolver(:error, exception:).resolve_message
+      @__resolved_error = _resolve_error unless defined?(@__resolved_error)
+      @__resolved_error
     end
 
     def success
       return unless ok?
+      return _resolve_success unless finalized?
 
-      _user_provided_success_message || _msg_resolver(:success, exception: nil).resolve_message
+      @__resolved_success = _resolve_success unless defined?(@__resolved_success)
+      @__resolved_success
     end
 
     def message = exception ? error : success
@@ -68,11 +77,24 @@ module Axn
       OUTCOME_EXCEPTION = "exception",
     ].freeze
 
+    # Deliberately NOT memoized (unlike #error/#success): outcome reflects classification state that
+    # can finalize at different points during dispatch (records #2/#3 below), so a value read early —
+    # e.g. by an ancestor's on_error before this level's context flag is set — must not be frozen in.
+    # The recompute is cheap: it short-circuits on the common paths and only allocates a StringInquirer.
     def outcome
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
-                action.class._fails_on?(exception) ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
+                # Three records of "this settled as a failure", in priority order:
+                #   1. context flag — durable; survives after the per-execution set is cleared.
+                #   2. live classification set — set as soon as ANY action (this one or a nested one,
+                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
+                #      reads outcome *before* the executor sets the context flag on this level.
+                #   3. `_fails_on?` — defensive recompute.
+                failure = @context.__classified_as_failure? ||
+                          Internal::ExceptionClassification.failure?(exception) ||
+                          action.class._fails_on?(exception)
+                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
                 OUTCOME_SUCCESS
               end
@@ -80,8 +102,8 @@ module Axn
       ActiveSupport::StringInquirer.new(label)
     end
 
-    # Internal accessor for the action instance
-    # TODO: exposed for errors :from support, but should be private if possible
+    # Internal accessor for the underlying action instance (used by introspection and tests). It is a
+    # reserved public field — see reserved_attribute_names_spec — so it stays public.
     def __action__ = @action
 
     # Enable pattern matching support for Ruby 3+
@@ -125,6 +147,25 @@ module Axn
       singleton_class.alias_method predicate_name, field
     end
 
+    def _resolve_error
+      reason = _user_provided_error_message
+      resolver = _msg_resolver(:error, exception:)
+      return resolver.resolve_message unless reason
+
+      _fail_prefixed? ? resolver.with_base_prefix(reason) : reason
+    end
+
+    def _resolve_success
+      reason = _user_provided_success_message
+      resolver = _msg_resolver(:success, exception: nil)
+      return resolver.resolve_message unless reason
+
+      # The prefixed opt-out is read from the context flag (not action-scoped like _fail_prefixed?)
+      # because a child `done!` never bubbles as an EarlyCompletion through a parent — `call!` swallows
+      # it and returns an ok result — so this flag only ever reflects THIS action's own opt-out.
+      @context.__early_completion_prefixed ? resolver.with_base_prefix(reason) : reason
+    end
+
     def _user_provided_success_message
       @context.__early_completion_message.presence
     end
@@ -132,9 +173,17 @@ module Axn
     def _user_provided_error_message
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
-      return if exception.cause # We raised this ourselves from nesting
 
       exception.message.presence
+    end
+
+    def _fail_prefixed?
+      return true unless exception.is_a?(Axn::Failure)
+      # `prefixed: false` is scoped to the action that called `fail!`. A bubbled child Failure
+      # resolved at an ancestor still gets the ancestor's base prefix (child opt-out is local).
+      return true unless exception.__originating_action.equal?(action)
+
+      exception.prefixed?
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)

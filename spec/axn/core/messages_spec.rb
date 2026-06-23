@@ -216,7 +216,9 @@ RSpec.describe Axn do
         it "falls back to conditional success message when condition is true" do
           result = action.call(trigger: true)
           expect(result).to be_ok
-          expect(result.success).to eq("Conditional fallback")
+          # "Final fallback" is the unconditional headline (base); "Conditional fallback" is a
+          # conditional reason, so it gains the base prefix.
+          expect(result.success).to eq("Final fallback: Conditional fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,
@@ -246,6 +248,8 @@ RSpec.describe Axn do
         it "falls back to next non-failing success message" do
           result = action.call
           expect(result).to be_ok
+          # All three are unconditional headlines; most-recent-first, the raising lambda is skipped
+          # and :fallback_method wins (replacing — not prefixing — the earlier "Final fallback").
           expect(result.success).to eq("Method fallback")
           expect_piping_error_called(
             message_substring: "determining message callable",
@@ -328,7 +332,7 @@ RSpec.describe Axn do
           end
 
           it { expect(result).not_to be_ok }
-          it { expect(result.error).to eq("Argument problem") }
+          it { expect(result.error).to eq("Default error: Argument problem") }
         end
 
         context "arity 1 method (receives exception)" do
@@ -397,7 +401,7 @@ RSpec.describe Axn do
           end
 
           it { expect(result).not_to be_ok }
-          it { expect(result.error).to eq("AE") }
+          it { expect(result.error).to eq("Default error: AE") }
         end
 
         context "unless matcher" do
@@ -419,7 +423,7 @@ RSpec.describe Axn do
             end
 
             it "uses custom error when condition is false" do
-              expect(result.error).to eq("Custom error")
+              expect(result.error).to eq("Default error: Custom error")
             end
           end
 
@@ -437,7 +441,7 @@ RSpec.describe Axn do
             end
 
             it { expect(result).not_to be_ok }
-            it { expect(result.error).to eq("Custom error") }
+            it { expect(result.error).to eq("Default error: Custom error") }
 
             context "when condition is true" do
               let(:action) do
@@ -475,7 +479,7 @@ RSpec.describe Axn do
             end
 
             it { expect(result).not_to be_ok }
-            it { expect(result.error).to eq("Custom error") }
+            it { expect(result.error).to eq("Default error: Custom error") }
 
             context "when condition is true" do
               let(:action) do
@@ -608,6 +612,11 @@ RSpec.describe Axn do
         end
 
         context "when fail! is called with custom message" do
+          # SHARP EDGE: an unconditional dynamic `error` is now a *headline* (base), and a fail!
+          # message is a reason the base prefixes. Because this particular headline reads
+          # `e.message` — which, for the Failure, IS the fail! message — the message appears twice.
+          # Realistic patterns avoid this: use a static base headline, or opt the fail! out with
+          # `prefixed: false` (covered below). A raised (non-fail!) exception renders cleanly.
           let(:action) do
             build_axn do
               error ->(e) { "Bad news: #{e.message}" }
@@ -618,8 +627,16 @@ RSpec.describe Axn do
             end
           end
 
-          it "uses the custom message" do
-            is_expected.to eq("Explicitly-set error message")
+          it "prefixes the fail! message with the dynamic headline (which here re-embeds it)" do
+            is_expected.to eq("Bad news: Explicitly-set error message: Explicitly-set error message")
+          end
+
+          it "renders the fail! message standalone when opted out with prefixed: false" do
+            action = build_axn do
+              error ->(e) { "Bad news: #{e.message}" }
+              def call = fail!("Explicitly-set error message", prefixed: false)
+            end
+            expect(action.call.error).to eq("Explicitly-set error message")
           end
         end
 
@@ -733,11 +750,13 @@ RSpec.describe Axn do
           expect(result).not_to be_ok
           expect(result.exception).to be_a(RuntimeError)
           expect(result.error).to eq("Something went wrong")
+          # Resolved once for the whole result (memoized on the Result) — the raising callable is
+          # invoked a single time across the lifecycle log + this read, not once per read.
           expect_piping_error_called(
             message_substring: "determining message callable",
             error_class: ArgumentError,
             error_message: "fail message",
-            times: 2,
+            times: 1,
           )
         end
       end
@@ -754,23 +773,23 @@ RSpec.describe Axn do
       it { expect(result).not_to be_ok }
 
       it "matches by string exception class name" do
-        expect(result.error).to eq("Inbound validation error!")
+        expect(result.error).to eq("Bad news!: Inbound validation error!")
       end
 
       it "matches specific exceptions" do
-        expect(action.call(param: 1).error).to eq("Argument error: bad arg")
+        expect(action.call(param: 1).error).to eq("Bad news!: Argument error: bad arg")
       end
 
       it "matches by callable matcher" do
-        expect(action.call(param: 2).error).to eq("whoa a 2")
+        expect(action.call(param: 2).error).to eq("Bad news!: whoa a 2")
       end
 
       it "can reference instance vars" do
-        expect(action.call(param: 3).error).to eq("whoa: 123")
+        expect(action.call(param: 3).error).to eq("Bad news!: whoa: 123")
       end
 
       it "can reference configured error" do
-        expect(action.call(param: 4).error).to eq("whoa: Bad news!")
+        expect(action.call(param: 4).error).to eq("Bad news!: whoa: Bad news!")
       end
 
       it "falls back correctly" do
@@ -814,12 +833,61 @@ RSpec.describe Axn do
       expect(action.call.success).to eq("Success from descriptor")
     end
 
-    it "raises error when combining descriptor with kwargs" do
+    it "raises error when combining descriptor with (removed) prefix: kwarg" do
       expect do
         build_axn do
           success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
         end
-      end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
+      end.to raise_error(ArgumentError, /prefix: is no longer supported/)
+    end
+  end
+
+  # Regression guard: a `fail!` raised from inside a `rescue` block gets Ruby's implicit `cause`
+  # ($!) attached to the Failure. The user explicitly chose that message, so it must be surfaced.
+  # (A removed `return if exception.cause` guard once suppressed it for the old nesting-wrap path.)
+  context "when fail! is raised from within a rescue block (Failure carries a cause)" do
+    let(:action) do
+      build_axn do
+        def call
+          raise "underlying boom"
+        rescue StandardError
+          fail!("friendly message")
+        end
+      end
+    end
+
+    it "surfaces the user-provided fail! message rather than the underlying cause" do
+      result = action.call
+      expect(result).not_to be_ok
+      expect(result.error).to eq("friendly message")
+      expect(result.exception).to be_a(Axn::Failure)
+      expect(result.exception.cause).to be_a(RuntimeError)
+      expect(result.exception.cause.message).to eq("underlying boom")
+    end
+  end
+
+  # Regression guard: a winning message block runs exactly once for the whole result lifecycle.
+  # Two ways it could regress: the resolver double-invoking (it once ran body_for in `detect` then
+  # again to capture the reason), or Result re-resolving on every read (it builds a fresh resolver
+  # per call). Memoizing the resolved string on the single Result, plus a single body_for per
+  # resolution, keeps it at one invocation regardless of how many times the message is read.
+  context "when a selected dynamic message block has side effects" do
+    it "invokes the winning message block exactly once across the lifecycle and repeated reads" do
+      invocations = []
+      action = build_axn do
+        error "Base"
+        error(if: ArgumentError) do
+          invocations << :called
+          "reason body"
+        end
+        def call = raise ArgumentError, "boom"
+      end
+
+      result = action.call
+      expect(result.error).to eq("Base: reason body")
+      result.error
+      result.message
+      expect(invocations.size).to eq(1)
     end
   end
 end

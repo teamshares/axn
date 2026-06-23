@@ -69,7 +69,6 @@ You can force a mode at a call-site where only one is valid with `persist: :crea
 | `expect` | `:params` | The params field name to read from |
 | `persist` | inferred | Force `:create` or `:update` |
 | `inject` | `nil` | Context field(s) merged into `model_params` |
-| `error_prefix` | `nil` | Prefix prepended to the validation-error message |
 
 ### Automatic contract
 
@@ -131,20 +130,32 @@ The strategy ships sensible defaults, resolved through the normal [message DSL](
 - **Success** (mode-aware): `"Created <Model>"` / `"Updated <Model>"`.
 - **Error**: the model's `errors.full_messages.to_sentence` (clean — not the raw `"Validation failed: …"`).
 
-Override just the prefix while keeping the validation body — this is what `error_prefix:` is for, and it's the one override the message DSL can't express in a line (a bare `error(prefix:)` would fall back to the raw `exception.message`):
+To prefix the validation-error message, declare a base `error` after `use :model` — the strategy's validation body is prefixed automatically:
 
 ```ruby
-use :model, update: :user, error_prefix: "Unable to update profile: "
+use :model, update: :user
+error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 
-For any other override — a custom success string, a full error message, or [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) — declare it with the normal DSL **after** `use :model` (later declarations win):
+A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so an **unconditional** declaration (string **or** block — they behave identically) becomes the **base** and *prefixes* them, symmetrically for success and error:
 
 ```ruby
 use :model, create: Widget
 success "Your widget is ready!"
-error "Could not save the widget"
+# => "Your widget is ready!: Created Widget"  (base prefixes the mode-aware body)
+error "Unable to create the widget"
+# => "Unable to create the widget: Name can't be blank"
 ```
+
+To **replace** the mode-aware message with a fixed string instead, declare it as a *conditional* reason (`if:`/`unless:`) — a matching reason wins and renders standalone:
+
+```ruby
+use :model, create: Widget
+success "Your widget is ready!", if: -> { true }   # => "Your widget is ready!"  (replaces, no prefix)
+```
+
+Add [`fails_on`](/usage/writing#reclassifying-exceptions-as-failures) the same way — a normal declaration after `use :model`.
 
 ## Validation failures are failures, not exceptions
 
