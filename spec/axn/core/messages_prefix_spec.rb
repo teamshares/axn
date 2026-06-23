@@ -301,6 +301,13 @@ RSpec.describe "Axn error_prefix DSL" do
       end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
     end
 
+    it "raises when delimiter: is given on a conditional reason that opted out with prefixed: false" do
+      # Still a reason (conditional), not the base — so delimiter: must be rejected, not ignored.
+      expect do
+        build_axn { error "x", if: ArgumentError, prefixed: false, delimiter: " - " }
+      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+    end
+
     it "allows delimiter: on a base error (an unconditional headline)" do
       expect do
         build_axn { error "Headline", delimiter: " - " }

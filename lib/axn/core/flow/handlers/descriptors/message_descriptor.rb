@@ -49,10 +49,13 @@ module Axn
               # just a headline/reason whose text is computed at runtime).
               prefixed = !matcher.static? if prefixed.nil?
 
-              # delimiter: is the string a base joins its reasons with, so it only belongs on the
-              # base/headline — never on a reason. Enforced in `build` (the chokepoint) so the
+              # delimiter: is the string a base joins its reasons with, so it only belongs on the base
+              # — an unconditional, non-prefixed headline. Anything conditional or prefixed is a reason
+              # (even a conditional with an explicit `prefixed: false` opt-out), so reject delimiter:
+              # there rather than silently ignore it. Enforced in `build` (the chokepoint) so the
               # direct/Factory path fails at declaration exactly like the `error`/`success` DSL.
-              raise ArgumentError, "delimiter: only applies to the base (an unprefixed headline)" if delimiter && prefixed
+              base = matcher.static? && !prefixed
+              raise ArgumentError, "delimiter: only applies to the base (an unprefixed headline)" if delimiter && !base
 
               new(handler:, prefixed:, delimiter:, matcher:)
             end
