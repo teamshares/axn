@@ -47,11 +47,14 @@ module Axn
     # External interface
     delegate :ok?, :exception, :elapsed_time, :finalized?, to: :context
 
-    # Memoized: a Result is a snapshot of a finalized context, and resolution can invoke
-    # user-supplied message blocks. The lifecycle (logging) and every caller read share the one
-    # memoized `@__result`, so resolving once here means those blocks run a single time total.
+    # Memoized once the context is finalized, so resolution (which can invoke user-supplied message
+    # blocks) runs a single time across the lifecycle (logging) and every caller read. A Result is the
+    # SAME object during and after the run, so we must NOT cache a pre-finalization read — e.g. a hook
+    # touching `result.success`/`#message` mid-run, where `ok?` is still true but a later `done!`/expose
+    # would change the answer. Pre-finalization reads resolve live; only a finalized result is frozen in.
     def error
-      return if ok?
+      return if ok? # (!ok? implies finalized — a failure sets the finalized flag — but be explicit)
+      return _resolve_error unless finalized?
 
       @__resolved_error = _resolve_error unless defined?(@__resolved_error)
       @__resolved_error
@@ -59,6 +62,7 @@ module Axn
 
     def success
       return unless ok?
+      return _resolve_success unless finalized?
 
       @__resolved_success = _resolve_success unless defined?(@__resolved_success)
       @__resolved_success

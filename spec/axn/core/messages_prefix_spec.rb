@@ -251,6 +251,19 @@ RSpec.describe "Axn success prefixing parity" do
     it { is_expected.to eq("User synced") }
   end
 
+  context "success read before the action finalizes is not cached as a stale value" do
+    # result.success/#message are memoized, but a Result is the same object during AND after the run.
+    # Reading success while in-progress (ok? true, not finalized) must not freeze the pre-done! value.
+    let(:action) do
+      build_axn do
+        success "User synced"
+        before { result.message } # touch success while in-progress
+        def call = done!("from cache")
+      end
+    end
+    it { is_expected.to eq("User synced: from cache") }
+  end
+
   context "conditional success reason prefixed" do
     let(:action) do
       build_axn do
