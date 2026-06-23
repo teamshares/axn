@@ -295,9 +295,10 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to include("Payload can't be blank")
     end
 
-    it "resolves an aliased parent (subfield declared on: the alias) directly" do
-      # The subfield's on: names the reader (:raw_payload); resolve_parent reads through that reader,
-      # so a missing aliased parent is detected as unextractable without any wire-key normalization.
+    it "normalizes an aliased parent (subfield declared on: the alias) back to the wire key" do
+      # The failed-parent set holds wire keys (:payload from the ActiveModel errors), but the
+      # subfield's on: names the reader (:raw_payload) — `_root_wire_field` must map it back so the
+      # derived-skip gate matches and the parent's user-facing message surfaces.
       action = build_axn do
         expects :payload, type: Hash, as: :raw_payload, user_facing: true
         expects :id, on: :raw_payload
@@ -308,7 +309,7 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to include("Payload can't be blank")
     end
 
-    it "resolves a subfield rooted at another subfield of the user-facing parent" do
+    it "normalizes a subfield rooted at another subfield of the user-facing parent" do
       action = build_axn do
         expects :payload, type: Hash, user_facing: true
         expects :meta, on: :payload, type: Hash
@@ -349,6 +350,47 @@ RSpec.describe "expects ..., user_facing:" do
       result = action.call(payload: { id: 5 })
       expect(result.outcome).to be_failure
       expect(result.error).to include("Payload is not allowed")
+    end
+  end
+
+  describe "the derived-skip is gated to the failed user_facing parent's own subfields" do
+    it "still pages a dev-facing subfield error whose parent is an unrelated absent optional field" do
+      # :note is the (blank) user-facing field; :payload is a *separate* optional field that's absent,
+      # so its required subfield :id can't resolve. That subfield error is independent of the
+      # user-facing :note failure — :payload is not a failed user-facing parent — so it stays
+      # dev-facing (exactly as it would with no user_facing field in play), rather than being
+      # masked into an on_failure result.
+      fired = []
+      recorder = fired
+      action = build_axn do
+        expects :note, user_facing: true
+        expects :payload, optional: true
+        expects :id, on: :payload, type: Integer
+
+        on_failure { recorder << :failure }
+        on_exception { recorder << :exception }
+
+        def call = nil
+      end
+      result = action.call # :note blank AND :payload absent
+      expect(result.outcome).to be_exception
+      expect(fired).to contain_exactly(:exception)
+    end
+
+    it "does not swallow a real error raised by a subfield reader as a derived skip" do
+      # :payload is present and unrelated to the blank user-facing :note, but reading payload.id
+      # raises a genuine bug. That must surface as a dev-facing exception, not be misread as
+      # "unextractable" and skipped behind the user-facing message.
+      raising = Class.new { def id = raise("boom from reader") }.new
+      action = build_axn do
+        expects :note, user_facing: true
+        expects :payload
+        expects :id, on: :payload, type: Integer
+
+        def call = nil
+      end
+      result = action.call(payload: raising) # :note blank (user-facing); payload.id raises
+      expect(result.outcome).to be_exception
     end
   end
 

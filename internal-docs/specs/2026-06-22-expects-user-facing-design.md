@@ -68,16 +68,25 @@ This preserves the invariant **a real contract bug always pages**. A genuine typ
 never masked behind a friendly "Note can't be blank" — you fix the bug first, and only once the
 contract is otherwise sound does the user-facing message become the thing the caller sees.
 
-Dominance is scoped to *independent* dev-facing violations. The discriminator is **extractability**:
-a subfield/model check is *derived* exactly when its parent value can't be extracted from — missing
-or the wrong shape — so reading the subfield is meaningless. With `expects :payload, type: Hash,
-user_facing: true` plus `expects :id, on: :payload`, an omitted/non-Hash `payload` makes the `:id`
-extraction fail, so that derived check does **not** dominate; the parent's user-facing message
-surfaces. But a parent that resolves to a readable container *is* extractable even if it failed some
-*other* top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash) — its subfield's
-own contract violation (`:id` of the wrong type) is then genuinely independent and still dominates.
-Extractability is tested by attempting the extraction (reusing the Extract resolver), not by matching
-the parent's field name — so aliased (`as:`), dotted, and subfield-rooted `on:` all fall out for free.
+Dominance is scoped to *independent* dev-facing violations. A subfield/model check is *derived*
+(skipped, so the parent's user-facing message surfaces) only when **both** hold:
+
+1. **Its parent root is one of the failed user-facing fields.** A subfield of any *other* parent —
+   an unrelated absent `optional:` field, say — is not derived from the user-facing failure, so it
+   runs and pages dev-facing exactly as it would with no `user_facing:` field in play. The root is
+   resolved with `_root_wire_field`, which walks an `on:` reader (aliased via `as:`, dotted, or
+   rooted at another subfield) back to its top-level wire key — reusing the action's existing
+   `_wire_parent_key` for the alias step rather than duplicating that mapping.
+2. **That parent value can't be extracted from** — missing or the wrong shape — so reading the
+   subfield is meaningless. This is tested *structurally* (mirroring the Extract resolver's
+   source-shape branches) **without invoking the reader**: a reader that raises a genuine bug must
+   surface as a dev-facing exception via the real validation, never be swallowed into a derived skip.
+
+So with `expects :payload, type: Hash, user_facing: true` plus `expects :id, on: :payload`, an
+omitted/non-Hash `payload` makes `:id` unextractable → derived → the parent's message surfaces. But a
+`payload` that resolves to a readable container is extractable even if it failed some *other*
+top-level validation (e.g. a custom `validate:` on an otherwise-valid Hash) — its subfield's own
+contract violation (`:id` of the wrong type) is then genuinely independent and still dominates.
 
 ## Outcome shape (when all failing fields are user-facing)
 
