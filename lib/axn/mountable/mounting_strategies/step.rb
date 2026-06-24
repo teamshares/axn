@@ -20,8 +20,10 @@ module Axn
             end
           end
 
-          def step(name, axn_klass = nil, error_prefix: nil, inherit: MountingStrategies::Step.default_inherit_mode, **, &)
-            # Steps default to :none - they are isolated units of work
+          def step(name, axn_klass = nil, error_prefix: nil, inherit: MountingStrategies::Step.default_inherit_mode, **kwargs, &)
+            # Steps chain into a shared, accumulating context (see the generated #call): each step is
+            # invoked with all data exposed so far, and its exposures merge back for later steps.
+            MountingStrategies::Step.validate_conditions!(kwargs)
             Helpers::Mounter.mount_via_strategy(
               target: self,
               as: :step,
@@ -29,13 +31,25 @@ module Axn
               axn_klass:,
               error_prefix:,
               inherit:,
-              **,
+              **kwargs,
               &
             )
           end
         end
 
-        def strategy_specific_kwargs = super + [:error_prefix]
+        # if:/unless: must be a Symbol (a parent method) or a callable — fail at declaration (AGENTS.md).
+        def validate_conditions!(kwargs)
+          %i[if unless].each do |key|
+            next unless kwargs.key?(key)
+
+            condition = kwargs[key]
+            next if condition.is_a?(Symbol) || condition.respond_to?(:call)
+
+            raise ArgumentError, "step #{key}: must be a Symbol or callable (got #{condition.inspect})"
+          end
+        end
+
+        def strategy_specific_kwargs = super + %i[error_prefix if unless]
 
         CALL_COLLISION_MESSAGE =
           "%s declares steps and a custom #call. Steps generate the #call orchestrator, so you " \
@@ -65,9 +79,20 @@ module Axn
           target.define_method(:call) do
             step_descriptors = self.class._mounted_axn_descriptors.select { |d| d.mount_strategy.key == :step }
 
+            evaluate_condition = lambda do |condition|
+              condition.is_a?(Symbol) ? send(condition) : instance_exec(&condition)
+            end
+
             step_descriptors.each do |step_descriptor|
+              options = step_descriptor.options
+              # Conditions run on the parent instance right before the step would run, so they read the
+              # accumulated context (parent inputs + anything exposed by earlier steps). if: and unless:
+              # combine with AND.
+              next if options[:if] && !evaluate_condition.call(options[:if])
+              next if options[:unless] && evaluate_condition.call(options[:unless])
+
               axn = step_descriptor.mounted_axn_for(target: self.class)
-              error_prefix = step_descriptor.options[:error_prefix] || "#{step_descriptor.name}: "
+              error_prefix = options[:error_prefix] || "#{step_descriptor.name}: "
 
               step_result = axn.call(**@__context.__combined_data)
 
