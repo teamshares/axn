@@ -37,13 +37,16 @@ module Axn
           end
         end
 
-        # if:/unless: must be a Symbol (a parent method) or a callable — fail at declaration (AGENTS.md).
+        # if:/unless: must be a Symbol (a parent method) or a Proc-compatible callable — fail at
+        # declaration (AGENTS.md). Use the same `callable?` seam as the rest of the contract: it
+        # requires `to_proc` (which the runner's `instance_exec(&condition)` needs), so a bare
+        # `#call`-only object is rejected here rather than raising TypeError at run time.
         def validate_conditions!(kwargs)
           %i[if unless].each do |key|
             next unless kwargs.key?(key)
 
             condition = kwargs[key]
-            next if condition.is_a?(Symbol) || condition.respond_to?(:call)
+            next if condition.is_a?(Symbol) || ::Axn::Core::Flow::Handlers::Invoker.callable?(condition)
 
             raise ArgumentError, "step #{key}: must be a Symbol or callable (got #{condition.inspect})"
           end
@@ -71,11 +74,25 @@ module Axn
           target.instance_variable_set(:@_axn_call_method_defined_for_steps, true)
         end
 
-        # Define the generated orchestrator. The defining flag lets the method_added guard ignore
-        # this (and the re-generation on a subclass that inherits the guard) — only a *user* #call
-        # should trip it.
+        # Catches a `def call` written *after* steps were declared (the reverse order). Prepended to
+        # the singleton class — rather than `define_singleton_method(:method_added)` — so it composes
+        # with (and `super`s into) any `method_added` the class already defined. It fires only once
+        # the orchestrator marker is set, i.e. on a class that generated its own step `#call`; a
+        # mounted child action that merely *inherits* the marker-less host (e.g. an `inherit:` step
+        # whose ClassBuilder subclasses the host) defines its own `#call` without tripping it.
+        module CallCollisionGuard
+          def method_added(name)
+            super
+            return unless name == :call
+            return unless instance_variable_defined?(:@_axn_call_method_defined_for_steps) && @_axn_call_method_defined_for_steps
+
+            raise ArgumentError, format(CALL_COLLISION_MESSAGE, self.name || "Action")
+          end
+        end
+
+        # Define the generated orchestrator. Defined before the marker is set (and before the guard is
+        # installed on a first mount), so generating it never trips the collision guard.
         def _define_steps_call(target)
-          target.instance_variable_set(:@_axn_defining_steps_call, true)
           target.define_method(:call) do
             step_descriptors = self.class._mounted_axn_descriptors.select { |d| d.mount_strategy.key == :step }
 
@@ -114,23 +131,13 @@ module Axn
               end
             end
           end
-        ensure
-          target.instance_variable_set(:@_axn_defining_steps_call, false)
         end
 
-        # Catch a `def call` written *after* steps were declared (the reverse order). The invariant:
-        # a class with step descriptors (own or inherited) must not define its own #call. Subclasses
-        # inherit this guard, so re-generating the orchestrator on a subclass is shielded by the
-        # defining flag set in _define_steps_call.
+        # Idempotent: prepending an already-present module is a no-op, and subclasses inherit the
+        # guard through the singleton-class ancestry, so re-installing on a subclass that adds a step
+        # is harmless.
         def _install_call_collision_guard(target)
-          target.define_singleton_method(:method_added) do |name|
-            super(name)
-            next unless name == :call
-            next if instance_variable_defined?(:@_axn_defining_steps_call) && @_axn_defining_steps_call
-            next unless _mounted_axn_descriptors.any? { |d| d.mount_strategy.key == :step }
-
-            raise ArgumentError, format(CALL_COLLISION_MESSAGE, self.name || "Action")
-          end
+          target.singleton_class.prepend(CallCollisionGuard)
         end
       end
     end

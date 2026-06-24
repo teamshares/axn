@@ -60,4 +60,39 @@ RSpec.describe "Steps + custom #call collision" do
     expect(result.a).to eq(1)
     expect(result.b).to eq(2)
   end
+
+  it "does not trip the guard when steps use inherit: :lifecycle (child action subclasses the host)" do
+    first = build_axn do
+      exposes :a
+      def call = expose(:a, 1)
+    end
+    action = nil
+    expect do
+      action = build_axn do
+        exposes :a, :b
+        step :first, first, inherit: :lifecycle
+        step :second, expects: [:a], exposes: [:b], inherit: :lifecycle do
+          expose :b, a + 1
+        end
+      end
+    end.not_to raise_error
+
+    result = action.call
+    expect(result).to be_ok
+    expect(result.b).to eq(2)
+  end
+
+  it "preserves a pre-existing self.method_added hook when steps are declared" do
+    step_child = child
+    observed = []
+    sink = observed
+    klass = Class.new do
+      include Axn
+      define_singleton_method(:method_added) { |name| sink << name }
+      step "a", step_child
+      def helper_after_steps; end
+    end
+    expect(klass).to be_truthy
+    expect(observed).to include(:helper_after_steps)
+  end
 end

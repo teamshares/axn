@@ -158,5 +158,14 @@ RSpec.describe "Conditional steps" do
         build_axn { step :maybe, step_axn, if: "nope" }
       end.to raise_error(ArgumentError, /Symbol or callable/)
     end
+
+    it "raises for a call-only object that cannot be instance_execed (no to_proc)" do
+      step_axn = marker_step(:yes)
+      call_only = Object.new
+      def call_only.call = true
+      expect do
+        build_axn { step :maybe, step_axn, if: call_only }
+      end.to raise_error(ArgumentError, /Symbol or callable/)
+    end
   end
 end
