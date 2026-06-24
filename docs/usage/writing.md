@@ -90,6 +90,29 @@ result = UpdateUser.call(user:, params:)
 result.user.errors.full_messages  # populated on both ok? and !ok?
 ```
 
+### Forwarding to a nested action (facades)
+
+When an action is a thin facade over another — forwarding most inputs and re-exposing the child's outputs — use `inputs` to forward arguments and `expose(result)` to forward outputs:
+
+```ruby
+class Assignments::Create
+  include Axn
+
+  expects :user, :company, :role, :started_at, optional: true
+  exposes :user, :employment, optional: true
+  error "Unable to create assignment"
+
+  def call
+    result = Employment::AddEmployeeToCompany.call(**inputs) # [!code focus]
+    expose(result)              # forwards (child's exposures ∩ this action's exposes) # [!code focus]
+    fail! unless result.ok?     # a declared base `error` provides the message # [!code focus]
+  end
+end
+```
+
+- `inputs` is the resolved declared-inbound fields (defaults and preprocessing applied) as a Hash — splat it, and use plain Hash methods to inject or drop fields: `Child.call(**inputs.except(:role), role: ROLE)`.
+- `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward.
+
 ### Convenient failure with context
 
 Both `fail!` and `done!` can accept keyword arguments to expose data before halting execution:
