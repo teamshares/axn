@@ -1,17 +1,14 @@
 # frozen_string_literal: true
 
 # Spike proof: the generic-worker Sidekiq adapter. Confirms the high-risk behaviors that
-# the old "action IS the Sidekiq::Job" model provided still hold under the new design —
-# and that it runs on the Sidekiq version os-app is on (v7).
+# the old "action IS the Sidekiq::Job" model provided still hold under the new design.
+# Runs against whatever Sidekiq is installed (this dummy app pins v7, os-app's version);
+# v8 is covered by a separate standalone check.
 RSpec.describe "Sidekiq generic worker (spike)" do
   let(:shared_worker) { Axn::Async::Adapters::Sidekiq::Worker }
 
   before { Sidekiq::Job.jobs.clear }
   after { Sidekiq::Job.jobs.clear }
-
-  it "is running against the Sidekiq version os-app uses (v7)" do
-    expect(Sidekiq::VERSION).to start_with("7.")
-  end
 
   describe "explicit async :sidekiq with per-action options" do
     let(:action) do
