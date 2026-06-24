@@ -262,6 +262,7 @@ module Axn
           each_pair
           default_success
           action_name
+          inputs
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
@@ -275,6 +276,7 @@ module Axn
           finalized?
           __action__
           prefixed
+          inputs
         ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
@@ -495,6 +497,14 @@ module Axn
       module InstanceMethods
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
         def result = @__result ||= _build_context_facade(:outbound)
+
+        # Resolved declared-inbound fields as a Hash (defaults/preprocess applied), keyed by wire
+        # key. Splat into a nested action to forward inputs: `Child.call(**inputs, override: x)`.
+        def inputs
+          self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
+            hash[field] = @__context.provided_data[field] if @__context.provided_data.key?(field)
+          end
+        end
 
         delegate :default_error, :default_success, to: :internal_context
 
