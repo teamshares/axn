@@ -573,8 +573,9 @@ RSpec.describe Axn do
 
         it "does not have access to target methods by default" do
           client = client_class.send(:new)
-          # The step converts the child's NameError into a prefixed Axn::Failure (single report, no re-raise)
-          expect { client.call }.to raise_error(Axn::Failure, /test_step:/)
+          # The child raises NameError (no access to target methods); the step re-raises the original
+          # so the parent settles as an exception too (see the failure-vs-exception contract).
+          expect { client.call }.to raise_error(NameError, /test_method/)
         end
       end
 

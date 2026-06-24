@@ -52,7 +52,17 @@ module Axn
               error_prefix = step_descriptor.options[:error_prefix] || "#{step_descriptor.name}: "
 
               step_result = axn.call(**@__context.__combined_data)
-              fail!("#{error_prefix}#{step_result.error}") unless step_result.ok?
+
+              unless step_result.ok?
+                # Propagate the step's outcome *category*, not a flattened failure: a deliberate fail!
+                # (or a fails_on-classified exception) settles the parent as a failure with the
+                # prefixed message; an unclassified exception (a bug) re-raises the original object so
+                # the parent settles as an exception too. The global report already fired at the step
+                # and is deduped per exception object, so re-raising never double-reports.
+                raise step_result.exception if step_result.outcome.exception?
+
+                fail!("#{error_prefix}#{step_result.error}")
+              end
 
               # Extract exposed fields from step result and update exposed_data
               step_result.declared_fields.each do |field|
