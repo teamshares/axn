@@ -19,6 +19,12 @@ RSpec.configure do |config|
     c.syntax = :expect
   end
 
+  config.mock_with :rspec do |mocks|
+    # Catch stubs/mocks on real objects (partial doubles) whose methods don't actually
+    # exist — prevents dead stubs from silently passing when an API is renamed/removed.
+    mocks.verify_partial_doubles = true
+  end
+
   config.before(:suite) do
     Axn.configure do |c|
       # Hide default logging

@@ -42,8 +42,12 @@ RSpec.describe Axn do
         # This will be tested with a mock transaction that tracks rollbacks
         rollback_called = false
 
-        # Mock ActiveRecord transaction behavior
-        stub_const("ActiveRecord::Base", Class.new)
+        # Mock ActiveRecord transaction behavior. Declaring the methods on the fake lets
+        # verify_partial_doubles confirm the stubbed methods exist.
+        stub_const("ActiveRecord::Base", Class.new do
+          def self.transaction; end
+          def self.rollback!; end
+        end)
         allow(ActiveRecord::Base).to receive(:transaction).and_yield
         allow(ActiveRecord::Base).to receive(:rollback!) { rollback_called = true }
 

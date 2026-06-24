@@ -6,6 +6,12 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
     Axn::Strategies.register(:vernier, described_class)
   end
 
+  # Vernier is lazily required (and not loaded in this suite), so we fake the constant.
+  # Declaring #profile lets verify_partial_doubles confirm the stubbed method really exists.
+  let(:fake_vernier) do
+    Module.new { def self.profile(*, **); end }
+  end
+
   let(:action_class) do
     build_axn do
       use :vernier
@@ -210,7 +216,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
 
     context "when profiling should run" do
       before do
-        stub_const("Vernier", Module.new)
+        stub_const("Vernier", fake_vernier)
         allow(Vernier).to receive(:profile).and_yield
       end
 
@@ -246,7 +252,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
 
   describe "integration with action execution" do
     before do
-      stub_const("Vernier", Module.new)
+      stub_const("Vernier", fake_vernier)
       allow(Vernier).to receive(:profile).and_yield
     end
 

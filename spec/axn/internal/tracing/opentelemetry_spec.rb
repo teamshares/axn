@@ -9,8 +9,9 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     # Save original OpenTelemetry if it exists
     @original_otel = defined?(OpenTelemetry) ? OpenTelemetry : nil
 
-    # Create a simple OpenTelemetry module that we'll stub methods on
-    otel_module = Module.new
+    # Create a simple OpenTelemetry module that we'll stub methods on. Declaring the
+    # methods we stub lets verify_partial_doubles confirm they really exist on the fake.
+    otel_module = Module.new { def self.tracer_provider; end }
     trace_module = Module.new
     status_class = Class.new
     mock_status = instance_double("Status")
