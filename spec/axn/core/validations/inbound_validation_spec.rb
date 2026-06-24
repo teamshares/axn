@@ -374,6 +374,14 @@ RSpec.describe Axn do
           end
         end.to raise_error(Axn::DuplicateFieldError, /foo/)
       end
+
+      it "raises when both normalize-equal names are in the same declaration" do
+        # `expects :foo, "foo"` is a single call, so the collision is within the batch (neither name
+        # exists in prior configs) — it must still be caught, or the generated reader is clobbered.
+        expect do
+          build_axn { expects :foo, "foo" }
+        end.to raise_error(Axn::DuplicateFieldError, /foo/)
+      end
     end
   end
 end

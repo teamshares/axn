@@ -223,14 +223,20 @@ module Axn
 
         private
 
-        # Field names that `new_configs` would re-declare against `existing` configs, compared by
-        # *symbolized* wire key: `:note` and `"note"` are the same field everywhere downstream
-        # (ActiveModel symbolizes the attribute, the reader is the same), so declaring both is a
-        # duplicate — otherwise two validations run on one field and per-field config (e.g.
-        # `user_facing:`) collapses ambiguously. Returns the offending names as declared.
+        # Field names that collide by *symbolized* wire key — against `existing` configs AND within
+        # `new_configs` itself (`expects :foo, "foo"` is a single batch, so its collision is intra-
+        # batch). `:note` and `"note"` are the same field everywhere downstream (ActiveModel
+        # symbolizes the attribute, the reader is the same), so declaring both is a duplicate —
+        # otherwise two validations run on one field, the generated reader is clobbered, and per-field
+        # config (e.g. `user_facing:`) collapses ambiguously. Returns the offending names as declared.
         def _duplicate_fields(existing, new_configs)
           taken = existing.map { |c| c.field.to_sym }
-          new_configs.map(&:field).select { |f| taken.include?(f.to_sym) }
+          seen = []
+          new_configs.map(&:field).select do |f|
+            collides = taken.include?(f.to_sym) || seen.include?(f.to_sym)
+            seen << f.to_sym
+            collides
+          end
         end
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
