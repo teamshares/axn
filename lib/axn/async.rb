@@ -10,6 +10,11 @@ module Axn
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+      # True when the adapter was applied via the global default (call_async/worker hook)
+      # rather than an explicit `async ...` in the action body. The Sidekiq adapter uses this
+      # to decide between a per-action Worker subclass (explicit: reconstructable in a worker)
+      # and the shared generic Worker (global default: no per-action body to reconstruct).
+      class_attribute :_async_via_default, default: false
       class_attribute :_async_exception_reporting, default: nil
 
       # Include batch enqueue functionality
@@ -68,6 +73,7 @@ module Axn
       def call_async(**kwargs)
         # Set up default async configuration if none is set
         if _async_adapter.nil?
+          self._async_via_default = true
           async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
           # Call ourselves again now that the adapter is included
           return call_async(**kwargs)
@@ -165,6 +171,7 @@ module Axn
         return if _async_adapter.present?
         return unless Axn.config._default_async_adapter.present?
 
+        self._async_via_default = true
         async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
       end
 

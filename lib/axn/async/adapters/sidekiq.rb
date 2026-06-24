@@ -31,10 +31,26 @@ module Axn
           # (e.g. when async :sidekiq is used without ever setting async_exception_reporting).
           AutoConfigure.ensure_registered_for_current_config!
 
-          # NOTE: the action is intentionally NOT turned into a Sidekiq::Job. A single generic
-          # Worker (see worker.rb) runs every action by name, so the action class stays a plain
-          # Axn action (private `new`, no Sidekiq class surface). Per-job options (queue, retry,
-          # …) are applied at enqueue time via Worker.set(**_async_config).
+          # The action is intentionally NOT turned into a Sidekiq::Job (so its `new` stays private
+          # and it carries no Sidekiq class surface).
+          #
+          # For EXPLICIT `async :sidekiq` we build a per-action Worker subclass and apply the full
+          # config — kwargs AND the arbitrary block — to it. Because it's a real Sidekiq::Job, the
+          # block can use anything Sidekiq exposes (sidekiq_options, sidekiq_retry_in,
+          # sidekiq_retries_exhausted, custom options consumed by middleware, …). A fresh worker
+          # reconstructs the subclass by autoloading the action (whose body re-runs `async :sidekiq`),
+          # the same mechanism the ActiveJob proxy already relies on.
+          #
+          # For the GLOBAL DEFAULT path (_async_via_default) we skip the subclass: the action body
+          # won't re-create it in a worker, so enqueue routes through the always-present shared
+          # Worker instead (see _enqueue_async_job).
+          unless _async_via_default
+            subclass = Class.new(Worker)
+            const_set(:AxnSidekiqWorker, subclass) unless const_defined?(:AxnSidekiqWorker, false)
+            subclass = const_get(:AxnSidekiqWorker, false)
+            subclass.sidekiq_options(**_async_config) if _async_config&.any?
+            subclass.class_eval(&_async_config_block) if _async_config_block
+          end
         end
 
         class_methods do
@@ -51,10 +67,16 @@ module Axn
             # Convert kwargs to string keys and handle GlobalID conversion
             job_kwargs = Axn::Internal::AsyncSerialization.serialize(kwargs)
 
-            # Per-action sidekiq options (queue/retry/…) ride along as enqueue-time .set options.
-            # display_class keeps the Sidekiq Web UI showing the real action, not the generic Worker.
-            setter_opts = (_async_config || {}).merge(display_class: name)
-            job = Worker.set(**setter_opts)
+            if _async_via_default
+              # Global default: no per-action subclass exists in a fresh worker, so use the shared
+              # Worker and carry per-job options (from the default config) via .set.
+              setter_opts = (_async_config || {}).merge(display_class: name)
+              job = Worker.set(**setter_opts)
+            else
+              # Explicit async: the per-action subclass already carries the full config
+              # (sidekiq_options + block). Only display_class needs to ride along per-enqueue.
+              job = const_get(:AxnSidekiqWorker, false).set(display_class: name)
+            end
 
             # Process normalized async options if present
             if normalized_options

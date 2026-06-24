@@ -22,8 +22,9 @@ module Axn
               # Resolve the underlying Axn action. With the generic Worker the action class
               # name + kwargs live in job["args"]; legacy direct-Sidekiq::Job actions put the
               # action in job["class"] with kwargs as the first arg.
+              job_klass = job["class"].to_s.safe_constantize
               action_class_name, action_args =
-                if job["class"].to_s == Worker.name
+                if job_klass && job_klass <= Worker
                   [job["args"]&.first, job["args"]&.dig(1)]
                 else
                   [job["class"], job["args"]&.first]

@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
 # Spike proof: the generic-worker Sidekiq adapter. Confirms the high-risk behaviors that
-# the old "action IS the Sidekiq::Job" model provided still hold under the new design.
+# the old "action IS the Sidekiq::Job" model provided still hold under the new design —
+# and that it runs on the Sidekiq version os-app is on (v7).
 RSpec.describe "Sidekiq generic worker (spike)" do
-  let(:worker) { Axn::Async::Adapters::Sidekiq::Worker }
+  let(:shared_worker) { Axn::Async::Adapters::Sidekiq::Worker }
 
   before { Sidekiq::Job.jobs.clear }
   after { Sidekiq::Job.jobs.clear }
+
+  it "is running against the Sidekiq version os-app uses (v7)" do
+    expect(Sidekiq::VERSION).to start_with("7.")
+  end
 
   describe "explicit async :sidekiq with per-action options" do
     let(:action) do
@@ -19,32 +24,66 @@ RSpec.describe "Sidekiq generic worker (spike)" do
       end)
     end
 
-    it "enqueues the generic Worker (not the action) with action name + kwargs, queue/retry, and display_class" do
+    let(:subclass) { action.const_get(:AxnSidekiqWorker) }
+
+    it "builds a per-action Worker subclass (a real Sidekiq::Job) carrying the options" do
+      expect(subclass.ancestors).to include(shared_worker, Sidekiq::Job)
+      expect(subclass.get_sidekiq_options).to include("queue" => "high_priority", "retry" => 5)
+    end
+
+    it "enqueues that subclass with action name + kwargs and a display_class for the Web UI" do
       Sidekiq::Testing.fake! do
         jid = action.call_async(name: "Ada")
         expect(jid).to match(/\A[0-9a-f]{24}\z/)
 
-        jobs = worker.jobs
-        expect(jobs.size).to eq(1)
-        job = jobs.first
-        expect(job["class"]).to eq("Axn::Async::Adapters::Sidekiq::Worker")
-        expect(job["args"].first).to eq("SpikeQueuedAction")             # action resolved by name
-        expect(job["args"].last).to include("name" => "Ada")             # serialized kwargs
-        expect(job["queue"]).to eq("high_priority")                      # per-action queue preserved
-        expect(job["retry"]).to eq(5)                                    # per-action retry preserved
-        expect(job["display_class"]).to eq("SpikeQueuedAction")          # Sidekiq Web UI shows the real action
+        job = subclass.jobs.last
+        expect(job["args"].first).to eq("SpikeQueuedAction")
+        expect(job["args"].last).to include("name" => "Ada")
+        expect(job["queue"]).to eq("high_priority")
+        expect(job["display_class"]).to eq("SpikeQueuedAction")
       end
     end
 
     it "runs the action when the worker performs the job" do
-      Sidekiq::Testing.inline! do
-        expect { action.call_async(name: "Ada") }.not_to raise_error
-      end
+      Sidekiq::Testing.inline! { expect { action.call_async(name: "Ada") }.not_to raise_error }
     end
 
-    it "keeps the action's own .new private (only the generic Worker is instantiated by Sidekiq)" do
+    it "keeps the action's own .new private; only the Worker subclass is instantiable" do
       expect { action.new(name: "x") }.to raise_error(NoMethodError, /private method/)
-      expect { worker.new }.not_to raise_error
+      expect { subclass.new }.not_to raise_error
+    end
+
+    it "reconstructs the subclass by name (the fresh-worker autoload path)" do
+      # In a worker process Sidekiq constantizes "SpikeQueuedAction::AxnSidekiqWorker", which
+      # autoloads the action and re-runs its `async :sidekiq` (same mechanism as ActiveJob's proxy).
+      expect(subclass).to eq("SpikeQueuedAction::AxnSidekiqWorker".constantize)
+    end
+  end
+
+  describe "arbitrary Sidekiq block config (control anything the backend allows)" do
+    let(:action) do
+      stub_const("SpikeBlockAction", Class.new do
+        include Axn
+        async :sidekiq, queue: "q1" do
+          # Anything a Sidekiq::Job class supports — not just the kwargs we modeled:
+          sidekiq_options(tags: ["billing"], dead: false, retry: 7)
+          sidekiq_retry_in { |count, _exc| 10 * (count + 1) }
+        end
+        expects :name
+        def call = nil
+      end)
+    end
+
+    let(:subclass) { action.const_get(:AxnSidekiqWorker) }
+
+    it "applies arbitrary sidekiq_options from the block to the per-action subclass" do
+      expect(subclass.get_sidekiq_options).to include(
+        "queue" => "q1", "tags" => ["billing"], "dead" => false, "retry" => 7,
+      )
+    end
+
+    it "supports class-level behavioral hooks from the block (e.g. custom retry backoff)" do
+      expect(subclass.sidekiq_retry_in_block.call(2, nil)).to eq(30)
     end
   end
 
@@ -68,11 +107,11 @@ RSpec.describe "Sidekiq generic worker (spike)" do
       end)
     end
 
-    it "enqueues via the generic Worker without the action ever being a Sidekiq::Job" do
+    it "uses the shared Worker (no per-action subclass to reconstruct in a worker)" do
       Sidekiq::Testing.fake! do
-        jid = action.call_async(name: "Grace")
-        expect(jid).to match(/\A[0-9a-f]{24}\z/)
-        expect(worker.jobs.last["args"].first).to eq("SpikeGlobalDefaultAction")
+        action.call_async(name: "Grace")
+        expect(shared_worker.jobs.last["args"].first).to eq("SpikeGlobalDefaultAction")
+        expect(action.const_defined?(:AxnSidekiqWorker, false)).to be(false)
       end
     end
 
@@ -93,7 +132,7 @@ RSpec.describe "Sidekiq generic worker (spike)" do
       end)
 
       serialized = Axn::Internal::AsyncSerialization.serialize(name: "Linus")
-      result = worker.new.perform("SpikeDirectAction", serialized)
+      result = shared_worker.new.perform("SpikeDirectAction", serialized)
       expect(result).to be_ok
       expect(result.greeting).to eq("hi Linus")
     end
