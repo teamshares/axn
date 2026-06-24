@@ -184,9 +184,11 @@ step :provision,    Provision,   if: :ready?, unless: :dry_run?   # both → AND
 - Accept a **Proc** (instance-`exec`'d on the parent) or a **Symbol** (a parent method) — the same
   pairing hooks and message conditionals already accept.
 - Evaluated on the parent instance **immediately before** that step would run, so a condition can
-  read everything the parent can read at that point: its `expects` inputs and its declared `exposes`.
-  To branch on an intermediate value produced by an earlier step, the parent must expose/declare it
-  (consistent with the readability rule — conditions are knowable locally).
+  read the parent's `expects` inputs and its own methods. It **cannot** read values exposed by
+  earlier steps — exposed fields get a reader on `Result`, not on the action instance mid-run, so a
+  bare `-> { flag }` referencing a prior step's exposure raises `NameError`. Branch on an input, or
+  have the step itself short-circuit with `done!`. (Verified during implementation — the original
+  spec's "declare it in `exposes`" claim was wrong.)
 - `if:` and `unless:` **may be combined** (the step runs only if `if` passes *and* `unless` fails) —
   matching Rails callback ergonomics. (Note: this deliberately differs from message conditionals,
   which reject `if:`+`unless:` together; for a guard condition the AND combination is normal and
@@ -228,7 +230,7 @@ assertion that a later step overwrites an earlier exposure (lock the blackboard 
 - `if:` Proc true/false; `unless:` Proc true/false; Symbol forms; combined `if:`+`unless:` (all four
   truth combinations).
 - skipped step exposes nothing and does not fail; later steps still run.
-- a condition reads a parent `expects` input and a declared `exposes` value.
+- a condition reads a parent `expects` input; referencing a prior step's exposure raises `NameError`.
 
 ## CHANGELOG
 
@@ -254,5 +256,7 @@ assertion that a later step overwrites an earlier exposure (lock the blackboard 
 - **`method_added` interplay.** The collision guard must not trip on the strategy's own generated
   `#call`, nor on inheritance. Pin the marker/guard mechanics in implementation with the subclass
   test above.
-- **Condition evaluation context.** Conditions read the parent's declared readers only; branching on
-  an undeclared intermediate is a `NameError` by design (locality). Documented, not worked around.
+- **Condition evaluation context.** Conditions read the parent's `expects` inputs and its own
+  methods only; branching on a prior step's exposure is a `NameError` (exposed readers live on
+  `Result`, not the action instance mid-run). Documented as a v1 limitation, not worked around —
+  revisit if a concrete need to branch on intermediates appears.
