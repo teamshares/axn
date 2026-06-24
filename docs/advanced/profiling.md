@@ -19,7 +19,7 @@ Add the Vernier gem to your Gemfile:
 
 ```ruby
 # Gemfile
-gem 'vernier', '~> 0.1'
+gem 'vernier', '~> 1.0'
 ```
 
 Then run:
@@ -92,7 +92,8 @@ class DataProcessing
   # Profile using a method
   use :vernier, if: :should_profile? # [!code focus]
 
-  expects :records, :record_count, :debug_mode, type: :boolean, default: false
+  expects :records, :record_count
+  expects :debug_mode, type: :boolean, default: false
 
   def should_profile?
     record_count > 1000 || debug_mode
@@ -163,7 +164,8 @@ class ComplexAction
   # Profile when debug mode is enabled OR when processing admin users
   use :vernier, if: -> { debug_mode || user.admin? } # [!code focus]
 
-  expects :user, :debug_mode, type: :boolean, default: false
+  expects :user
+  expects :debug_mode, type: :boolean, default: false
 
   def call
     # Complex logic
@@ -293,7 +295,11 @@ end
 If you see this error:
 
 ```
-LoadError: Vernier gem is not loaded. Add `gem 'vernier', '~> 0.1'` to your Gemfile to enable profiling.
+LoadError: Vernier profiler is not available. To use profiling, add 'vernier' to your Gemfile:
+
+  gem 'vernier', '~> 1.0'
+
+Then run: bundle install
 ```
 
 Make sure to:

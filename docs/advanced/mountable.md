@@ -15,7 +15,7 @@ This is in VERY EXPERIMENTAL use at Teamshares, but the API is still definitely 
 When you attach an action to a class, you get multiple ways to access it:
 
 1. **Direct method calls** on the class (e.g., `SomeClass.foo`), which depend on how you told it to mount
-3. **Namespace method calls** (e.g., `SomeClass::Axns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
+2. **Namespace method calls** (e.g., `SomeClass::Axns.foo`) which always call the underlying axn directly (i.e. returning Axn::Result like a normal SomeAxn.call)
 
 ## Host Types
 
@@ -391,7 +391,6 @@ Method names must be convertible to valid Ruby constant names:
 # ✅ Valid names
 mount_axn(:create_user)           # Creates CreateUser constant
 mount_axn(:process_payment)       # Creates ProcessPayment constant
-mount_axn(:send-email)            # Creates SendEmail constant (parameterized)
 mount_axn(:step_1)                # Creates Step1 constant
 
 # ❌ Invalid names
@@ -401,13 +400,14 @@ mount_axn(:123invalid)            # Cannot start with number
 
 ### Special Character Handling
 
-The system automatically handles special characters using `parameterize`:
+The system automatically handles special characters using `parameterize`. Pass such names as strings (they are not valid symbol literals):
 
 ```ruby
-mount_axn(:send-email)     # Becomes SendEmail constant
-mount_axn(:step 1)         # Becomes Step1 constant
-mount_axn(:user@domain)    # Becomes UserDomain constant
+mount_axn("step 1")         # Becomes Step1 constant
+mount_axn("user@domain")    # Becomes UserDomain constant
 ```
+
+Note that hyphens do not round-trip cleanly: `"send-email"` parameterizes to `"Send-email"`, which is not a valid constant name and will raise. Use underscores (`"send_email"`) instead.
 
 ## Best Practices
 
@@ -497,9 +497,7 @@ class OrderWorkflow
     expose :confirmation_number, "CONF-123"
   end
 
-  def call
-    # Steps execute automatically
-  end
+  # The steps run automatically — no `def call` needed (defining one would override them).
 end
 ```
 

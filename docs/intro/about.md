@@ -36,7 +36,7 @@ The core library provides many benefits for individual action calls, but also ai
 * Linear flow
   * A list of actions to execute in series
   * Each layer `expects` and `exposes` its own accessor set, but internally all the values are passed down the chain (i.e. actor C can accept something A exposed that B didn’t touch and knows nothing about).
-  * The top-level action must `expose` it’s own layer (effectively documenting public vs private exposures, which drastically eases refactoring)
+  * The top-level action must `expose` its own layer (effectively documenting public vs private exposures, which drastically eases refactoring)
 * Ad hoc (called arbitrarily from within other actions)
   * Use `call!` to ensure any failure from a nested service raises an exception, or manually check `result.ok?` and handle failures appropriately
   * Declare a base `error` to give a parent's failures a consistent headline that prefixes nested failures, or run children with `call` + `fail!` for per-call-site context

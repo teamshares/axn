@@ -187,15 +187,15 @@ step :validation, expects: [:input] do
   fail! "Input too short"
 end
 
-# If this step fails, the error message becomes: "validation step: Input too short"
+# If this step fails, the error message becomes: "validation: Input too short"
 ```
 
 ### Step Failure Propagation
 
 When a step fails:
-1. The step's exception is caught
+1. The step's failure or exception is caught
 2. The parent action fails with the prefixed error message
-3. The `on_exception` handlers are triggered appropriately
+3. The matching callbacks fire: a step that calls `fail!` settles as a failure (`on_failure`), while a step that raises an unhandled exception settles as an exception (`on_exception`). `on_error` fires in both cases.
 
 ### Exception Handling
 
@@ -206,7 +206,7 @@ step :risky_operation, expects: [:input] do
   raise StandardError, "Something went wrong with #{input}"
 end
 
-# The exception is caught and the error message becomes: "risky_operation step: Something went wrong with [input]"
+# The exception is caught and the error message becomes: "risky_operation: Something went wrong with [input]"
 ```
 
 
