@@ -79,7 +79,10 @@ module Axn
         field = config.field
         mode = config.mode
         base.class_eval do
-          expects config.expect_attr, default: {}, allow_blank: true
+          # `type: :params` accepts a plain Hash OR ActionController::Parameters, so it guards the
+          # caller-supplied attribute source without forcing a controller context (non-Rails/plain-Hash
+          # callers still pass). The {} default + allow_blank keep "nothing supplied" valid.
+          expects config.expect_attr, type: :params, default: {}, allow_blank: true
 
           # Declare the model field as an INPUT for update/upsert (skipped if the action already
           # declared it, e.g. a custom finder/options). NOT in create mode: a forced create
