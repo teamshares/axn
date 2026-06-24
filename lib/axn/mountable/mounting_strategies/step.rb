@@ -66,8 +66,13 @@ module Axn
           return if target.instance_variable_defined?(:@_axn_call_method_defined_for_steps)
 
           # A user-authored #call already on this class (steps declared after `def call`) collides
-          # with the orchestrator we're about to generate — fail at declaration (AGENTS.md).
-          raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action") if target.instance_methods(false).include?(:call)
+          # with the orchestrator we're about to generate — fail at declaration (AGENTS.md). Check
+          # private methods too: instance_methods(false) omits a `private def call`, which would
+          # otherwise be silently replaced (the reverse order is caught by method_added, which fires
+          # regardless of visibility).
+          if (target.instance_methods(false) + target.private_instance_methods(false)).include?(:call)
+            raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action")
+          end
 
           _define_steps_call(target)
           _install_call_collision_guard(target)

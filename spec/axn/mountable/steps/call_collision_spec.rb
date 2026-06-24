@@ -25,6 +25,16 @@ RSpec.describe "Steps + custom #call collision" do
     end.to raise_error(ArgumentError, /steps and a custom #call/i)
   end
 
+  it "raises when a private #call exists before steps are declared" do
+    step_child = child
+    expect do
+      build_axn do
+        private def call; end
+        step "a", step_child
+      end
+    end.to raise_error(ArgumentError, /steps and a custom #call/i)
+  end
+
   it "raises for the bulk steps(...) form too" do
     step_child = child
     expect do
