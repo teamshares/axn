@@ -60,8 +60,8 @@ Common options (same for `expects` and `exposes`):
 
 | Option | Meaning |
 | --- | --- |
-| `type:` | `is_a?` check. `type: :boolean` (no Ruby Boolean class; also defines a `field?` predicate), `type: :uuid`, `type: :params` (Hash or permitted `ActionController::Parameters`). Union: `type: [String, Symbol]`. |
-| `optional: true` | Don't fail if missing/nil/blank. **Preferred** spelling (≡ `allow_blank: true`). Without any allow-option, a presence check is added automatically. |
+| `type:` | `is_a?` check. `type: :boolean` (no Ruby Boolean class; also defines a `field?` predicate), `type: :uuid`, `type: :params` (a Hash or any `ActionController::Parameters`). Union: `type: [String, Symbol]`. |
+| `optional: true` | Don't fail when the field is missing or nil (≡ `allow_blank: true`); removes the auto presence check. **Preferred** spelling. Caveat: a *typed* field still type-checks a non-nil blank — `type: Hash, optional: true` still rejects `""` (a `type: String` field accepts it, since `"".is_a?(String)`). |
 | `allow_nil:` / `allow_blank:` | Finer-grained than `optional:`. |
 | `default:` | Used when the field is missing or explicitly `nil` (**not** for blank values). |
 | `sensitive: true` | Filter the value in logs / error reports / `inspect`. Accepts a proc/symbol for runtime decisions. |
@@ -241,7 +241,9 @@ sensitive values in `sensitive:` fields. Detail:
   ActiveRecord record, assign `model_params` (defaults to `params`), save in a `before` hook, expose
   it (as `result.model` or the field name). Validation failures become clean failures with
   `record.errors` (wires `fails_on ActiveRecord::RecordInvalid`); no global report. `call` runs
-  post-save. <https://teamshares.github.io/axn/strategies/model>.
+  post-save. `model_params` must return a plain Hash or **permitted** params (mass-assignment
+  protection — raw controller params raise; `params.permit(...)` or override `model_params`).
+  <https://teamshares.github.io/axn/strategies/model>.
 - **`use :form do … end`** — validate user input via an `Axn::FormObject` (full ActiveModel
   validations) before `call`; exposes `form`. For genuinely user-facing input.
   <https://teamshares.github.io/axn/strategies/form>.
