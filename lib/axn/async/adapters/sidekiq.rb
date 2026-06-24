@@ -75,7 +75,10 @@ module Axn
             else
               # Explicit async: the per-action subclass already carries the full config
               # (sidekiq_options + block). Only display_class needs to ride along per-enqueue.
-              job = const_get(:AxnSidekiqWorker, false).set(display_class: name)
+              # Inherited lookup (no `false`): a child that inherits async config without
+              # redeclaring reuses the parent's subclass — the generic perform(name, …) still
+              # runs THIS action by name. A child that redeclares gets its own (built in included).
+              job = const_get(:AxnSidekiqWorker).set(display_class: name)
             end
 
             # Process normalized async options if present
