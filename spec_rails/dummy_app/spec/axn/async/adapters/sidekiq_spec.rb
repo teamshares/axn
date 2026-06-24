@@ -251,4 +251,115 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       end
     end
   end
+
+  # Migrated from the deleted non-rails mock-based spec/axn/async/adapters/sidekiq_spec.rb
+  # ("async adapter exception handling" + "per-class async_exception_reporting override"
+  # shared examples). The old model performed the action directly (it WAS the Sidekiq::Job);
+  # here we dispatch through the real generic Worker: Worker#perform(action_name, kwargs).
+  describe "Worker dispatch exception handling" do
+    def dispatch(action, kwargs = {})
+      action.const_get(:AxnSidekiqWorker).new.perform(action.name, Axn::Internal::AsyncSerialization.serialize(kwargs))
+    end
+
+    let(:success_action) do
+      stub_const("WorkerDispatchSuccess", Class.new do
+        include Axn
+        async :sidekiq
+        expects :value
+        exposes :result_value
+        def call = expose(result_value: value * 2)
+      end)
+    end
+
+    let(:fail_action) do
+      stub_const("WorkerDispatchFail", Class.new do
+        include Axn
+        async :sidekiq
+        expects :should_fail
+        def call = (fail!("Business logic failure") if should_fail)
+      end)
+    end
+
+    let(:exception_action) do
+      stub_const("WorkerDispatchRaise", Class.new do
+        include Axn
+        async :sidekiq
+        def call = raise("Unexpected error")
+      end)
+    end
+
+    it "returns result on success" do
+      result = dispatch(success_action, value: 5)
+      expect(result).to be_ok
+      expect(result.result_value).to eq(10)
+    end
+
+    it "does not raise on Axn::Failure (business logic failure)" do
+      expect { dispatch(fail_action, should_fail: true) }.not_to raise_error
+
+      result = dispatch(fail_action, should_fail: true)
+      expect(result.outcome).to be_failure
+      expect(result.exception).to be_a(Axn::Failure)
+    end
+
+    it "re-raises unexpected exceptions for retry" do
+      expect { dispatch(exception_action) }.to raise_error(RuntimeError, "Unexpected error")
+    end
+  end
+
+  # Migrated from the deleted non-rails "per-class async_exception_reporting override" shared
+  # example. Per-attempt reporting routes through the executor, which reads the action's
+  # _async_exception_reporting and the CurrentRetryContext set by the Sidekiq middleware.
+  describe "per-class async_exception_reporting override (via Worker dispatch)" do
+    let(:retry_context) do
+      Axn::Async::RetryContext.new(adapter: :sidekiq, attempt: 5, max_retries: 25)
+    end
+
+    around do |example|
+      Axn::Async::CurrentRetryContext.with(retry_context) { example.run }
+    end
+
+    def dispatch_and_capture(action)
+      on_exception_called = false
+      original = Axn.config.method(:on_exception)
+      allow(Axn.config).to receive(:on_exception) do |*args, **kwargs|
+        on_exception_called = true
+        original.call(*args, **kwargs)
+      end
+      expect { action.const_get(:AxnSidekiqWorker).new.perform(action.name, {}) }.to raise_error(RuntimeError)
+      on_exception_called
+    end
+
+    it "does not trigger on_exception on intermediate attempts when per-class is :only_exhausted" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:every_attempt)
+      action = stub_const("WorkerDispatchOnlyExhausted", Class.new do
+        include Axn
+        async :sidekiq
+        async_exception_reporting :only_exhausted
+        def call = raise("Test error")
+      end)
+      expect(dispatch_and_capture(action)).to be false
+    end
+
+    it "triggers on_exception on every attempt when per-class is :every_attempt" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+      action = stub_const("WorkerDispatchEveryAttempt", Class.new do
+        include Axn
+        async :sidekiq
+        async_exception_reporting :every_attempt
+        def call = raise("Test error")
+      end)
+      expect(dispatch_and_capture(action)).to be true
+    end
+
+    it "falls back to global config when no per-class override" do
+      allow(Axn.config).to receive(:async_exception_reporting).and_return(:only_exhausted)
+      action = stub_const("WorkerDispatchNoOverride", Class.new do
+        include Axn
+        async :sidekiq
+        def call = raise("Test error")
+      end)
+      expect(dispatch_and_capture(action)).to be false
+    end
+  end
 end
