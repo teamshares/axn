@@ -75,11 +75,6 @@ module Axn
 
           _validate_user_facing!(user_facing)
           raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
-          # A shape block validates nested members, which `ShapeValidator` reports under this same
-          # top-level attribute — so reclassifying the field user-facing would wrongly turn a
-          # malformed-member (structural) failure into a user-facing one. Nested checks stay
-          # dev-facing, exactly like subfields, so reject the combination (top-level fields only).
-          raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)" if user_facing && block
 
           reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
           # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
@@ -97,6 +92,16 @@ module Axn
           end
 
           validations[:shape] = _build_shape(fields, validations:, &block) if block
+
+          # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
+          # validates nested members, which `ShapeValidator` reports under this same top-level
+          # attribute — so reclassifying the field user-facing would wrongly turn a malformed-member
+          # (structural) failure into a user-facing one. Nested checks stay dev-facing, exactly like
+          # subfields, so reject the combination (top-level fields only). Keyed on the resolved
+          # `validations[:shape]`, not the block, so a direct `shape:` kwarg is caught too.
+          if user_facing && validations[:shape]
+            raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
+          end
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, define_readers: true, user_facing:, **validations).tap do |configs|

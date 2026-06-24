@@ -336,6 +336,17 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
     end
 
+    it "rejects a shape passed as a raw shape: kwarg (not just the block form)" do
+      # The guard keys on the resolved validations[:shape], so a direct shape: option is caught too —
+      # ShapeValidator reports member failures under the same attribute either way.
+      expect do
+        build_axn do
+          expects :payload, type: Hash, user_facing: true, shape: { members: [] }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
+    end
+
     it "rejects a subfield declared on a user_facing parent's alias" do
       expect do
         build_axn do
