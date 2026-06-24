@@ -66,6 +66,12 @@ module Axn
 
       _ensure_async_exception_reporting_registered_for_adapter(adapter)
       _apply_async_to_enqueue_all_orchestrator
+
+      # Build the dedicated Sidekiq default worker now (at boot, in every process) so it exists
+      # and carries the default's config/block when a globally-defaulted action is enqueued or run.
+      return unless @default_async_adapter == :sidekiq && defined?(Axn::Async::Adapters::Sidekiq)
+
+      Axn::Async::Adapters::Sidekiq.configure_default_worker!(config: @default_async_config, block: @default_async_config_block)
     end
 
     # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async)

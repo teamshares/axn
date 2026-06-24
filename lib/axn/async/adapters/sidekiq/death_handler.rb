@@ -19,8 +19,18 @@ module Axn
         module DeathHandler
           class << self
             def call(job, exception)
-              # Only handle Axn jobs
-              klass = job["class"].to_s.safe_constantize
+              # Resolve the underlying Axn action. With the generic Worker the action class
+              # name + kwargs live in job["args"]; legacy direct-Sidekiq::Job actions put the
+              # action in job["class"] with kwargs as the first arg.
+              job_klass = job["class"].to_s.safe_constantize
+              action_class_name, action_args =
+                if job_klass && job_klass <= Worker
+                  [job["args"]&.first, job["args"]&.dig(1)]
+                else
+                  [job["class"], job["args"]&.first]
+                end
+
+              klass = action_class_name.to_s.safe_constantize
               return unless klass&.included_modules&.include?(Axn::Core)
 
               # Use per-class override if set, otherwise fall back to global config
@@ -33,7 +43,7 @@ module Axn
               # For :only_exhausted, we need to report now (only time)
               return unless retry_context.should_trigger_on_exception?(config_mode, from_exhaustion_handler: true)
 
-              job_args = (job["args"]&.first || {}).symbolize_keys
+              job_args = (action_args || {}).symbolize_keys
 
               ExceptionReporting.trigger_on_exception(
                 exception:,

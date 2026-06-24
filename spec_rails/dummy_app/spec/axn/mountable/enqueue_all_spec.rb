@@ -16,6 +16,27 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
     Axn.config.set_default_async(false)
   end
 
+  describe "enqueue_all on an action relying on the global default (no explicit async)" do
+    let(:default_action) do
+      stub_const("EnqueueAllGlobalDefaultAction", Class.new do
+        include Axn
+        expects :item
+        enqueues_each :item, from: -> { [1, 2, 3] }
+        def call = nil
+      end)
+    end
+
+    it "applies the default via the shared path (sets _async_via_default, no orphan per-action subclass)" do
+      Axn.config.set_default_async(:sidekiq)
+      default_action.enqueue_all
+
+      # Must route through the dedicated default worker — a per-action subclass here couldn't be
+      # reconstructed in a fresh worker (the action body never re-runs `async`).
+      expect(default_action._async_via_default).to be(true)
+      expect(default_action.const_defined?(:AxnSidekiqWorker, false)).to be(false)
+    end
+  end
+
   describe "core call behavior" do
     it "foreground" do
       expect do
@@ -45,12 +66,15 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       expect(result).to be_a(String) # Job ID
       expect(Sidekiq::Queues["default"].size).to eq(1)
 
-      # Verify the job is the shared EnqueueAllOrchestrator
+      # The orchestrator runs via the generic Sidekiq Worker subclass; the job carries the
+      # orchestrator's class name + serialized kwargs as args (action_class_name, kwargs).
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
-      expect(job["args"].size).to eq(1) # single kwargs payload, not double-wrapped
-      expect(job["args"].first).to include("target_class_name" => "Actions::EnqueueAll::Tester")
-      expect(job["args"].first["static_args"]).to be_empty.or eq("_aj_symbol_keys" => [])
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator::AxnSidekiqWorker")
+      expect(job["args"].size).to eq(2)
+      expect(job["args"].first).to eq("Axn::Async::EnqueueAllOrchestrator")
+      kwargs = job["args"].last
+      expect(kwargs).to include("target_class_name" => "Actions::EnqueueAll::Tester")
+      expect(kwargs["static_args"]).to be_empty.or eq("_aj_symbol_keys" => [])
     end
 
     it "iterates and enqueues individual jobs when processed inline" do
@@ -70,7 +94,9 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
 
       # Should only enqueue the trigger, not individual jobs
       expect(Sidekiq::Queues["default"].size).to eq(1)
-      expect(Sidekiq::Queues["default"].first["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
+      job = Sidekiq::Queues["default"].first
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator::AxnSidekiqWorker")
+      expect(job["args"].first).to eq("Axn::Async::EnqueueAllOrchestrator")
     end
 
     describe "error handling - validation happens upfront" do
@@ -145,17 +171,20 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       end
 
       it "swallows filter block exception and skips item" do
-        action_class = Class.new do
+        # Named so the generic Sidekiq Worker can constantize it when each item enqueues.
+        action_class = stub_const("Actions::EnqueueAll::FilterExplodes", Class.new do
           include Axn
           async :sidekiq
           expects :item
+
+          def call; end
 
           enqueues_each :item, from: -> { [1, 2, 3] } do |item|
             raise "filter exploded for #{item}" if item == 2
 
             true
           end
-        end
+        end)
 
         # Filter block errors are swallowed - should not raise
         expect do
@@ -237,12 +266,14 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
       # One orchestrator job enqueued (the fan-out itself happens when it runs).
       expect(Sidekiq::Queues["default"].size).to eq(1)
       job = Sidekiq::Queues["default"].first
-      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator")
+      expect(job["class"]).to eq("Axn::Async::EnqueueAllOrchestrator::AxnSidekiqWorker")
+      expect(job["args"].first).to eq("Axn::Async::EnqueueAllOrchestrator")
 
       # Run the orchestrator inline: it deserializes static_args and fans out the per-number jobs,
       # which (still inline) execute and capture the restored static arg types.
+      # The generic Worker perform takes (action_class_name, kwargs) — splat the two args.
       Sidekiq::Testing.inline! do
-        job["class"].constantize.send(:new).perform(job["args"].first)
+        job["class"].constantize.send(:new).perform(*job["args"])
       end
 
       captured = action_class.captured

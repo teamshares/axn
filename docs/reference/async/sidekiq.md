@@ -23,6 +23,10 @@ end
 SendEmailAction.call_async(user: user, template: "welcome")
 ```
 
+::: info How actions map to Sidekiq jobs
+The action class is **not** itself a `Sidekiq::Job`. Axn runs every action through a generic worker, so an explicitly-configured action enqueues a per-action `SendEmailAction::AxnSidekiqWorker` (a `Sidekiq::Job` subclass carrying your `queue`/`retry`/options), and actions riding the [global default](#global-default) enqueue a dedicated `Axn::Async::Adapters::Sidekiq::DefaultWorker` that carries the default's `queue`/`retry`/options and block. The Sidekiq Web UI still shows the real action name (via `display_class`). Always enqueue with `call_async` — `SendEmailAction.perform_async` / `sidekiq_options` are not defined on the action itself.
+:::
+
 ## Automatic Configuration
 
 When you set `async_exception_reporting` to `:first_and_exhausted` or `:only_exhausted` in your Axn configuration, Axn **automatically registers** the required Sidekiq middleware and death handler:

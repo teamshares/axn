@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
-require "axn/async/adapters/sidekiq/death_handler"
-require "axn/async/adapters/sidekiq/retry_helpers"
-require "axn/async/exception_reporting"
-
-RSpec.describe Axn::Async::Adapters::Sidekiq::DeathHandler do
+# Recreated in the Rails dummy app (real Sidekiq + the generic Worker) from the deleted
+# non-rails spec/axn/async/adapters/sidekiq/death_handler_spec.rb. The death handler now
+# resolves the underlying Axn action from job["args"] (action_class_name, kwargs) when
+# job["class"] is a generic Worker subclass — so the job hashes here use the NEW shape.
+RSpec.describe Axn::Async::Adapters::Sidekiq::DeathHandler, :sidekiq do
   # Sidekiq calls death handlers after incrementing retry_count one final time.
   # For retry: 3 (4 total executions), Sidekiq sets retry_count = 3 before the death
   # handler fires, even though the last actual execution ran with retry_count = 2.
 
   let(:action_class) do
     klass = build_axn do
+      async :sidekiq
+
       def call
         raise "intentional failure"
       end
@@ -21,10 +23,12 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::DeathHandler do
 
   let(:exception) { RuntimeError.new("intentional failure") }
 
+  # New job shape: the generic Worker subclass is the Sidekiq job class, and the action
+  # class name + kwargs ride along in args.
   def job_for(retry_count:, retry_opt:, jid: "test-jid")
     hash = {
-      "class" => "TestAxnDeathHandlerAction",
-      "args" => [{}],
+      "class" => "TestAxnDeathHandlerAction::AxnSidekiqWorker",
+      "args" => ["TestAxnDeathHandlerAction", {}],
       "retry" => retry_opt,
       "jid" => jid,
       "queue" => "default",
@@ -33,7 +37,7 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::DeathHandler do
     hash
   end
 
-  before { action_class } # ensure stub_const fires
+  before { action_class } # ensure stub_const fires (defines the Worker subclass)
 
   describe ".call" do
     context "with :first_and_exhausted mode (default)" do

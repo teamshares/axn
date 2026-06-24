@@ -93,7 +93,8 @@ RSpec.describe "Axn::Async async interface" do
       end
 
       it "applies Sidekiq configuration" do
-        expect(action_class.sidekiq_options_hash).to include("queue" => "high_priority", "retry" => 5)
+        # Per-action sidekiq options now live on the generated Worker subclass.
+        expect(action_class.const_get(:AxnSidekiqWorker).get_sidekiq_options).to include("queue" => "high_priority", "retry" => 5)
       end
     end
   end
