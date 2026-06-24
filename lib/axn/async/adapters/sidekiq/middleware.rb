@@ -20,8 +20,9 @@ module Axn
         #
         class Middleware
           def call(worker, job, _queue, &)
-            # Only set up context for Axn workers
-            return yield unless worker.class.included_modules.include?(Axn::Core)
+            # Only set up context for Axn jobs: the generic Worker, or (legacy) an action
+            # that included Sidekiq::Job directly.
+            return yield unless worker.is_a?(Worker) || worker.class.included_modules.include?(Axn::Core)
 
             context = RetryHelpers.build_retry_context(job)
             CurrentRetryContext.with(context, &)

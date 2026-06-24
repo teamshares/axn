@@ -2,6 +2,11 @@
 
 require_relative "sidekiq/auto_configure"
 
+# Define the generic Worker whenever Sidekiq is loaded (so it exists in worker processes
+# that dispatch by class name), but stay loadable when Sidekiq is absent — this adapter
+# file is required unconditionally by the adapter registry.
+require_relative "sidekiq/worker" if defined?(Sidekiq::Job)
+
 module Axn
   module Async
     class Adapters
@@ -18,22 +23,18 @@ module Axn
           # Use Sidekiq::Job if available (Sidekiq 7+), otherwise error
           raise LoadError, "Sidekiq::Job is not available. Please check your Sidekiq version." unless defined?(::Sidekiq::Job)
 
+          # Safety net for the "axn loaded before sidekiq" ordering: ensure the Worker const
+          # exists now that Sidekiq is definitely available (idempotent).
+          require_relative "sidekiq/worker"
+
           # Ensure middleware and death handler are registered for current async_exception_reporting
           # (e.g. when async :sidekiq is used without ever setting async_exception_reporting).
           AutoConfigure.ensure_registered_for_current_config!
 
-          include ::Sidekiq::Job
-
-          # Sidekiq's processor calls .new on the worker class from outside the class hierarchy
-          # (see Sidekiq::Processor#dispatch which does `klass.new`).
-          # Since Axn::Core makes :new private, we need to restore it for Sidekiq workers.
-          public_class_method :new
-
-          # Apply configuration block if present
-          class_eval(&_async_config_block) if _async_config_block
-
-          # Apply kwargs configuration if present
-          sidekiq_options(**_async_config) if _async_config&.any?
+          # NOTE: the action is intentionally NOT turned into a Sidekiq::Job. A single generic
+          # Worker (see worker.rb) runs every action by name, so the action class stays a plain
+          # Axn action (private `new`, no Sidekiq class surface). Per-job options (queue, retry,
+          # …) are applied at enqueue time via Worker.set(**_async_config).
         end
 
         class_methods do
@@ -42,43 +43,30 @@ module Axn
           # Implements adapter-specific enqueueing logic for Sidekiq.
           # Note: Adapters must implement _enqueue_async_job and must NOT override call_async.
           def _enqueue_async_job(kwargs)
+            raise ArgumentError, "Cannot enqueue an anonymous Axn action to Sidekiq; assign it to a constant first." if name.nil?
+
             # Extract and normalize _async options (removes _async from kwargs)
             normalized_options = _extract_and_normalize_async_options(kwargs)
 
             # Convert kwargs to string keys and handle GlobalID conversion
             job_kwargs = Axn::Internal::AsyncSerialization.serialize(kwargs)
 
+            # Per-action sidekiq options (queue/retry/…) ride along as enqueue-time .set options.
+            # display_class keeps the Sidekiq Web UI showing the real action, not the generic Worker.
+            setter_opts = (_async_config || {}).merge(display_class: name)
+            job = Worker.set(**setter_opts)
+
             # Process normalized async options if present
             if normalized_options
               if normalized_options["wait_until"]
-                return perform_at(normalized_options["wait_until"], job_kwargs)
+                return job.perform_at(normalized_options["wait_until"], name, job_kwargs)
               elsif normalized_options["wait"]
-                return perform_in(normalized_options["wait"], job_kwargs)
+                return job.perform_in(normalized_options["wait"], name, job_kwargs)
               end
             end
 
-            perform_async(job_kwargs)
+            job.perform_async(name, job_kwargs)
           end
-        end
-
-        def perform(*args)
-          context = Axn::Internal::AsyncSerialization.deserialize(args.first)
-
-          # Validate Sidekiq configuration once on first job execution in a real server context.
-          # Skip validation when:
-          # - Already validated
-          # - In Sidekiq test mode (inline/fake)
-          # - In a test environment (where Sidekiq may be stubbed)
-          AutoConfigure.validate_configuration!(Axn.config.async_exception_reporting) unless AutoConfigure.skip_validation?
-
-          result = self.class.call(**context)
-
-          # Only re-raise unexpected exceptions so Sidekiq can retry.
-          # Axn::Failure is a deliberate business decision (from fail!), not a transient error.
-          # Per Sidekiq's ethos: "Sidekiq retries are for unexpected errors."
-          raise result.exception if result.outcome.exception?
-
-          result
         end
       end
     end
