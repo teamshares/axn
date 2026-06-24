@@ -93,7 +93,11 @@ RSpec.describe Axn::Configuration do
       config.set_enqueue_all_async(:sidekiq)
 
       expect(Axn::Async::EnqueueAllOrchestrator._async_adapter).to eq(:sidekiq)
-      expect(Axn::Async::EnqueueAllOrchestrator.ancestors).to include(Sidekiq::Job)
+      # The orchestrator is no longer a Sidekiq::Job itself; its per-action generic Worker
+      # subclass is the Sidekiq::Job that runs it.
+      worker = Axn::Async::EnqueueAllOrchestrator.const_get(:AxnSidekiqWorker)
+      expect(worker.ancestors).to include(Sidekiq::Job)
+      expect(worker).to be < Axn::Async::Adapters::Sidekiq::Worker
     end
   end
 end

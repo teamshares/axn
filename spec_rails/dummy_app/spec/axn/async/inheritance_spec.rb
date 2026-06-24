@@ -14,8 +14,12 @@ RSpec.describe "Axn::Async inheritance" do
 
   shared_examples "inherits sidekiq configuration" do |queue, retry_count|
     it "inherits parent's sidekiq configuration" do
-      expect(child_class.sidekiq_options_hash["queue"]).to eq(queue)
-      expect(child_class.sidekiq_options_hash["retry"]).to eq(retry_count)
+      # Sidekiq options now live on the per-action Worker subclass. A child that inherits
+      # async config without redeclaring resolves (via inherited const lookup) to the
+      # parent's AxnSidekiqWorker subclass.
+      options = child_class.const_get(:AxnSidekiqWorker).get_sidekiq_options
+      expect(options["queue"]).to eq(queue)
+      expect(options["retry"]).to eq(retry_count)
     end
   end
 
@@ -30,18 +34,15 @@ RSpec.describe "Axn::Async inheritance" do
 
   shared_examples "child proxy calls child method" do |adapter_type|
     it "child proxy calls child's call method, not parent's" do
-      # Create a spy to track which call method gets executed
-      child_instance = child_class.send(:new, name: "World")
-      allow(child_class).to receive(:call).and_call_original
-
       # Mock the call method to verify it's called on the child class
       # Note: adapters now call `call` (not `call!`) to handle failures correctly
       mock_result = instance_double(Axn::Result, outcome: instance_double("Outcome", exception?: false))
       expect(child_class).to receive(:call).with(name: "World").and_return(mock_result)
 
       if adapter_type == :sidekiq
-        # Execute the perform method (this is what Sidekiq would call)
-        result = child_instance.perform(name: "World")
+        # The generic Worker dispatches by class name: perform(action_name, kwargs).
+        # child_class is named via stub_const in the calling context.
+        result = child_class.const_get(:AxnSidekiqWorker).new.perform(child_class.name, { "name" => "World" })
       else
         # For ActiveJob, trigger proxy creation and execute perform
         child_class.call_async(name: "World")
@@ -56,18 +57,15 @@ RSpec.describe "Axn::Async inheritance" do
 
   shared_examples "parent proxy calls parent method" do |adapter_type|
     it "parent proxy calls parent's call method" do
-      # Create a spy to track which call method gets executed
-      parent_instance = parent_class.send(:new, name: "World")
-      allow(parent_class).to receive(:call).and_call_original
-
       # Mock the call method to verify it's called on the parent class
       # Note: adapters now call `call` (not `call!`) to handle failures correctly
       mock_result = instance_double(Axn::Result, outcome: instance_double("Outcome", exception?: false))
       expect(parent_class).to receive(:call).with(name: "World").and_return(mock_result)
 
       if adapter_type == :sidekiq
-        # Execute the perform method (this is what Sidekiq would call)
-        result = parent_instance.perform(name: "World")
+        # The generic Worker dispatches by class name: perform(action_name, kwargs).
+        # parent_class is named via stub_const in the calling context.
+        result = parent_class.const_get(:AxnSidekiqWorker).new.perform(parent_class.name, { "name" => "World" })
       else
         # For ActiveJob, trigger proxy creation and execute perform
         parent_class.call_async(name: "World")
@@ -81,7 +79,7 @@ RSpec.describe "Axn::Async inheritance" do
   end
   context "when parent class has async :sidekiq" do
     let(:parent_class) do
-      build_axn do
+      klass = build_axn do
         async :sidekiq do
           sidekiq_options queue: "parent_queue", retry: 3
         end
@@ -92,12 +90,15 @@ RSpec.describe "Axn::Async inheritance" do
           "Hello, #{name}!"
         end
       end
+      # Named so the generic Sidekiq Worker can constantize it when enqueuing/dispatching.
+      stub_const("SidekiqInheritanceParent", klass)
     end
 
     let(:child_class) do
-      Class.new(parent_class) do
+      klass = Class.new(parent_class) do
         # No async configuration - should inherit parent's
       end
+      stub_const("SidekiqInheritanceChild", klass)
     end
 
     include_examples "inherits async configuration", :sidekiq
@@ -180,8 +181,8 @@ RSpec.describe "Axn::Async inheritance" do
     end
 
     it "inherits parent's sidekiq methods but uses child's activejob configuration" do
-      # The child class inherits parent's sidekiq methods (Ruby inheritance)
-      expect(child_class).to respond_to(:sidekiq_options_hash)
+      # The child class inherits the parent's Sidekiq Worker subclass (Ruby const inheritance)
+      expect(child_class.const_get(:AxnSidekiqWorker)).to be < Axn::Async::Adapters::Sidekiq::Worker
 
       # But it uses the child's activejob configuration
       expect(child_class._async_adapter).to eq(:active_job)
@@ -295,7 +296,7 @@ RSpec.describe "Axn::Async inheritance" do
 
   context "Sidekiq inheritance behavior" do
     let(:parent_class) do
-      build_axn do
+      klass = build_axn do
         async :sidekiq do
           sidekiq_options queue: "parent_queue", retry: 3
         end
@@ -306,15 +307,18 @@ RSpec.describe "Axn::Async inheritance" do
           "Parent: Hello, #{name}!"
         end
       end
+      # Named so the generic Sidekiq Worker can constantize it when dispatching.
+      stub_const("SidekiqBehaviorParent", klass)
     end
 
     let(:child_class) do
-      Class.new(parent_class) do
+      klass = Class.new(parent_class) do
         # Override the call method
         def call
           "Child: Hello, #{name}!"
         end
       end
+      stub_const("SidekiqBehaviorChild", klass)
     end
 
     include_examples "inherits sidekiq configuration", "parent_queue", 3
@@ -337,8 +341,10 @@ RSpec.describe "Axn::Async inheritance" do
         end
       end
 
-      expect(child_with_own_config.sidekiq_options_hash["queue"]).to eq("child_queue")
-      expect(child_with_own_config.sidekiq_options_hash["retry"]).to eq(5)
+      # Per-action sidekiq options now live on the generated Worker subclass.
+      options = child_with_own_config.const_get(:AxnSidekiqWorker).get_sidekiq_options
+      expect(options["queue"]).to eq("child_queue")
+      expect(options["retry"]).to eq(5)
     end
   end
 
@@ -404,12 +410,14 @@ RSpec.describe "Axn::Async inheritance" do
           "Override: Hello, #{name}!"
         end
       end
+      # Named so the generic Sidekiq Worker can constantize it when enqueuing.
+      stub_const("SidekiqDefaultOverrideChild", child_with_override)
 
       # Trigger configuration
       child_with_override.call_async(name: "Test")
 
       expect(child_with_override._async_adapter).to eq(:sidekiq)
-      expect(child_with_override.sidekiq_options_hash["queue"]).to eq("override_queue")
+      expect(child_with_override.const_get(:AxnSidekiqWorker).get_sidekiq_options["queue"]).to eq("override_queue")
     end
   end
 end
