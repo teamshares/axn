@@ -45,6 +45,21 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
+  describe "string field names" do
+    it "reclassifies a string-declared field, matching the symbolized failing attribute" do
+      # ActiveModel reports the failing attribute as :note, but `expects "note"` stores config.field
+      # as the string "note" — the user_facing opt-in must be normalized to the same key or the
+      # reclassification misses and the field wrongly stays in the exception bucket.
+      action = build_axn do
+        expects "note", user_facing: true
+        def call = nil
+      end
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Note can't be blank")
+    end
+  end
+
   describe "the field stays required (unlike optional: true)" do
     let(:action) do
       build_axn do
