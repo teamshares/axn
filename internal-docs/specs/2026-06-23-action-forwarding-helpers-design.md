@@ -157,27 +157,33 @@ the action's own readers see:
 ```ruby
 def inputs
   self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
-    next unless _inbound_field_provided?(field)        # wire key OR (model: field) its <field>_id
-    hash[field] = internal_context.public_send(field)  # resolved reader value, keyed by wire key
+    value = internal_context.public_send(field)  # resolved reader value, keyed by wire key
+    hash[field] = value unless value.nil?
   end
 end
 ```
 
 Values are read **through `internal_context`** (the inbound facade), not raw `provided_data`, so
-`Child.call(**inputs)` forwards the same view the parent's readers have.
+`Child.call(**inputs)` forwards the same view the parent's readers have. Presence is decided by the
+**resolved value being non-`nil`**, not by a raw `provided_data.key?`.
 
 ### Semantics & rules
 
 - **Declared inbound only.** Undeclared passthrough keys in `provided_data` are *not* included, so
   they never leak into children.
-- **Resolved values.** Defaults and preprocessing are applied. Critically, a `model:` field is
-  forwarded as its **resolved record**, not the raw input — the record lives only inside the reader,
-  never in `provided_data`. This is why reading must go through `internal_context`: a field supplied
-  by `<field>_id` (the id-based resolution path) has no `<field>` key in `provided_data` at all, so a
-  raw-`provided_data` read would drop it entirely and a same-contract child would receive nothing.
-- **Absent optional fields are omitted** (not present as `nil` keys). Presence counts the `<field>_id`
-  companion for `model:` fields, so a by-id model input is forwarded while a genuinely absent optional
-  is skipped.
+- **Resolved values.** Defaults and preprocessing are applied. A `model:` field is forwarded as its
+  **resolved record**, not the raw input — the record lives only inside the reader, never in
+  `provided_data`. This is why reading goes through `internal_context`: a field supplied by
+  `<field>_id` (the id-based resolution path) has no `<field>` key in `provided_data` at all, so a
+  raw-`provided_data` read would drop it and a same-contract child would receive nothing.
+- **Fields whose resolved value is `nil` are omitted** (never forwarded as `field: nil`). This keeps
+  forwarding consistent across the ways a value can be absent: a genuinely-unprovided optional, a
+  `model:` field whose id resolves to nothing, and an optional `preprocess` that maps `nil → nil` all
+  drop out — so a nested action still applies its own absent/default handling. A non-`nil` resolved
+  value *is* forwarded even when framework-synthesized (a `default:`, or a `preprocess` mapping
+  `nil → ""`): that value is genuinely what the parent's reader sees, exactly like a `default:`. A
+  facade that instead wants the child's own absence-handling drops the field explicitly:
+  `inputs.except(:role)`.
 - **Returns a plain `Hash`.** Subsetting needs no special API: `inputs.except(:role)`,
   `inputs.slice(:user, :company)`. Injection/override is just merge-at-call-site:
   `Child.call(**inputs.except(:role), role: ROLE)`.

@@ -22,6 +22,30 @@ RSpec.describe "#inputs reader" do
     expect(action.call(a: 2).captured).to eq(a: 20)
   end
 
+  it "forwards a preprocess result for an omitted optional, but omits one that resolves to nil" do
+    # apply_inbound_preprocessing! runs preprocess on the omitted field's nil and writes the result
+    # back into provided_data. A non-nil result (here "") is a real resolved value the reader sees,
+    # so it forwards; a nil result must NOT forward as `field: nil` (it would clobber a child's default).
+    action = build_axn do
+      expects :role, optional: true, preprocess: ->(v) { v.to_s.strip } # nil -> ""
+      expects :note, optional: true, preprocess: ->(v) { v&.strip }     # nil -> nil
+      exposes :captured, optional: true
+      def call = expose(captured: inputs)
+    end
+
+    expect(action.call.captured).to eq(role: "")
+  end
+
+  it "forwards a boolean false value (non-nil, not falsy-filtered)" do
+    action = build_axn do
+      expects :flag, optional: true
+      exposes :captured, optional: true
+      def call = expose(captured: inputs)
+    end
+
+    expect(action.call(flag: false).captured).to eq(flag: false)
+  end
+
   it "excludes undeclared passthrough keys" do
     action = build_axn do
       expects :a

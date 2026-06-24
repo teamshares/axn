@@ -500,14 +500,14 @@ module Axn
 
         # Resolved declared-inbound fields as a Hash (defaults/preprocess applied, model: fields
         # resolved to their record), keyed by wire key. Splat into a nested action to forward
-        # inputs: `Child.call(**inputs, override: x)`. Reads through internal_context so a model:
-        # field supplied by `<field>_id` forwards the resolved record (the record lives only in the
-        # reader, never in provided_data); absent optional fields are omitted.
+        # inputs: `Child.call(**inputs, override: x)`. Reads through internal_context (not raw
+        # provided_data) so a model: field supplied by `<field>_id` forwards the resolved record —
+        # the record lives only in the reader. Fields whose resolved value is nil are omitted, so a
+        # nested action still applies its own absent/default handling for them.
         def inputs
           self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
-            next unless _inbound_field_provided?(field)
-
-            hash[field] = internal_context.public_send(field)
+            value = internal_context.public_send(field)
+            hash[field] = value unless value.nil?
           end
         end
 
@@ -561,18 +561,6 @@ module Axn
         end
 
         private
-
-        # A declared inbound field counts as "provided" when its wire key is in provided_data, or —
-        # for a model: field — when its `<field>_id` companion is (the id-based resolution path).
-        def _inbound_field_provided?(field)
-          return true if @__context.provided_data.key?(field)
-
-          _model_backed_input?(field) && @__context.provided_data.key?(:"#{field}_id")
-        end
-
-        def _model_backed_input?(field)
-          self.class.internal_field_configs.any? { |config| config.field == field && config.validations.key?(:model) }
-        end
 
         # Forward the intersection of a nested result's declared exposures and this action's own
         # declared exposures. Reads declared fields (static contract) so it is safe on a failed
