@@ -372,11 +372,10 @@ module Axn
     end
 
     def _user_facing_configs(configs)
-      # Key by the symbolized field name so lookups match `failing` (built from
-      # `err.attribute.to_sym`): `expects "note"` stores `config.field` as the string "note", but
-      # ActiveModel reports the failing attribute as :note.
+      # config.field is symbol-keyed at declaration (PRO-2790), so it matches `failing` (built from
+      # `err.attribute.to_sym`) directly — no normalization needed.
       configs.each_with_object({}) do |config, hash|
-        hash[config.field.to_sym] = config.user_facing if config.user_facing
+        hash[config.field] = config.user_facing if config.user_facing
       end
     end
 
