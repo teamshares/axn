@@ -104,10 +104,13 @@ RSpec.describe "Sidekiq generic worker (spike)" do
       end)
     end
 
-    it "uses the shared Worker (no per-action subclass to reconstruct in a worker)" do
+    it "uses the dedicated default worker (no per-action subclass to reconstruct in a worker)" do
       Sidekiq::Testing.fake! do
         action.call_async(name: "Grace")
-        expect(shared_worker.jobs.last["args"].first).to eq("SpikeGlobalDefaultAction")
+        job = Axn::Async::Adapters::Sidekiq::DefaultWorker.jobs.last
+        expect(job["args"].first).to eq("SpikeGlobalDefaultAction")
+        expect(job["display_class"]).to eq("SpikeGlobalDefaultAction")
+        expect(Axn::Async::Adapters::Sidekiq::DefaultWorker).to be < shared_worker
         expect(action.const_defined?(:AxnSidekiqWorker, false)).to be(false)
       end
     end
@@ -116,6 +119,38 @@ RSpec.describe "Sidekiq generic worker (spike)" do
       action # force stub_const
       Sidekiq::Testing.inline! { action.call_async(name: "Grace") }
       expect(SPIKE_SINK).to eq(["Grace"])
+    end
+  end
+
+  describe "global default block config (applies to the default worker)" do
+    around do |ex|
+      original = Axn.config._default_async_adapter
+      Axn.config.set_default_async(:sidekiq, queue: "kw_queue") { sidekiq_options(retry: 7, dead: false) }
+      ex.run
+    ensure
+      Axn.config.set_default_async(original || false)
+    end
+
+    it "carries the default block's options (not just kwargs) onto the default worker" do
+      opts = Axn::Async::Adapters::Sidekiq::DefaultWorker.get_sidekiq_options
+      expect(opts).to include("queue" => "kw_queue", "retry" => 7, "dead" => false)
+    end
+  end
+
+  describe "explicit kwargs override block options (precedence preserved)" do
+    let(:action) do
+      stub_const("SpikePrecedenceAction", Class.new do
+        include Axn
+        async :sidekiq, queue: "kwarg_wins" do
+          sidekiq_options queue: "block_loses"
+        end
+        expects :name
+        def call = nil
+      end)
+    end
+
+    it "lets the keyword queue win over the block" do
+      expect(action.const_get(:AxnSidekiqWorker).get_sidekiq_options["queue"]).to eq("kwarg_wins")
     end
   end
 

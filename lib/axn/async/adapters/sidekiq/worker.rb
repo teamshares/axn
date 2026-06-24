@@ -17,7 +17,13 @@ module Axn
         # the action's `new` stay private AND makes the "rely on the global default in a
         # fresh worker process" path work without any lazy reconfiguration.
         class Worker
-          include ::Sidekiq::Job
+          # Mixed in lazily so the const is definable regardless of axn/sidekiq load order
+          # (the adapter file is required unconditionally by the registry). Sidekiq is always
+          # present by the time the worker is actually enqueued or dispatched.
+          def self._ensure_sidekiq_job!
+            include(::Sidekiq::Job) unless include?(::Sidekiq::Job)
+          end
+          _ensure_sidekiq_job! if defined?(::Sidekiq::Job)
 
           def perform(action_class_name, job_kwargs = {})
             # Validate Sidekiq config once on first real execution (skipped in test modes).
