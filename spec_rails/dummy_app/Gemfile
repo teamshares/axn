@@ -23,6 +23,10 @@ gem "bootsnap", ">= 1.4.4", require: false
 group :development, :test do
   gem "pry-byebug", "3.12.0"
   gem "sidekiq", "~> 7" # Background job processor -- when update, ensure `process_context_to_sidekiq_args` is still compatible
+  # Sidekiq 7 calls connection_pool's `pop` positionally; connection_pool 3 made it keyword-only,
+  # which breaks Sidekiq 7's scheduled poller against a real Redis. Sidekiq 7 declares no upper
+  # bound, so cap it here. (Drop when bumping to Sidekiq 8, which supports connection_pool 3.)
+  gem "connection_pool", "< 3"
 end
 
 group :development do
