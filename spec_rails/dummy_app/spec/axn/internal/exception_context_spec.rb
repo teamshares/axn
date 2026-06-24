@@ -17,7 +17,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(user:)
+      instance = TestAction.send(:new, user:)
       result = described_class.build(action: instance)
 
       expect(result[:inputs][:user]).to eq(user.to_global_id.to_s)
@@ -36,7 +36,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(params:)
+      instance = TestAction.send(:new, params:)
       result = described_class.build(action: instance)
 
       expect(result[:inputs][:params]).to eq({ "name" => "Alice", "age" => 30 })
@@ -59,7 +59,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(form:)
+      instance = TestAction.send(:new, form:)
       result = described_class.build(action: instance)
 
       expect(result[:inputs][:form]).to eq({ name: "Alice", age: 30 })
@@ -82,7 +82,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(wrapper: { form:, user: })
+      instance = TestAction.send(:new, wrapper: { form:, user: })
       result = described_class.build(action: instance)
 
       expect(result[:inputs][:wrapper][:form]).to eq({ name: "Nested" })
@@ -103,7 +103,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("ActionWithModel", action_class)
 
-      instance = ActionWithModel.new(user:, name: "Alice")
+      instance = ActionWithModel.send(:new, user:, name: "Alice")
 
       original_value = Axn.config._include_retry_command_in_exceptions
       begin
