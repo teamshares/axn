@@ -128,8 +128,10 @@ RSpec.describe "Step functionality" do
       expect(parent.call.error).to eq("validate: nope")
     end
 
-    it "cascades base error into a step child that declares no error and raises an unclassified exception" do
-      # Child declares no error — falls back to "Something went wrong" for unclassified exceptions
+    it "settles the parent as an exception (not a failure) when a step raises an unclassified exception" do
+      # An unclassified exception in a step is a bug: the step re-raises it so the parent settles as
+      # an exception too. The surfaced error is the parent's declared base (exception internals stay
+      # hidden); the step prefix is not applied on the exception path. See failure_semantics_spec.
       child = build_axn { def call = raise TypeError, "boom" }
       parent = build_axn do
         error "Onboarding failed"
@@ -137,8 +139,8 @@ RSpec.describe "Step functionality" do
       end
       result = parent.call
       expect(result).not_to be_ok
-      expect(result.outcome).to eq("failure")
-      expect(result.error).to eq("Onboarding failed: setup: Something went wrong")
+      expect(result.outcome).to eq("exception")
+      expect(result.error).to eq("Onboarding failed")
     end
 
     it "runs inherited steps when a step-mounting action is subclassed" do

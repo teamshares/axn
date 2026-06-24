@@ -188,7 +188,6 @@ RSpec.describe "Axn::Mountable inherit modes" do
         include Axn
         before :some_hook
 
-        def call; end
         def some_hook; end
 
         step :my_step do

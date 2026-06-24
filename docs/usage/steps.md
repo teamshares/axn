@@ -4,24 +4,29 @@ outline: deep
 
 # Using Steps in Actions
 
-The steps functionality allows you to compose complex actions by breaking them down into sequential, reusable steps. Each step can expect data from the parent context or previous steps, and expose data for subsequent steps.
+Steps let you compose a complex action by **chaining** smaller actions together. The steps share one accumulating context: each step is invoked with everything available so far (the parent's inputs plus whatever earlier steps exposed), and whatever it exposes is merged back in for the steps that follow.
 
 ## Basic Concepts
 
 ### What are Steps?
 
 Steps are a way to organize action logic into smaller, focused pieces that:
-- Execute in a defined order
-- Can share data between each other
-- Handle failures gracefully with error prefixing
-- Can be reused across different actions
+- Execute sequentially, in the order declared
+- Chain through a **shared, accumulating context** — a later step sees everything earlier steps exposed
+- Are reusable: any existing Axn can be mounted as a step
+- Propagate failures and exceptions to the parent with the right semantics (see [Error Handling](#error-handling))
 
-### How Steps Work
+### The shared context (and collisions)
 
-1. **Step Definition**: Define steps using the `step` class method
-2. **Execution Order**: Steps execute sequentially in the order they're defined
-3. **Data Flow**: Each step can expect and expose data
-4. **Error Handling**: Step failures are caught and can trigger error handlers
+The context is a shared blackboard, not isolated per-step state:
+
+- A step receives the **full** accumulated context, regardless of what it declares via `expects` (its `expects` only controls what it reads and validates).
+- A step's exposures are merged into the parent's context, visible to every later step.
+- If two steps expose the **same** key, the later step **overwrites** the earlier value — silently. This is intentional (it's how chaining transforms a value through the pipeline), but name your exposures deliberately.
+
+### Defining the orchestrator
+
+Declaring steps generates the action's `#call` — it *is* the orchestrator that runs the steps. So a steps-using class **must not define its own `#call`**; doing so raises an `ArgumentError` at load time. Use `before`/`after` hooks for setup or teardown around the steps.
 
 ## Defining Steps
 
@@ -53,12 +58,10 @@ class UserRegistration
     WelcomeMailer.send_welcome(user_id, validated_data[:email]).deliver_now
     expose :welcome_message, "Welcome #{validated_data[:name]}!"
   end
-
-  def call
-    # Steps handle execution automatically
-  end
 end
 ```
+
+> Note there is no `def call` — declaring steps generates it. Adding your own would raise.
 
 ### Using the `steps` Method
 
@@ -190,26 +193,63 @@ end
 # If this step fails, the error message becomes: "validation: Input too short"
 ```
 
-### Step Failure Propagation
+### Failure vs. exception propagation
 
-When a step fails:
-1. The step's failure or exception is caught
-2. The parent action fails with the prefixed error message
-3. The matching callbacks fire: a step that calls `fail!` settles as a failure (`on_failure`), while a step that raises an unhandled exception settles as an exception (`on_exception`). `on_error` fires in both cases.
+A step propagates its **outcome category** to the parent — it does not flatten everything into a generic failure. This preserves Axn's distinction between a deliberate failure and an unexpected bug:
 
-### Exception Handling
+**A step that calls `fail!` (a deliberate, expected failure):**
+- The parent settles as a **failure**: its `on_failure` and `on_error` callbacks fire (`on_exception` does not).
+- The parent's `error` is the step's message, prefixed: `"#{step_name}: #{step_error}"` (and cascaded under the parent's base `error` if it declares one).
+- Nothing is reported to the global `on_exception` handler — a `fail!` is not a bug.
 
-Steps can raise exceptions that will be caught and handled:
+**A step that raises an unexpected exception (a bug):**
+- The original exception is re-raised, so the parent settles as an **exception**: its `on_exception` and `on_error` callbacks fire (`on_failure` does *not*).
+- The global `on_exception` handler fires **exactly once**, at the step (with the step's context). It is not reported again as it propagates.
+- The parent's `error` is its declared base `error` (or `"Something went wrong"`) — exception internals are not surfaced into the caller-facing message, so the step-name prefix is **not** applied on this path. The full exception, including which step raised it, goes to the report.
+
+In short: `on_error` is the catch-all at every level; `on_failure` means a deliberate `fail!`; `on_exception` means a real bug bubbled through.
 
 ```ruby
-step :risky_operation, expects: [:input] do
-  raise StandardError, "Something went wrong with #{input}"
+step :validate do
+  fail! "Input too short"          # → parent FAILS with "validate: Input too short"; no report
 end
 
-# The exception is caught and the error message becomes: "risky_operation: Something went wrong with [input]"
+step :risky_operation do
+  raise SomeClient::Error, "..."   # → parent settles as an EXCEPTION; reported once at the step
+end
 ```
 
+### Rollback
 
+There is no built-in rollback DSL. Because a failed/erroring step settles the parent as not-ok, wrap the orchestrator (or the relevant steps) in a database transaction to get all-or-nothing behavior — Axn defers `on_success` until the enclosing transaction commits, so committed side effects only fire if the whole chain succeeds.
+
+
+## Conditional Steps
+
+Run a step only when a condition holds, using `if:` and/or `unless:`:
+
+```ruby
+step :charge_card,  ChargeCard,  if:     -> { paid_plan }
+step :send_invoice, SendInvoice, unless: :free_tier?
+step :provision,    Provision,   if: :ready?, unless: :dry_run?   # both must pass
+```
+
+- A condition is a **Proc** (evaluated on the parent instance) or a **Symbol** naming a parent method — the same forms hooks accept.
+- `if:` and `unless:` may be combined; the step runs only if `if:` is truthy **and** `unless:` is falsey.
+- A skipped step simply does not run: it exposes nothing and cannot fail. Later steps still run.
+
+Conditions are evaluated on the parent, so they read data the same way the rest of the action does:
+
+- **Inputs** — via the `expects` reader (`-> { tier == "paid" }`) or `inputs` (`-> { inputs[:tier] == "paid" }`).
+- **A prior step's output** — via `result.<field>` (`-> { result.flag }`), exactly as in `success`/`error`/`sensitive:` procs. The parent must declare the field in `exposes`, and the earlier step's value is live in the context by the time the next step's condition runs.
+
+```ruby
+exposes :eligible, allow_blank: true
+step :check,   CheckEligibility            # exposes :eligible
+step :enroll,  Enroll, if: -> { result.eligible }
+```
+
+A bare reference to an undeclared name (e.g. `-> { flag }` with no `exposes :flag`) raises `NameError` — `exposes` does not create bare instance readers; use `result.flag`.
 
 ## Best Practices
 
