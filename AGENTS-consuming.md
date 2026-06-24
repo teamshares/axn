@@ -1,13 +1,9 @@
 # Axn — agent guide
 
-Dense usage reference for an LLM writing code that **calls** Axn or **declares** Axn service
-objects. It is not a tutorial and not a guide to modifying Axn internals. It covers the contract
-surface, how results and failures behave, the canonical idioms, and the gotchas that produce
-subtle bugs — then points out to the human docs and the source for depth.
-
-When something here is ambiguous or you hit an edge case, **read the source** (paths below, resolve
-with `bundle show axn`) — for a gem this small it is the highest-fidelity, never-drifting truth.
-Human docs: <https://teamshares.github.io/axn/>.
+For an LLM writing code that **calls** or **declares** Axn actions (not modifying Axn internals).
+Covers the contract, result/failure behavior, idioms, and gotchas; points out to the docs and source
+for depth. On an edge case, read the source — paths below, via `bundle show axn`.
+Docs: <https://teamshares.github.io/axn/>.
 
 ## Mental model
 
@@ -24,6 +20,11 @@ class CreateWidget
   expects :category, type: String, optional: true
   exposes :widget
 
+  # Idiom: set meaningful messages — the generic fallbacks ("Action completed successfully" /
+  # "Something went wrong") are almost never what a caller should see. Do this by default.
+  success "Widget created"
+  error "Couldn't create widget"
+
   def call
     fail!("Name is taken") if Widget.exists?(name:)
     expose widget: Widget.create!(name:, category:)
@@ -32,12 +33,12 @@ end
 
 result = CreateWidget.call(name: "Sprocket")
 result.ok?      # => true
-result.widget   # => #<Widget ...>   (reader for the exposed field)
-result.success  # => "Action completed successfully" (customizable)
+result.widget   # => #<Widget ...>                            (reader for the exposed field)
+result.success  # => "Widget created"
 
-result = CreateWidget.call(name: "")          # type ok but blank → validation failure
+result = CreateWidget.call(name: "Existing")  # name taken → fail!
 result.ok?      # => false
-result.error    # => "Something went wrong"  (dev-facing default; see Failure semantics)
+result.error    # => "Couldn't create widget: Name is taken"  (base headline prefixes the reason)
 ```
 
 Each declared field gets a reader **inside** the action (`name`, `category`) and each exposed field
@@ -186,11 +187,16 @@ reported to `Axn.config.on_exception`. Key consequences:
 - **A nested bug is reported once**, from the innermost action that treats it as a bug, however deep
   the `call!` chain.
 
-**Messages — base/reason model.** An *unconditional* `error "Headline"` is the **base**: it's the
-fallback and it auto-prefixes every failure reason as `"Headline: reason"` (a conditional `error …
-if:`, a `prefixed: true` entry, and `fail!` strings). A *conditional* `error "…", if: SomeError` is a
-reason. Most-recently-declared matching reason wins. `success`/`done!` work the same. A literal and a
-block behave identically — conditionality (not string-vs-block) sets the role.
+**Messages — declare `success` and `error` by default.** The fallbacks are the generic
+`"Action completed successfully"` / `"Something went wrong"`; declare a meaningful `success "…"` and
+`error "…"` on every action whose result a caller surfaces. Both accept a string, a symbol (action
+method), or a block (evaluated in instance context: `error { "Failed for #{name}" }`).
+
+**Base/reason model.** An *unconditional* `error "Headline"` is the **base**: it's the fallback and it
+auto-prefixes every failure reason as `"Headline: reason"` (a conditional `error … if:`, a
+`prefixed: true` entry, and `fail!` strings). A *conditional* `error "…", if: SomeError` is a reason.
+Most-recently-declared matching reason wins. `success`/`done!` work the same. A literal and a block
+behave identically — conditionality (not string-vs-block) sets the role.
 
 ```ruby
 error "Couldn't sync user"                       # base / fallback + prefix
