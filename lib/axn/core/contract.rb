@@ -262,6 +262,7 @@ module Axn
           each_pair
           default_success
           action_name
+          inputs
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
@@ -275,6 +276,7 @@ module Axn
           finalized?
           __action__
           prefixed
+          inputs
         ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
@@ -496,10 +498,28 @@ module Axn
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
         def result = @__result ||= _build_context_facade(:outbound)
 
+        # Resolved declared-inbound fields as a Hash (defaults/preprocess applied, model: fields
+        # resolved to their record), keyed by wire key. Splat into a nested action to forward
+        # inputs: `Child.call(**inputs, override: x)`. Reads through internal_context (not raw
+        # provided_data) so a model: field supplied by `<field>_id` forwards the resolved record —
+        # the record lives only in the reader. Fields whose resolved value is nil are omitted, so a
+        # nested action still applies its own absent/default handling for them.
+        def inputs
+          self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
+            value = internal_context.public_send(field)
+            hash[field] = value unless value.nil?
+          end
+        end
+
         delegate :default_error, :default_success, to: :internal_context
 
-        # Accepts either two positional arguments (key, value) or a hash of key/value pairs
+        # Accepts:
+        # - a single Axn::Result: forwards (result.declared_fields & own outbound declared fields)
+        # - two positional arguments (key, value)
+        # - a hash of key/value pairs
         def expose(*args, **kwargs)
+          return _expose_from_result(args.first) if args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+
           if args.any?
             if args.size != 2
               raise ArgumentError,
@@ -541,6 +561,25 @@ module Axn
         end
 
         private
+
+        # Forward the intersection of a nested result's declared exposures and this action's own
+        # declared exposures. Reads declared fields (static contract) so it is safe on a failed
+        # result — it forwards whatever the child managed to expose (nil for the rest) and never
+        # inspects ok?/error or calls fail!. An empty intersection is always a wiring mistake.
+        def _expose_from_result(source_result)
+          forwardable = source_result.declared_fields & self.class._declared_fields(:outbound)
+
+          if forwardable.empty?
+            raise Axn::ContractViolation::NoMatchingExposures.new(
+              declared: self.class._declared_fields(:outbound),
+              exposed: source_result.declared_fields,
+            )
+          end
+
+          forwardable.each do |field|
+            @__context.exposed_data[field] = source_result.public_send(field)
+          end
+        end
 
         # Filtered inbound fields only (no additional context) - used by automatic logging and execution_context
         def inputs_for_logging

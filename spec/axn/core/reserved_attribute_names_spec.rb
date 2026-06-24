@@ -23,7 +23,7 @@ RSpec.describe Axn do
     end
 
     context "with other reserved expectation field names" do
-      %w[default_success action_name].each do |field_name|
+      %w[default_success action_name inputs].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do
@@ -84,6 +84,16 @@ RSpec.describe Axn do
           it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
         end
       end
+    end
+
+    context "with inputs reserved exposure name" do
+      let(:action) do
+        build_axn do
+          exposes :inputs, type: String
+        end
+      end
+
+      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 end

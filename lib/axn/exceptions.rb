@@ -65,6 +65,20 @@ module Axn
 
       def message = "Attempted to expose unknown key '#{@key}': be sure to declare it with `exposes :#{@key}`"
     end
+
+    # Like other ContractViolations raised inside `call`, propagates from `call!` but surfaces as `result.exception` under `.call`.
+    class NoMatchingExposures < ContractViolation
+      def initialize(declared:, exposed:)
+        @declared = declared
+        @exposed = exposed
+        super()
+      end
+
+      def message
+        "expose(result): the result exposes #{@exposed.inspect} but this action declares " \
+          "#{@declared.inspect} — no fields in common to forward"
+      end
+    end
   end
 
   class DuplicateFieldError < ContractViolation; end
