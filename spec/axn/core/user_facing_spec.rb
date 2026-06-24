@@ -415,6 +415,16 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
+    it "rejects an object with #arity but no #to_proc (the invoker calls it via &block)" do
+      # The invoker runs callables as `instance_exec(..., &callable)`, which needs `to_proc`. An
+      # object answering #arity but not convertible to a block would pass an arity-only check yet
+      # raise (and get swallowed) at call time — so reject it at declaration.
+      arity_only = Class.new { def arity = 1 }.new
+      expect do
+        build_axn { expects(:note, user_facing: arity_only) }
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
     it "rejects user_facing: combined with on: (subfields are dev-facing)" do
       expect do
         build_axn { expects(:id, on: :event_params, user_facing: true) }

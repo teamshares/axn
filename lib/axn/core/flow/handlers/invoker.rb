@@ -30,8 +30,11 @@ module Axn
 
           # Public so the contract DSL can validate a declared handler against the same notion of
           # "invokable" used here at call time — what `expects ..., user_facing:` accepts is exactly
-          # what this invoker will actually call, with no second, divergent predicate.
-          def callable?(value) = value.respond_to?(:arity)
+          # what this invoker will actually call, with no second, divergent predicate. Requires both
+          # traits the invoker actually uses: `to_proc` (it runs the handler as `instance_exec(&...)`)
+          # and `arity` (it arity-filters the args). An object answering one but not the other would
+          # pass an arity-only check yet raise at call time — Procs/lambdas/Methods answer both.
+          def callable?(value) = value.respond_to?(:to_proc) && value.respond_to?(:arity)
 
           private
 
