@@ -47,6 +47,12 @@ module Axn
   end
 
   def self.included(base)
+    # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run
+    # setup and reset the inheritance-aware class_attributes that hold field configs,
+    # silently wiping the parent's expects/exposes. Inheritance already carries everything
+    # down, so treat a redundant inclusion as a no-op.
+    return if base < Core
+
     base.class_eval do
       include Core
 
