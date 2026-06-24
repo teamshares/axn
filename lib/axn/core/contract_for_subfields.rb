@@ -83,7 +83,7 @@ module Axn
 
           _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, **validations).tap do |configs|
-            duplicated = subfield_configs.map(&:field) & configs.map(&:field)
+            duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children

@@ -105,7 +105,7 @@ module Axn
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, define_readers: true, user_facing:, **validations).tap do |configs|
-            duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
+            duplicated = _duplicate_fields(internal_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
@@ -133,7 +133,7 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
-            duplicated = external_field_configs.map(&:field) & configs.map(&:field)
+            duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
@@ -222,6 +222,16 @@ module Axn
         end
 
         private
+
+        # Field names that `new_configs` would re-declare against `existing` configs, compared by
+        # *symbolized* wire key: `:note` and `"note"` are the same field everywhere downstream
+        # (ActiveModel symbolizes the attribute, the reader is the same), so declaring both is a
+        # duplicate — otherwise two validations run on one field and per-field config (e.g.
+        # `user_facing:`) collapses ambiguously. Returns the offending names as declared.
+        def _duplicate_fields(existing, new_configs)
+          taken = existing.map { |c| c.field.to_sym }
+          new_configs.map(&:field).select { |f| taken.include?(f.to_sym) }
+        end
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
         # reader is named for the wire key (identity). `as:` renames a single field's reader;
