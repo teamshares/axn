@@ -72,8 +72,11 @@ This dominance is between a `user_facing:` top-level field and a *plain top-leve
 subfield/model dimension is kept out of it by a deliberate scoping rule:
 
 > **`user_facing:` is top-level only.** It cannot be declared on a subfield (`on:`), and it is
-> rejected at declaration on any field that *has* subfields. Subfields and model consistency are
-> always dev-facing.
+> rejected at declaration on any field that carries nested expectations — subfields (`on:`) or a
+> shape block (`do … end`). Those nested/member checks (and model consistency) are always
+> dev-facing. (A shape block is the same hazard via different syntax: `ShapeValidator` reports its
+> member failures under the parent's own attribute, so reclassifying the field would turn a
+> structural member failure into a user-facing one.)
 
 This is what keeps the feature simple. The genuinely hard case — a subfield hanging off a *failed*
 user-facing parent, where you must decide whether the subfield's failure is "derived" from the

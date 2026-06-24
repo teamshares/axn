@@ -323,6 +323,19 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: is for top-level fields without nested subfield expectations/)
     end
 
+    it "rejects a shape block on a user_facing field" do
+      # ShapeValidator reports nested member failures under the same top-level attribute, so a
+      # malformed-member error would otherwise be reclassified as user-facing — but nested member
+      # checks are structural and must stay dev-facing, exactly like subfields.
+      expect do
+        build_axn do
+          expects :payload, type: Hash, user_facing: true do
+            field :id, type: Integer
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
+    end
+
     it "rejects a subfield declared on a user_facing parent's alias" do
       expect do
         build_axn do

@@ -441,7 +441,7 @@ If a single call fails validation on both a `user_facing:` field **and** a plain
 :::
 
 ::: tip Top-level fields only
-`user_facing:` is a top-level concern. It can't be declared on a subfield (`on:`), and it's rejected on a field that *has* subfields — [nested subfield expectations](/reference/class#nested-subfield-expectations) and model-consistency checks are always dev-facing (a malformed nested shape is a bug in the calling code). Keep `user_facing:` for the flat, caller-controlled inputs; if you need it on a structured payload, validate the specific leaf you care about as its own top-level field. (Support for `user_facing:` on fields with subfields is deliberately deferred until a concrete need appears.)
+`user_facing:` is a top-level concern. It can't be declared on a subfield (`on:`), and it's rejected on a field that carries nested expectations — [subfields](/reference/class#nested-subfield-expectations) or a shape block — whose member/structural checks (and model-consistency checks) are always dev-facing (a malformed nested shape is a bug in the calling code). Keep `user_facing:` for the flat, caller-controlled inputs; if you need it on a structured payload, validate the specific leaf you care about as its own top-level field. (Support for `user_facing:` on fields with nested expectations is deliberately deferred until a concrete need appears.)
 :::
 
 ## Lifecycle methods

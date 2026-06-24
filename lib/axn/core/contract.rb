@@ -75,6 +75,11 @@ module Axn
 
           _validate_user_facing!(user_facing)
           raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
+          # A shape block validates nested members, which `ShapeValidator` reports under this same
+          # top-level attribute — so reclassifying the field user-facing would wrongly turn a
+          # malformed-member (structural) failure into a user-facing one. Nested checks stay
+          # dev-facing, exactly like subfields, so reject the combination (top-level fields only).
+          raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)" if user_facing && block
 
           reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
           # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
