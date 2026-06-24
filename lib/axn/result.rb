@@ -16,7 +16,7 @@ module Axn
       def ok(msg = nil, **exposures)
         exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
-        Axn::Factory.build(exposes:, success: msg, log_calls: false, log_errors: false) do
+        Axn::Factory.build(exposes:, success: msg, auto_log: false) do
           exposures.each do |key, value|
             expose(key, value)
           end
@@ -26,7 +26,7 @@ module Axn
       def error(msg = nil, **exposures, &block)
         exposes = exposures.keys.to_h { |key| [key, { optional: true }] }
 
-        Axn::Factory.build(exposes:, error: msg, log_calls: false, log_errors: false) do
+        Axn::Factory.build(exposes:, error: msg, auto_log: false) do
           exposures.each do |key, value|
             expose(key, value)
           end

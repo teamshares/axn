@@ -19,7 +19,7 @@ module Axn
       include Axn
 
       # Disable automatic before/after logging - we log the count manually
-      log_calls false
+      auto_log false
 
       expects :target_class_name
       expects :static_args, default: {}, allow_blank: true
@@ -97,11 +97,11 @@ module Axn
 
         # Execute iteration with per-job async logging suppressed (for foreground execution)
         def execute_iteration_without_logging(target, **static_args)
-          original_log_level = target.log_calls_level
-          target.log_calls_level = nil
+          original_levels = target._auto_log_levels
+          target._auto_log_levels = Core::AutomaticLogging::OUTCOMES.each_with_object({}) { |outcome, h| h[outcome] = nil }.freeze
           execute_iteration(target, **static_args)
         ensure
-          target.log_calls_level = original_log_level
+          target._auto_log_levels = original_levels
         end
 
         private

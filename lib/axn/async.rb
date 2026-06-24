@@ -97,7 +97,7 @@ module Axn
 
         # Log async invocation if logging is enabled
         adapter_name = _async_adapter_name_for_logging
-        _log_async_invocation(kwargs, adapter_name:) if adapter_name && log_calls_level
+        _log_async_invocation(kwargs, adapter_name:) if adapter_name && _auto_log_before_level
 
         # Delegate to adapter-specific enqueueing logic
         _enqueue_async_job(kwargs)
@@ -126,7 +126,7 @@ module Axn
       def _log_async_invocation(kwargs, adapter_name:)
         Axn::Internal::CallLogger.log_at_level(
           self,
-          level: log_calls_level,
+          level: _auto_log_before_level,
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
           join_string: " with: ",
           before: _async_log_separator,

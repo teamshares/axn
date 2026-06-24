@@ -40,8 +40,8 @@ RSpec.describe "Axn::Core::AutomaticLogging async invocation logging (Sidekiq)",
       expect(async_log[:level]).to eq(:info)
     end
 
-    it "uses the log_calls_level setting" do
-      action_class.log_calls :warn
+    it "uses the configured auto_log level" do
+      action_class.auto_log :warn
 
       action_class.call_async(name: "World")
 
@@ -49,8 +49,16 @@ RSpec.describe "Axn::Core::AutomaticLogging async invocation logging (Sidekiq)",
       expect(log_messages.first[:level]).to eq(:warn)
     end
 
-    it "does not log when log_calls is disabled" do
-      action_class.log_calls false
+    it "does not log when auto_log is disabled" do
+      action_class.auto_log false
+
+      action_class.call_async(name: "World")
+
+      expect(log_messages).to be_empty
+    end
+
+    it "does not log the enqueue when only error outcomes are configured" do
+      action_class.auto_log exception: :error
 
       action_class.call_async(name: "World")
 
