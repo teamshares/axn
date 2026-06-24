@@ -16,6 +16,27 @@ RSpec.describe "Axn::Async::BatchEnqueue with Sidekiq" do
     Axn.config.set_default_async(false)
   end
 
+  describe "enqueue_all on an action relying on the global default (no explicit async)" do
+    let(:default_action) do
+      stub_const("EnqueueAllGlobalDefaultAction", Class.new do
+        include Axn
+        expects :item
+        enqueues_each :item, from: -> { [1, 2, 3] }
+        def call = nil
+      end)
+    end
+
+    it "applies the default via the shared path (sets _async_via_default, no orphan per-action subclass)" do
+      Axn.config.set_default_async(:sidekiq)
+      default_action.enqueue_all
+
+      # Must route through the dedicated default worker — a per-action subclass here couldn't be
+      # reconstructed in a fresh worker (the action body never re-runs `async`).
+      expect(default_action._async_via_default).to be(true)
+      expect(default_action.const_defined?(:AxnSidekiqWorker, false)).to be(false)
+    end
+  end
+
   describe "core call behavior" do
     it "foreground" do
       expect do

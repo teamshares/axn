@@ -282,14 +282,11 @@ module Axn
         end
 
         def validate_async_configured!(target)
-          # Set up default async configuration if none is set (same pattern as call_async)
-          if target._async_adapter.nil? && Axn.config._default_async_adapter.present?
-            target.async(
-              Axn.config._default_async_adapter,
-              **Axn.config._default_async_config,
-              &Axn.config._default_async_config_block
-            )
-          end
+          # Set up default async configuration if none is set. Routes through the shared helper
+          # (rather than calling target.async directly) so it sets _async_via_default — otherwise a
+          # defaulted action would build a per-action Worker subclass that a fresh Sidekiq worker
+          # can't reconstruct (the action body never re-runs `async`). Self-guards on adapter presence.
+          target.send(:_ensure_default_async_configured)
 
           return if target._async_adapter.present? && target._async_adapter != false
 
