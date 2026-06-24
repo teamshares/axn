@@ -65,6 +65,10 @@ RSpec.describe "expose(result) forwarding" do
     end
 
     expect { parent.call! }.to raise_error(Axn::ContractViolation::NoMatchingExposures)
+
+    r = parent.call
+    expect(r).not_to be_ok
+    expect(r.exception).to be_a(Axn::ContractViolation::NoMatchingExposures)
   end
 
   it "still exposes a Result as a value via the two-positional form" do

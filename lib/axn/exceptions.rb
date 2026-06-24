@@ -66,6 +66,7 @@ module Axn
       def message = "Attempted to expose unknown key '#{@key}': be sure to declare it with `exposes :#{@key}`"
     end
 
+    # Like other ContractViolations raised inside `call`, propagates from `call!` but surfaces as `result.exception` under `.call`.
     class NoMatchingExposures < ContractViolation
       def initialize(declared:, exposed:)
         @declared = declared

@@ -93,7 +93,7 @@ RSpec.describe Axn do
         end
       end
 
-      it { expect { action }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
+      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 end
