@@ -36,6 +36,18 @@ RSpec.describe "use :model strategy" do
       expect { action.call }.not_to raise_error # missing params → handled, not a NoMethodError
     end
 
+    it "auto-declares the params field with type: :params (rejects a non-Hash/Parameters value)" do
+      result = action.call(params: "not a hash")
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "accepts ActionController::Parameters for params (not just a plain Hash)" do
+      result = action.call(params: ActionController::Parameters.new(name: "Sprocket").permit!)
+      expect(result).to be_ok
+      expect(result.user.name).to eq("Sprocket")
+    end
+
     context "when validation fails" do
       subject(:result) { action.call(params: { name: "" }) }
 
