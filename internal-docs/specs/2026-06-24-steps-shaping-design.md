@@ -183,12 +183,16 @@ step :provision,    Provision,   if: :ready?, unless: :dry_run?   # both → AND
 
 - Accept a **Proc** (instance-`exec`'d on the parent) or a **Symbol** (a parent method) — the same
   pairing hooks and message conditionals already accept.
-- Evaluated on the parent instance **immediately before** that step would run, so a condition can
-  read the parent's `expects` inputs and its own methods. It **cannot** read values exposed by
-  earlier steps — exposed fields get a reader on `Result`, not on the action instance mid-run, so a
-  bare `-> { flag }` referencing a prior step's exposure raises `NameError`. Branch on an input, or
-  have the step itself short-circuit with `done!`. (Verified during implementation — the original
-  spec's "declare it in `exposes`" claim was wrong.)
+- Evaluated on the parent instance **immediately before** that step would run, so a condition reads
+  data exactly as the rest of the action does — reusing existing seams, no new accessor:
+  - **inputs** via the `expects` reader (`-> { tier == "paid" }`) or `inputs` (`-> { inputs[:tier] }`).
+  - **a prior step's output** via `result.<field>` (`-> { result.flag }`) — the sanctioned exposure
+    read (same as `success`/`error`/`sensitive:` procs). The parent must declare the field in
+    `exposes`; the earlier step's value is live by the time the condition runs.
+  - A **bare** reference to an undeclared name (`-> { flag }`) raises `NameError` — `exposes` defines
+    no bare instance readers, by design. (Verified during implementation: this is the only thing that
+    doesn't work; `result.<field>` covers branching on prior steps, so no `ctx` arg / `exposures`
+    accessor is added.)
 - `if:` and `unless:` **may be combined** (the step runs only if `if` passes *and* `unless` fails) —
   matching Rails callback ergonomics. (Note: this deliberately differs from message conditionals,
   which reject `if:`+`unless:` together; for a guard condition the AND combination is normal and
@@ -230,7 +234,8 @@ assertion that a later step overwrites an earlier exposure (lock the blackboard 
 - `if:` Proc true/false; `unless:` Proc true/false; Symbol forms; combined `if:`+`unless:` (all four
   truth combinations).
 - skipped step exposes nothing and does not fail; later steps still run.
-- a condition reads a parent `expects` input; referencing a prior step's exposure raises `NameError`.
+- a condition reads a parent `expects` input (direct reader and via `inputs`), and a prior step's
+  exposure via `result.<field>`; a bare reference to an undeclared name raises `NameError`.
 
 ## CHANGELOG
 
@@ -256,7 +261,7 @@ assertion that a later step overwrites an earlier exposure (lock the blackboard 
 - **`method_added` interplay.** The collision guard must not trip on the strategy's own generated
   `#call`, nor on inheritance. Pin the marker/guard mechanics in implementation with the subclass
   test above.
-- **Condition evaluation context.** Conditions read the parent's `expects` inputs and its own
-  methods only; branching on a prior step's exposure is a `NameError` (exposed readers live on
-  `Result`, not the action instance mid-run). Documented as a v1 limitation, not worked around —
-  revisit if a concrete need to branch on intermediates appears.
+- **Condition evaluation context.** Resolved by reusing existing seams: conditions read inputs (the
+  `expects` reader or `inputs`) and prior-step output (`result.<field>`). No new accessor was needed.
+  Only a bare reference to an undeclared name raises `NameError` (no bare exposure readers, by
+  design) — documented, not worked around.

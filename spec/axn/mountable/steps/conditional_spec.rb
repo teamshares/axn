@@ -91,7 +91,7 @@ RSpec.describe "Conditional steps" do
   end
 
   describe "evaluation context" do
-    it "reads the parent's expects inputs" do
+    it "reads the parent's expects inputs (direct reader)" do
       step_axn = marker_step(:yes)
       action = build_axn do
         expects :tier
@@ -102,10 +102,41 @@ RSpec.describe "Conditional steps" do
       expect(action.call!(tier: "free").ran).to be_nil
     end
 
-    it "does not expose a bare reader for a prior step's exposure (read inputs, not intermediates)" do
-      # Conditions run on the parent instance, which has readers for its expects inputs and its own
-      # methods — but NOT for values exposed by earlier steps. Branch on an input (or restructure)
-      # rather than a prior step's output.
+    it "reads the parent's inputs via the inputs hash" do
+      step_axn = marker_step(:yes)
+      action = build_axn do
+        expects :tier
+        exposes :ran, allow_blank: true
+        step :maybe, step_axn, if: -> { inputs[:tier] == "paid" }
+      end
+      expect(action.call!(tier: "paid").ran).to eq(:yes)
+      expect(action.call!(tier: "free").ran).to be_nil
+    end
+
+    it "branches on a prior step's exposure via result.<field>" do
+      # The sanctioned way to read an exposure (same as in success/error/sensitive procs): the parent
+      # declares the field and the condition reads result.<field>. The earlier step's value is live
+      # in the accumulated context by the time the next step's condition runs.
+      flagger = build_axn do
+        exposes :flag
+        def call = expose(:flag, true)
+      end
+      gated = build_axn do
+        exposes :gated_ran
+        def call = expose(:gated_ran, true)
+      end
+      action = build_axn do
+        exposes :flag, :gated_ran, allow_blank: true
+        step :flagger, flagger
+        step :gated, gated, if: -> { result.flag }
+      end
+      result = action.call!
+      expect(result.flag).to be(true)
+      expect(result.gated_ran).to be(true)
+    end
+
+    it "raises on a bare reference to an undeclared name (no bare exposure readers, by design)" do
+      # exposes does not define bare instance readers — use result.<field>. A bare `flag` is a NameError.
       flagger = build_axn do
         exposes :flag
         def call = expose(:flag, true)

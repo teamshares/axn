@@ -237,7 +237,19 @@ step :provision,    Provision,   if: :ready?, unless: :dry_run?   # both must pa
 - A condition is a **Proc** (evaluated on the parent instance) or a **Symbol** naming a parent method — the same forms hooks accept.
 - `if:` and `unless:` may be combined; the step runs only if `if:` is truthy **and** `unless:` is falsey.
 - A skipped step simply does not run: it exposes nothing and cannot fail. Later steps still run.
-- Conditions are evaluated on the parent, so they can read the parent's `expects` inputs and its own methods. They **cannot** read values exposed by earlier steps (those aren't readable on the parent mid-run) — branch on an input, or have the step itself short-circuit with `done!`.
+
+Conditions are evaluated on the parent, so they read data the same way the rest of the action does:
+
+- **Inputs** — via the `expects` reader (`-> { tier == "paid" }`) or `inputs` (`-> { inputs[:tier] == "paid" }`).
+- **A prior step's output** — via `result.<field>` (`-> { result.flag }`), exactly as in `success`/`error`/`sensitive:` procs. The parent must declare the field in `exposes`, and the earlier step's value is live in the context by the time the next step's condition runs.
+
+```ruby
+exposes :eligible, allow_blank: true
+step :check,   CheckEligibility            # exposes :eligible
+step :enroll,  Enroll, if: -> { result.eligible }
+```
+
+A bare reference to an undeclared name (e.g. `-> { flag }` with no `exposes :flag`) raises `NameError` — `exposes` does not create bare instance readers; use `result.flag`.
 
 ## Best Practices
 

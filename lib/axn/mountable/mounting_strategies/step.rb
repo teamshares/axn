@@ -85,9 +85,10 @@ module Axn
 
             step_descriptors.each do |step_descriptor|
               options = step_descriptor.options
-              # Conditions run on the parent instance right before the step would run, so they read the
-              # parent's expects inputs and its own methods (not earlier steps' exposures, which have no
-              # reader on the instance). if: and unless: combine with AND.
+              # Conditions run on the parent instance right before the step would run, reading data the
+              # same way the action does: expects inputs (direct reader or `inputs`) and a prior step's
+              # output via `result.<field>` (no bare exposure readers exist, by design). if: and
+              # unless: combine with AND.
               next if options[:if] && !evaluate_condition.call(options[:if])
               next if options[:unless] && evaluate_condition.call(options[:unless])
 
