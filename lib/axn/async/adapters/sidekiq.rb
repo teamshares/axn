@@ -42,6 +42,26 @@ module Axn
           configure_default_worker!(config: Axn.config._default_async_config, block: Axn.config._default_async_config_block)
         end
 
+        # Per-action setup, invoked from Axn::Async#async on every explicit `async :sidekiq`
+        # declaration (so subclasses that re-declare get their own worker even though `include`
+        # is a no-op for them). Builds a per-action `AxnSidekiqWorker` subclass carrying the
+        # action's kwargs + block; skipped for the global-default path (those use DefaultWorker).
+        def self._configure_action!(action)
+          return if action._async_via_default
+
+          Worker._ensure_sidekiq_job!
+          # Build a FRESH subclass each declaration (own const per class in a hierarchy, and no
+          # stale options carried over if async is re-declared with different config). sidekiq_options
+          # merges, so reusing an existing subclass would silently retain prior settings.
+          action.send(:remove_const, :AxnSidekiqWorker) if action.const_defined?(:AxnSidekiqWorker, false)
+          subclass = action.const_set(:AxnSidekiqWorker, Class.new(Worker))
+          # Block first, then kwargs override — `async :sidekiq, queue: "x" do sidekiq_options queue: "y" end`
+          # resolves to "x" (the keyword wins), matching the pre-refactor adapter's precedence.
+          subclass.class_eval(&action._async_config_block) if action._async_config_block
+          subclass.sidekiq_options(**action._async_config) if action._async_config&.any?
+          subclass
+        end
+
         included do
           raise LoadError, "Sidekiq is not available. Please add 'sidekiq' to your Gemfile." unless defined?(::Sidekiq)
 
@@ -56,28 +76,10 @@ module Axn
           # (e.g. when async :sidekiq is used without ever setting async_exception_reporting).
           AutoConfigure.ensure_registered_for_current_config!
 
-          # The action is intentionally NOT turned into a Sidekiq::Job (so its `new` stays private
-          # and it carries no Sidekiq class surface).
-          #
-          # For EXPLICIT `async :sidekiq` we build a per-action Worker subclass and apply the full
-          # config — kwargs AND the arbitrary block — to it. Because it's a real Sidekiq::Job, the
-          # block can use anything Sidekiq exposes (sidekiq_options, sidekiq_retry_in,
-          # sidekiq_retries_exhausted, custom options consumed by middleware, …). A fresh worker
-          # reconstructs the subclass by autoloading the action (whose body re-runs `async :sidekiq`),
-          # the same mechanism the ActiveJob proxy already relies on.
-          #
-          # For the GLOBAL DEFAULT path (_async_via_default) we skip the subclass: the action body
-          # won't re-create it in a worker, so enqueue routes through the always-present shared
-          # Worker instead (see _enqueue_async_job).
-          unless _async_via_default
-            Worker._ensure_sidekiq_job!
-            const_set(:AxnSidekiqWorker, Class.new(Worker)) unless const_defined?(:AxnSidekiqWorker, false)
-            subclass = const_get(:AxnSidekiqWorker, false)
-            # Block first, then kwargs override — `async :sidekiq, queue: "x" do sidekiq_options queue: "y" end`
-            # resolves to "x" (the keyword wins), matching the pre-refactor adapter's precedence.
-            subclass.class_eval(&_async_config_block) if _async_config_block
-            subclass.sidekiq_options(**_async_config) if _async_config&.any?
-          end
+          # NOTE: the action is intentionally NOT turned into a Sidekiq::Job (so its `new` stays
+          # private). The per-action Worker subclass is built in `_configure_action!`, invoked from
+          # `async` on every declaration — not here — so subclasses that re-declare async (where
+          # `include` is a no-op) still get their own worker.
         end
 
         class_methods do

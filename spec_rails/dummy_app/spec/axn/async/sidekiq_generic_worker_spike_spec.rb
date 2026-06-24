@@ -154,6 +154,53 @@ RSpec.describe "Sidekiq generic worker (spike)" do
     end
   end
 
+  describe "explicit async config wins over an inherited global-default marker" do
+    around do |ex|
+      original = Axn.config._default_async_adapter
+      Axn.config.set_default_async(:sidekiq)
+      ex.run
+    ensure
+      Axn.config.set_default_async(original || false)
+    end
+
+    it "clears _async_via_default so an explicit subclass uses its own worker + options" do
+      parent = stub_const("SpikeDefaultParent", Class.new do
+        include Axn
+        expects :name
+        def call = nil
+      end)
+      Sidekiq::Testing.fake! { parent.call_async(name: "p") } # applies the default → via_default: true
+      expect(parent._async_via_default).to be(true)
+
+      child = stub_const("SpikeExplicitChild", Class.new(parent) do
+        async :sidekiq, queue: "child_q"
+      end)
+      expect(child._async_via_default).to be(false)
+      expect(child.const_get(:AxnSidekiqWorker, false).get_sidekiq_options["queue"]).to eq("child_q")
+    end
+  end
+
+  describe "explicitly-disabled async is not silently defaulted" do
+    around do |ex|
+      original = Axn.config._default_async_adapter
+      Axn.config.set_default_async(:sidekiq)
+      ex.run
+    ensure
+      Axn.config.set_default_async(original || false)
+    end
+
+    it "leaves `async false` intact even with a global default configured" do
+      action = stub_const("SpikeDisabledAction", Class.new do
+        include Axn
+        async false
+        expects :name
+        def call = nil
+      end)
+      action.call(name: "x") # triggers the new-hook path that could have defaulted it
+      expect(action._async_adapter).to eq(false)
+    end
+  end
+
   describe "Worker dispatch directly (simulating Sidekiq::Processor#dispatch)" do
     it "constantizes the action by name and calls it with deserialized kwargs" do
       stub_const("SpikeDirectAction", Class.new do

@@ -50,10 +50,16 @@ module Axn
         self._async_exception_reporting = mode
       end
 
-      def async(adapter = nil, **config, &block)
+      # `via_default: true` is set only by the default-application paths (call_async /
+      # _ensure_default_async_configured). An explicit `async :sidekiq` from a class body — even
+      # on a subclass that inherited `_async_via_default = true` — passes false and clears the
+      # marker, so the Sidekiq adapter builds/uses the per-action worker (honoring explicit config)
+      # rather than the shared DefaultWorker.
+      def async(adapter = nil, via_default: false, **config, &block)
         self._async_adapter = adapter
         self._async_config = config
         self._async_config_block = block
+        self._async_via_default = via_default
 
         case adapter
         when false
@@ -67,14 +73,18 @@ module Axn
           # Look up adapter in registry
           adapter_module = Adapters.find(adapter)
           include adapter_module
+          # Per-action setup that must run on EVERY `async <adapter>` declaration — including a
+          # subclass re-declaring it, where `include` is a no-op (module already inherited) so the
+          # adapter's `included do` won't fire. The Sidekiq adapter uses this to (re)build the
+          # action's per-action Worker subclass with the current config.
+          adapter_module._configure_action!(self) if adapter_module.respond_to?(:_configure_action!)
         end
       end
 
       def call_async(**kwargs)
         # Set up default async configuration if none is set
         if _async_adapter.nil?
-          self._async_via_default = true
-          async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+          async Axn.config._default_async_adapter, via_default: true, **Axn.config._default_async_config, &Axn.config._default_async_config_block
           # Call ourselves again now that the adapter is included
           return call_async(**kwargs)
         end
@@ -168,11 +178,13 @@ module Axn
       end
 
       def _ensure_default_async_configured
-        return if _async_adapter.present?
+        # Only when the adapter is genuinely unset — an explicit `async false` (disabled) must be
+        # left intact so callers (e.g. enqueue_all validation) reject it upfront rather than
+        # silently defaulting it (false.present? is falsy, so guard on nil explicitly).
+        return unless _async_adapter.nil?
         return unless Axn.config._default_async_adapter.present?
 
-        self._async_via_default = true
-        async Axn.config._default_async_adapter, **Axn.config._default_async_config, &Axn.config._default_async_config_block
+        async Axn.config._default_async_adapter, via_default: true, **Axn.config._default_async_config, &Axn.config._default_async_config_block
       end
 
       # Extracts and normalizes _async options from kwargs.
