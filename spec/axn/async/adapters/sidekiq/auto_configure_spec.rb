@@ -11,6 +11,12 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::AutoConfigure do
     described_class.reset!
   end
 
+  # Sidekiq isn't a dependency of this suite, so we fake the constant. Declaring
+  # #configure_server lets verify_partial_doubles confirm the stubbed method exists.
+  let(:fake_sidekiq) do
+    Module.new { def self.configure_server; end }
+  end
+
   describe ".registered?" do
     it "returns false initially" do
       expect(described_class.registered?).to be false
@@ -18,7 +24,7 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::AutoConfigure do
 
     it "returns true after register!" do
       # Mock Sidekiq
-      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq", fake_sidekiq)
       allow(Sidekiq).to receive(:configure_server).and_yield(double(
                                                                server_middleware: ->(&block) { block.call(double(add: nil, any?: false)) },
                                                                death_handlers: [],
@@ -31,7 +37,7 @@ RSpec.describe Axn::Async::Adapters::Sidekiq::AutoConfigure do
 
   describe ".ensure_registered_for_current_config!" do
     before do
-      stub_const("Sidekiq", Module.new)
+      stub_const("Sidekiq", fake_sidekiq)
       allow(Sidekiq).to receive(:configure_server).and_yield(double(
                                                                server_middleware: ->(&block) { block.call(double(add: nil, any?: false)) },
                                                                death_handlers: [],

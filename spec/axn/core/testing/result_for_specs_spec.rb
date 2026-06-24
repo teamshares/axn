@@ -180,9 +180,9 @@ RSpec.describe "Action spec helpers" do
     describe "Axn::Result.ok" do
       context "when logging is enabled by default" do
         before do
-          allow_any_instance_of(Axn::Result).to receive(:info) do |_instance, message, **options|
-            log_messages << { level: :info, message:, options: }
-          end
+          # Logging routes through Axn.config.logger (see Axn::Core::Logging), so spy there —
+          # Axn::Result itself has no #info, which is why an any_instance stub on it was dead.
+          allow(Axn.config.logger).to receive(:info) { |message| log_messages << { level: :info, message: } }
         end
 
         it "does not log when using Result.ok" do
@@ -196,12 +196,9 @@ RSpec.describe "Action spec helpers" do
     describe "Axn::Result.error" do
       context "when logging is enabled by default" do
         before do
-          allow_any_instance_of(Axn::Result).to receive(:info) do |_instance, message, **options|
-            log_messages << { level: :info, message:, options: }
-          end
-          allow_any_instance_of(Axn::Result).to receive(:warn) do |_instance, message, **options|
-            log_messages << { level: :warn, message:, options: }
-          end
+          # See note above: spy on the real log sink, not on Axn::Result (which has no #info/#warn).
+          allow(Axn.config.logger).to receive(:info) { |message| log_messages << { level: :info, message: } }
+          allow(Axn.config.logger).to receive(:warn) { |message| log_messages << { level: :warn, message: } }
         end
 
         it "does not log when using Result.error" do
