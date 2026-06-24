@@ -530,7 +530,7 @@ By default, every `action.call` will emit log lines when it is called and after 
     [YourCustomAction] Execution completed (with outcome: success) in 0.957 milliseconds
   ```
 
-Automatic logging will log at `Axn.config.log_level` by default, but can be overridden or disabled using the declarative `log_calls` method:
+Automatic logging will log at `Axn.config.log_level` by default, but can be overridden, scoped per outcome, or disabled using the declarative `auto_log` method:
 
 ```ruby
 # Set default for all actions (affects both explicit logging and automatic logging)
@@ -538,48 +538,45 @@ Axn.configure do |c|
   c.log_level = :debug
 end
 
-# Override for specific actions
+# Override the level for a specific action (logs every outcome at :warn)
 class MyAction
-  log_calls :warn  # Use warn level for this action
+  auto_log :warn
 end
 
+# Disable automatic logging for an action
 class SilentAction
-  log_calls false  # Disable automatic logging for this action
+  auto_log false
 end
 
-# Use default level (no log_calls call needed)
+# Use the configured default level — any of these is equivalent to no declaration at all
 class DefaultAction
-  # Uses Axn.config.log_level
+  auto_log         # or: auto_log true
 end
 ```
 
-The `log_calls` method supports inheritance, so subclasses will inherit the setting from their parent class unless explicitly overridden.
+`auto_log` resolves a level for each of the three outcomes — `success`, `failure`, and `exception` (the values `result.outcome` reports). A positional level is the default for any outcome you do not name; per-outcome keywords override it. The **"About to execute" before line** is emitted only when success logging is on, at the success level — so narrating successful calls gives you the before/after bookend, and an errors-only configuration stays quiet until something goes wrong.
+
+`auto_log` supports inheritance, so subclasses inherit the setting from their parent class unless they redeclare it.
 
 ### Error-Only Logging
 
-For actions where you only want to log when something goes wrong, use `log_errors` instead of `log_calls`. This will:
-- **Not** log before execution
-- **Only** log after execution if `result.ok?` is false (i.e., on failures or exceptions)
+To log only when something goes wrong, turn off `success` while leaving the failure/exception outcomes on. This logs **no** before line and an after line only on a failure or exception:
 
 ```ruby
 class MyAction
-  log_calls false   # Disable full logging
-  log_errors :warn  # Only log failures/exceptions at warn level
-end
-
-class SilentOnErrorsAction
-  log_calls false
-  log_errors false  # Disable error logging for this action
-end
-
-# Use default level
-class DefaultErrorLoggingAction
-  log_calls false
-  log_errors Axn.config.log_level  # Uses default log level
+  auto_log :warn, success: false  # log failures and exceptions at :warn; nothing on success
 end
 ```
 
-The `log_errors` method supports inheritance, just like `log_calls`. If both `log_calls` and `log_errors` are set, `log_calls` takes precedence (it will log before and after for all outcomes). To use `log_errors` exclusively, you must first disable `log_calls` with `log_calls false`.
+Because each outcome is configured independently, you can also distinguish an explicit `fail!` (outcome `failure`) from an unhandled raised error (outcome `exception`). For example, to log only genuine raised bugs and stay silent on expected `fail!`s:
+
+```ruby
+class MyAction
+  auto_log exception: :error  # only log raised exceptions; nothing on success or fail!
+end
+```
+
+When you give keywords but no positional level, the unnamed outcomes are off — so `auto_log exception: :error` logs *only* exceptions. Each keyword accepts a level, `false` (off), or `true` (the configured default level); an invalid level raises `ArgumentError` at declaration.
 
 ## Complete Configuration Example
 

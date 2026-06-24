@@ -41,8 +41,7 @@ module Axn
         async: nil,
 
         # Logging configuration
-        log_calls: NOT_PROVIDED,
-        log_errors: NOT_PROVIDED,
+        auto_log: NOT_PROVIDED,
 
         # Internal flag to prevent recursion during action class creation
         # Tracks which target class is having an action class created for it
@@ -85,9 +84,12 @@ module Axn
             axn.exposes(field, **opts)
           end
 
-          # Apply logging configuration (always apply if provided to override defaults)
-          axn.log_calls(log_calls) unless log_calls == NOT_PROVIDED
-          axn.log_errors(log_errors) unless log_errors == NOT_PROVIDED
+          # Apply logging configuration (always apply if provided to override defaults).
+          # A Hash forwards as per-outcome keywords (auto_log success: :info, ...); anything else
+          # is the positional level (auto_log :warn / auto_log false).
+          unless auto_log == NOT_PROVIDED
+            auto_log.is_a?(Hash) ? axn.auto_log(**auto_log) : axn.auto_log(auto_log)
+          end
 
           # Apply success and error handlers
           _apply_handlers(axn, :success, success, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)

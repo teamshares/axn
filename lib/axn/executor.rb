@@ -112,16 +112,16 @@ module Axn
     # =========================================================================
 
     def with_logging
-      log_before if @action_class.log_calls_level
+      log_before if @action_class._auto_log_before_level
       yield
     ensure
-      log_after if @action_class.log_calls_level || @action_class.log_errors_level
+      log_after
     end
 
     def log_before
       Internal::CallLogger.log_at_level(
         @action_class,
-        level: @action_class.log_calls_level,
+        level: @action_class._auto_log_before_level,
         message_parts: ["About to execute"],
         join_string: " with: ",
         before: top_level_separator,
@@ -132,14 +132,10 @@ module Axn
     end
 
     def log_after
-      if @action_class.log_calls_level
-        log_after_at_level(@action_class.log_calls_level)
-        return
-      end
+      level = @action_class._auto_log_level_for(@action.result.outcome)
+      return unless level
 
-      return unless @action_class.log_errors_level && !@action.result.ok?
-
-      log_after_at_level(@action_class.log_errors_level)
+      log_after_at_level(level)
     end
 
     def log_after_at_level(level)

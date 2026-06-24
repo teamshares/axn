@@ -58,7 +58,7 @@ RSpec.describe "Additional execution context" do
 
     it "does not include additional context in pre/post logging" do
       action = build_axn do
-        log_calls :info
+        auto_log :info
 
         def call
           set_execution_context(extra: "context")
@@ -168,7 +168,7 @@ RSpec.describe "Additional execution context" do
 
     it "does not include hook context in pre/post logging" do
       action = build_axn do
-        log_calls :info
+        auto_log :info
 
         def call
           @current_record = { id: 999 }
