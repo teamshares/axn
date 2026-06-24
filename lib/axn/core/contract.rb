@@ -498,8 +498,13 @@ module Axn
 
         delegate :default_error, :default_success, to: :internal_context
 
-        # Accepts either two positional arguments (key, value) or a hash of key/value pairs
+        # Accepts:
+        # - a single Axn::Result: forwards (result.declared_fields & own outbound declared fields)
+        # - two positional arguments (key, value)
+        # - a hash of key/value pairs
         def expose(*args, **kwargs)
+          return _expose_from_result(args.first) if args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+
           if args.any?
             if args.size != 2
               raise ArgumentError,
@@ -541,6 +546,25 @@ module Axn
         end
 
         private
+
+        # Forward the intersection of a nested result's declared exposures and this action's own
+        # declared exposures. Reads declared fields (static contract) so it is safe on a failed
+        # result — it forwards whatever the child managed to expose (nil for the rest) and never
+        # inspects ok?/error or calls fail!. An empty intersection is always a wiring mistake.
+        def _expose_from_result(source_result)
+          forwardable = source_result.declared_fields & self.class._declared_fields(:outbound)
+
+          if forwardable.empty?
+            raise Axn::ContractViolation::NoMatchingExposures.new(
+              declared: self.class._declared_fields(:outbound),
+              exposed: source_result.declared_fields,
+            )
+          end
+
+          forwardable.each do |field|
+            @__context.exposed_data[field] = source_result.public_send(field)
+          end
+        end
 
         # Filtered inbound fields only (no additional context) - used by automatic logging and execution_context
         def inputs_for_logging
