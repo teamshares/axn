@@ -361,5 +361,27 @@ RSpec.describe Axn do
         expect { action.call(foo: 100) }.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
       end
     end
+
+    context "with the same wire key declared as both a symbol and a string" do
+      it "raises (the names normalize to the same field, so it's a duplicate)" do
+        # `:foo` and `"foo"` are the same wire key everywhere downstream (ActiveModel symbolizes the
+        # attribute), so declaring both is a duplicate — otherwise two validations run on one field
+        # and per-field config (e.g. user_facing:) collapses ambiguously.
+        expect do
+          build_axn do
+            expects :foo
+            expects "foo", user_facing: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /foo/)
+      end
+
+      it "raises when both normalize-equal names are in the same declaration" do
+        # `expects :foo, "foo"` is a single call, so the collision is within the batch (neither name
+        # exists in prior configs) — it must still be caught, or the generated reader is clobbered.
+        expect do
+          build_axn { expects :foo, "foo" }
+        end.to raise_error(Axn::DuplicateFieldError, /foo/)
+      end
+    end
   end
 end

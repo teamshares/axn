@@ -411,6 +411,39 @@ The inner action that makes the API call or database write is the right home for
 
 Distinct from `fails_on` (which decides whether an *expected* failure is reported at all): a genuine, unhandled exception is reported to `Axn.config.on_exception` **once** — from the innermost action that treats it as a reportable exception — however deeply it propagates through nested `call!`s. Each action's own `on_exception` callback still fires at its level; the single global report is sent from where the exception first surfaced as a bug. So a bug that bubbles up through `call!`, and one you absorb into a parent `fail!` via non-bang `call`, each produce a single report.
 
+### User-facing contract violations
+
+A failed `expects` validation is dev-facing by default: a caller who omits a required field has a **bug**, so the violation lands in the **exception** bucket (pages the global handler, `result.error` is the generic `"Something went wrong"`). That's the right call when the input comes from your own code.
+
+But some inputs are genuinely user-supplied, where a missing or invalid value is the *caller's* fault, not a bug. Mark that field `user_facing:` and a violation of it settles in the **failure** bucket instead — firing `on_failure`, skipping `on_exception` / the global report, and surfacing a meaningful message on `result.error`:
+
+```ruby
+expects :note, user_facing: true            # surfaces the field's own message ("Note can't be blank")
+expects :note, user_facing: "Add a note"    # override the surfaced message
+expects :note, user_facing: :note_message   # call an action method to compute it
+expects :note, user_facing: ->(e) { ... }   # compute it from the InboundValidationError
+```
+
+The value rides the same muscle memory as `fail!` / `error` / `fails_on` — `true`, a String, a Symbol naming an action method, or a block receiving the exception. (A String/Symbol/block that resolves blank falls back to the field's own validation message, so a user-facing failure never surfaces the generic dev-facing message.) The structured `InboundValidationError` is preserved on `result.exception` either way.
+
+The surfaced message is a failure **reason**, so it composes with a declared base `error` exactly like a `fail!` message — [prefixed by the headline](#prefixing-failure-reasons) by default, standalone when no base is declared:
+
+```ruby
+error "Couldn't save note"
+expects :note, user_facing: true
+# result.error → "Couldn't save note: Note can't be blank"
+```
+
+`user_facing:` changes *who is blamed* for a violation, not *whether* the field is validated — the field stays **required** (unlike `optional: true`, which removes the check). It's a per-field decision: scope it to the inputs a user actually controls, and leave the rest dev-facing. (If *every* input is user-supplied, reach for [`use :form`](/strategies/form) instead.)
+
+::: warning Dev-facing wins in a mixed failure
+If a single call fails validation on both a `user_facing:` field **and** a plain one, the violation stays **dev-facing** (exception bucket) — a real contract bug always pages, and is never masked behind a friendly message. The user-facing path is taken only when *every* failing field is `user_facing:`.
+:::
+
+::: tip Top-level fields only
+`user_facing:` is a top-level concern. It can't be declared on a subfield (`on:`), and it's rejected on a field that carries nested expectations — [subfields](/reference/class#nested-subfield-expectations) or a shape block — whose member/structural checks (and model-consistency checks) are always dev-facing (a malformed nested shape is a bug in the calling code). Keep `user_facing:` for the flat, caller-controlled inputs; if you need it on a structured payload, validate the specific leaf you care about as its own top-level field. (Support for `user_facing:` on fields with nested expectations is deliberately deferred until a concrete need appears.)
+:::
+
 ## Lifecycle methods
 
 In addition to `#call`, there are a few additional pieces to be aware of:

@@ -6,6 +6,7 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 
 require "axn/core/validation/fields"
+require "axn/core/flow/handlers/invoker"
 require "axn/result"
 require "axn/core/context/internal"
 
@@ -24,7 +25,7 @@ module Axn
       # `reader_as` is the name of the generated accessor method. It defaults to `field` (the wire
       # key), but `expects ..., as:`/`prefix:` decouple them so the caller-facing contract stays
       # `field` while the in-action reader gets its own name.
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as) do
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing) do
         def description = metadata[:description]
       end
 
@@ -62,6 +63,7 @@ module Axn
           sensitive: false,
           as: nil,
           prefix: nil,
+          user_facing: false,
           **,
           &block
         )
@@ -70,6 +72,9 @@ module Axn
           end
 
           raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
+
+          _validate_user_facing!(user_facing)
+          raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
 
           reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
           # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
@@ -88,9 +93,19 @@ module Axn
 
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
+          # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
+          # validates nested members, which `ShapeValidator` reports under this same top-level
+          # attribute — so reclassifying the field user-facing would wrongly turn a malformed-member
+          # (structural) failure into a user-facing one. Nested checks stay dev-facing, exactly like
+          # subfields, so reject the combination (top-level fields only). Keyed on the resolved
+          # `validations[:shape]`, not the block, so a direct `shape:` kwarg is caught too.
+          if user_facing && validations[:shape]
+            raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
+          end
+
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        reader_names:, define_readers: true, **validations).tap do |configs|
-            duplicated = internal_field_configs.map(&:field) & configs.map(&:field)
+                                        reader_names:, define_readers: true, user_facing:, **validations).tap do |configs|
+            duplicated = _duplicate_fields(internal_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
@@ -118,7 +133,7 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
-            duplicated = external_field_configs.map(&:field) & configs.map(&:field)
+            duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # NOTE: avoid <<, which would update value for parents and children
@@ -208,6 +223,22 @@ module Axn
 
         private
 
+        # Field names that collide by *symbolized* wire key — against `existing` configs AND within
+        # `new_configs` itself (`expects :foo, "foo"` is a single batch, so its collision is intra-
+        # batch). `:note` and `"note"` are the same field everywhere downstream (ActiveModel
+        # symbolizes the attribute, the reader is the same), so declaring both is a duplicate —
+        # otherwise two validations run on one field, the generated reader is clobbered, and per-field
+        # config (e.g. `user_facing:`) collapses ambiguously. Returns the offending names as declared.
+        def _duplicate_fields(existing, new_configs)
+          taken = existing.map { |c| c.field.to_sym }
+          seen = []
+          new_configs.map(&:field).select do |f|
+            collides = taken.include?(f.to_sym) || seen.include?(f.to_sym)
+            seen << f.to_sym
+            collides
+          end
+        end
+
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
         # reader is named for the wire key (identity). `as:` renames a single field's reader;
         # `prefix:` is sugar that prepends to every field's reader (literal concatenation, so the
@@ -254,6 +285,19 @@ module Axn
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
           raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?
+        end
+
+        # `user_facing:` reclassifies a violation of this field from a dev-facing exception into a
+        # user-facing failure (see Executor). Its value doubles as the surfaced message: `true` uses
+        # the field's own validation message; a String overrides it; a Symbol names an action method
+        # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
+        # handler shape. Anything else is a programmer error, so reject it at declaration.
+        def _validate_user_facing!(user_facing)
+          return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
+                    Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+
+          raise ArgumentError,
+                "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
         end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -366,6 +410,7 @@ module Axn
           [validations, metadata]
         end
 
+        # rubocop:disable Metrics/ParameterLists
         def _parse_field_configs(
           *fields,
           allow_blank: false,
@@ -377,6 +422,7 @@ module Axn
           metadata: {},
           reader_names: {},
           define_readers: false,
+          user_facing: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -384,7 +430,8 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader).tap do |config|
+            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader,
+                            user_facing:).tap do |config|
               if define_readers
                 _define_field_reader(reader, field)
                 _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
@@ -393,6 +440,7 @@ module Axn
             end
           end
         end
+        # rubocop:enable Metrics/ParameterLists
 
         # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
         # pre-existing method of the same name rather than clobbering it — but, unlike a silent skip,

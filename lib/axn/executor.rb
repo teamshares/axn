@@ -197,11 +197,13 @@ module Axn
 
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-      if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e)
-        # Make a `fails_on` classification sticky to this exception object (per call tree), so it stays
-        # a failure (fires on_failure, no report) as it propagates through ancestor `call!`s — mirroring
-        # how Axn::Failure is sticky via its class. Also record it on this result's context so
-        # result.outcome reports `failure` after the per-execution set is cleared.
+      if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
+         Axn::ValidationError.user_facing?(e)
+        # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
+        # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
+        # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
+        # Also record it on this result's context so result.outcome reports `failure` after the
+        # per-execution set is cleared.
         Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
         @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
@@ -318,12 +320,105 @@ module Axn
       context = direction == :inbound ? @action.internal_context : @action.result
       exception_klass = direction == :inbound ? InboundValidationError : OutboundValidationError
 
-      Axn::Validation::Fields.validate!(validations:, context:, exception_klass:)
+      if direction == :inbound
+        _validate_inbound!(validations:, context:, configs:)
+      else
+        Axn::Validation::Fields.validate!(validations:, context:, exception_klass:)
+      end
+    end
 
-      return unless direction == :inbound
+    # Inbound validation has three sources — top-level fields, subfields, and model consistency.
+    # Only top-level fields can opt into `user_facing:`; subfields and model consistency are always
+    # dev-facing. To keep "dev-facing dominates a mixed failure" honest, we must not reclassify the
+    # top-level failure until we know the later checks pass — otherwise a blank user-facing field
+    # would short-circuit and mask a co-occurring dev-facing subfield/model violation.
+    def _validate_inbound!(validations:, context:, configs:)
+      fields_error = _capture_inbound_validation_error do
+        Axn::Validation::Fields.validate!(validations:, context:, exception_klass: InboundValidationError)
+      end
 
+      unless fields_error
+        validate_subfields_contract!
+        validate_model_consistency!
+        return
+      end
+
+      user_facing = _user_facing_configs(configs)
+      failing = fields_error.errors.map { |err| err.attribute.to_sym }.uniq
+      # A dev-facing top-level field failed → it dominates; raise immediately (original behavior,
+      # later checks not consulted).
+      raise fields_error unless failing.any? && failing.all? { |field| user_facing.key?(field) }
+
+      # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
+      # violation still wins, so run those checks and let any such error propagate unreclassified
+      # (a real contract bug always pages). They're guaranteed independent here: `user_facing:` is
+      # rejected on any field that has subfields (see ContractForSubfields), so no subfield/model
+      # check hangs off one of these failed parents — each one's own parent validated cleanly.
       validate_subfields_contract!
       validate_model_consistency!
+
+      # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
+      # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
+      # discarded reclassification never fires an expensive/side-effecting handler for nothing.
+      raise InboundValidationError.new(fields_error.errors, user_facing: true,
+                                                            user_facing_message: _user_facing_message(fields_error, failing, user_facing))
+    end
+
+    def _capture_inbound_validation_error
+      yield
+      nil
+    rescue InboundValidationError => e
+      e
+    end
+
+    def _user_facing_configs(configs)
+      # Key by the symbolized field name so lookups match `failing` (built from
+      # `err.attribute.to_sym`): `expects "note"` stores `config.field` as the string "note", but
+      # ActiveModel reports the failing attribute as :note.
+      configs.each_with_object({}) do |config, hash|
+        hash[config.field.to_sym] = config.user_facing if config.user_facing
+      end
+    end
+
+    # One message part per failing user-facing field, in failure order, joined like
+    # `ValidationError#message`: `true` → the field's own validation message(s); a String → verbatim;
+    # a Symbol/callable → its return, invoked with an error **scoped to that field** (so a shared
+    # `->(e) { e.message }` sees only its own field, not the aggregate). A String/Symbol/callable
+    # that resolves blank falls back to the field's own validation message, so a user-facing failure
+    # never surfaces as the dev-facing generic message. The composed reason is then headlined by any
+    # declared base `error` in Result (prefixed-by-default, like a `fail!` reason).
+    def _user_facing_message(error, failing, user_facing)
+      failing.flat_map do |field|
+        own = _field_validation_messages(error, field)
+        override = case user_facing[field]
+                   when true then own
+                   when String then user_facing[field]
+                   else Core::Flow::Handlers::Invoker.call(action: @action, handler: user_facing[field],
+                                                           exception: _field_scoped_error(error, field),
+                                                           operation: "resolving user_facing: message")
+                   end
+        # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
+        # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
+        # back to the field's own validation message.
+        Array(override).filter_map { |m| m.presence&.to_s }.presence || own
+      end.to_sentence
+    end
+
+    # The InboundValidationError handed to a per-field Symbol/Proc handler, carrying only that
+    # field's validation errors — `user_facing:` is configured per field, so its handler must see a
+    # field-scoped error (otherwise `e.message` leaks every failing field into each field's part).
+    def _field_scoped_error(error, field)
+      scoped = ActiveModel::Errors.new(error.errors.first.base)
+      _field_errors(error, field).each { |err| scoped.import(err) }
+      InboundValidationError.new(scoped)
+    end
+
+    def _field_validation_messages(error, field)
+      _field_errors(error, field).map(&:full_message)
+    end
+
+    def _field_errors(error, field)
+      error.errors.group_by_attribute[field] || []
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`

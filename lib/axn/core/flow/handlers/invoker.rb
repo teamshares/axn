@@ -28,11 +28,17 @@ module Axn
             Axn::Internal::PipingError.swallow(operation, action:, exception: e)
           end
 
+          # Public so the contract DSL can validate a declared handler against the same notion of
+          # "invokable" used here at call time — what `expects ..., user_facing:` accepts is exactly
+          # what this invoker will actually call, with no second, divergent predicate. Requires both
+          # traits the invoker actually uses: `to_proc` (it runs the handler as `instance_exec(&...)`)
+          # and `arity` (it arity-filters the args). An object answering one but not the other would
+          # pass an arity-only check yet raise at call time — Procs/lambdas/Methods answer both.
+          def callable?(value) = value.respond_to?(:to_proc) && value.respond_to?(:arity)
+
           private
 
           def symbol?(value) = value.is_a?(Symbol)
-
-          def callable?(value) = value.respond_to?(:arity)
 
           def call_symbol_handler(action:, symbol:, exception: nil)
             unless action.respond_to?(symbol, true)
