@@ -58,6 +58,11 @@ module Axn
 
         # Internal: tracks nesting depth for logging and duplicate-log suppression
         include Core::NestingTracking
+
+        # Actions are run via the sanctioned entry points (.call / .call!), which build
+        # the instance internally. Block direct instantiation so callers can't bypass
+        # hooks, validation, and the other guarantees those entry points provide.
+        private_class_method :new
       end
     end
 

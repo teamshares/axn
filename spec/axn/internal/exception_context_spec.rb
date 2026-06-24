@@ -16,7 +16,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(name: "Alice", age: 30)
+      instance = TestAction.send(:new, name: "Alice", age: 30)
 
       result = described_class.build(action: instance)
 
@@ -37,10 +37,10 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(data: {
-                                  outer: { inner: "x" },
-                                  list: [{ a: 1 }, { b: 2 }],
-                                })
+      instance = TestAction.send(:new, data: {
+                                   outer: { inner: "x" },
+                                   list: [{ a: 1 }, { b: 2 }],
+                                 })
 
       result = described_class.build(action: instance)
 
@@ -61,7 +61,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(name: "Alice")
+      instance = TestAction.send(:new, name: "Alice")
       retry_context = double("RetryContext", to_h: { attempt: 2, max_attempts: 5 })
 
       result = described_class.build(
@@ -87,7 +87,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(name: "Alice")
+      instance = TestAction.send(:new, name: "Alice")
 
       original_value = Axn.config._include_retry_command_in_exceptions
       begin
@@ -116,7 +116,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("TestAction", action_class)
 
-      instance = TestAction.new(name: "Alice")
+      instance = TestAction.send(:new, name: "Alice")
 
       original_value = Axn.config._include_retry_command_in_exceptions
       begin
@@ -142,7 +142,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
       stub_const("NoExpectationsAction", no_expectations_action)
 
-      instance = NoExpectationsAction.new
+      instance = NoExpectationsAction.send(:new)
 
       original_value = Axn.config._include_retry_command_in_exceptions
       begin
@@ -198,7 +198,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
         end
 
         stub_const("TestAction", action_class)
-        instance = TestAction.new(record: unpersisted)
+        instance = TestAction.send(:new, record: unpersisted)
 
         expect { described_class.build(action: instance) }.not_to raise_error
       end
@@ -213,7 +213,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
         end
 
         stub_const("TestAction", action_class)
-        instance = TestAction.new(record: unpersisted)
+        instance = TestAction.send(:new, record: unpersisted)
 
         result = described_class.build(action: instance)
 
@@ -230,7 +230,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
         end
 
         stub_const("TestAction", action_class)
-        instance = TestAction.new(record: persisted)
+        instance = TestAction.send(:new, record: persisted)
 
         result = described_class.build(action: instance)
 
@@ -247,7 +247,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
         end
 
         stub_const("TestAction", action_class)
-        instance = TestAction.new(record: unpersisted)
+        instance = TestAction.send(:new, record: unpersisted)
 
         original = Axn.config._include_retry_command_in_exceptions
         begin
@@ -271,7 +271,7 @@ RSpec.describe Axn::Internal::ExceptionContext do
         end
       end
 
-      instance = anonymous_action.new(name: "test")
+      instance = anonymous_action.send(:new, name: "test")
 
       # Stub class.name to return nil (simulating anonymous class)
       allow(instance.class).to receive(:name).and_return(nil)

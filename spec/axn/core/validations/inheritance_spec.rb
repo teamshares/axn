@@ -51,6 +51,25 @@ RSpec.describe Axn do
     end
   end
 
+  describe "re-including Axn in a subclass" do
+    let(:base) do
+      build_axn do
+        expects :foo, type: Numeric
+        exposes :bar, type: Numeric
+
+        def call = expose(bar: foo * 10)
+      end
+    end
+
+    it "is a no-op that preserves inherited field configs" do
+      redundant_subclass = Class.new(base) { include Axn }
+
+      result = redundant_subclass.call(foo: 11)
+      expect(result).to be_ok
+      expect(result.bar).to eq(110)
+    end
+  end
+
   describe "inheritance via explicit inclusion" do
     let(:custom_action_with_foo) do
       Module.new do
