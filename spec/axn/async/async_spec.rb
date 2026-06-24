@@ -19,98 +19,12 @@ RSpec.describe Axn::Async do
     end
   end
 
-  context "when explicitly configured with :sidekiq" do
-    let(:action) do
-      sidekiq_client = Class.new do
-        def send(_method, *_args)
-          false # Mock json_unsafe? to return false
-        end
-      end
-
-      sidekiq_job = Module.new do
-        def self.included(base)
-          base.class_eval do
-            def self.perform_async(*args)
-              # Mock implementation
-            end
-          end
-        end
-      end
-
-      stub_const("Sidekiq", Module.new)
-      stub_const("Sidekiq::Job", sidekiq_job)
-      stub_const("Sidekiq::Client", sidekiq_client)
-
-      build_axn do
-        async :sidekiq
-      end
-    end
-
-    it "includes Adapters::Sidekiq" do
-      expect(action.ancestors).to include(Axn::Async::Adapters::Sidekiq)
-    end
-
-    it "provides call_async method" do
-      expect(action).to respond_to(:call_async)
-    end
-
-    it "call_async works without raising" do
-      expect { action.call_async(foo: "bar") }.not_to raise_error
-    end
-  end
-
-  context "when configured with :sidekiq and kwargs" do
-    let(:action) do
-      sidekiq_client = Class.new do
-        def send(_method, *_args)
-          false # Mock json_unsafe? to return false
-        end
-      end
-
-      sidekiq_job = Module.new do
-        def self.included(base)
-          base.class_eval do
-            def self.perform_async(*args)
-              # Mock implementation
-            end
-
-            def self.sidekiq_options(**options)
-              @sidekiq_options = options
-            end
-
-            def self.sidekiq_options_hash
-              @sidekiq_options || {}
-            end
-          end
-        end
-      end
-
-      stub_const("Sidekiq", Module.new)
-      stub_const("Sidekiq::Job", sidekiq_job)
-      stub_const("Sidekiq::Client", sidekiq_client)
-
-      build_axn do
-        async :sidekiq, queue: "high_priority", retry: 3
-      end
-    end
-
-    it "includes Adapters::Sidekiq" do
-      expect(action.ancestors).to include(Axn::Async::Adapters::Sidekiq)
-    end
-
-    it "applies sidekiq_options from kwargs" do
-      expect(action.sidekiq_options_hash).to include(queue: "high_priority", retry: 3)
-    end
-
-    it "provides call_async method" do
-      expect(action).to respond_to(:call_async)
-    end
-
-    it "call_async works without raising" do
-      expect { action.call_async(foo: "bar") }.not_to raise_error
-    end
-  end
-
+  # NOTE: The :sidekiq adapter contexts (adapter inclusion, sidekiq_options from kwargs,
+  # and call_async behavior) were removed here because they depended on mocking Sidekiq
+  # (the old "action IS the Sidekiq::Job" model). That behavior is covered against real
+  # Sidekiq + the generic Worker in the Rails dummy app:
+  #   spec_rails/dummy_app/spec/axn/async/async_interface_spec.rb (adapter inclusion + options)
+  #   spec_rails/dummy_app/spec/axn/async/adapters/sidekiq_spec.rb (options + call_async)
   context "when explicitly configured with :active_job" do
     let(:action) do
       active_job_base = Class.new do
