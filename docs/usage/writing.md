@@ -110,7 +110,7 @@ class Assignments::Create
 end
 ```
 
-- `inputs` is the resolved declared-inbound fields (defaults and preprocessing applied) as a Hash — splat it, and use plain Hash methods to inject or drop fields: `Child.call(**inputs.except(:role), role: ROLE)`.
+- `inputs` is the resolved declared-inbound fields (defaults and preprocessing applied, and `model:` fields resolved to their record — even when supplied by `<field>_id`) as a Hash — splat it, and use plain Hash methods to inject or drop fields: `Child.call(**inputs.except(:role), role: ROLE)`.
 - `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward.
 
 ### Convenient failure with context

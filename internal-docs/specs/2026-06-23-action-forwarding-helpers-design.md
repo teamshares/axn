@@ -156,20 +156,28 @@ the action's own readers see:
 
 ```ruby
 def inputs
-  self.class._declared_fields(:inbound).to_h { |f| [f, send_resolved(f)] }
+  self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
+    next unless _inbound_field_provided?(field)        # wire key OR (model: field) its <field>_id
+    hash[field] = internal_context.public_send(field)  # resolved reader value, keyed by wire key
+  end
 end
 ```
 
-(Exact resolution seam — reading through `internal_context` vs. the public readers — is for the
-plan; the **requirement** is that values match what the action's readers return, so
-`Child.call(**inputs)` forwards the same view the parent has, not raw `provided_data`.)
+Values are read **through `internal_context`** (the inbound facade), not raw `provided_data`, so
+`Child.call(**inputs)` forwards the same view the parent's readers have.
 
 ### Semantics & rules
 
 - **Declared inbound only.** Undeclared passthrough keys in `provided_data` are *not* included, so
   they never leak into children.
-- **Resolved values.** Defaults and preprocessing are applied — forwarding is faithful to the
-  parent's own view.
+- **Resolved values.** Defaults and preprocessing are applied. Critically, a `model:` field is
+  forwarded as its **resolved record**, not the raw input — the record lives only inside the reader,
+  never in `provided_data`. This is why reading must go through `internal_context`: a field supplied
+  by `<field>_id` (the id-based resolution path) has no `<field>` key in `provided_data` at all, so a
+  raw-`provided_data` read would drop it entirely and a same-contract child would receive nothing.
+- **Absent optional fields are omitted** (not present as `nil` keys). Presence counts the `<field>_id`
+  companion for `model:` fields, so a by-id model input is forwarded while a genuinely absent optional
+  is skipped.
 - **Returns a plain `Hash`.** Subsetting needs no special API: `inputs.except(:role)`,
   `inputs.slice(:user, :company)`. Injection/override is just merge-at-call-site:
   `Child.call(**inputs.except(:role), role: ROLE)`.

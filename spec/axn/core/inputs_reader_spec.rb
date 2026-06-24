@@ -74,4 +74,72 @@ RSpec.describe "#inputs reader" do
 
     expect(parent.call(a: 1, b: 9).pair).to eq([1, 0])
   end
+
+  # Model-backed inputs: the resolved record only ever lives inside the reader — provided_data
+  # holds the record (when passed directly) or only the `<field>_id` (when passed by id). `inputs`
+  # must forward the resolved record under the wire key in both cases, or a same-contract child
+  # would receive nothing and fail validation.
+  describe "model-backed inputs" do
+    let(:klass) do
+      Class.new do
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+      end
+    end
+
+    it "forwards the resolved record when provided by id" do
+      k = klass
+      action = build_axn do
+        expects :company, model: { klass: k, finder: :find }
+        exposes :captured, optional: true
+        def call = expose(captured: inputs)
+      end
+
+      captured = action.call(company_id: 5).captured
+      expect(captured.keys).to eq([:company])
+      expect(captured[:company].id).to eq(5)
+    end
+
+    it "forwards the record when provided directly" do
+      k = klass
+      record = klass.new(7)
+      action = build_axn do
+        expects :company, model: { klass: k, finder: :find }
+        exposes :captured, optional: true
+        def call = expose(captured: inputs)
+      end
+
+      expect(action.call(company: record).captured).to eq(company: record)
+    end
+
+    it "round-trips a by-id model input through a same-contract child" do
+      k = klass
+      child = build_axn do
+        expects :company, model: { klass: k, finder: :find }
+        exposes :company_id_seen, optional: true
+        def call = expose(company_id_seen: company.id)
+      end
+      c = child
+      parent = build_axn do
+        expects :company, model: { klass: k, finder: :find }
+        exposes :company_id_seen, optional: true
+        define_method(:call) { expose(c.call(**inputs)) }
+      end
+
+      expect(parent.call(company_id: 5).company_id_seen).to eq(5)
+    end
+
+    it "omits an absent optional model field" do
+      k = klass
+      action = build_axn do
+        expects :company, model: { klass: k, finder: :find }, optional: true
+        exposes :captured, optional: true
+        def call = expose(captured: inputs)
+      end
+
+      expect(action.call.captured).to eq({})
+    end
+  end
 end
