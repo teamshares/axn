@@ -204,9 +204,12 @@ error "email already taken", if: ArgumentError   # reason → "Couldn't sync use
 fail! "missing field"                            # reason → "Couldn't sync user: missing field"
 ```
 
-Composing actions: a base `error` on the parent automatically prefixes a child failure surfaced via
-`call!`. Reach for explicit `call` + `fail!("context: #{child.error}")` only when you need per-call
-context or to absorb a child's raised exception into a parent *failure*.
+Composing actions: a base `error` on the parent auto-prefixes a child failure surfaced via `call!`
+**only when the child failed via `fail!`** (re-raised as `Axn::Failure`). A child `fails_on`-matched
+exception — or any raised exception — bubbles as the *original* exception, so the parent settles as a
+failure but `result.error` shows just the parent headline; the child's message is **not** woven in.
+To carry the child's message (e.g. a `RecordInvalid`/model-strategy child), or to add per-call
+context, use non-bang `call` + `fail!("context: #{child.error}")`.
 
 ⚠️ **Message bodies are NOT redacted** and propagate outward to every ancestor's `result.error`,
 logs, and error trackers. Never interpolate secrets/PII into `error`/`success`/`fail!` text — put
