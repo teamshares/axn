@@ -34,6 +34,24 @@ class MessagesController < ApplicationController
 end
 ```
 
+### Compact flash idiom
+
+When you don't need to read a specific exposure on success, `result.message` is always set — the `success` message when `ok?`, the `error` message otherwise — so the whole branch collapses to a single line:
+
+```ruby
+def create
+  result = Actions::Slack::Post.call(channel: "#engineering", message: params[:message])
+  flash[result.ok? ? :success : :error] = result.message
+  redirect_to messages_path
+end
+```
+
+This pairs especially well with [per-action `success`/`error` declarations](/reference/class#success-and-error), so `result.message` is meaningful in both cases.
+
+::: tip Flash keys
+`:success` and `:error` aren't default Rails flash keys. Register them with `add_flash_types :success, :error` in your `ApplicationController`, or use the built-in `:notice` / `:alert` instead.
+:::
+
 ## Advanced Usage
 
 ### `#call!`
