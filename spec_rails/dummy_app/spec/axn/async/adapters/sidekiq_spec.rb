@@ -17,13 +17,13 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     Sidekiq::Testing.inline!
     Sidekiq.strict_args!(false)
     allow(Axn.config.logger).to receive(:info).and_call_original
-    Sidekiq::Job.jobs.clear
+    Sidekiq::Job.clear_all
   end
 
   after do
     Sidekiq::Testing.fake!
     Sidekiq.strict_args!(true)
-    Sidekiq::Job.jobs.clear
+    Sidekiq::Job.clear_all
   end
 
   it_behaves_like "async adapter rails delayed execution"
@@ -42,25 +42,33 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
     it { expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/) }
 
-    it "converts GlobalID objects during execution" do
-      expect_any_instance_of(global_id_action).to receive(:perform).with(
-        hash_including("name" => "World", "user" => hash_including("_aj_globalid" => a_string_matching(%r{\Agid://[^/]+/User/\d+\z}))),
-      ).and_call_original
+    it "converts GlobalID objects during enqueue serialization" do
+      Sidekiq::Testing.fake!
+      Sidekiq::Job.clear_all
 
       expect(global_id_action.call_async(name: "World", user:)).to match(/\A[0-9a-f]{24}\z/)
+
+      # args == [action_class_name, serialized_kwargs]; the kwargs carry the GlobalID
+      job_kwargs = Sidekiq::Job.jobs.last["args"].last
+      expect(job_kwargs).to include(
+        "name" => "World",
+        "user" => hash_including("_aj_globalid" => a_string_matching(%r{\Agid://[^/]+/User/\d+\z})),
+      )
     end
   end
 
   describe "Sidekiq options configuration" do
+    # Per-action sidekiq options now live on the generated per-action Worker subclass
+    # (the action itself is no longer a Sidekiq::Job).
     it "applies sidekiq_options from async config" do
-      expect(Actions::Async::TestActionSidekiqWithOptions.sidekiq_options).to include(
+      expect(Actions::Async::TestActionSidekiqWithOptions::AxnSidekiqWorker.get_sidekiq_options).to include(
         "queue" => "high_priority",
         "retry" => 3,
       )
       expect(Actions::Async::TestActionSidekiqWithOptions.call_async(name: "Test", age: 25)).to match(/\A[0-9a-f]{24}\z/)
     end
 
-    it { expect(test_action.sidekiq_options).to be_a(Hash) }
+    it { expect(test_action::AxnSidekiqWorker.get_sidekiq_options).to be_a(Hash) }
   end
 
   describe "Sidekiq job execution" do
@@ -109,16 +117,16 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
     context "when Sidekiq::Testing.fake! is enabled" do
       before do
         Sidekiq::Testing.fake!
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
       end
 
       after do
         Sidekiq::Testing.inline!
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
       end
 
       it "enqueues job in Sidekiq jobs array" do
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
         expect { test_action.call_async(name: "World", age: 25) }.to change { Sidekiq::Job.jobs.size }.by(1)
       end
 
@@ -143,7 +151,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
         expect(Axn.config.logger).not_to have_received(:info).with(expected_log_message)
 
         job_data = Sidekiq::Job.jobs.first
-        job_data["class"].constantize.send(:new).perform(job_data["args"].first)
+        job_data["class"].constantize.send(:new).perform(*job_data["args"])
 
         expect(Axn.config.logger).to have_received(:info).with(expected_log_message)
       end
@@ -185,13 +193,13 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
       it "does not leak _async into job arguments" do
         Sidekiq::Testing.fake!
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
 
         test_action.call_async(name: "World", age: 25, _async: { wait: 3600 })
 
         job = Sidekiq::Job.jobs.first
-        expect(job["args"].first).not_to have_key("_async")
-        expect(job["args"].first).not_to have_key(:_async)
+        expect(job["args"].last).not_to have_key("_async")
+        expect(job["args"].last).not_to have_key(:_async)
       end
     end
 
@@ -206,22 +214,24 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
       it "does not leak _async into job arguments with duration" do
         Sidekiq::Testing.fake!
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
 
         test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
 
         job = Sidekiq::Job.jobs.first
-        expect(job["args"].first).not_to have_key("_async")
-        expect(job["args"].first).not_to have_key(:_async)
+        expect(job["args"].last).not_to have_key("_async")
+        expect(job["args"].last).not_to have_key(:_async)
       end
 
       it "converts duration to seconds correctly" do
         Sidekiq::Testing.fake!
-        Sidekiq::Job.jobs.clear
-
-        expect(test_action).to receive(:perform_in).with(300, anything) # 5.minutes = 300 seconds
+        Sidekiq::Job.clear_all
 
         test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes })
+
+        # 5.minutes is normalized to 300s and scheduled via perform_in on the Worker
+        job = Sidekiq::Job.jobs.first
+        expect((job["at"] - job["created_at"]).round).to eq(300) # 5.minutes = 300 seconds
       end
     end
 
@@ -232,7 +242,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
       it "does not cause serialization errors" do
         Sidekiq::Testing.fake!
-        Sidekiq::Job.jobs.clear
+        Sidekiq::Job.clear_all
         Sidekiq.strict_args!(true)
 
         expect { test_action.call_async(name: "World", age: 25, _async: { wait: 5.minutes }) }.not_to raise_error
