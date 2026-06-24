@@ -67,6 +67,12 @@ module Axn
           **,
           &block
         )
+          # Canonicalize the wire key to a symbol up front so everything downstream — config.field,
+          # reader names, duplicate detection, the inbound read path — is symbol-keyed by construction.
+          # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
+          # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
+          fields = fields.map(&:to_sym)
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
@@ -124,6 +130,9 @@ module Axn
           **,
           &block
         )
+          # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
+          fields = fields.map(&:to_sym)
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
@@ -223,18 +232,18 @@ module Axn
 
         private
 
-        # Field names that collide by *symbolized* wire key — against `existing` configs AND within
-        # `new_configs` itself (`expects :foo, "foo"` is a single batch, so its collision is intra-
-        # batch). `:note` and `"note"` are the same field everywhere downstream (ActiveModel
-        # symbolizes the attribute, the reader is the same), so declaring both is a duplicate —
-        # otherwise two validations run on one field, the generated reader is clobbered, and per-field
-        # config (e.g. `user_facing:`) collapses ambiguously. Returns the offending names as declared.
+        # Field names that collide by wire key — against `existing` configs AND within `new_configs`
+        # itself (`expects :foo, "foo"` is a single batch, so its collision is intra-batch). Keys are
+        # symbol-canonical at declaration (PRO-2790), so `:note` and `"note"` are already the same
+        # field here; declaring both is a duplicate — otherwise two validations run on one field, the
+        # generated reader is clobbered, and per-field config (e.g. `user_facing:`) collapses
+        # ambiguously. Returns the offending names.
         def _duplicate_fields(existing, new_configs)
-          taken = existing.map { |c| c.field.to_sym }
+          taken = existing.map(&:field)
           seen = []
           new_configs.map(&:field).select do |f|
-            collides = taken.include?(f.to_sym) || seen.include?(f.to_sym)
-            seen << f.to_sym
+            collides = taken.include?(f) || seen.include?(f)
+            seen << f
             collides
           end
         end
@@ -578,6 +587,13 @@ module Axn
           end
 
           kwargs.each do |key, value|
+            # Symbolize the exposure key to match the symbol-canonical outbound contract (PRO-2790):
+            # `exposes "saved"` declares `:saved`, and the result facade / outbound validation read
+            # `exposed_data[:saved]`. Without this a string-keyed write (`expose("saved", v)`,
+            # `expose("saved" => v)`, or a string `expose_return_as`) would store under "saved" and
+            # the declared field would read nil.
+            key = key.to_sym
+
             raise Axn::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
 
             @__context.exposed_data[key] = value

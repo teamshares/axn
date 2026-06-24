@@ -3,7 +3,13 @@
 module Axn
   class Context
     def initialize(**provided_data)
-      @provided_data = provided_data
+      # Normalize inbound keys to symbols so the read path has indifferent access: a declared field's
+      # key (always symbolized at declaration) matches the call-arg key regardless of how the caller
+      # spelled it. Splatting JSON/HTTP params straight into `.call(**body)` (string keys) Just Works
+      # instead of silently reading nil. Top-level keys only — values (including nested hashes) are
+      # untouched. Async deserialize paths already re-symbolize keys before re-invoking, so this is
+      # consistent with the round-trip (see Axn::Async serialization). See PRO-2790.
+      @provided_data = provided_data.transform_keys(&:to_sym)
       @exposed_data = {}
 
       # Framework-managed fields
