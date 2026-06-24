@@ -557,6 +557,8 @@ This is triggered after the Axn completes successfully, once the enclosing datab
 
 Triggered on ANY error (explicit `fail!` or uncaught exception). Optional filter argument works the same as `on_exception` (documented below).
 
+`on_error` is a superset of `on_failure` and `on_exception`, so it co-fires with whichever specific bucket applies: a `fail!` triggers both `on_error` and `on_failure`, and an uncaught exception triggers both `on_error` and `on_exception`. If you register `on_error` alongside the specific callback, expect both to run — they are not mutually exclusive.
+
 ### `on_failure`
 
 Triggered ONLY on explicit `fail!` (i.e. _not_ by an uncaught exception). Optional filter argument works the same as `on_exception` (documented below).

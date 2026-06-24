@@ -12,18 +12,16 @@ Use the form strategy when you need to validate **user-facing input** with user-
 class CreateUser
   include Axn
 
-  use :form, type: CreateUser::Form
+  use :form do
+    validates :email, presence: true, format: { with: URI::MailTo::EMAIL_REGEXP }
+    validates :name, presence: true, length: { minimum: 2 }
+  end
 
   def call
     # form is automatically validated and exposed
     # If validation fails, the action fails with form.errors
     User.create!(form.to_h)
   end
-end
-
-class CreateUser::Form < Axn::FormObject
-  validates :email, presence: true, format: { with: URI::MailTo::EMAIL_REGEXP }
-  validates :name, presence: true, length: { minimum: 2 }
 end
 ```
 
@@ -50,7 +48,9 @@ The `type` option determines which form class to use:
 # Explicit type
 use :form, type: RegistrationForm
 
-# String constant (useful for avoiding load order issues)
+# String constant — defers the bareword reference so it plays nicely with Rails
+# autoloading. The constant must still be loadable when `use :form` runs; for full
+# load-order independence (defining the form inline), pass a block instead.
 use :form, type: "Users::RegistrationForm"
 
 # Auto-detected from action name
@@ -118,7 +118,9 @@ class UpdateProfile
   use :form, type: ProfileForm, inject: [:user] # [!code focus]
 
   def call
-    user.update!(form.to_h)
+    # Injected fields are real accessors, so they show up in `form.to_h`.
+    # Exclude them when passing attributes to a writer like `update!`.
+    user.update!(form.to_h.except(:user)) # [!code focus]
   end
 end
 
@@ -202,23 +204,6 @@ end
 ## Complete Example
 
 ```ruby
-class CreateCompanyMember
-  include Axn
-
-  expects :company, model: Company
-  use :form, type: MemberForm, inject: [:company]
-
-  exposes :member
-
-  error { form.errors.full_messages.to_sentence }
-  success { "#{member.name} has been added to #{company.name}" }
-
-  def call
-    member = company.members.create!(form.to_h)
-    expose member: member
-  end
-end
-
 class MemberForm < Axn::FormObject
   attr_accessor :company  # Injected
 
@@ -234,6 +219,23 @@ class MemberForm < Axn::FormObject
     return unless company&.members&.exists?(email: email)
 
     errors.add(:email, "is already a member of this company")
+  end
+end
+
+class CreateCompanyMember
+  include Axn
+
+  expects :company, model: Company
+  use :form, type: MemberForm, inject: [:company]
+
+  exposes :member
+
+  error { form.errors.full_messages.to_sentence }
+  success { "#{member.name} has been added to #{company.name}" }
+
+  def call
+    member = company.members.create!(form.to_h)
+    expose member: member
   end
 end
 ```

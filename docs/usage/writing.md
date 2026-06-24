@@ -223,7 +223,7 @@ Would give us these outputs:
 ```ruby
 Foo.call.error # => "No secret of life for you: Name can't be blank"
 Foo.call(name: "Doug").error # => "Douglas already knows the meaning"
-Foo.call(name: "Adams").success # => "Revealed the secret of life to Adams"
+Foo.call(name: "Adams").success # => "Revealed to Adams: Hello Adams, the meaning of life is 42"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
 

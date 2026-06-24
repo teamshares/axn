@@ -33,7 +33,7 @@ Helper method to log (via the [configurable](/reference/configuration#logger) `A
 * First argument (required) is a string message to log
 * Also accepts a `level:` keyword argument to change the log level (defaults to `info`)
 
-Primarily used for its side effects; returns whatever the underlying `Axn.config.logger` instance returns but it does return a Hash with the key/value pair(s) you exposed.
+Primarily used for its side effects; returns whatever the underlying `Axn.config.logger` instance returns.
 
 
 

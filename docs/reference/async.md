@@ -40,7 +40,7 @@ The Sidekiq adapter provides integration with the Sidekiq background job process
 ```ruby
 # In your action class
 async :sidekiq do
-  sidekiq_options queue: "high_priority", retry: 5, priority: 10
+  sidekiq_options queue: "high_priority", retry: 5
 end
 
 # Or with keyword arguments (shorthand)
@@ -50,7 +50,6 @@ async :sidekiq, queue: "high_priority", retry: 5
 **Configuration options:**
 - `queue`: The Sidekiq queue name (default: "default")
 - `retry`: Number of retry attempts (default: 25)
-- `priority`: Job priority (default: 0)
 - Any other Sidekiq options supported by `sidekiq_options`
 
 For detailed setup instructions including middleware configuration, see [Sidekiq Adapter Setup](/reference/async/sidekiq).
@@ -64,7 +63,6 @@ The ActiveJob adapter provides integration with Rails' ActiveJob framework.
 async :active_job do
   queue_as "high_priority"
   self.priority = 10
-  self.wait = 5.minutes
 end
 ```
 
@@ -224,8 +222,8 @@ SyncForCompany.enqueue_all  # Automatically iterates Company.all and enqueues ea
 
 **How it works:**
 1. `enqueue_all` validates configuration upfront (async configured, static args present)
-2. If all arguments are serializable, enqueues an `EnqueueAllOrchestrator` job in the background
-3. If any argument is unserializable (e.g., an AR relation override), executes in the foreground instead
+2. By default, enqueues an `EnqueueAllOrchestrator` job that performs the iteration in the background
+3. If an iterable is passed as a keyword argument (e.g., overriding the source with an AR relation), that source can't be serialized for a background job, so the iteration runs in the foreground instead
 4. During execution, iterates over the source collection and enqueues individual jobs
 5. Model-based iterations (using `find_each`) are processed first for memory efficiency
 

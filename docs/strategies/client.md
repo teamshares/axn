@@ -29,8 +29,8 @@ end
 | Option | Default | Description |
 | ------ | ------- | ----------- |
 | `name` | `:client` | The method name for accessing the client |
-| `url` | (required) | Base URL for the API |
-| `headers` | `{}` | Default headers to include in all requests |
+| `url` | (none) | Base URL for the API. Not enforced by the strategy — it's passed through to `Faraday.new`, so it's effectively required only if you make relative requests. |
+| `headers` | `{}` | Default headers to include in all requests (passed through to `Faraday.new`) |
 | `user_agent` | Auto-generated | Custom User-Agent header |
 | `debug` | `false` | Enable Faraday response logging |
 | `prepend_config` | `nil` | Proc to prepend middleware configuration |
@@ -40,14 +40,21 @@ Any additional options are passed directly to `Faraday.new`.
 
 ## Default Middleware
 
-The client strategy automatically configures these middleware:
+The client strategy sets these headers and middleware on the Faraday connection.
 
-1. `Content-Type: application/json` header
-2. `User-Agent` header (configurable)
-3. `response :raise_error` - Raises on 4xx/5xx responses
-4. `request :url_encoded` - Encodes request parameters
-5. `request :json` - JSON request encoding
-6. `response :json` - JSON response parsing
+**Headers:**
+
+- `Content-Type: application/json`
+- `User-Agent` (configurable via `user_agent:`)
+
+**Middleware** (registered in this order; any `prepend_config` proc runs before them):
+
+1. An execution-context middleware that records the last request/response so it can be attached to exception reports
+2. `response :raise_error` - Raises on 4xx/5xx responses
+3. `request :url_encoded` - Encodes request parameters
+4. `request :json` - JSON request encoding
+5. `response :json` - JSON response parsing (only for `json` content types)
+6. `response :logger` - Response logging, only when `debug: true`
 
 ## Custom Client Name
 
