@@ -59,6 +59,7 @@ export default defineConfig({
           { text: 'Validating User Input', link: '/recipes/validating-user-input' },
           { text: 'Testing Actions', link: '/recipes/testing' },
           { text: 'Wrapping External Service Clients', link: '/recipes/wrapping-external-clients' },
+          { text: 'Dashboards from Axn Metrics', link: '/recipes/datadog-dashboards' },
           { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
           { text: 'Suppressing Duplicate Async Reports', link: '/recipes/suppressing-duplicate-async-reports' },
           { text: 'Configuration for Axn-based Gems', link: '/recipes/gem-configuration' },

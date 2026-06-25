@@ -80,3 +80,18 @@ jobs:
         bundle install --path vendor/bundle
     - name: Run Rails specs
       run: bundle exec rake spec_rails
+
+  docs_links:
+    runs-on: ubuntu-latest
+    name: Docs Link Check
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Node
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: yarn
+    - name: Install dependencies
+      run: yarn install
+    - name: Build docs and verify internal links
+      run: yarn docs:check

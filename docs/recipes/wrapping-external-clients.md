@@ -1,6 +1,6 @@
 # Wrapping External Service Clients
 
-A convention several Axn-based apps have converged on: wrap each external service (a third-party API, a vendor SDK, an internal service) in a single class that `include`s `Axn`, memoizes the underlying connection, and mounts one action per operation via [`mount_axn_method`](/advanced/mountable#mount_axn_method-strategy).
+A convention several Axn-based apps have converged on: wrap each external service (a third-party API, a vendor SDK, an internal service) in a single class that `include`s `Axn`, memoizes the underlying connection, and mounts one action per operation via [`mount_axn_method`](/advanced/mountable#mount-axn-method-strategy).
 
 This is a **convention, not a framework requirement** — nothing in Axn enforces it. It's written up here because it has been consistently useful, and because the choice of `mount_axn_method` (rather than `mount_axn`) is deliberate in a way that's worth understanding before you copy the pattern.
 
