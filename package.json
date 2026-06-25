@@ -5,6 +5,8 @@
   "scripts": {
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:check-links": "node docs/.vitepress/check-links.mjs",
+    "docs:check": "vitepress build docs && node docs/.vitepress/check-links.mjs"
   }
 }

@@ -257,23 +257,25 @@ For example, to wire up Datadog metrics:
 ```ruby
   Axn.configure do |c|
     c.emit_metrics = proc do |resource:, result:|
-      TS::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s, resource: })
-      TS::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
+      TS::Metrics.increment("axn.call", tags: { resource:, outcome: result.outcome.to_s })
+      TS::Metrics.distribution("axn.call.duration", result.elapsed_time, tags: { resource:, outcome: result.outcome.to_s })
     end
   end
 ```
+
+Prefer a **single metric name tagged by `resource`** (as above) over a separate metric name per action (e.g. `"action.#{resource.underscore}"`). One tagged metric lets a single dashboard render the whole fleet and drill into any one action with a `resource:` filter — see [Dashboards from Axn Metrics](/recipes/datadog-dashboards).
 
 You can also define `emit_metrics` to only receive the arguments you need:
 
 ```ruby
   # Only receive resource (if you don't need the result)
   c.emit_metrics = proc do |resource:|
-    TS::Metrics.increment("action.#{resource.underscore}")
+    TS::Metrics.increment("axn.call", tags: { resource: })
   end
 
   # Only receive result (if you don't need the resource)
   c.emit_metrics = proc do |result:|
-    TS::Metrics.increment("action.call", tags: { outcome: result.outcome.to_s })
+    TS::Metrics.increment("axn.call", tags: { outcome: result.outcome.to_s })
   end
 
   # Accept any keyword arguments (receives both)
@@ -600,8 +602,8 @@ Axn.configure do |c|
   # OpenTelemetry tracing is automatic when OpenTelemetry is available
 
   c.emit_metrics = proc do |resource:, result:|
-    Datadog::Metrics.increment("action.#{resource.underscore}", tags: { outcome: result.outcome.to_s })
-    Datadog::Metrics.histogram("action.duration", result.elapsed_time, tags: { resource: })
+    Datadog::Metrics.increment("axn.call", tags: { resource:, outcome: result.outcome.to_s })
+    Datadog::Metrics.distribution("axn.call.duration", result.elapsed_time, tags: { resource:, outcome: result.outcome.to_s })
   end
 
 

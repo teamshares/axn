@@ -105,7 +105,7 @@ SendReport.call_async(occurred_at: Time.current)        # ✅ arrives as a Time 
 SendReport.call_async(occurred_at: Tempfile.new("rpt")) # ✗ raises Axn::Async::UnserializableArgument
 ```
 
-The same rules apply to the static arguments passed to [`enqueue_all`](#batch-enqueueing-with-enqueues_each).
+The same rules apply to the static arguments passed to [`enqueue_all`](#batch-enqueueing-with-enqueues-each).
 
 ## Delayed Execution
 
