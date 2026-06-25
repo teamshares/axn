@@ -65,10 +65,12 @@ Switching the mount to `mount_axn` would put the non-bang `Result` method direct
 The wrapper is the right place to translate vendor-specific exceptions into user-facing `result.error` strings, so callers never have to know the shape of the underlying API's errors. Use a per-operation `error:` handler, or — when a whole service shares error semantics — declare them once on a base class keyed by exception class:
 
 ```ruby
-error "Please sign in again.", if: PaymentProvider::AuthenticationError
-error "That charge wasn't found.", if: PaymentProvider::NotFoundError
 error "Payment failed. Please try again.", if: PaymentProvider::Error
+error "That charge wasn't found.", if: PaymentProvider::NotFoundError
+error "Please sign in again.", if: PaymentProvider::AuthenticationError
 ```
+
+Order matters: the **last** matching `error` wins. When the vendor's exceptions form a hierarchy (e.g. `AuthenticationError < PaymentProvider::Error`), declare the broad catch-all first and the more-specific classes last, so a specific match isn't shadowed by the catch-all.
 
 These resolve only for the non-bang (`Result`) path — the bang method still raises the original exception — which pairs naturally with the two-interface split above.
 
