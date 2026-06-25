@@ -56,6 +56,7 @@ export default defineConfig({
         text: 'Recipes',
         items: [
           { text: 'Memoization', link: '/recipes/memoization' },
+          { text: 'Wrapping External Service Clients', link: '/recipes/wrapping-external-clients' },
           { text: 'Validating User Input', link: '/recipes/validating-user-input' },
           { text: 'Testing Actions', link: '/recipes/testing' },
           { text: 'RuboCop Integration', link: '/recipes/rubocop-integration' },
