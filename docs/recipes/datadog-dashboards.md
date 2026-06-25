@@ -31,9 +31,9 @@ A pair of dashboards covers most needs:
 
 **1. A fleet overview** — one per app/service, answering "is everything healthy?":
 
-- Total throughput (`axn.call.count` over time)
+- Total throughput (`sum:axn.call{*}.as_count()` over time) — DogStatsD stores the counter as a per-second rate, so apply `.as_count()` wherever you want raw totals
 - Outcome mix and error rate (`outcome:failure` + `outcome:exception` over total)
-- **Top actions by failure** (`sum:axn.call.count{outcome:failure} by {resource}`) — this surfaces a single misbehaving action instantly
+- **Top actions by failure** (`sum:axn.call{outcome:failure} by {resource}.as_count()`) — this surfaces a single misbehaving action instantly
 - Top actions by volume, and by exception
 - Latency percentiles (p50/p95/p99) once you're emitting `axn.call.duration`
 
@@ -42,7 +42,7 @@ A pair of dashboards covers most needs:
 Because both are built from the same `axn.call` schema, the per-action view is just the overview with a `resource:` filter applied — which is what makes a single template reusable across every action and every Axn-based app (each one only supplies its own `service` name).
 
 ::: tip A "dead pipeline" alarm
-The most valuable single monitor is often the simplest: alert when `axn.call.count{service:your-app}` drops to ~zero. That rarely means your actions stopped running — it usually means the metrics pipeline itself broke (a bad deploy, a misconfigured agent), which otherwise fails silently and leaves every other widget looking deceptively calm.
+The most valuable single monitor is often the simplest: alert when `sum:axn.call{service:your-app}.as_count()` drops to ~zero. That rarely means your actions stopped running — it usually means the metrics pipeline itself broke (a bad deploy, a misconfigured agent), which otherwise fails silently and leaves every other widget looking deceptively calm.
 :::
 
 Once you've settled on dashboards worth keeping, store their definitions in version control rather than hand-editing in the UI — most providers expose a dashboards API you can drive from a rake task to create or update them reproducibly.
