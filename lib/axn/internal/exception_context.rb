@@ -16,18 +16,16 @@ module Axn
         #     inputs: { ... },              # User's action inputs (filtered for sensitive data, always formatted)
         #     outputs: { ... },             # Action outputs (filtered for sensitive data, always formatted)
         #     ...extra_keys...,             # Additional context from set_execution_context / hook (formatted)
-        #     retry_command: "...",         # Optional: copy-pasteable retry command (if _include_retry_command_in_exceptions is true)
         #     current_attributes: { ... },  # Optional: Current.attributes if defined and present
         #     async: { ... }                # Optional: async retry context if applicable
         #   }
         def build(action:, retry_context: nil)
           # Get structured execution context (inputs, outputs, and extra keys at top level)
           exec_ctx = action.execution_context
-          raw_inputs = exec_ctx[:inputs]
 
           # Start building the context with formatted execution context
           context = {
-            inputs: format_hash_values(raw_inputs),
+            inputs: format_hash_values(exec_ctx[:inputs]),
             outputs: format_hash_values(exec_ctx[:outputs] || {}),
           }
 
@@ -37,16 +35,6 @@ module Axn
 
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context
-
-          # Auto-generate retry command if experimental flag is enabled
-          if Axn.config._include_retry_command_in_exceptions
-            # Use raw_inputs (not formatted) for retry command generation
-            # so we can generate proper Model.find() calls from AR objects
-            context[:retry_command] = retry_command(
-              action:,
-              context: raw_inputs,
-            )
-          end
 
           # Auto-include Current.attributes if defined, responds to attributes, and has non-nil values
           if defined?(Current) && Current.respond_to?(:attributes)
@@ -94,59 +82,6 @@ module Axn
           else
             value
           end
-        end
-
-        # Generate a retry command for an action.
-        # Creates copy-pasteable Ruby code that can be used to reproduce the action call.
-        def retry_command(action:, context:)
-          action_name = action.class.name
-          return nil if action_name.nil? # Anonymous (unnamed) actions cannot generate a retry command
-
-          expected_fields = action.internal_field_configs.map(&:field)
-
-          return "#{action_name}.call()" if expected_fields.empty?
-
-          args = expected_fields.map do |field|
-            value = context[field]
-
-            "#{field}: #{format_value_for_retry_command(value)}"
-          end.join(", ")
-
-          "#{action_name}.call(#{args})"
-        end
-
-        # Format a single value for retry command generation.
-        # Produces copy-pasteable Ruby code for reproducing the action call.
-        def format_value_for_retry_command(value)
-          # Handle ActiveRecord model instances
-          if value.respond_to?(:to_global_id) && value.respond_to?(:id) && !value.is_a?(Class)
-            begin
-              id = value.id
-              if id
-                model_class = value.class.name
-                return "#{model_class}.find(#{id.inspect})"
-              end
-            rescue StandardError
-              # If accessing id fails, fall through to default behavior
-            end
-          end
-
-          # Handle GlobalID strings (useful for serialized values)
-          if value.is_a?(String) && value.start_with?("gid://")
-            begin
-              gid = GlobalID.parse(value)
-              if gid
-                model_class = gid.model_class.name
-                id = gid.model_id
-                return "#{model_class}.find(#{id.inspect})"
-              end
-            rescue StandardError
-              # If parsing fails, fall through to default behavior
-            end
-          end
-
-          # Default: use inspect for other types
-          value.inspect
         end
       end
     end

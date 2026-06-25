@@ -88,33 +88,5 @@ RSpec.describe Axn::Internal::ExceptionContext do
       expect(result[:inputs][:wrapper][:form]).to eq({ name: "Nested" })
       expect(result[:inputs][:wrapper][:user]).to match(%r{\Agid://})
     end
-
-    it "generates retry command with ActiveRecord objects formatted as Model.find(id)" do
-      user = User.create!(name: "Test User")
-
-      action_class = build_axn do
-        expects :user
-        expects :name, type: String
-
-        def call
-          # no-op
-        end
-      end
-
-      stub_const("ActionWithModel", action_class)
-
-      instance = ActionWithModel.send(:new, user:, name: "Alice")
-
-      original_value = Axn.config._include_retry_command_in_exceptions
-      begin
-        Axn.config._include_retry_command_in_exceptions = true
-
-        result = described_class.build(action: instance)
-
-        expect(result[:retry_command]).to eq("ActionWithModel.call(user: User.find(#{user.id}), name: \"Alice\")")
-      ensure
-        Axn.config._include_retry_command_in_exceptions = original_value
-      end
-    end
   end
 end
