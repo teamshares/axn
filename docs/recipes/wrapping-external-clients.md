@@ -9,23 +9,23 @@ This is a **convention, not a framework requirement** — nothing in Axn enforce
 One class per service. Memoize the client/connection privately, then mount one operation per `mount_axn_method`:
 
 ```ruby
-class Clients::AuthZero
+class Clients::Payments
   include Axn
 
-  mount_axn_method :create_user,
-    expects: { password: { sensitive: true } },
-    error: ->(exception:) { HttpErrorMessage.user_message(exception, fallback: CREATE_USER_ERROR_FALLBACK) } do |name:, email:, password:|
-    auth0_client.create_user(CONNECTION_NAME, name:, email:, password:)
+  mount_axn_method :create_charge,
+    expects: { card_token: { sensitive: true } },
+    error: ->(exception:) { PaymentErrorMessage.user_message(exception, fallback: CHARGE_ERROR_FALLBACK) } do |amount_cents:, card_token:|
+    payment_client.charge(amount_cents:, source: card_token)
   end
 
-  mount_axn_method :change_password, expects: { password: { sensitive: true } } do |user_id:, password:|
-    auth0_client.patch_user(user_id, password:)
+  mount_axn_method :refund, expects: { charge_id: { type: String } } do |charge_id:|
+    payment_client.refund(charge_id)
   end
 
   private
 
-  memo def auth0_client # [!code focus]
-    Auth0Client.new(client_id: ENV["..."], client_secret: ENV["..."], domain: ENV["..."])
+  memo def payment_client # [!code focus]
+    PaymentProvider::Client.new(api_key: ENV["PAYMENT_PROVIDER_API_KEY"])
   end
 end
 ```
@@ -37,17 +37,17 @@ Each block returns a single value (the API response), so `mount_axn_method` auto
 This is the load-bearing decision. `mount_axn_method` gives you a single bang method that **raises on failure and returns the exposed value directly**:
 
 ```ruby
-# Returns the user array directly; raises if the call fails.
-user = Clients::AuthZero.find_user_by_email!(email:).first
+# Returns the charge object directly; raises if the call fails.
+charge = Clients::Payments.create_charge!(amount_cents:, card_token:)
 ```
 
 That's the ergonomic common case. But the full [`Result` interface](/reference/axn-result) is *also* available — mounting always generates an `Axns` namespace alongside the convenience method:
 
 ```ruby
 # Returns a Result; branch on ok? instead of rescuing.
-result = Clients::AuthZero::Axns.change_password(user_id:, password:)
+result = Clients::Payments::Axns.refund(charge_id:)
 if result.ok?
-  redirect_to settings_path, success: "Password updated."
+  redirect_to receipt_path, success: "Refund issued."
 else
   flash[:error] = result.error
 end
@@ -65,9 +65,9 @@ Switching the mount to `mount_axn` would put the non-bang `Result` method direct
 The wrapper is the right place to translate vendor-specific exceptions into user-facing `result.error` strings, so callers never have to know the shape of the underlying API's errors. Use a per-operation `error:` handler, or — when a whole service shares error semantics — declare them once on a base class keyed by exception class:
 
 ```ruby
-error "Please sign in again.", if: TeamsharesAPI::AuthorizationError # [!code focus]
-error "That item wasn't found.", if: TeamsharesAPI::NotFoundError # [!code focus]
-error "Something went wrong. Please try again.", if: TeamsharesAPI::ServerError # [!code focus]
+error "Please sign in again.", if: PaymentProvider::AuthenticationError # [!code focus]
+error "That charge wasn't found.", if: PaymentProvider::NotFoundError # [!code focus]
+error "Payment failed. Please try again.", if: PaymentProvider::Error # [!code focus]
 ```
 
 These resolve only for the non-bang (`Result`) path — the bang method still raises the original exception — which pairs naturally with the two-interface split above.
@@ -77,15 +77,15 @@ These resolve only for the non-bang (`Result`) path — the bang method still ra
 When a service has several resources, give it a `Base` that holds the connection (often via the [`:client` strategy](/strategies/client)) and shared helpers, then keep each resource thin:
 
 ```ruby
-class Clients::Zendesk::Base
+class Clients::Crm::Base
   include Axn
 
-  use :client, name: :zendesk, url: "https://teamshares.zendesk.com/api/v2", headers: { ... }
+  use :client, name: :crm, url: "https://api.example.com/v2", headers: { ... }
 end
 
-class Clients::Zendesk::User < Clients::Zendesk::Base
+class Clients::Crm::Contact < Clients::Crm::Base
   mount_axn_method :get do |id:|
-    zendesk.get("users/#{id}").body["user"]
+    crm.get("contacts/#{id}").body["contact"]
   end
 end
 ```
