@@ -280,7 +280,6 @@ RSpec.describe "Global on_exception handler" do
   end
 
   describe "enhanced context features" do
-    # Use a named class so retry_command can access the class name
     before do
       stub_const("TestEnhancedContextAction", build_axn do
         expects :name, type: String
@@ -294,33 +293,11 @@ RSpec.describe "Global on_exception handler" do
 
     let(:action) { TestEnhancedContextAction }
 
-    shared_context "with retry command in exceptions enabled" do
-      around do |example|
-        original = Axn.config._include_retry_command_in_exceptions
-        Axn.config._include_retry_command_in_exceptions = true
-        example.run
-      ensure
-        Axn.config._include_retry_command_in_exceptions = original
-      end
-    end
-
     describe "automatic formatting" do
       it "always formats complex objects in context and includes outputs" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
           expect(context[:outputs]).to eq({})
-        end
-
-        action.call(name: "test", value: 42)
-      end
-    end
-
-    describe "_include_retry_command_in_exceptions (experimental)" do
-      include_context "with retry command in exceptions enabled"
-
-      it "includes retry command in context when enabled" do
-        expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context[:retry_command]).to eq('TestEnhancedContextAction.call(name: "test", value: 42)')
         end
 
         action.call(name: "test", value: 42)
@@ -363,8 +340,6 @@ RSpec.describe "Global on_exception handler" do
     end
 
     describe "combined features" do
-      include_context "with retry command in exceptions enabled"
-
       before do
         stub_const("Current", Class.new do
           class << self
@@ -379,12 +354,11 @@ RSpec.describe "Global on_exception handler" do
         Current.user_id = 456
       end
 
-      it "includes all context enhancements (formatting always on, Current auto-detected, retry command if enabled)" do
+      it "includes all context enhancements (formatting always on, Current auto-detected)" do
         expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context.keys).to contain_exactly(:inputs, :outputs, :retry_command, :current_attributes)
+          expect(context.keys).to contain_exactly(:inputs, :outputs, :current_attributes)
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
           expect(context[:outputs]).to eq({})
-          expect(context[:retry_command]).to be_a(String)
           expect(context[:current_attributes]).to eq({ user_id: 456 })
         end
 

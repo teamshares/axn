@@ -24,11 +24,6 @@ module Axn
     # When explicitly set, this value overrides the adapter's default for retry context tracking.
     setting :async_max_retries
 
-    # EXPERIMENTAL: When true, automatically generates a retry command in exception context.
-    # This is marked experimental because the retry command generation may not work well
-    # for all action types (e.g., actions with complex object dependencies).
-    setting :_include_retry_command_in_exceptions, default: false
-
     attr_writer :logger, :env, :on_exception, :rails
 
     # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).
