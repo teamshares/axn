@@ -68,6 +68,7 @@ export default defineConfig({
         text: 'Advanced',
         items: [
           { text: 'Profiling', link: '/advanced/profiling' },
+          { text: 'Concurrency & Fiber Safety', link: '/advanced/concurrency' },
           { text: 'Conventions', link: '/advanced/conventions' },
           { text: 'Mountable', link: '/advanced/mountable' },
           { text: 'Internal Notes', link: '/advanced/rough' },
