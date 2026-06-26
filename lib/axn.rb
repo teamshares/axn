@@ -47,6 +47,12 @@ module Axn
     @extension_config ||= ExtensionConfig.new
   end
 
+  # Whether axn owns this exception's #message (and may stamp the resolved presentation onto it).
+  # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
+  def self.owns_failure_exception?(exception)
+    exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
+  end
+
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run
     # setup and reset the inheritance-aware class_attributes that hold field configs,

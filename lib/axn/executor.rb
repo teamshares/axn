@@ -203,6 +203,13 @@ module Axn
         Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
         @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
+
+        # Resolve THIS level's presentation now (reads the child's carried presentation if this was a
+        # bubbled call!), persist it for the next ancestor, and — for axn-owned exceptions only —
+        # stamp it onto #message so a rescued exception reads the same string as result.error.
+        resolved = @action.result.error
+        Internal::CarriedPresentation.set(e, resolved) if resolved
+        e.__present_as(resolved) if resolved && e.is_a?(Failure)
       else
         trigger_on_exception(e)
       end

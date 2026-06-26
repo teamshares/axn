@@ -18,3 +18,40 @@ RSpec.describe "Axn::Failure raw/presentation split" do
     expect(Axn::Failure.new(nil, action: nil).message).to eq(Axn::Failure::DEFAULT_MESSAGE)
   end
 end
+
+RSpec.describe "Header aggregation across nested call!" do
+  it "prefixes every level's base onto the leaf, outermost first" do
+    inner = build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end
+    stub_const("Inner", inner)
+    mid = build_axn do
+      error "Onboarding failed"
+      def call = Inner.call!
+    end
+    stub_const("Mid", mid)
+    outer = build_axn do
+      error "Signup failed"
+      def call = Mid.call!
+    end
+
+    # two levels
+    expect(mid.call.error).to eq("Onboarding failed: Charge failed: card declined")
+    # three levels
+    expect(outer.call.error).to eq("Signup failed: Onboarding failed: Charge failed: card declined")
+  end
+
+  it "passes the child's resolved presentation through a baseless ancestor unchanged" do
+    inner = build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end
+    outer = build_axn do
+      expects :inner
+      # no base declared
+      def call = inner.call!
+    end
+    expect(outer.call(inner:).error).to eq("Charge failed: card declined")
+  end
+end
