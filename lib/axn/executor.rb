@@ -209,7 +209,7 @@ module Axn
         # stamp it onto #message so a rescued exception reads the same string as result.error.
         resolved = @action.result.error
         Internal::CarriedPresentation.set(e, resolved) if resolved
-        e.__present_as(resolved) if resolved && e.is_a?(Failure)
+        e.__present_as(resolved) if resolved && Axn.owns_failure_exception?(e) && e.respond_to?(:__present_as)
       else
         trigger_on_exception(e)
       end

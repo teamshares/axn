@@ -134,3 +134,23 @@ RSpec.describe "call! / #message parity (Axn::Failure)" do
     expect(r.exception.message).to eq(r.error)
   end
 end
+
+RSpec.describe "user_facing validation parity" do
+  it "prefixes the base onto the user-facing validation message and aggregates across call!" do
+    inner = build_axn do
+      error "Couldn't add note"
+      expects :note, user_facing: "Add a note"
+      def call = nil
+    end
+    outer = build_axn do
+      expects :inner
+      error "Save failed"
+      def call = inner.call!(note: nil)
+    end
+    expect(inner.call(note: nil).error).to eq("Couldn't add note: Add a note")
+    expect(outer.call(inner:).error).to eq("Save failed: Couldn't add note: Add a note")
+    expect { outer.call!(inner:) }.to raise_error(Axn::ValidationError) { |e|
+      expect(e.message).to eq("Save failed: Couldn't add note: Add a note")
+    }
+  end
+end

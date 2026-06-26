@@ -109,7 +109,8 @@ module Axn
     def self.user_facing?(exception) = exception.is_a?(self) && exception.user_facing?
 
     def user_facing? = @user_facing
-    def message = errors.full_messages.to_sentence
+    def __present_as(string) = @presentation = string.presence
+    def message = @presentation.presence || errors.full_messages.to_sentence
     def to_s = message
   end
 
