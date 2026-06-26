@@ -76,3 +76,22 @@ RSpec.describe "Per-segment delimiters in aggregation" do
     expect(outer.call.error).to eq("A: B > C | leaf")
   end
 end
+
+RSpec.describe "prefixed: false under aggregation" do
+  it "suppresses the originating action's own base" do
+    action = build_axn do
+      error "Child base"
+      def call = fail!("card declined", prefixed: false)
+    end
+    expect(action.call.error).to eq("card declined")
+  end
+
+  it "still lets an ancestor prefix its base onto a bubbled opt-out child" do
+    stub_const("OptOutChild", build_axn { def call = fail!("card declined", prefixed: false) })
+    parent = build_axn do
+      error "Charging failed"
+      def call = OptOutChild.call!
+    end
+    expect(parent.call.error).to eq("Charging failed: card declined")
+  end
+end
