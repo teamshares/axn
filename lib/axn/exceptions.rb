@@ -40,9 +40,10 @@ module Axn
 
     def prefixed? = @prefixed
     def message = @presentation.presence || @raw_reason.presence || DEFAULT_MESSAGE
-    # Must be read before any presentation is stamped (i.e. at the originating level); once
-    # __present_as is called, #message returns the stamped presentation — not the raw default.
-    def default_message? = message == DEFAULT_MESSAGE
+    # Keyed off the RAW reason, not #message: once __present_as stamps the resolved presentation,
+    # #message no longer reflects whether the caller supplied a reason. Post-run consumers read this
+    # on a finalized, stamped result (e.g. ContextFacadeInspector#status → "[failed]" vs "[failed with…]").
+    def default_message? = (@raw_reason.presence || DEFAULT_MESSAGE) == DEFAULT_MESSAGE
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
 

@@ -211,6 +211,15 @@ module Axn
         Internal::CarriedPresentation.set(e, resolved) if resolved
         e.__present_as(resolved) if resolved && Axn.owns_failure_exception?(e) && e.respond_to?(:__present_as)
       else
+        # Aggregate result.error across nested call! for the exception bucket too, so presentation is
+        # bucket-independent. Unlike a failure there is no authored leaf, so only carry a level that
+        # produced a real headline — never the bare generic fallback (a baseless level contributes
+        # nothing, so an ancestor's base stands alone rather than reading "…: Something went wrong").
+        # #message is NOT stamped: an unexpected exception keeps its technical message (ownership rule).
+        resolved = @action.result.error
+        generic_fallback = Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
+        Internal::CarriedPresentation.set(e, resolved) if resolved && resolved != generic_fallback
+
         trigger_on_exception(e)
       end
     end

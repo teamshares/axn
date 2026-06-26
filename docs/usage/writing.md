@@ -315,6 +315,8 @@ Onboarding.call(...).error  # => "Onboarding failed: Charge failed: card decline
 ```
 
 Each level uses *its own* `delimiter:` for the segment it joins — so `error "Onboarding failed", delimiter: " — "` would produce `"Onboarding failed — Charge failed: card declined"`.
+
+This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). For an unexpected exception there is no authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the raw exception message never enters `result.error` (it stays the technical `#message` on `result.exception`), and a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
 :::
 
 ::: warning Error/success message bodies are not redacted

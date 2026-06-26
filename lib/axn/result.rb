@@ -151,11 +151,19 @@ module Axn
     def _resolve_error
       resolver = _msg_resolver(:error, exception:)
 
-      # Ancestor of a bubbled failure: the child already resolved its full presentation; prefix this
-      # level's base onto it (always — a bubbled child is never this action's own fail!). A baseless
-      # ancestor's with_base_prefix is a no-op, so the child's presentation passes through unchanged.
+      # Ancestor of a bubbled failure: the child already resolved its full presentation.
       carried = Internal::CarriedPresentation.get(exception)
-      return resolver.with_base_prefix(carried) if carried
+      if carried
+        # This level's OWN matching reason (a conditional/dynamic `error`, possibly `prefixed: false`)
+        # takes precedence over the bubbled child — preserving the default-with-specific-overrides
+        # pattern for bubbled failures (e.g. a parent `error "Record not found", if: NotFoundError`
+        # around `Child.call!`). Only when this level declares nothing specific do we prefix our base
+        # onto the carried child message (a baseless ancestor's with_base_prefix is a no-op pass-through).
+        descriptor, matched = resolver.matched_reason
+        return descriptor.prefixed? ? resolver.with_base_prefix(matched) : matched if descriptor
+
+        return resolver.with_base_prefix(carried)
+      end
 
       # Originating level (no carried presentation yet): unchanged behavior.
       reason = _user_provided_error_message

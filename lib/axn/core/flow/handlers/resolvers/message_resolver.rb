@@ -13,19 +13,27 @@ module Axn
             DEFAULT_SUCCESS = "Action completed successfully"
 
             def resolve_message
-              # Pick the winning reason (a conditional or explicitly-prefixed entry); unconditional
-              # non-prefixed entries are headlines, excluded here and surfaced via base_message.
-              # filter_map captures each body once (body_for invokes the handler block), so the winning
-              # entry's message block runs a single time rather than twice.
-              descriptor, reason = matching_entries.lazy.filter_map do |d|
+              descriptor, reason = matched_reason
+              return base_message || fallback_message unless descriptor
+
+              descriptor.prefixed? ? with_base_prefix(reason) : reason
+            end
+
+            # The winning reason as [descriptor, body], or nil if no conditional/dynamic (or explicitly
+            # `prefixed:`) entry matches. Unconditional non-prefixed entries are headlines, excluded here
+            # and surfaced via base_message. filter_map captures each body once (body_for invokes the
+            # handler block), so the winning entry's message block runs a single time. Memoized — a
+            # resolver is single-use — so an external caller (Result#_resolve_error, deciding whether a
+            # parent override should beat a bubbled child message) and resolve_message share one pass.
+            def matched_reason
+              return @matched_reason if defined?(@matched_reason)
+
+              @matched_reason = matching_entries.lazy.filter_map do |d|
                 next unless reason?(d)
 
                 body = body_for(d)
                 [d, body] if body.present?
               end.first
-              return base_message || fallback_message unless descriptor
-
-              descriptor.prefixed? ? with_base_prefix(reason) : reason
             end
 
             def resolve_default_message = base_message || fallback_message

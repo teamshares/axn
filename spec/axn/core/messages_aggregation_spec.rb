@@ -197,3 +197,68 @@ RSpec.describe "step interaction with aggregation" do
     expect(msg).to include("card declined")
   end
 end
+
+RSpec.describe "parent override beats a bubbled child presentation" do
+  before { stub_const("NotFoundErr", Class.new(StandardError)) }
+
+  it "uses the parent's matching conditional reason instead of prefixing the carried child message" do
+    inner = build_axn do
+      error "Child base"
+      fails_on [NotFoundErr]
+      def call = raise NotFoundErr
+    end
+    parent = build_axn do
+      expects :inner
+      error "Parent base"
+      error "Record not found", if: NotFoundErr, prefixed: false
+      fails_on [NotFoundErr]
+      def call = inner.call!
+    end
+    # The parent's explicit override wins, standalone — not "Parent base: Child base".
+    expect(parent.call(inner:).error).to eq("Record not found")
+  end
+end
+
+RSpec.describe "default_message? is raw-reason based (stamp-independent)" do
+  it "stays true for a bare fail! even after #message is stamped with the resolved presentation" do
+    action = build_axn do
+      error "Onboarding failed"
+      def call = fail!
+    end
+    r = action.call
+    expect(r.error).to eq("Onboarding failed")             # base resolved and stamped
+    expect(r.exception.message).to eq("Onboarding failed") # #message carries the stamped presentation
+    expect(r.exception.default_message?).to be(true) # ...but it was a bare fail!
+  end
+end
+
+RSpec.describe "exception-bucket aggregation (unexpected exceptions)" do
+  it "aggregates declared bases across nested call!, keeping the technical message on the exception" do
+    # inner raises a bare RuntimeError -> exception bucket (a bug, not a fail!)
+    inner = build_axn do
+      error "inner went bad"
+      def call = raise "boom"
+    end
+    outer = build_axn do
+      expects :inner
+      error "Outer prefix"
+      def call = inner.call!
+    end
+    r = outer.call(inner:)
+    expect(r.error).to eq("Outer prefix: inner went bad") # bases chain across the bucket
+    expect(r.outcome).to eq("exception")                  # still classified a bug
+    expect(r.exception).to be_a(RuntimeError)
+    expect(r.exception.message).to eq("boom")             # technical cause untouched, never stamped
+  end
+
+  it "does not chain the generic fallback when an inner level declares no base" do
+    # inner declares no base
+    inner = build_axn { def call = raise "boom" }
+    outer = build_axn do
+      expects :inner
+      error "Outer prefix"
+      def call = inner.call!
+    end
+    expect(outer.call(inner:).error).to eq("Outer prefix") # NOT "Outer prefix: Something went wrong"
+  end
+end
