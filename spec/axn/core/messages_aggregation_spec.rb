@@ -154,3 +154,26 @@ RSpec.describe "user_facing validation parity" do
     }
   end
 end
+
+RSpec.describe "fails_on foreign exception presentation" do
+  before { stub_const("ThirdPartyError", Class.new(StandardError)) }
+
+  it "aggregates result.error but preserves the foreign technical message on the exception" do
+    inner = build_axn do
+      error "Couldn't sync"
+      fails_on [ThirdPartyError], "the upstream service is down"
+      def call = raise ThirdPartyError, "ECONNREFUSED"
+    end
+    outer = build_axn do
+      expects :inner
+      error "Onboarding failed"
+      fails_on [ThirdPartyError]
+      def call = inner.call!
+    end
+
+    r = outer.call(inner:)
+    expect(r.error).to eq("Onboarding failed: Couldn't sync: the upstream service is down")
+    expect(r.exception).to be_a(ThirdPartyError)
+    expect(r.exception.message).to eq("ECONNREFUSED") # technical cause preserved, never rewritten
+  end
+end
