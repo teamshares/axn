@@ -177,3 +177,23 @@ RSpec.describe "fails_on foreign exception presentation" do
     expect(r.exception.message).to eq("ECONNREFUSED") # technical cause preserved, never rewritten
   end
 end
+
+RSpec.describe "step interaction with aggregation" do
+  it "does not double-count base headers for a step failure" do
+    stub_const("Charge", build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end)
+    parent = build_axn do
+      error "Onboarding failed"
+      step :charge, Charge
+    end
+
+    msg = parent.call.error
+    # Parent base appears exactly once, child base appears exactly once, leaf present.
+    # No segment is doubled — step swallows the child via .call and originates a fresh fail!.
+    expect(msg.scan("Onboarding failed").size).to eq(1)
+    expect(msg.scan("Charge failed").size).to eq(1)
+    expect(msg).to include("card declined")
+  end
+end
