@@ -55,3 +55,24 @@ RSpec.describe "Header aggregation across nested call!" do
     expect(outer.call(inner:).error).to eq("Charge failed: card declined")
   end
 end
+
+RSpec.describe "Per-segment delimiters in aggregation" do
+  it "uses each level's own delimiter for its own join" do
+    inner = build_axn do
+      error "C", delimiter: " | "
+      def call = fail!("leaf")
+    end
+    stub_const("Inner", inner)
+    mid = build_axn do
+      error "B", delimiter: " > "
+      def call = Inner.call!
+    end
+    stub_const("Mid", mid)
+    outer = build_axn do
+      error "A" # default ": "
+      def call = Mid.call!
+    end
+
+    expect(outer.call.error).to eq("A: B > C | leaf")
+  end
+end
