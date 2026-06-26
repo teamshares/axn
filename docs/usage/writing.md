@@ -286,7 +286,7 @@ SyncUser.call.error  # => "vendor not found"
 ```
 
 ::: tip result.error vs Axn::Failure#message
-Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
+`result.error` is the uniform, user-facing presentation string (base prefix + reason, aggregated across all levels). For **Axn-owned** failures (`fail!`), the raised `Axn::Failure#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
 :::
 
 ::: warning Error/success message bodies are not redacted

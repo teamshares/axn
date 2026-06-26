@@ -95,3 +95,42 @@ RSpec.describe "prefixed: false under aggregation" do
     expect(parent.call.error).to eq("Charging failed: card declined")
   end
 end
+
+RSpec.describe "call! / #message parity (Axn::Failure)" do
+  it "raises with #message equal to result.error at the top level" do
+    action = build_axn do
+      error "Couldn't sync user"
+      def call = fail!("email taken")
+    end
+    expect(action.call.error).to eq("Couldn't sync user: email taken")
+    expect { action.call! }.to raise_error(Axn::Failure, "Couldn't sync user: email taken")
+  end
+
+  it "matches the aggregated string at the outer level" do
+    inner = build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end
+    outer = build_axn do
+      expects :inner
+      error "Onboarding failed"
+      def call = inner.call!
+    end
+    expect(outer.call(inner:).error).to eq("Onboarding failed: Charge failed: card declined")
+    expect { outer.call!(inner:) }.to raise_error(Axn::Failure, "Onboarding failed: Charge failed: card declined")
+  end
+
+  it "leaves result.exception.message equal to result.error on the non-bang path" do
+    inner = build_axn do
+      error "Charge failed"
+      def call = fail!("card declined")
+    end
+    outer = build_axn do
+      expects :inner
+      error "Onboarding failed"
+      def call = inner.call!
+    end
+    r = outer.call(inner:)
+    expect(r.exception.message).to eq(r.error)
+  end
+end
