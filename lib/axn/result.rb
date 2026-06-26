@@ -179,7 +179,7 @@ module Axn
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
 
-      exception.message.presence
+      exception.raw_reason.presence
     end
 
     def _fail_prefixed?

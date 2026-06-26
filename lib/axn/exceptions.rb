@@ -24,17 +24,22 @@ module Axn
     # applies its OWN base prefix (the child's opt-out is local).
     # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
     # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
-    attr_reader :__originating_action
+    attr_reader :__originating_action, :raw_reason
 
     def initialize(message = nil, prefixed: true, action: nil)
-      @message = message
+      @raw_reason = message
+      @presentation = nil
       @prefixed = prefixed
       @__originating_action = action
       super(message)
     end
 
+    # Set the resolved, presentation-layer string shown by #message. Leaves raw_reason untouched so
+    # the framework can keep re-resolving from the raw reason without double-prefixing.
+    def __present_as(string) = @presentation = string.presence
+
     def prefixed? = @prefixed
-    def message = @message.presence || DEFAULT_MESSAGE
+    def message = @presentation.presence || @raw_reason.presence || DEFAULT_MESSAGE
     def default_message? = message == DEFAULT_MESSAGE
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
