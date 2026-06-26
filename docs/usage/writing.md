@@ -286,7 +286,7 @@ SyncUser.call.error  # => "vendor not found"
 ```
 
 ::: tip result.error vs Axn::Failure#message
-`result.error` is the uniform, user-facing presentation string (base prefix + reason, aggregated across all levels). For **Axn-owned** failures (`fail!`), the raised `Axn::Failure#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
+`result.error` is the uniform, user-facing presentation string (base prefix + reason, aggregated across all levels). For **Axn-owned** failures (`fail!`, and user-facing validation failures), the raised exception's `#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
 :::
 
 ::: tip Header aggregation across nested call!
@@ -396,7 +396,7 @@ Use this when specific error classes deserve their own user-facing copy and you 
 
 By default a child action's `result.error` is prepended by every ancestor's base header as it bubbles up through `call!`. There are two ways to opt out:
 
-**Drop the base entirely.** If an action declares no unconditional `error`, its failures render without any header and the caller receives the raw reason — nothing to prepend on its side either (a caller's base still applies, but it only sees the inner action's already-rendered string as the reason).
+**Drop the base entirely.** If an action declares no unconditional `error`, its failures render without their own header — the raw reason surfaces as the segment a caller will prefix. A caller's base still applies; it sees the inner action's already-rendered string as the reason and prepends its own header as usual.
 
 **Pass `prefixed: false` when re-raising.** Inspect the inner result with non-bang `call`, then re-raise with `prefixed: false` to keep the inner message standalone at the current level:
 

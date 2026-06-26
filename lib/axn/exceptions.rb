@@ -40,6 +40,8 @@ module Axn
 
     def prefixed? = @prefixed
     def message = @presentation.presence || @raw_reason.presence || DEFAULT_MESSAGE
+    # Must be read before any presentation is stamped (i.e. at the originating level); once
+    # __present_as is called, #message returns the stamped presentation — not the raw default.
     def default_message? = message == DEFAULT_MESSAGE
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
