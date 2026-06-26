@@ -154,3 +154,27 @@ RSpec.describe Axn do
     end
   end
 end
+
+RSpec.describe "on_exception context: nested action breadcrumb" do
+  it "includes the axn_stack (outermost -> innermost) in the reported context" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn { def call = raise "boom" }
+    stub_const("BreadcrumbInner", inner)
+    outer = build_axn { def call = BreadcrumbInner.call! }
+    stub_const("BreadcrumbOuter", outer)
+
+    BreadcrumbOuter.call
+    expect(captured[:axn_stack]).to eq(%w[BreadcrumbOuter BreadcrumbInner])
+  end
+
+  it "omits axn_stack for a single (non-nested) action" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    stub_const("SoloAction", build_axn { def call = raise "boom" })
+    SoloAction.call
+    expect(captured).not_to have_key(:axn_stack)
+  end
+end
