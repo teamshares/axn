@@ -25,6 +25,7 @@ require "axn/internal/global_id_serialization"
 require "axn/internal/async_serialization"
 require "axn/internal/exception_context"
 require "axn/internal/exception_classification"
+require "axn/internal/carried_presentation"
 require "axn/internal/subfield_path"
 require "axn/internal/field_config"
 require "axn/internal/timing"
@@ -44,6 +45,12 @@ require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 module Axn
   def self.extension_config
     @extension_config ||= ExtensionConfig.new
+  end
+
+  # Whether axn owns this exception's #message (and may stamp the resolved presentation onto it).
+  # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
+  def self.owns_failure_exception?(exception)
+    exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
   end
 
   def self.included(base)

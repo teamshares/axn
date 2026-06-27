@@ -24,18 +24,26 @@ module Axn
     # applies its OWN base prefix (the child's opt-out is local).
     # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
     # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
-    attr_reader :__originating_action
+    attr_reader :__originating_action, :raw_reason
 
     def initialize(message = nil, prefixed: true, action: nil)
-      @message = message
+      @raw_reason = message
+      @presentation = nil
       @prefixed = prefixed
       @__originating_action = action
       super(message)
     end
 
+    # Set the resolved, presentation-layer string shown by #message. Leaves raw_reason untouched so
+    # the framework can keep re-resolving from the raw reason without double-prefixing.
+    def __present_as(string) = @presentation = string.presence
+
     def prefixed? = @prefixed
-    def message = @message.presence || DEFAULT_MESSAGE
-    def default_message? = message == DEFAULT_MESSAGE
+    def message = @presentation.presence || @raw_reason.presence || DEFAULT_MESSAGE
+    # Keyed off the RAW reason, not #message: once __present_as stamps the resolved presentation,
+    # #message no longer reflects whether the caller supplied a reason. Post-run consumers read this
+    # on a finalized, stamped result (e.g. ContextFacadeInspector#status → "[failed]" vs "[failed with…]").
+    def default_message? = (@raw_reason.presence || DEFAULT_MESSAGE) == DEFAULT_MESSAGE
     def inspect = "#<#{self.class.name} '#{message}'>"
   end
 
@@ -104,7 +112,8 @@ module Axn
     def self.user_facing?(exception) = exception.is_a?(self) && exception.user_facing?
 
     def user_facing? = @user_facing
-    def message = errors.full_messages.to_sentence
+    def __present_as(string) = @presentation = string.presence
+    def message = @presentation.presence || errors.full_messages.to_sentence
     def to_s = message
   end
 

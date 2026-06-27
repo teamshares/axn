@@ -16,6 +16,7 @@ module Axn
         # mark on a reused thread/fiber silently suppressing a real report.
         if _current_axn_stack.empty?
           Axn::Internal::ExceptionClassification.reset!
+          Axn::Internal::CarriedPresentation.reset!
           _warn_if_fiber_isolation_mismatch
         end
         _current_axn_stack.push(axn)
@@ -25,7 +26,10 @@ module Axn
         # Outermost action finished: clear per-execution exception bookkeeping so the same exception
         # object re-raised by a later, independent run starts fresh (report dedup + fails_on
         # stickiness are scoped to one call tree).
-        Axn::Internal::ExceptionClassification.reset! if _current_axn_stack.empty?
+        if _current_axn_stack.empty?
+          Axn::Internal::ExceptionClassification.reset!
+          Axn::Internal::CarriedPresentation.reset!
+        end
       end
 
       # axn's per-execution state lives in ActiveSupport::IsolatedExecutionState, which is scoped by

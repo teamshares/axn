@@ -33,6 +33,13 @@ module Axn
           extra_keys = exec_ctx.except(:inputs, :outputs)
           context.merge!(format_hash_values(extra_keys)) if extra_keys.any?
 
+          # When this ran nested inside other actions, record the call! chain (outermost → innermost)
+          # so a report shows which path reached the failure — the structured breadcrumb the
+          # user-facing result.error aggregation deliberately keeps out of the message. Omitted for a
+          # single (non-nested) action, where it would just echo the reported class.
+          stack = Core::NestingTracking._current_axn_stack
+          context[:axn_stack] = stack.map { |a| a.class.name || "AnonymousClass" } if stack.length > 1
+
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context
 

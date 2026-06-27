@@ -203,7 +203,24 @@ module Axn
         Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
         @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
+
+        # Resolve THIS level's presentation now (reads the child's carried presentation if this was a
+        # bubbled call!), persist it for the next ancestor, and — for axn-owned exceptions only —
+        # stamp it onto #message so a rescued exception reads the same string as result.error.
+        resolved = @action.result.error
+        Internal::CarriedPresentation.set(e, resolved) if resolved
+        e.__present_as(resolved) if resolved && Axn.owns_failure_exception?(e) && e.respond_to?(:__present_as)
       else
+        # Aggregate result.error across nested call! for the exception bucket too, so presentation is
+        # bucket-independent. Unlike a failure there is no authored leaf, so only carry a level that
+        # produced a real headline — a baseless level that only resolved to the generic fallback
+        # contributes nothing (an ancestor's base stands alone rather than reading "…: Something went
+        # wrong"). The check keys off whether a base/reason was *declared*, not the resolved text, so a
+        # base that legitimately reads "Something went wrong" is still carried. #message is NOT stamped:
+        # an unexpected exception keeps its technical message (ownership rule).
+        result = @action.result
+        Internal::CarriedPresentation.set(e, result.error) if result.send(:_error_from_declared_source?)
+
         trigger_on_exception(e)
       end
     end

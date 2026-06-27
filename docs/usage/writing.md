@@ -286,7 +286,37 @@ SyncUser.call.error  # => "vendor not found"
 ```
 
 ::: tip result.error vs Axn::Failure#message
-Prefixing is applied when **resolving** `result.error` (or `result.success`) — it is **not** written onto the raised exception. If you `rescue Axn::Failure` directly (e.g. from `call!`), `exception.message` carries the **raw reason** without the base prefix. `result.error` always returns the prefixed, presentation-layer string. Exception reporting (`Axn.config.on_exception`) and the `step` cascade read `result.error`, so they see the prefixed form.
+`result.error` is the uniform, user-facing presentation string (base prefix + reason, aggregated across all levels). For **Axn-owned** failures (`fail!`, and user-facing validation failures), the raised exception's `#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
+:::
+
+::: tip Header aggregation across nested call!
+When an inner action fails and the outer action calls it with `call!`, the outer action's base header is prepended to whatever the inner action already produced, joined by the outer action's own `delimiter:`. The outermost header comes first — every level contributes its base in order from outside in.
+
+```ruby
+class ChargeCard
+  include Axn
+  error "Charge failed"
+
+  def call
+    fail! "card declined"
+  end
+end
+
+class Onboarding
+  include Axn
+  error "Onboarding failed"
+
+  def call
+    ChargeCard.call!(**inputs)  # propagates the inner failure upward
+  end
+end
+
+Onboarding.call(...).error  # => "Onboarding failed: Charge failed: card declined"
+```
+
+Each level uses *its own* `delimiter:` for the segment it joins — so `error "Onboarding failed", delimiter: " — "` would produce `"Onboarding failed — Charge failed: card declined"`.
+
+This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). For an unexpected exception there is no authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the raw exception message never enters `result.error` (it stays the technical `#message` on `result.exception`), and a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
 :::
 
 ::: warning Error/success message bodies are not redacted
@@ -305,6 +335,81 @@ class Foo
 end
 ```
 :::
+
+### Overriding an inherited base
+
+When a subclass inherits from an action that declares an `error` base, the subclass can replace it with its own `error` declaration — the last-declared unconditional entry wins (same last-declared-first-checked rule as reasons). A literal string and a context-derived block are both valid:
+
+```ruby
+class BaseTool
+  include Axn
+  error "Tool failed"
+end
+
+class RubyLlmTool < BaseTool
+  error "RubyLLM tool failed"                 # literal override # [!code focus]
+end
+
+class DynamicTool < BaseTool
+  error { "#{tool_name} tool failed" }        # context-derived block override # [!code focus]
+end
+```
+
+::: warning A header block must describe the action, not the failure reason
+A block passed to `error` — whether as an override or a base — is evaluated to produce the **header** for the action (the "who failed" part). It must **not** interpolate the exception's message:
+
+```ruby
+# BAD — doubles the reason in every failure message
+error { |e| "#{tool_name} tool failed: #{e.message}" }  # [!code warning]
+
+# GOOD — the reason is appended automatically
+error { "#{tool_name} tool failed" }                    # [!code focus]
+```
+
+The exception message is already appended as the *reason* segment; interpolating it into the header prints it twice — `"MyTool tool failed: card declined: card declined"`.
+:::
+
+### Default with specific overrides
+
+A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `prefixed: false` reasons for known error classes. `prefixed: false` renders those specific messages **standalone** (without the base prefix), keeping them clean for user display:
+
+```ruby
+class CallExternalApi
+  include Axn
+
+  error "External API request failed"                                  # fallback base
+  error "Record not found", if: RecordNotFoundError, prefixed: false  # standalone # [!code focus:2]
+  error "Permission denied", if: PermissionError, prefixed: false     # standalone
+
+  def call
+    ExternalApi.fetch!(resource_id)
+  end
+end
+
+CallExternalApi.call(...).error
+# RecordNotFoundError raised  → "Record not found"          (prefixed: false — standalone)
+# PermissionError raised      → "Permission denied"         (prefixed: false — standalone)
+# any other error             → "External API request failed"  (fallback base)
+```
+
+Use this when specific error classes deserve their own user-facing copy and you don't want the base headline prepended to them.
+
+### Opting out of a caller's prefix
+
+By default a child action's `result.error` is prepended by every ancestor's base header as it bubbles up through `call!`. There are two ways to opt out:
+
+**Drop the base entirely.** If an action declares no unconditional `error`, its failures render without their own header — the raw reason surfaces as the segment a caller will prefix. A caller's base still applies; it sees the inner action's already-rendered string as the reason and prepends its own header as usual.
+
+**Pass `prefixed: false` when re-raising.** Inspect the inner result with non-bang `call`, then re-raise with `prefixed: false` to keep the inner message standalone at the current level:
+
+```ruby
+def call
+  r = InnerAction.call(**inputs)       # [!code focus:2]
+  fail!(r.error, prefixed: false) unless r.ok?  # inner message shown as-is, no caller prefix
+end
+```
+
+Note this only suppresses the *current* action's base prefix — the inner action's own aggregation (its base + reason) is already baked into `r.error` before you re-raise.
 
 ## Reclassifying exceptions as failures
 

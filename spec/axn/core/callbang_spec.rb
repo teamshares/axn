@@ -50,8 +50,8 @@ RSpec.describe Axn do
         expect(result.error).to eq("|||: User-facing error")
       end
 
-      it "call! raises our own Failure class" do
-        expect { subject }.to raise_error(described_class::Failure, "User-facing error")
+      it "call! raises our own Failure class (message is the full resolved presentation)" do
+        expect { subject }.to raise_error(described_class::Failure, "|||: User-facing error")
       end
     end
   end

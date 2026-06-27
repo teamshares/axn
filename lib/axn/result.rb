@@ -148,9 +148,42 @@ module Axn
       singleton_class.alias_method predicate_name, field
     end
 
+    # Memoized so resolution and _error_from_declared_source? share one resolver instance — message
+    # blocks (and base resolution) run once, not twice. Only built when there's an exception (error
+    # resolution is gated on !ok?), and exception/registry are fixed for a Result's lifetime.
+    def _error_resolver = @_error_resolver ||= _msg_resolver(:error, exception:)
+
+    # Whether result.error came from a declared base/reason rather than the bare generic fallback.
+    # The executor uses this to decide whether an unexpected exception's presentation is worth
+    # carrying to an ancestor (a baseless level that only produced the fallback contributes nothing).
+    # Keys off declaration, NOT the resolved text — so a base/reason that legitimately resolves to the
+    # default copy (e.g. `error "Something went wrong"`) is still recognized as declared and carried.
+    def _error_from_declared_source?
+      return false if ok?
+      return true if _user_provided_error_message.present?
+
+      _error_resolver.base_message.present? || !_error_resolver.matched_reason.nil?
+    end
+
     def _resolve_error
+      resolver = _error_resolver
+
+      # Ancestor of a bubbled failure: the child already resolved its full presentation.
+      carried = Internal::CarriedPresentation.get(exception)
+      if carried
+        # This level's OWN matching reason (a conditional/dynamic `error`, possibly `prefixed: false`)
+        # takes precedence over the bubbled child — preserving the default-with-specific-overrides
+        # pattern for bubbled failures (e.g. a parent `error "Record not found", if: NotFoundError`
+        # around `Child.call!`). Only when this level declares nothing specific do we prefix our base
+        # onto the carried child message (a baseless ancestor's with_base_prefix is a no-op pass-through).
+        descriptor, matched = resolver.matched_reason
+        return descriptor.prefixed? ? resolver.with_base_prefix(matched) : matched if descriptor
+
+        return resolver.with_base_prefix(carried)
+      end
+
+      # Originating level (no carried presentation yet): unchanged behavior.
       reason = _user_provided_error_message
-      resolver = _msg_resolver(:error, exception:)
       return resolver.resolve_message unless reason
 
       _fail_prefixed? ? resolver.with_base_prefix(reason) : reason
@@ -179,7 +212,7 @@ module Axn
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
 
-      exception.message.presence
+      exception.raw_reason.presence
     end
 
     def _fail_prefixed?
