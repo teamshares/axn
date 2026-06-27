@@ -261,4 +261,18 @@ RSpec.describe "exception-bucket aggregation (unexpected exceptions)" do
     end
     expect(outer.call(inner:).error).to eq("Outer prefix") # NOT "Outer prefix: Something went wrong"
   end
+
+  it "carries a declared base even when it legitimately reads like the generic fallback" do
+    # base is explicitly declared but happens to equal DEFAULT_ERROR's text — must still be carried
+    inner = build_axn do
+      error "Something went wrong"
+      def call = raise "boom"
+    end
+    outer = build_axn do
+      expects :inner
+      error "Outer prefix"
+      def call = inner.call!
+    end
+    expect(outer.call(inner:).error).to eq("Outer prefix: Something went wrong")
+  end
 end

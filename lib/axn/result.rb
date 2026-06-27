@@ -148,8 +148,25 @@ module Axn
       singleton_class.alias_method predicate_name, field
     end
 
+    # Memoized so resolution and _error_from_declared_source? share one resolver instance — message
+    # blocks (and base resolution) run once, not twice. Only built when there's an exception (error
+    # resolution is gated on !ok?), and exception/registry are fixed for a Result's lifetime.
+    def _error_resolver = @_error_resolver ||= _msg_resolver(:error, exception:)
+
+    # Whether result.error came from a declared base/reason rather than the bare generic fallback.
+    # The executor uses this to decide whether an unexpected exception's presentation is worth
+    # carrying to an ancestor (a baseless level that only produced the fallback contributes nothing).
+    # Keys off declaration, NOT the resolved text — so a base/reason that legitimately resolves to the
+    # default copy (e.g. `error "Something went wrong"`) is still recognized as declared and carried.
+    def _error_from_declared_source?
+      return false if ok?
+      return true if _user_provided_error_message.present?
+
+      _error_resolver.base_message.present? || !_error_resolver.matched_reason.nil?
+    end
+
     def _resolve_error
-      resolver = _msg_resolver(:error, exception:)
+      resolver = _error_resolver
 
       # Ancestor of a bubbled failure: the child already resolved its full presentation.
       carried = Internal::CarriedPresentation.get(exception)
