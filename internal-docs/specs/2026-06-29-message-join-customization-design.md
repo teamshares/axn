@@ -55,21 +55,20 @@ end
 
 A String join cannot fail; a Proc can (it runs on the error-presentation path, which must never itself raise). If the proc raises or has the wrong arity, rescue and fall back to the default `": "` join, and log a warning through the existing logging mechanism — the same spirit as a base-header block that raises falling back down the headline chain. Where it reads cleanly, route the proc invocation through `Invoker` (used today for header/reason blocks) to get consistent rescue + logging; otherwise a local rescue around the call.
 
-## Migration: remove `delimiter:`
+## Migration: none — `delimiter:` never shipped
 
-`delimiter:` is removed, not aliased. It joins the existing `REMOVED_OPTION_MESSAGES` map in `MessageDescriptor` so it raises an actionable hint at declaration instead of being silently ignored — mirroring `from:` and `prefix:`:
+`delimiter:` was introduced in #109 (commit `1663272`), which is in **no release tag** — the whole prefixing/delimiter feature lives only under `## Unreleased` in the CHANGELOG. Nobody could have started using it, so there is **zero backward-compat work**:
 
-```
-delimiter: is no longer supported — use join: (a String, or a ->(base, reason) {} proc)
-```
+- Remove `delimiter:` entirely from `MessageDescriptor` — the attr, the `build` param, the placement validation. Do **not** add it to `REMOVED_OPTION_MESSAGES`; an old `delimiter:` then falls through to the existing generic `"Unknown :delimiter option"` error, which is sufficient.
+- No `[BREAKING]` CHANGELOG note. Instead, amend the existing **Unreleased** entries that mention `delimiter:` (CHANGELOG.md lines 4, 31, 35) to describe `join:` and its String|Proc capability — since the feature ships for the first time as `join:`, there is nothing to migrate from.
 
-Update the affected docs (`docs/usage/writing.md`) and the existing per-segment delimiter specs to `join:`, and add a `CHANGELOG` entry tagged `[BREAKING]`.
+This reduces the change to "rename `delimiter:`→`join:`, add Proc support" with no migration surface.
 
 ## Implementation surface
 
-- `lib/axn/core/flow/handlers/descriptors/message_descriptor.rb` — `@delimiter`→`@join` attr; `build` accepts `join:` (String|Proc), rejects it on non-base; add `delimiter:` to `REMOVED_OPTION_MESSAGES`.
+- `lib/axn/core/flow/handlers/descriptors/message_descriptor.rb` — `@delimiter`→`@join` attr; `build` accepts `join:` (String|Proc), rejects it on non-base. `REMOVED_OPTION_MESSAGES` untouched (no `delimiter:` entry).
 - `lib/axn/core/flow/handlers/resolvers/message_resolver.rb` — `#delimiter` → resolve `descriptor.join`; `with_base_prefix` applies String-or-Proc via `combine`; raise-safety fallback.
-- Docs: `docs/usage/writing.md` (delimiter rows/examples → `join:`, add proc + casing/wrapping examples), `CHANGELOG.md`.
+- Docs: `docs/usage/writing.md` (delimiter rows/examples → `join:`, add proc + casing/wrapping examples), `CHANGELOG.md` (amend the Unreleased entries that mention `delimiter:`).
 
 ## Testing
 
@@ -79,4 +78,4 @@ Update the affected docs (`docs/usage/writing.md`) and the existing per-segment 
 - **Success parity:** the proc-form wrapping/casing specs run for `success`/`done!`, not just `error`/`fail!`.
 - **Raise-safety:** a proc that raises (and wrong arity) → falls back to default join, does not raise.
 - **Placement:** `join:` on a reason → raises at declaration.
-- **Migration:** `delimiter:` → raises the migration hint.
+- **Removal:** `delimiter:` is no longer a recognized option → raises the generic unknown-option error.
