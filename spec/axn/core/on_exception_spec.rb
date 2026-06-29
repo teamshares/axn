@@ -194,4 +194,25 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     ReservedOuter.call
     expect(captured[:axn_stack]).to eq(%w[ReservedOuter ReservedInner]) # not ["user-supplied"]
   end
+
+  it "keeps the full axn_stack when the report is retried from an ancestor" do
+    # The innermost on_exception attempt raises, so it's never marked reported and the report is
+    # retried from an ancestor — after the inner frames have popped. The breadcrumb must still be the
+    # full path (captured at the innermost report), not the depleted live stack.
+    landed = nil
+    calls = 0
+    allow(Axn.config).to receive(:on_exception) do |_e, action:, context:| # rubocop:disable Lint/UnusedBlockArgument
+      calls += 1
+      raise "tracker down" if calls == 1
+
+      landed = context[:axn_stack]
+    end
+
+    stub_const("RetryC", build_axn { def call = raise "boom" })
+    stub_const("RetryB", build_axn { def call = RetryC.call! })
+    stub_const("RetryA", build_axn { def call = RetryB.call! })
+
+    RetryA.call
+    expect(landed).to eq(%w[RetryA RetryB RetryC]) # not the truncated ["RetryA", "RetryB"]
+  end
 end

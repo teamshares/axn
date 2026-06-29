@@ -25,16 +25,26 @@ module Axn
         def failure?(exception) = _failures.include?(exception)
         def mark_failure!(exception) = _failures.add(exception)
 
+        # The nested `call!` chain (class names, outermost→innermost) captured the FIRST time an
+        # exception is about to be reported — i.e. at the innermost executor, where the full stack is
+        # still present. A report retried from an ancestor (because an inner `on_exception` attempt
+        # raised and so was never marked reported) runs after the inner frames have popped, so deriving
+        # the breadcrumb from the live stack then would truncate it; reusing the captured snapshot keeps
+        # the landed report's path complete. The block is evaluated only on first capture.
+        def captured_stack(exception) = (_stacks[exception] ||= yield)
+
         # Called by NestingTracking when the outermost action finishes.
         def reset!
           ActiveSupport::IsolatedExecutionState[:_axn_reported_exceptions] = nil
           ActiveSupport::IsolatedExecutionState[:_axn_failure_exceptions] = nil
+          ActiveSupport::IsolatedExecutionState[:_axn_exception_stacks] = nil
         end
 
         private
 
         def _reported = (ActiveSupport::IsolatedExecutionState[:_axn_reported_exceptions] ||= Set.new.compare_by_identity)
         def _failures = (ActiveSupport::IsolatedExecutionState[:_axn_failure_exceptions] ||= Set.new.compare_by_identity)
+        def _stacks = (ActiveSupport::IsolatedExecutionState[:_axn_exception_stacks] ||= {}.compare_by_identity)
       end
     end
   end

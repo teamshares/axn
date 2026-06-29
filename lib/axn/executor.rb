@@ -250,6 +250,12 @@ module Axn
       context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
+        # Capture the call! chain at the FIRST (innermost) report, so a retry from an ancestor — after
+        # an inner on_exception attempt raised and was therefore never marked reported — still carries
+        # the full path rather than the depleted live stack.
+        axn_stack: Internal::ExceptionClassification.captured_stack(exception) do
+          Core::NestingTracking._current_axn_stack.map { |a| a.class.name || "AnonymousClass" }
+        end,
       )
 
       Axn.config.on_exception(exception, action: @action, context:)

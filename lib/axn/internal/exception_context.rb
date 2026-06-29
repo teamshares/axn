@@ -19,7 +19,7 @@ module Axn
         #     current_attributes: { ... },  # Optional: Current.attributes if defined and present
         #     async: { ... }                # Optional: async retry context if applicable
         #   }
-        def build(action:, retry_context: nil)
+        def build(action:, retry_context: nil, axn_stack: nil)
           # Get structured execution context (inputs, outputs, and extra keys at top level)
           exec_ctx = action.execution_context
 
@@ -35,11 +35,12 @@ module Axn
 
           # When this ran nested inside other actions, record the call! chain (outermost → innermost)
           # so a report shows which path reached the failure — the structured breadcrumb the
-          # user-facing result.error aggregation deliberately keeps out of the message. Omitted for a
-          # single (non-nested) action, where it would just echo the reported class. :axn_stack is a
-          # RESERVED_EXECUTION_CONTEXT_KEY, so this never clobbers a user-supplied value.
-          stack = Core::NestingTracking._current_axn_stack
-          context[:axn_stack] = stack.map { |a| a.class.name || "AnonymousClass" } if stack.length > 1
+          # user-facing result.error aggregation deliberately keeps out of the message. The caller
+          # passes the snapshot captured at the innermost report (see ExceptionClassification.captured_stack)
+          # so an ancestor-retried report keeps the full path even after inner frames have popped.
+          # Omitted for a single (non-nested) action. :axn_stack is a RESERVED_EXECUTION_CONTEXT_KEY, so
+          # this never clobbers a user-supplied value.
+          context[:axn_stack] = axn_stack if axn_stack && axn_stack.length > 1
 
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context
