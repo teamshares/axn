@@ -259,7 +259,7 @@ result.error  # => "Couldn't sync user: email already taken"
 |---|---|
 | **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
 | **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix. Scoped to the action: a bubbled child `fail!(..., prefixed: false)` still receives the *caller's* base prefix |
-| **Custom delimiter** | `error "Headline", delimiter: " — "` changes the join string (default is `": "`); only valid on the base (an unprefixed headline) — `delimiter:` on a reason raises at declaration |
+| **Custom join** | `error "Headline", join: " — "` changes the separator string (default is `": "`); or pass a Proc `join: ->(base, reason) { … }` for full control (wrapping, recasing). Only valid on the base — `join:` on a reason raises at declaration |
 | **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
 | **Promote to an always-on reason** | `error(prefixed: true, &:message)` (or `error "detail", prefixed: true`) — `prefixed: true` makes an otherwise-headline entry a prefixed reason, e.g. an always-on detail rendered under the base |
 
@@ -268,7 +268,7 @@ result.error  # => "Couldn't sync user: email already taken"
 class SyncUser
   include Axn
 
-  error "Couldn't sync user", delimiter: " — "        # base (custom delimiter)
+  error "Couldn't sync user", join: " — "              # base (custom join)
   error(prefixed: true, &:message)                     # dynamic detail — declared 2nd
   error "vendor not found", if: ArgumentError, prefixed: false  # opt-out — declared last → highest priority
 
@@ -290,7 +290,7 @@ SyncUser.call.error  # => "vendor not found"
 :::
 
 ::: tip Header aggregation across nested call!
-When an inner action fails and the outer action calls it with `call!`, the outer action's base header is prepended to whatever the inner action already produced, joined by the outer action's own `delimiter:`. The outermost header comes first — every level contributes its base in order from outside in.
+When an inner action fails and the outer action calls it with `call!`, the outer action's base header is prepended to whatever the inner action already produced, joined by the outer action's own `join:`. The outermost header comes first — every level contributes its base in order from outside in.
 
 ```ruby
 class ChargeCard
@@ -314,7 +314,16 @@ end
 Onboarding.call(...).error  # => "Onboarding failed: Charge failed: card declined"
 ```
 
-Each level uses *its own* `delimiter:` for the segment it joins — so `error "Onboarding failed", delimiter: " — "` would produce `"Onboarding failed — Charge failed: card declined"`.
+Each level uses *its own* `join:` for the segment it joins — so `error "Onboarding failed", join: " — "` would produce `"Onboarding failed — Charge failed: card declined"`.
+
+For full control over the combination — wrapping, recasing — pass a Proc instead of a string:
+
+```ruby
+error "Onboarding failed", join: ->(base, reason) { "#{base} (#{reason})" }
+# => "Onboarding failed (Charge failed: card declined)"
+```
+
+The Proc receives `(base, reason)` — this level's base header and the already-resolved segment below it — and returns the combined string. It runs per-segment, so each level controls its own join. If the Proc raises or returns a non-String, the framework falls back to the default `": "` join. `success`/`done!` use the same mechanism.
 
 This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). For an unexpected exception there is no authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the raw exception message never enters `result.error` (it stays the technical `#message` on `result.exception`), and a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
 :::
