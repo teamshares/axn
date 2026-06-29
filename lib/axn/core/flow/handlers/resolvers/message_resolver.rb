@@ -84,8 +84,8 @@ module Axn
             # the most-recent declared one. nil → default; an explicit "" String is honored verbatim.
             def join = resolved_base&.first&.join
 
-            # Combine base and reason. A String join is the infix separator (default DEFAULT_JOIN when
-            # unset); other shapes are handled in later tasks.
+            # Combine base and reason. A String join is the infix separator; a Proc join receives
+            # (base, reason) and returns the combined string. DEFAULT_JOIN is used when unset.
             def combine(base, reason)
               j = join
               return j.call(base, reason) if j.respond_to?(:call)
