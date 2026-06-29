@@ -241,28 +241,20 @@ module Axn
       end
 
       # Per-action :exception callbacks fire at each level (an action may legitimately observe its
-      # own failure), but the GLOBAL report is sent only once per exception. A nested `call!`
-      # re-raises the same exception object up the stack; without this, each ancestor executor would
-      # report it again — N duplicate Honeybadger notices for one bug.
+      # own failure), but the GLOBAL report is sent at most once per exception, at the INNERMOST action
+      # that treats it as a bug (where the failing action and full nesting stack are still live). A
+      # nested `call!` re-raises the same object up the stack; the `reported?` guard stops each ancestor
+      # from reporting it again.
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
       return if Internal::ExceptionClassification.reported?(exception)
 
-      # Capture the report payload (action + context) at the FIRST (innermost) report. If an inner
-      # on_exception attempt raised, it was never marked reported and the report retries from an
-      # ancestor — by then the inner frames have popped, so rebuilding here would describe the wrong
-      # action (its inputs/outputs and a truncated axn_stack). Reusing the innermost snapshot keeps the
-      # landed report describing the action where the bug occurred. (Unchanged for the common single
-      # successful report.)
-      reporter, context = Internal::ExceptionClassification.captured_report(exception) do
-        ctx = Internal::ExceptionContext.build(
-          action: @action,
-          retry_context:,
-          axn_stack: Core::NestingTracking._current_axn_stack.map { |a| a.class.name || "AnonymousClass" },
-        )
-        [@action, ctx]
-      end
+      # Mark BEFORE attempting, so the report is best-effort EXACTLY once: if on_exception (or building
+      # its context) raises, it's swallowed and logged below and NOT retried from an ancestor (which
+      # would describe the wrong action anyway). Deterministic regardless of nesting depth.
+      Internal::ExceptionClassification.mark_reported!(exception)
 
-      Axn.config.on_exception(exception, action: reporter, context:)
+      context = Internal::ExceptionContext.build(action: @action, retry_context:)
+      Axn.config.on_exception(exception, action: @action, context:)
 
       # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
       # rescue below swallows it WITHOUT marking — so an ancestor executor still attempts the report

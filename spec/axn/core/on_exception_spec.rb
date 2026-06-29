@@ -195,19 +195,14 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     expect(captured[:axn_stack]).to eq(%w[ReservedOuter ReservedInner]) # not ["user-supplied"]
   end
 
-  it "keeps the full report (action, inputs, axn_stack) when retried from an ancestor" do
-    # The innermost on_exception attempt raises, so it's never marked reported and the report is
-    # retried from an ancestor — after the inner frames have popped. The landed report must still
-    # describe the failing innermost action (captured at the first report), not the ancestor.
-    landed = nil
-    reporter = nil
-    calls = 0
+  it "reports once at the innermost action and never retries from an ancestor, even if the handler raises" do
+    # The global report is best-effort EXACTLY once, at the innermost (failing) action. If the handler
+    # raises it's swallowed (and logged via piping-error), NOT retried from an ancestor — so delivery
+    # is deterministic regardless of nesting depth, and the one attempt describes the failing action.
+    attempts = []
     allow(Axn.config).to receive(:on_exception) do |_e, action:, context:|
-      calls += 1
-      raise "tracker down" if calls == 1
-
-      reporter = action
-      landed = context
+      attempts << { action:, inputs: context[:inputs], axn_stack: context[:axn_stack] }
+      raise "tracker down" # always fails — must NOT trigger ancestor retries
     end
 
     stub_const("RetryC", build_axn do
@@ -218,8 +213,9 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     stub_const("RetryA", build_axn { def call = RetryB.call! })
 
     RetryA.call
-    expect(landed[:axn_stack]).to eq(%w[RetryA RetryB RetryC]) # not the truncated ["RetryA", "RetryB"]
-    expect(landed[:inputs]).to eq({ ic: "c-in" })              # innermost's inputs, not the ancestor's
-    expect(reporter).to be_a(RetryC)                           # report describes the failing action
+    expect(attempts.size).to eq(1) # exactly one attempt — no ancestor retry
+    expect(attempts.first[:action]).to be_a(RetryC)            # at the innermost (failing) action
+    expect(attempts.first[:inputs]).to eq({ ic: "c-in" })      # innermost's inputs
+    expect(attempts.first[:axn_stack]).to eq(%w[RetryA RetryB RetryC]) # full path (live stack at innermost)
   end
 end

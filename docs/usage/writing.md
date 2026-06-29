@@ -540,6 +540,8 @@ The inner action that makes the API call or database write is the right home for
 
 Distinct from `fails_on` (which decides whether an *expected* failure is reported at all): a genuine, unhandled exception is reported to `Axn.config.on_exception` **once** — from the innermost action that treats it as a reportable exception — however deeply it propagates through nested `call!`s. Each action's own `on_exception` callback still fires at its level; the single global report is sent from where the exception first surfaced as a bug. So a bug that bubbles up through `call!`, and one you absorb into a parent `fail!` via non-bang `call`, each produce a single report.
 
+Delivery is **best-effort, attempted exactly once**: if your `on_exception` handler itself raises, the failure is logged (via the internal piping-error path) and the report is *not* retried from an ancestor — so behavior is deterministic regardless of nesting depth.
+
 ### User-facing contract violations
 
 A failed `expects` validation is dev-facing by default: a caller who omits a required field has a **bug**, so the violation lands in the **exception** bucket (pages the global handler, `result.error` is the generic `"Something went wrong"`). That's the right call when the input comes from your own code.
