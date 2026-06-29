@@ -319,6 +319,19 @@ Each level uses *its own* `delimiter:` for the segment it joins — so `error "O
 This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). For an unexpected exception there is no authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the raw exception message never enters `result.error` (it stays the technical `#message` on `result.exception`), and a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
 :::
 
+::: tip Composing nested actions: `call!` vs explicit `.call` + `fail!`
+Reach for **`inner.call!`** when the inner action *must* succeed for the outer to continue. Its failure aborts the outer transparently, and `result.error` cascades automatically — the outer's base is prepended to the inner's already-resolved presentation (the aggregation above), with no per-call-site wiring. This is the default for a straight-line dependency.
+
+Reach for the explicit **`r = inner.call; fail!(…) unless r.ok?`** idiom when the outer needs a say *before* failing:
+
+- **Inspect or forward the child result** — read `r.error`, `expose(r)` partial outputs (see [Forwarding to a nested action](#forwarding-to-a-nested-action-facades)), log, or run compensating logic.
+- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through *standalone* with `fail!(r.error, prefixed: false)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
+- **Recover instead of aborting** — branch on `r.ok?` and continue without failing.
+- **Orchestrate several children** — collect multiple results, then decide.
+
+Neither replaces the other: `call!` is transparent propagation with automatic cascade; `.call` + `fail!` is for when the outer must intervene. For a fixed sequential pipeline, [`steps`](/usage/steps) wraps the explicit idiom for you (prefixing each child's `result.error` with a step label, then the parent base).
+:::
+
 ::: warning Error/success message bodies are not redacted
 Message text is treated as authored, user-facing copy — it is **not** passed through the sensitive-field filtering that protects `inspect` output and the `context:` payload sent to `on_exception`. Because a base now composes with reasons, and a `step` cascade interpolates a child's `result.error` into the parent's failure (`"Parent base: Step 1: child reason"`), any detail you interpolate into an `error`/`success`/`fail!` body propagates outward to every ancestor's `result.error` — and onward to logs and error trackers. **Do not interpolate secrets or PII into message bodies.** Put sensitive values in `expects`/`exposes` fields (which are filterable) instead.
 :::
