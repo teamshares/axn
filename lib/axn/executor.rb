@@ -247,18 +247,22 @@ module Axn
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
       return if Internal::ExceptionClassification.reported?(exception)
 
-      context = Internal::ExceptionContext.build(
-        action: @action,
-        retry_context:,
-        # Capture the call! chain at the FIRST (innermost) report, so a retry from an ancestor — after
-        # an inner on_exception attempt raised and was therefore never marked reported — still carries
-        # the full path rather than the depleted live stack.
-        axn_stack: Internal::ExceptionClassification.captured_stack(exception) do
-          Core::NestingTracking._current_axn_stack.map { |a| a.class.name || "AnonymousClass" }
-        end,
-      )
+      # Capture the report payload (action + context) at the FIRST (innermost) report. If an inner
+      # on_exception attempt raised, it was never marked reported and the report retries from an
+      # ancestor — by then the inner frames have popped, so rebuilding here would describe the wrong
+      # action (its inputs/outputs and a truncated axn_stack). Reusing the innermost snapshot keeps the
+      # landed report describing the action where the bug occurred. (Unchanged for the common single
+      # successful report.)
+      reporter, context = Internal::ExceptionClassification.captured_report(exception) do
+        ctx = Internal::ExceptionContext.build(
+          action: @action,
+          retry_context:,
+          axn_stack: Core::NestingTracking._current_axn_stack.map { |a| a.class.name || "AnonymousClass" },
+        )
+        [@action, ctx]
+      end
 
-      Axn.config.on_exception(exception, action: @action, context:)
+      Axn.config.on_exception(exception, action: reporter, context:)
 
       # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
       # rescue below swallows it WITHOUT marking — so an ancestor executor still attempts the report
