@@ -19,11 +19,11 @@ module Axn
                       "(prefixes reasons by default; opt out with prefixed: false)",
             }.freeze
 
-            attr_reader :delimiter
+            attr_reader :join
 
-            def initialize(matcher:, handler:, prefixed: false, delimiter: nil)
+            def initialize(matcher:, handler:, prefixed: false, join: nil)
               @prefixed = prefixed
-              @delimiter = delimiter
+              @join = join
               super(matcher:, handler:)
             end
 
@@ -44,26 +44,19 @@ module Axn
               raise ArgumentError, "#{label} for error/success message"
             end
 
-            def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, delimiter: nil, **unsupported)
+            def self.build(handler: nil, if: nil, unless: nil, prefixed: nil, join: nil, **unsupported)
               reject_unsupported_options!(unsupported)
               matcher = Matcher.build(if:, unless:)
 
-              # Conditionality picks the default role: a conditional entry (if:/unless:) is a prefixed
-              # *reason*; an unconditional entry is the *headline* (base). `prefixed:` overrides
-              # explicitly — `prefixed: true` promotes an unconditional entry to a prefixed reason.
-              # Whether the handler is a literal, block, or symbol carries no meaning here (a block is
-              # just a headline/reason whose text is computed at runtime).
               prefixed = !matcher.static? if prefixed.nil?
 
-              # delimiter: is the string a base joins its reasons with, so it only belongs on the base
-              # — an unconditional, non-prefixed headline. Anything conditional or prefixed is a reason
-              # (even a conditional with an explicit `prefixed: false` opt-out), so reject delimiter:
-              # there rather than silently ignore it. Enforced in `build` (the chokepoint) so the
-              # direct/Factory path fails at declaration exactly like the `error`/`success` DSL.
+              # join: (a String separator or a ->(base, reason) {} Proc) is how a base combines with its
+              # reasons, so it only belongs on the base — an unconditional, non-prefixed headline.
+              # Anything conditional or prefixed is a reason, so reject join: there rather than ignore it.
               base = matcher.static? && !prefixed
-              raise ArgumentError, "delimiter: only applies to the base (an unprefixed headline)" if delimiter && !base
+              raise ArgumentError, "join: only applies to the base (an unprefixed headline)" if join && !base
 
-              new(handler:, prefixed:, delimiter:, matcher:)
+              new(handler:, prefixed:, join:, matcher:)
             end
           end
         end

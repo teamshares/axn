@@ -56,15 +56,15 @@ RSpec.describe "Header aggregation across nested call!" do
   end
 end
 
-RSpec.describe "Per-segment delimiters in aggregation" do
-  it "uses each level's own delimiter for its own join" do
+RSpec.describe "Per-segment joins in aggregation" do
+  it "uses each level's own join for its own segment" do
     inner = build_axn do
-      error "C", delimiter: " | "
+      error "C", join: " | "
       def call = fail!("leaf")
     end
     stub_const("Inner", inner)
     mid = build_axn do
-      error "B", delimiter: " > "
+      error "B", join: " > "
       def call = Inner.call!
     end
     stub_const("Mid", mid)

@@ -11,6 +11,7 @@ module Axn
           class MessageResolver < BaseResolver
             DEFAULT_ERROR = "Something went wrong"
             DEFAULT_SUCCESS = "Action completed successfully"
+            DEFAULT_JOIN = ": "
 
             def resolve_message
               descriptor, reason = matched_reason
@@ -42,7 +43,7 @@ module Axn
             def with_base_prefix(reason)
               return reason unless base_message.present?
 
-              "#{base_message}#{delimiter}#{reason}"
+              combine(base_message, reason)
             end
 
             def base_message = resolved_base&.last
@@ -79,10 +80,18 @@ module Axn
               descriptor.prefixed? || !descriptor.static?
             end
 
-            # The delimiter comes from the headline whose body we're actually showing (resolved_base),
-            # NOT the most-recent declared one. NOTE: no `.presence` — an explicit `delimiter: ""` is
-            # honored (join with no separator); only an unset (nil) delimiter falls back to the default.
-            def delimiter = resolved_base&.first&.delimiter || ": "
+            # The join comes from the headline whose body we're actually showing (resolved_base), NOT
+            # the most-recent declared one. nil → default; an explicit "" String is honored verbatim.
+            def join = resolved_base&.first&.join
+
+            # Combine base and reason. A String join is the infix separator (default DEFAULT_JOIN when
+            # unset); other shapes are handled in later tasks.
+            def combine(base, reason)
+              j = join
+              return "#{base}#{j}#{reason}" if j.is_a?(String)
+
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            end
 
             def body_for(descriptor)
               return nil unless descriptor

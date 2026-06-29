@@ -38,7 +38,7 @@ RSpec.describe "Axn error_prefix resolution" do
   context "custom delimiter on the base" do
     let(:action) do
       build_axn do
-        error "Couldn't sync user", delimiter: " — "
+        error "Couldn't sync user", join: " — "
         error "is invalid", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -49,7 +49,7 @@ RSpec.describe "Axn error_prefix resolution" do
   context "explicit empty delimiter (join with no separator)" do
     let(:action) do
       build_axn do
-        error "Failed", delimiter: ""
+        error "Failed", join: ""
         error "reason", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -116,13 +116,13 @@ RSpec.describe "Axn error_prefix resolution" do
   end
 
   context "delimiter comes from the headline that actually resolved, not a blank newer one" do
-    # The newest headline is a block that resolves blank but carries `delimiter: ""`. base_message
-    # falls back to the earlier "Base" headline, so the delimiter must come from "Base" (default
+    # The newest headline is a block that resolves blank but carries `join: ""`. base_message
+    # falls back to the earlier "Base" headline, so the join must come from "Base" (default
     # ": "), not the blank block — otherwise we'd render "Basedetail".
     let(:action) do
       build_axn do
         error "Base"
-        error(delimiter: "") { "" }
+        error(join: "") { "" }
         error "detail", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -374,48 +374,45 @@ RSpec.describe "Axn error_prefix DSL" do
       end.not_to raise_error
     end
 
-    it "raises when delimiter: is given on a conditional reason" do
+    it "raises when join: is given on a conditional reason" do
       expect do
-        build_axn { error "x", if: ArgumentError, delimiter: " - " }
-      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+        build_axn { error "x", if: ArgumentError, join: " - " }
+      end.to raise_error(ArgumentError, /join: only applies to the base/)
     end
 
-    it "raises when delimiter: is given on a conditional reason that opted out with prefixed: false" do
-      # Still a reason (conditional), not the base — so delimiter: must be rejected, not ignored.
+    it "raises when join: is given on a conditional reason that opted out with prefixed: false" do
       expect do
-        build_axn { error "x", if: ArgumentError, prefixed: false, delimiter: " - " }
-      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+        build_axn { error "x", if: ArgumentError, prefixed: false, join: " - " }
+      end.to raise_error(ArgumentError, /join: only applies to the base/)
     end
 
-    it "allows delimiter: on a base error (an unconditional headline)" do
+    it "allows join: on a base error (an unconditional headline)" do
       expect do
-        build_axn { error "Headline", delimiter: " - " }
+        build_axn { error "Headline", join: " - " }
       end.not_to raise_error
     end
 
-    it "raises when delimiter: is combined with prefixed: true (which makes it a reason, not the base)" do
+    it "raises when join: is combined with prefixed: true (which makes it a reason, not the base)" do
       expect do
-        build_axn { error "x", delimiter: " - ", prefixed: true }
-      end.to raise_error(ArgumentError, "delimiter: only applies to the base (an unprefixed headline)")
+        build_axn { error "x", join: " - ", prefixed: true }
+      end.to raise_error(ArgumentError, "join: only applies to the base (an unprefixed headline)")
     end
 
-    # The direct/Factory `MessageDescriptor.build` path (no DSL) must enforce the same validation,
-    # rather than silently ignoring an option that resolution never reads.
     describe "direct MessageDescriptor.build path" do
       let(:described) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
 
-      it "raises when delimiter: is given on a conditional reason" do
+      it "raises when join: is given on a conditional reason" do
         expect do
-          described.build(handler: "x", if: ArgumentError, delimiter: " - ")
-        end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+          described.build(handler: "x", if: ArgumentError, join: " - ")
+        end.to raise_error(ArgumentError, /join: only applies to the base/)
       end
 
       it "allows prefixed: true on an unconditional headline (promotes it to a prefixed reason)" do
         expect { described.build(handler: "Headline", prefixed: true) }.not_to raise_error
       end
 
-      it "allows delimiter: on a base (unconditional headline) descriptor" do
-        expect { described.build(handler: "Headline", delimiter: " - ") }.not_to raise_error
+      it "allows join: on a base (unconditional headline) descriptor" do
+        expect { described.build(handler: "Headline", join: " - ") }.not_to raise_error
       end
     end
   end

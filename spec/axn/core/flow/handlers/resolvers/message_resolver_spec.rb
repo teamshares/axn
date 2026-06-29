@@ -6,11 +6,11 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
   let(:exception) { nil }
   let(:resolver) { described_class.new(registry, :success, action:, exception:) }
 
-  def build_descriptor(handler:, prefixed: false, delimiter: nil, if: nil, unless: nil)
+  def build_descriptor(handler:, prefixed: false, join: nil, if: nil, unless: nil)
     Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
       handler:,
       prefixed:,
-      delimiter:,
+      join:,
       if: binding.local_variable_get(:if),
       unless: binding.local_variable_get(:unless),
     )
@@ -138,7 +138,7 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
     it "returns reason prefixed with base when base_message present" do
       error_resolver = described_class.new(registry, :error, action:, exception:)
       allow(error_resolver).to receive(:base_message).and_return("Base")
-      allow(error_resolver).to receive(:delimiter).and_return(": ")
+      allow(error_resolver).to receive(:join).and_return(": ")
       expect(error_resolver.with_base_prefix("reason")).to eq("Base: reason")
     end
 
