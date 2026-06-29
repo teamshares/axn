@@ -103,6 +103,7 @@ module Axn
       @errors = errors
       @user_facing = user_facing
       @user_facing_message = user_facing_message
+      @presentation = nil # set by __present_as when an owned, user-facing failure is stamped (see Axn::Failure)
       super(errors)
     end
 
