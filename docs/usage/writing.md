@@ -380,6 +380,8 @@ error { "#{tool_name} tool failed" }                    # [!code focus]
 ```
 
 The exception message is already appended as the *reason* segment; interpolating it into the header prints it twice — `"MyTool tool failed: card declined: card declined"`.
+
+The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) that reads `e.message`: when the failure bubbled up from a nested `call!`, `e.message` is the child's **already-accumulated presentation** (e.g. `"Charge failed: card declined"`), not the raw reason — so interpolating it re-embeds the whole child chain. Read `e.message` in a message block only if you genuinely want the resolved presentation so far.
 :::
 
 ### Default with specific overrides
@@ -406,6 +408,15 @@ CallExternalApi.call(...).error
 ```
 
 Use this when specific error classes deserve their own user-facing copy and you don't want the base headline prepended to them.
+
+::: tip Base vs. conditional, and how each treats a bubbled child
+These are two different jobs, and the difference matters most when a failure bubbles up through `call!`:
+
+- A **base** (unconditional `error "X"`) is the **headline** — it *prefixes* whatever the failure resolved to, **including a nested child's whole chain**. Use it for uniform copy that *preserves* what failed: `error "Checkout failed"` over a child yields `"Checkout failed: Charge failed: card declined"`.
+- A **conditional reason** (`error "X", if: …`, or `fails_on [K], "X"`) is an **override for a matched failure mode** — when its condition matches the failure (yours *or a bubbled child's*), it *becomes* the message, **replacing** the child's chain, and the base then prefixes it (unless `prefixed: false`). Use it to *translate* a specific failure into your own copy: `error "Record not found", if: NotFoundError` over a child yields `"Checkout failed: Record not found"` — the child's own message is intentionally dropped.
+
+Because a conditional matches the *failure*, a **catch-all** `error "…", if: ->(_e){ true }` will override **every** bubbled child (and it doesn't even fire for your own `fail!("msg")`, which always wins at its own level). If you want "one friendly message for any failure" *while keeping* the child context, that's a **base**, not a catch-all conditional.
+:::
 
 ### Opting out of a caller's prefix
 
