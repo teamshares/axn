@@ -174,4 +174,12 @@ RSpec.describe "join: Proc raise-safety" do
     end
     expect(action.call.error).to eq("Outer: inner")
   end
+
+  it "falls back to the default join when the Proc raises (success/done! path)" do
+    action = build_axn do
+      success "All good", join: ->(_base, _reason) { raise "kaboom in join" }
+      def call = done!("from cache")
+    end
+    expect(action.call.success).to eq("All good: from cache")
+  end
 end
