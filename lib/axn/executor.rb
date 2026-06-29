@@ -204,27 +204,28 @@ module Axn
         @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
 
-        _carry_and_stamp_presentation(e)
+        _resolve_and_stamp_presentation(e)
       else
-        _carry_and_stamp_presentation(e)
+        _resolve_and_stamp_presentation(e)
         trigger_on_exception(e)
       end
     end
 
-    # Resolve THIS level's presentation, persist it for the next ancestor's aggregation, and — for
-    # axn-owned exceptions only — stamp it onto #message so a rescued exception reads the same string
-    # as result.error. Carrying is gated on whether a base/reason was actually *declared* (not on the
-    # resolved text): a baseless level that only produced the generic fallback contributes nothing, so
-    # an ancestor's base stands alone rather than reading "…: Something went wrong". Applied identically
-    # to both buckets — a foreign exception simply isn't owned, so its technical #message is never
-    # stamped. (`#message` itself is still stamped on an owned exception even when not carried, so a
-    # bare fail!'s #message stays consistent with its own result.error.)
-    def _carry_and_stamp_presentation(exception)
+    # Resolve THIS level's presentation NOW (memoizing it on the result) and, for an Axn-owned
+    # exception, stamp it onto #message so a rescued exception reads the same string as result.error.
+    #
+    # The eager resolution matters even when nothing is stamped: it must happen while this action is
+    # still on the nesting stack, because an ancestor's `call!` carried the child's presentation in
+    # CarriedPresentation, which is cleared when the stack empties. Resolving (and memoizing) here
+    # freezes the aggregated value before that reset; a later lazy read would find the carry gone.
+    #
+    # The cross-level CARRY itself is set by `call!`, not here — it must be scoped to transparent
+    # `call!` bubbling. Setting it at every level would leave a presentation on a child run via plain
+    # `.call`, which an explicit `.call` + re-raise (e.g. `step`'s bug path, `raise step_result.exception`)
+    # would then leak into the parent's aggregation.
+    def _resolve_and_stamp_presentation(exception)
       resolved = @action.result.error
-      return unless resolved
-
-      Internal::CarriedPresentation.set(exception, resolved) if @action.result.send(:_error_from_declared_source?)
-      return unless Axn.owns_failure_exception?(exception) && exception.respond_to?(:__present_as)
+      return unless resolved && Axn.owns_failure_exception?(exception) && exception.respond_to?(:__present_as)
 
       exception.__present_as(resolved)
     end

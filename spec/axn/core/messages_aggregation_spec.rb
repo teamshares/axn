@@ -288,3 +288,38 @@ RSpec.describe "exception-bucket aggregation (unexpected exceptions)" do
     expect(outer.call(inner:).error).to eq("Outer prefix: Something went wrong")
   end
 end
+
+RSpec.describe "aggregation is scoped to transparent call! (no leak through plain .call)" do
+  it "does not leak a step child's presentation into the parent on the bug (exception) path" do
+    # step runs the child via .call and re-raises the original exception for a bug outcome; the
+    # child's presentation must NOT carry into the parent (which only owns the parent-level message).
+    child = build_axn do
+      error "Child failed"
+      def call = raise "boom"
+    end
+    stub_const("LeakStepChild", child)
+    parent = build_axn do
+      error "Parent failed"
+      step :child, LeakStepChild
+    end
+    r = parent.call
+    expect(r.outcome).to eq("exception")
+    expect(r.error).to eq("Parent failed") # NOT "Parent failed: Child failed"
+  end
+
+  it "does not leak through an explicit .call + raise r.exception" do
+    child = build_axn do
+      error "Child failed"
+      def call = raise "boom"
+    end
+    parent = build_axn do
+      expects :child
+      error "Parent failed"
+      def call
+        r = child.call
+        raise r.exception unless r.ok?
+      end
+    end
+    expect(parent.call(child:).error).to eq("Parent failed")
+  end
+end

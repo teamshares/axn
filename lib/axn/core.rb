@@ -37,6 +37,12 @@ module Axn
         result = call(**)
         return result if result.ok?
 
+        # Carry this result's presentation for an ancestor to prefix onto (header aggregation). Scoped
+        # to `call!` — transparent bubbling — on purpose: a child run via plain `.call` must NOT leave a
+        # carried presentation, or an explicit `.call` + re-raise (e.g. `step`'s bug path) would leak it
+        # into the parent. Gated on a declared base/reason so a baseless fallback contributes nothing.
+        Axn::Internal::CarriedPresentation.set(result.exception, result.error) if result.send(:_error_from_declared_source?)
+
         raise result.exception
       end
     end
