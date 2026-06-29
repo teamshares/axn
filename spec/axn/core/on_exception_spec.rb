@@ -154,3 +154,68 @@ RSpec.describe Axn do
     end
   end
 end
+
+RSpec.describe "on_exception context: nested action breadcrumb" do
+  it "includes the axn_stack (outermost -> innermost) in the reported context" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn { def call = raise "boom" }
+    stub_const("BreadcrumbInner", inner)
+    outer = build_axn { def call = BreadcrumbInner.call! }
+    stub_const("BreadcrumbOuter", outer)
+
+    BreadcrumbOuter.call
+    expect(captured[:axn_stack]).to eq(%w[BreadcrumbOuter BreadcrumbInner])
+  end
+
+  it "omits axn_stack for a single (non-nested) action" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    stub_const("SoloAction", build_axn { def call = raise "boom" })
+    SoloAction.call
+    expect(captured).not_to have_key(:axn_stack)
+  end
+
+  it "reserves :axn_stack — a user-set value is stripped, the framework breadcrumb wins" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn do
+      def call
+        set_execution_context(axn_stack: ["user-supplied"])
+        raise "boom"
+      end
+    end
+    stub_const("ReservedInner", inner)
+    stub_const("ReservedOuter", build_axn { def call = ReservedInner.call! })
+
+    ReservedOuter.call
+    expect(captured[:axn_stack]).to eq(%w[ReservedOuter ReservedInner]) # not ["user-supplied"]
+  end
+
+  it "reports once at the innermost action and never retries from an ancestor, even if the handler raises" do
+    # The global report is best-effort EXACTLY once, at the innermost (failing) action. If the handler
+    # raises it's swallowed (and logged via piping-error), NOT retried from an ancestor — so delivery
+    # is deterministic regardless of nesting depth, and the one attempt describes the failing action.
+    attempts = []
+    allow(Axn.config).to receive(:on_exception) do |_e, action:, context:|
+      attempts << { action:, inputs: context[:inputs], axn_stack: context[:axn_stack] }
+      raise "tracker down" # always fails — must NOT trigger ancestor retries
+    end
+
+    stub_const("RetryC", build_axn do
+      expects :ic, default: "c-in"
+      def call = raise "boom"
+    end)
+    stub_const("RetryB", build_axn { def call = RetryC.call! })
+    stub_const("RetryA", build_axn { def call = RetryB.call! })
+
+    RetryA.call
+    expect(attempts.size).to eq(1) # exactly one attempt — no ancestor retry
+    expect(attempts.first[:action]).to be_a(RetryC)            # at the innermost (failing) action
+    expect(attempts.first[:inputs]).to eq({ ic: "c-in" })      # innermost's inputs
+    expect(attempts.first[:axn_stack]).to eq(%w[RetryA RetryB RetryC]) # full path (live stack at innermost)
+  end
+end

@@ -53,7 +53,7 @@ RSpec.describe Axn do
         expect(result).not_to be_ok
         expect(result.error).to eq("badbadbad: arg was all 1s")
         expect(result.exception).to be_a(Axn::Failure)
-        expect(result.exception.message).to eq("arg was all 1s")
+        expect(result.exception.message).to eq("badbadbad: arg was all 1s")
         expect(result.value).to eq(nil)
       end
 
@@ -75,7 +75,7 @@ RSpec.describe Axn do
 
       it "handles fail!" do
         expect { client.number!(arg: 111) }.to raise_error(Axn::Failure) do |error|
-          expect(error.message).to eq("arg was all 1s")
+          expect(error.message).to eq("badbadbad: arg was all 1s")
         end
       end
 

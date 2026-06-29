@@ -548,8 +548,12 @@ module Axn
         end
       end
 
-      # Reserved keys that cannot be set via set_execution_context or additional_execution_context hook
-      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs].freeze
+      # Keys the framework owns in the execution/exception-report context, so they can't be set via
+      # set_execution_context or the additional_execution_context hook: :inputs/:outputs are the
+      # structural pair, and :async/:current_attributes/:axn_stack are framework-populated in
+      # Internal::ExceptionContext.build — reserving them here prevents a user value from being
+      # silently overwritten when build assigns them after merging the user's extra keys.
+      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async current_attributes axn_stack].freeze
 
       module InstanceMethods
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
@@ -602,7 +606,7 @@ module Axn
 
         # Set additional context to be included in execution_context for exception reporting/handlers.
         # This context is NOT included in automatic pre/post logging (which only logs inputs/outputs).
-        # Reserved keys (:inputs, :outputs) are stripped before merging.
+        # Framework-owned keys (RESERVED_EXECUTION_CONTEXT_KEYS) are stripped before merging.
         def set_execution_context(**kwargs)
           @__additional_execution_context ||= {}
           @__additional_execution_context.merge!(kwargs.except(*RESERVED_EXECUTION_CONTEXT_KEYS))
@@ -615,7 +619,7 @@ module Axn
 
         # Returns a structured hash for exception reporting and handlers.
         # Contains :inputs, :outputs, and any extra keys from set_execution_context / additional_execution_context hook.
-        # Reserved keys (:inputs, :outputs) from extra context are stripped before merging at top level.
+        # Framework-owned keys (RESERVED_EXECUTION_CONTEXT_KEYS) from extra context are stripped before merging.
         def execution_context
           explicit_context = @__additional_execution_context || {}
           hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}

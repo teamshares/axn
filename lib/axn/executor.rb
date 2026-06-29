@@ -191,6 +191,12 @@ module Axn
 
       @context.__record_exception(e)
 
+      # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
+      # filter or body that reads exception.message observes the same resolved string as result.error
+      # and the call!-raised exception — not the raw reason. (Context is finalized by __record_exception
+      # above, so result.error memoizes here.)
+      _resolve_and_stamp_presentation(e)
+
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
       if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
@@ -208,6 +214,25 @@ module Axn
       end
     end
 
+    # Resolve THIS level's presentation NOW (memoizing it on the result) and, for an Axn-owned
+    # exception, stamp it onto #message so a rescued exception reads the same string as result.error.
+    #
+    # The eager resolution matters even when nothing is stamped: it must happen while this action is
+    # still on the nesting stack, because an ancestor's `call!` carried the child's presentation in
+    # CarriedPresentation, which is cleared when the stack empties. Resolving (and memoizing) here
+    # freezes the aggregated value before that reset; a later lazy read would find the carry gone.
+    #
+    # The cross-level CARRY itself is set by `call!`, not here — it must be scoped to transparent
+    # `call!` bubbling. Setting it at every level would leave a presentation on a child run via plain
+    # `.call`, which an explicit `.call` + re-raise (e.g. `step`'s bug path, `raise step_result.exception`)
+    # would then leak into the parent's aggregation.
+    def _resolve_and_stamp_presentation(exception)
+      resolved = @action.result.error
+      return unless resolved && Axn.owns_failure_exception?(exception) && exception.respond_to?(:__present_as)
+
+      exception.__present_as(resolved)
+    end
+
     def trigger_on_exception(exception)
       retry_context = Async::CurrentRetryContext.current if defined?(Async::CurrentRetryContext)
       if retry_context
@@ -216,17 +241,19 @@ module Axn
       end
 
       # Per-action :exception callbacks fire at each level (an action may legitimately observe its
-      # own failure), but the GLOBAL report is sent only once per exception. A nested `call!`
-      # re-raises the same exception object up the stack; without this, each ancestor executor would
-      # report it again — N duplicate Honeybadger notices for one bug.
+      # own failure), but the GLOBAL report is sent at most once per exception, at the INNERMOST action
+      # that treats it as a bug (where the failing action and full nesting stack are still live). A
+      # nested `call!` re-raises the same object up the stack; the `reported?` guard stops each ancestor
+      # from reporting it again.
       @action_class._dispatch_callbacks(:exception, action: @action, exception:)
       return if Internal::ExceptionClassification.reported?(exception)
 
-      context = Internal::ExceptionContext.build(
-        action: @action,
-        retry_context:,
-      )
+      # Mark BEFORE attempting, so the report is best-effort EXACTLY once: if on_exception (or building
+      # its context) raises, it's swallowed and logged below and NOT retried from an ancestor (which
+      # would describe the wrong action anyway). Deterministic regardless of nesting depth.
+      Internal::ExceptionClassification.mark_reported!(exception)
 
+      context = Internal::ExceptionContext.build(action: @action, retry_context:)
       Axn.config.on_exception(exception, action: @action, context:)
 
       # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
