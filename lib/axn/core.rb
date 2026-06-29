@@ -40,8 +40,14 @@ module Axn
         # Carry this result's presentation for an ancestor to prefix onto (header aggregation). Scoped
         # to `call!` — transparent bubbling — on purpose: a child run via plain `.call` must NOT leave a
         # carried presentation, or an explicit `.call` + re-raise (e.g. `step`'s bug path) would leak it
-        # into the parent. Gated on a declared base/reason so a baseless fallback contributes nothing.
-        Axn::Internal::CarriedPresentation.set(result.exception, result.error) if result.send(:_error_from_declared_source?)
+        # into the parent. Two gates: (1) only when an Axn ancestor is still on the stack to consume it
+        # — at the OUTERMOST `call!`, `call` above has already unwound NestingTracking (and run its
+        # reset), so a write here would have no consumer and no later reset (a thread-local leak that
+        # also pins the Failure's __originating_action/context); (2) only when a base/reason was actually
+        # declared, so a baseless fallback contributes nothing.
+        if Core::NestingTracking._current_axn_stack.any? && result.send(:_error_from_declared_source?)
+          Axn::Internal::CarriedPresentation.set(result.exception, result.error)
+        end
 
         raise result.exception
       end

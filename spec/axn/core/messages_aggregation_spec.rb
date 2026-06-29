@@ -323,3 +323,21 @@ RSpec.describe "aggregation is scoped to transparent call! (no leak through plai
     expect(parent.call(child:).error).to eq("Parent failed")
   end
 end
+
+RSpec.describe "carry does not leak after an outermost call!" do
+  it "leaves no carried presentation in the store after a rescued top-level call!" do
+    # The outermost call!'s `call` has already unwound NestingTracking (and run its reset), so a
+    # carry written here would never be consumed or reset — gate it on an active ancestor stack.
+    action = build_axn do
+      error "Top failed"
+      def call = fail!("boom")
+    end
+    exc = nil
+    begin
+      action.call!
+    rescue Axn::Failure => e
+      exc = e
+    end
+    expect(Axn::Internal::CarriedPresentation.get(exc)).to be_nil
+  end
+end
