@@ -268,7 +268,7 @@ result.error  # => "Couldn't sync user: email already taken"
 class SyncUser
   include Axn
 
-  error "Couldn't sync user", join: " — "              # base (custom join)
+  error "Couldn't sync user", join: " — "              # base (custom separator)
   error(prefixed: true, &:message)                     # dynamic detail — declared 2nd
   error "vendor not found", if: ArgumentError, prefixed: false  # opt-out — declared last → highest priority
 

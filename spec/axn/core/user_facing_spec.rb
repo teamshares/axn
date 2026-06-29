@@ -161,7 +161,7 @@ RSpec.describe "expects ..., user_facing:" do
       expect(action.call.error).to eq("Couldn't save widget: Add a note")
     end
 
-    it "honors the base's custom delimiter" do
+    it "honors the base's custom join" do
       action = build_axn do
         error "Couldn't save widget", join: " — "
         expects :note, user_facing: true

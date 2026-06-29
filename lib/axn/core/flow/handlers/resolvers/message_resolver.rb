@@ -58,8 +58,8 @@ module Axn
 
             # The headline that actually resolves, as [descriptor, body]. Headlines form a fallback chain
             # (most-recent first — see Registry): a headline whose block raises or returns blank falls
-            # back to an earlier one. The body AND its delimiter both come from this descriptor, so a
-            # blank/raising newer headline can't impose its delimiter on an earlier headline's text.
+            # back to an earlier one. The body AND its join both come from this descriptor, so a
+            # blank/raising newer headline can't impose its join on an earlier headline's text.
             def resolved_base
               return @resolved_base if defined?(@resolved_base)
 

@@ -35,7 +35,7 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("is invalid") }
   end
 
-  context "custom delimiter on the base" do
+  context "custom join on the base" do
     let(:action) do
       build_axn do
         error "Couldn't sync user", join: " — "
@@ -46,7 +46,7 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user — is invalid") }
   end
 
-  context "explicit empty delimiter (join with no separator)" do
+  context "explicit empty join (no separator)" do
     let(:action) do
       build_axn do
         error "Failed", join: ""
@@ -115,7 +115,7 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user") }
   end
 
-  context "delimiter comes from the headline that actually resolved, not a blank newer one" do
+  context "join comes from the headline that actually resolved, not a blank newer one" do
     # The newest headline is a block that resolves blank but carries `join: ""`. base_message
     # falls back to the earlier "Base" headline, so the join must come from "Base" (default
     # ": "), not the blank block — otherwise we'd render "Basedetail".
@@ -130,7 +130,7 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Base: detail") }
   end
 
-  context "a headline block that RAISES falls back to an earlier headline (and that headline's delimiter)" do
+  context "a headline block that RAISES falls back to an earlier headline (and that headline's join)" do
     # The resolver promises "a headline whose block raises or returns blank falls back to an earlier
     # one" (message_resolver.rb). The blank case is covered above; this locks in the *raises* case,
     # which depends on body_for → Invoker.call rescuing internally.
