@@ -88,9 +88,23 @@ module Axn
             # (base, reason) and returns the combined string. DEFAULT_JOIN is used when unset.
             def combine(base, reason)
               j = join
-              return j.call(base, reason) if j.respond_to?(:call)
+              return apply_join_proc(j, base, reason) if j.respond_to?(:call)
               return "#{base}#{j}#{reason}" if j.is_a?(String)
 
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            end
+
+            # A join Proc runs on the presentation path, which must never raise. A Proc that raises,
+            # mismatches arity, or returns a non-String falls back to the default join (and warns) —
+            # mirroring how a base-header block that raises falls back down the headline chain.
+            def apply_join_proc(proc, base, reason)
+              result = proc.call(base, reason)
+              return result if result.is_a?(String)
+
+              action.warn("join: Proc returned #{result.class} (expected String) — using default join")
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            rescue StandardError => e
+              action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
             end
 

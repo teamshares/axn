@@ -149,3 +149,29 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
     end
   end
 end
+
+RSpec.describe "join: Proc raise-safety" do
+  it "falls back to the default join when the Proc raises" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise "kaboom in join" }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "falls back to the default join when the Proc has the wrong arity (lambda)" do
+    action = build_axn do
+      error "Outer", join: ->(only_one) { only_one }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "falls back to the default join when the Proc returns a non-String" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { 42 }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+end
