@@ -329,7 +329,7 @@ Reach for the explicit **`r = inner.call; fail!(…) unless r.ok?`** idiom when 
 - **Recover instead of aborting** — branch on `r.ok?` and continue without failing.
 - **Orchestrate several children** — collect multiple results, then decide.
 
-Neither replaces the other: `call!` is transparent propagation with automatic cascade; `.call` + `fail!` is for when the outer must intervene. For a fixed sequential pipeline, [`steps`](/usage/steps) wraps the explicit idiom for you (prefixing each child's `result.error` with a step label, then the parent base).
+Neither replaces the other: `call!` is transparent propagation with automatic cascade; `.call` + `fail!` is for when the outer must intervene. And when you're chaining several sub-actions in sequence, [`steps`](/usage/steps) is the purpose-built tool — it runs each child and composes the messages for you (prefixing each child's `result.error` with a step label, then the parent base), so you don't hand-write the per-step `call`/`fail!` at all.
 :::
 
 ::: warning Error/success message bodies are not redacted
