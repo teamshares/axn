@@ -262,6 +262,18 @@ RSpec.describe "exception-bucket aggregation (unexpected exceptions)" do
     expect(outer.call(inner:).error).to eq("Outer prefix") # NOT "Outer prefix: Something went wrong"
   end
 
+  it "does not chain the generic fallback for a baseless bare fail! (failure bucket parity)" do
+    # baseless inner + bare fail! (no message) resolves to the generic fallback — must not be carried,
+    # mirroring the exception bucket (a baseless level contributes nothing).
+    inner = build_axn { def call = fail! }
+    outer = build_axn do
+      expects :inner
+      error "Outer prefix"
+      def call = inner.call!
+    end
+    expect(outer.call(inner:).error).to eq("Outer prefix") # NOT "Outer prefix: Something went wrong"
+  end
+
   it "carries a declared base even when it legitimately reads like the generic fallback" do
     # base is explicitly declared but happens to equal DEFAULT_ERROR's text — must still be carried
     inner = build_axn do
