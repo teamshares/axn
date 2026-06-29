@@ -341,3 +341,17 @@ RSpec.describe "carry does not leak after an outermost call!" do
     expect(Axn::Internal::CarriedPresentation.get(exc)).to be_nil
   end
 end
+
+RSpec.describe "callbacks observe the stamped presentation" do
+  it "on_failure sees exception.message equal to result.error (stamped before callbacks)" do
+    seen = []
+    action = build_axn do
+      error "Checkout failed"
+      on_failure { |e| seen << e.message }
+      def call = fail!("declined")
+    end
+    r = action.call
+    expect(r.error).to eq("Checkout failed: declined")
+    expect(seen).to eq(["Checkout failed: declined"]) # not the raw "declined"
+  end
+end

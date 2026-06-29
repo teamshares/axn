@@ -191,6 +191,12 @@ module Axn
 
       @context.__record_exception(e)
 
+      # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
+      # filter or body that reads exception.message observes the same resolved string as result.error
+      # and the call!-raised exception — not the raw reason. (Context is finalized by __record_exception
+      # above, so result.error memoizes here.)
+      _resolve_and_stamp_presentation(e)
+
       @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
       if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
@@ -203,10 +209,7 @@ module Axn
         Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
         @context.__classify_as_failure!
         @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
-
-        _resolve_and_stamp_presentation(e)
       else
-        _resolve_and_stamp_presentation(e)
         trigger_on_exception(e)
       end
     end
