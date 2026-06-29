@@ -177,4 +177,21 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     SoloAction.call
     expect(captured).not_to have_key(:axn_stack)
   end
+
+  it "reserves :axn_stack — a user-set value is stripped, the framework breadcrumb wins" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn do
+      def call
+        set_execution_context(axn_stack: ["user-supplied"])
+        raise "boom"
+      end
+    end
+    stub_const("ReservedInner", inner)
+    stub_const("ReservedOuter", build_axn { def call = ReservedInner.call! })
+
+    ReservedOuter.call
+    expect(captured[:axn_stack]).to eq(%w[ReservedOuter ReservedInner]) # not ["user-supplied"]
+  end
 end

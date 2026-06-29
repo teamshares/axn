@@ -36,7 +36,8 @@ module Axn
           # When this ran nested inside other actions, record the call! chain (outermost → innermost)
           # so a report shows which path reached the failure — the structured breadcrumb the
           # user-facing result.error aggregation deliberately keeps out of the message. Omitted for a
-          # single (non-nested) action, where it would just echo the reported class.
+          # single (non-nested) action, where it would just echo the reported class. :axn_stack is a
+          # RESERVED_EXECUTION_CONTEXT_KEY, so this never clobbers a user-supplied value.
           stack = Core::NestingTracking._current_axn_stack
           context[:axn_stack] = stack.map { |a| a.class.name || "AnonymousClass" } if stack.length > 1
 

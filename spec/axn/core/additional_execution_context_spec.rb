@@ -110,6 +110,29 @@ RSpec.describe "Additional execution context" do
 
       action.call(name: "test")
     end
+
+    it "ignores framework-owned reserved keys (async, current_attributes, axn_stack) from set_execution_context" do
+      action = build_axn do
+        def call
+          set_execution_context(axn_stack: ["UserValue"], async: { user: true }, current_attributes: { u: 1 }, custom_key: "allowed")
+          raise "Failed"
+        end
+      end
+
+      expect(Axn.config).to receive(:on_exception).with(
+        anything,
+        hash_including(context: hash_including(custom_key: "allowed")),
+      ) do |_exception, options|
+        ctx = options[:context]
+        # Single, non-nested, non-retry action: the framework sets none of these, and the user's
+        # attempts are stripped at collection — so none of the reserved keys appear.
+        expect(ctx).not_to have_key(:axn_stack)
+        expect(ctx).not_to have_key(:async)
+        expect(ctx).not_to have_key(:current_attributes)
+      end.and_call_original
+
+      action.call
+    end
   end
 
   describe "additional_execution_context hook method" do
