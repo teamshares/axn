@@ -324,6 +324,22 @@ RSpec.describe "aggregation is scoped to transparent call! (no leak through plai
   end
 end
 
+RSpec.describe "Mixed String and Proc joins in aggregation" do
+  it "uses each level's own join (Proc and String compose per-segment)" do
+    inner = build_axn do
+      error "C" # default ": "
+      def call = fail!("leaf")
+    end
+    stub_const("Inner", inner)
+    outer = build_axn do
+      error "A", join: ->(base, reason) { "#{base} [#{reason}]" }
+      def call = Inner.call!
+    end
+
+    expect(outer.call.error).to eq("A [C: leaf]")
+  end
+end
+
 RSpec.describe "carry does not leak after an outermost call!" do
   it "leaves no carried presentation in the store after a rescued top-level call!" do
     # The outermost call!'s `call` has already unwound NestingTracking (and run its reset), so a

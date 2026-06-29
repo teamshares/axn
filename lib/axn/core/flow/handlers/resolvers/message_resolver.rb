@@ -88,6 +88,7 @@ module Axn
             # unset); other shapes are handled in later tasks.
             def combine(base, reason)
               j = join
+              return j.call(base, reason) if j.respond_to?(:call)
               return "#{base}#{j}#{reason}" if j.is_a?(String)
 
               "#{base}#{DEFAULT_JOIN}#{reason}"

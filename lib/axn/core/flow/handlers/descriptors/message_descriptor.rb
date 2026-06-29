@@ -55,6 +55,7 @@ module Axn
               # Anything conditional or prefixed is a reason, so reject join: there rather than ignore it.
               base = matcher.static? && !prefixed
               raise ArgumentError, "join: only applies to the base (an unprefixed headline)" if join && !base
+              raise ArgumentError, "join: must be a String or a callable ->(base, reason) {}" if join && !(join.is_a?(String) || join.respond_to?(:call))
 
               new(handler:, prefixed:, join:, matcher:)
             end

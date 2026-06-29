@@ -326,6 +326,44 @@ RSpec.describe "prefixed: false is scoped to the originating action" do
   end
 end
 
+RSpec.describe "Axn join: Proc form" do
+  it "wraps the reason (error)" do
+    action = build_axn do
+      error "Outer error", join: ->(base, reason) { "#{base} (#{reason})" }
+      def call = fail!("inner error")
+    end
+    expect(action.call.error).to eq("Outer error (inner error)")
+  end
+
+  it "recases the reason's first letter (error)" do
+    action = build_axn do
+      error "Outer error", join: ->(base, reason) { "#{base}: #{reason[0].downcase}#{reason[1..]}" }
+      def call = fail!("Inner error")
+    end
+    expect(action.call.error).to eq("Outer error: inner error")
+  end
+
+  it "applies for success/done! identically" do
+    action = build_axn do
+      success "User synced", join: ->(base, reason) { "#{base} (#{reason})" }
+      def call = done!("from cache")
+    end
+    expect(action.call.success).to eq("User synced (from cache)")
+  end
+
+  it "raises at declaration when join: (Proc) is given on a reason" do
+    expect do
+      build_axn { error "x", if: ArgumentError, join: ->(b, r) { "#{b} #{r}" } }
+    end.to raise_error(ArgumentError, /join: only applies to the base/)
+  end
+
+  it "raises at declaration when join: is neither a String nor callable" do
+    expect do
+      build_axn { error "Base", join: 5 }
+    end.to raise_error(ArgumentError, /join: must be a String or a callable/)
+  end
+end
+
 RSpec.describe "removed error options" do
   it "rejects from:" do
     expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, /from: is no longer supported/)
