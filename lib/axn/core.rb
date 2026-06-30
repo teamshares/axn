@@ -83,14 +83,16 @@ module Axn
       Axn::Executor.new(self).run
     end
 
-    def fail!(message = nil, prefixed: true, **exposures)
+    def fail!(message = nil, standalone: false, bare: nil, **exposures)
       expose(**exposures) if exposures.any?
-      raise Axn::Failure.new(message, prefixed:, action: self)
+      standalone = bare unless bare.nil?
+      raise Axn::Failure.new(message, standalone:, action: self)
     end
 
-    def done!(message = nil, prefixed: true, **exposures)
+    def done!(message = nil, standalone: false, bare: nil, **exposures)
       expose(**exposures) if exposures.any?
-      raise Axn::Internal::EarlyCompletion.new(message, prefixed:)
+      standalone = bare unless bare.nil?
+      raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 
     private

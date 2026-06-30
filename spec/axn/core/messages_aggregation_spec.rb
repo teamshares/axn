@@ -77,17 +77,17 @@ RSpec.describe "Per-segment joins in aggregation" do
   end
 end
 
-RSpec.describe "prefixed: false under aggregation" do
+RSpec.describe "standalone: true under aggregation" do
   it "suppresses the originating action's own base" do
     action = build_axn do
       error "Child base"
-      def call = fail!("card declined", prefixed: false)
+      def call = fail!("card declined", standalone: true)
     end
     expect(action.call.error).to eq("card declined")
   end
 
-  it "still lets an ancestor prefix its base onto a bubbled opt-out child" do
-    stub_const("OptOutChild", build_axn { def call = fail!("card declined", prefixed: false) })
+  it "still lets an ancestor attach its base onto a bubbled opt-out child" do
+    stub_const("OptOutChild", build_axn { def call = fail!("card declined", standalone: true) })
     parent = build_axn do
       error "Charging failed"
       def call = OptOutChild.call!
@@ -210,7 +210,7 @@ RSpec.describe "parent override beats a bubbled child presentation" do
     parent = build_axn do
       expects :inner
       error "Parent base"
-      error "Record not found", if: NotFoundErr, prefixed: false
+      error "Record not found", if: NotFoundErr, standalone: true
       fails_on [NotFoundErr]
       def call = inner.call!
     end

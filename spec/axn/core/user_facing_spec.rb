@@ -140,8 +140,8 @@ RSpec.describe "expects ..., user_facing:" do
   end
 
   # The user-facing message is a failure *reason*: a declared base `error` headlines it by default,
-  # exactly like a `fail!` reason (see PRO-2746 nested-error-message prefixing). Opting a single
-  # field out (`prefixed: false`) is deliberately deferred.
+  # exactly like a `fail!` reason (see PRO-2746 nested-error-message attachment). Opting a single
+  # field out (`standalone: true`) is deliberately deferred.
   describe "prefixing by a declared base error" do
     it "prefixes the field's own message under the base headline" do
       action = build_axn do

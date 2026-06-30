@@ -20,28 +20,29 @@ module Axn
 
           private
 
-          def _add_message(kind, message:, prefixed: nil, join: nil, **kwargs, &block)
+          def _add_message(kind, message:, standalone: nil, bare: nil, join: nil, **kwargs, &block)
             Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.reject_unsupported_options!(kwargs.slice(:from, :prefix))
             raise Axn::UnsupportedArgument, "calling #{kind} with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
-            entry = _build_entry(message, prefixed:, join:, kwargs:, block:, block_given: block_given?)
+            standalone = bare unless bare.nil? # bare: is an undocumented alias for standalone:
+            entry = _build_entry(message, standalone:, join:, kwargs:, block:, block_given: block_given?)
 
             self._messages_registry = _messages_registry.register(event_type: kind, entry:)
             true
           end
 
-          def _build_entry(message, prefixed:, join:, kwargs:, block:, block_given:)
+          def _build_entry(message, standalone:, join:, kwargs:, block:, block_given:)
             if message.is_a?(Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
-              raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given || !prefixed.nil? || join
+              raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given || !standalone.nil? || join
 
               return message
             end
 
             Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
               handler: block_given ? block : message,
-              prefixed:,
+              standalone:,
               join:,
               **kwargs,
             )

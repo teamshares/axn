@@ -291,7 +291,7 @@ module Axn
       yield
       false
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message, prefixed: e.prefixed)
+      @context.__record_early_completion(e.message, standalone: e.standalone)
       trigger_on_success
       true
     end
@@ -408,7 +408,7 @@ module Axn
     # `->(e) { e.message }` sees only its own field, not the aggregate). A String/Symbol/callable
     # that resolves blank falls back to the field's own validation message, so a user-facing failure
     # never surfaces as the dev-facing generic message. The composed reason is then headlined by any
-    # declared base `error` in Result (prefixed-by-default, like a `fail!` reason).
+    # declared base `error` in Result (attached by default, like a `fail!` reason).
     def _user_facing_message(error, failing, user_facing)
       failing.flat_map do |field|
         own = _field_validation_messages(error, field)
@@ -622,7 +622,7 @@ module Axn
     def respecting_early_completion
       yield
     rescue Internal::EarlyCompletion => e
-      @context.__record_early_completion(e.message, prefixed: e.prefixed)
+      @context.__record_early_completion(e.message, standalone: e.standalone)
       raise e
     end
 

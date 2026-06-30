@@ -613,10 +613,10 @@ RSpec.describe Axn do
 
         context "when fail! is called with custom message" do
           # SHARP EDGE: an unconditional dynamic `error` is now a *headline* (base), and a fail!
-          # message is a reason the base prefixes. Because this particular headline reads
+          # message is a reason the base attaches. Because this particular headline reads
           # `e.message` — which, for the Failure, IS the fail! message — the message appears twice.
           # Realistic patterns avoid this: use a static base headline, or opt the fail! out with
-          # `prefixed: false` (covered below). A raised (non-fail!) exception renders cleanly.
+          # `standalone: true` (covered below). A raised (non-fail!) exception renders cleanly.
           let(:action) do
             build_axn do
               error ->(e) { "Bad news: #{e.message}" }
@@ -631,10 +631,10 @@ RSpec.describe Axn do
             is_expected.to eq("Bad news: Explicitly-set error message: Explicitly-set error message")
           end
 
-          it "renders the fail! message standalone when opted out with prefixed: false" do
+          it "renders the fail! message standalone when opted out with standalone: true" do
             action = build_axn do
               error ->(e) { "Bad news: #{e.message}" }
-              def call = fail!("Explicitly-set error message", prefixed: false)
+              def call = fail!("Explicitly-set error message", standalone: true)
             end
             expect(action.call.error).to eq("Explicitly-set error message")
           end

@@ -17,12 +17,12 @@ module Axn
               descriptor, reason = matched_reason
               return base_message || fallback_message unless descriptor
 
-              descriptor.prefixed? ? with_base_prefix(reason) : reason
+              descriptor.standalone? ? reason : with_base(reason)
             end
 
             # The winning reason as [descriptor, body], or nil if no conditional/dynamic (or explicitly
-            # `prefixed:`) entry matches. Unconditional non-prefixed entries are headlines, excluded here
-            # and surfaced via base_message. filter_map captures each body once (body_for invokes the
+            # `standalone: false`) entry matches. Unconditional standalone entries are headlines, excluded
+            # here and surfaced via base_message. filter_map captures each body once (body_for invokes the
             # handler block), so the winning entry's message block runs a single time. Memoized — a
             # resolver is single-use — so an external caller (Result#_resolve_error, deciding whether a
             # parent override should beat a bubbled child message) and resolve_message share one pass.
@@ -39,8 +39,8 @@ module Axn
 
             def resolve_default_message = base_message || fallback_message
 
-            # Prefix an externally-supplied reason (e.g. a fail!/done! message) with the base.
-            def with_base_prefix(reason)
+            # Combine an externally-supplied reason (e.g. a fail!/done! message) with the base.
+            def with_base(reason)
               return reason unless base_message.present?
 
               combine(base_message, reason)
@@ -50,11 +50,12 @@ module Axn
 
             private
 
-            # Unconditional, non-prefixed entries with a handler — the headline candidates. The handler
-            # kind (literal/block/symbol) is irrelevant; only conditionality + prefixed: decide the role.
-            # Applies to both :error and :success events. Memoized: a resolver is single-use, and this
-            # is consulted once per matching entry (via reason?/base_descriptor) plus once by resolved_base.
-            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
+            # Unconditional, standalone entries with a handler — the headline candidates. The handler
+            # kind (literal/block/symbol) is irrelevant; only conditionality + standalone: decide the
+            # role. Applies to both :error and :success events. Memoized: a resolver is single-use, and
+            # this is consulted once per matching entry (via reason?/base_descriptor) plus once by
+            # resolved_base.
+            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && d.standalone? && d.handler }
 
             # The headline that actually resolves, as [descriptor, body]. Headlines form a fallback chain
             # (most-recent first — see Registry): a headline whose block raises or returns blank falls
@@ -66,18 +67,19 @@ module Axn
               @resolved_base = base_candidates.lazy.filter_map { |d| (body = body_for(d)) && [d, body] }.first
             end
 
-            # Whether a base is *declared* (gates whether reasons are prefixed) — independent of whether
+            # Whether a base is *declared* (gates whether reasons are attached) — independent of whether
             # its body resolves to something present (the most-recently declared headline).
             def base_descriptor = base_candidates.first
 
             # A "reason" is an entry eligible to be selected as the displayed message: a conditional
-            # entry (if:/unless:) or one explicitly `prefixed:`. Unconditional non-prefixed entries are
-            # headlines (the base + any secondary headlines) — surfaced via base_message, never selected
-            # here. When no base exists, every entry is conditional/prefixed, so all qualify.
+            # entry (if:/unless:) or one explicitly promoted with `standalone: false`. Unconditional
+            # standalone entries are headlines (the base + any secondary headlines) — surfaced via
+            # base_message, never selected here. When no base exists, every entry is conditional or
+            # promoted, so all qualify.
             def reason?(descriptor)
               return true unless base_descriptor
 
-              descriptor.prefixed? || !descriptor.static?
+              !descriptor.standalone? || !descriptor.static?
             end
 
             # The join comes from the headline whose body we're actually showing (resolved_base), NOT

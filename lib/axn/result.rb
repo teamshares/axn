@@ -38,7 +38,7 @@ module Axn
               @__context.__record_exception(e)
             end
           else
-            fail! msg, prefixed: false
+            fail! msg, standalone: true
           end
         end.call
       end
@@ -171,22 +171,22 @@ module Axn
       # Ancestor of a bubbled failure: the child already resolved its full presentation.
       carried = Internal::CarriedPresentation.get(exception)
       if carried
-        # This level's OWN matching reason (a conditional/dynamic `error`, possibly `prefixed: false`)
+        # This level's OWN matching reason (a conditional/dynamic `error`, possibly `standalone: true`)
         # takes precedence over the bubbled child — preserving the default-with-specific-overrides
         # pattern for bubbled failures (e.g. a parent `error "Record not found", if: NotFoundError`
-        # around `Child.call!`). Only when this level declares nothing specific do we prefix our base
-        # onto the carried child message (a baseless ancestor's with_base_prefix is a no-op pass-through).
+        # around `Child.call!`). Only when this level declares nothing specific do we attach our base
+        # onto the carried child message (a baseless ancestor's with_base is a no-op pass-through).
         descriptor, matched = resolver.matched_reason
-        return descriptor.prefixed? ? resolver.with_base_prefix(matched) : matched if descriptor
+        return descriptor.standalone? ? matched : resolver.with_base(matched) if descriptor
 
-        return resolver.with_base_prefix(carried)
+        return resolver.with_base(carried)
       end
 
       # Originating level (no carried presentation yet): unchanged behavior.
       reason = _user_provided_error_message
       return resolver.resolve_message unless reason
 
-      _fail_prefixed? ? resolver.with_base_prefix(reason) : reason
+      _fail_standalone? ? reason : resolver.with_base(reason)
     end
 
     def _resolve_success
@@ -194,10 +194,10 @@ module Axn
       resolver = _msg_resolver(:success, exception: nil)
       return resolver.resolve_message unless reason
 
-      # The prefixed opt-out is read from the context flag (not action-scoped like _fail_prefixed?)
+      # The standalone opt-out is read from the context flag (not action-scoped like _fail_standalone?)
       # because a child `done!` never bubbles as an EarlyCompletion through a parent — `call!` swallows
       # it and returns an ok result — so this flag only ever reflects THIS action's own opt-out.
-      @context.__early_completion_prefixed ? resolver.with_base_prefix(reason) : reason
+      @context.__early_completion_standalone ? reason : resolver.with_base(reason)
     end
 
     def _user_provided_success_message
@@ -206,7 +206,7 @@ module Axn
 
     def _user_provided_error_message
       # A user-facing validation failure (expects ..., user_facing:) surfaces its composed message as
-      # a prefixable reason, so a declared base `error` headlines it exactly like a `fail!` reason.
+      # an attachable reason, so a declared base `error` headlines it exactly like a `fail!` reason.
       return exception.user_facing_message.presence if Axn::ValidationError.user_facing?(exception)
 
       return unless exception.is_a?(Axn::Failure)
@@ -215,15 +215,15 @@ module Axn
       exception.raw_reason.presence
     end
 
-    def _fail_prefixed?
-      # A user-facing validation reason is prefixed-by-default (no per-field opt-out yet — deferred),
-      # so anything that isn't a `fail!` Failure prefixes.
-      return true unless exception.is_a?(Axn::Failure)
-      # `prefixed: false` is scoped to the action that called `fail!`. A bubbled child Failure
-      # resolved at an ancestor still gets the ancestor's base prefix (child opt-out is local).
-      return true unless exception.__originating_action.equal?(action)
+    def _fail_standalone?
+      # A user-facing validation reason attaches by default (no per-field opt-out yet — deferred),
+      # so anything that isn't a fail! Failure is NOT standalone.
+      return false unless exception.is_a?(Axn::Failure)
+      # standalone: is scoped to the action that called fail!. A bubbled child Failure resolved at an
+      # ancestor still gets the ancestor's base (child opt-out is local) → not standalone here.
+      return false unless exception.__originating_action.equal?(action)
 
-      exception.prefixed?
+      exception.standalone?
     end
 
     def method_missing(method_name, ...) # rubocop:disable Style/MissingRespondToMissing (because we're not actually responding to anything additional)
