@@ -2,19 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the `prefixed:` message kwarg with `standalone:` (inverted, opt-out-only) plus an undocumented `bare:` alias, drop the promotion direction, and migrate the one internal consumer (model strategy) — all unreleased, so no back-compat.
+**Goal:** Replace the `prefixed:` message kwarg with `standalone:` — a pure rename with **inverted polarity** — plus an undocumented `bare:` alias. No feature removed: promotion is retained, now expressed as `standalone: false`. All unreleased, so no back-compat.
 
-**Architecture:** `prefixed:` conflated two concepts — render opt-out and headline→reason promotion. We keep only the render opt-out, inverted: `standalone: true` renders a reason without the base. Role (headline vs reason) collapses to pure conditionality. The boolean is inverted across every internal site (`MessageDescriptor`, `Axn::Failure`/`EarlyCompletion`, the `Context` early-completion flag, `Result`, the resolver) in one atomic change so the suite is green at a single commit.
+**Architecture:** `prefixed:` controls whether a message attaches to the base. We rename it to `standalone:` (the inverse: `standalone: true` ⟺ old `prefixed: false`; `standalone: false` ⟺ old `prefixed: true`) and invert every internal site in one atomic change so the suite is green at a single commit. Mechanically: the descriptor's stored flag, its default rule, the resolver's `base_candidates`/`reason?`/resolution polarity, the `Failure`/`EarlyCompletion` flag, the `Context` early-completion flag, and `Result`'s call sites all flip together.
 
 **Tech Stack:** Ruby, RSpec. Rails-optional (no AR/Rails constants outside `defined?` guards).
 
 ## Global Constraints
 
-- `standalone:` is **opt-out-only** and **reason-only**: legal on a conditional `error`/`success` or a `fail!`/`done!` message; on an unconditional headline it **raises at declaration** ("standalone: only applies to a reason"). This mirrors `join:` being base-only.
-- Default is **attached** (`standalone` defaults `false` for reasons). `standalone: true` opts out. The opt-out is **action-scoped** (a bubbled child still gets an ancestor's base via `call!`).
-- **`bare:` is an undocumented alias** for `standalone:` everywhere `standalone:` is accepted (`error`/`success` DSL, `fail!`, `done!`). When both are given, `bare:` wins (coalesce `effective = bare.nil? ? standalone : bare`). Docs never mention `bare:`. To be collapsed to one name before the first non-alpha release.
-- **Promotion is removed.** No `prefixed: true`/`standalone: false` on an unconditional entry. The model strategy's default success migrates to an always-on conditional reason.
+- `standalone:` replaces `prefixed:` with **inverted polarity** and is valid on **any** entry (no reason-only restriction, no new raises). `standalone: true` renders a message on its own; `standalone: false` attaches it to the base.
+- **Default follows conditionality:** `standalone = matcher.static? if standalone.nil?` — an unconditional entry defaults to standalone (the base headline); a conditional entry defaults to attached (a reason). So `standalone: false` on an unconditional entry **promotes** it to an attached reason (the old `prefixed: true`); `standalone: true` on a conditional reason opts it out (the old `prefixed: false`).
+- The opt-out is **action-scoped** (a bubbled child still gets an ancestor's base via `call!`).
+- **`bare:` is an undocumented alias** for `standalone:` everywhere `standalone:` is accepted (`error`/`success` DSL, `fail!`, `done!`). When both are given, `bare:` wins: `standalone = bare unless bare.nil?`. Docs never mention `bare:`. To be collapsed to one name before the first non-alpha release.
+- Rename the resolver's `with_base_prefix` → `with_base` ("prefix" is inaccurate now that `join:` can wrap); update its three `Result` call sites.
+- `prefixed` is a reserved exposure name (it's a `fail!`/`done!` control kwarg) → replace with `standalone` + `bare`.
 - All unreleased → **no `[BREAKING]` note**, no deprecation shims, no `REMOVED_OPTION_MESSAGES` entry for `prefixed:` (it falls through to the generic unknown-option error).
+- Do **not** touch the unrelated field-namespacing `prefix:` kwarg (contract.rb subfield logic, strategies' field prefixing). Only the message-presentation tokens: `prefixed`/`prefixed?`/`with_base_prefix`/`__early_completion_prefixed`/`_fail_prefixed?`.
 - Run the suite with `bundle exec rspec`; a single file with `bundle exec rspec <path>`.
 
 ---
@@ -29,38 +32,29 @@
 
 ---
 
-### Task 1: Rename `prefixed:` → `standalone:` (invert, opt-out-only) + `bare:` alias + drop promotion
+### Task 1: Rename `prefixed:` → `standalone:` (invert polarity) + `bare:` alias
 
-This is one atomic change — a half-renamed boolean won't compile/pass. Update the specs to the new API first (RED), then rename across lib (GREEN). Provide complete before/after for each lib file; specs follow mechanical transformation rules plus the explicit add/remove list.
+This is one atomic change — a half-renamed boolean won't compile/pass. Update the specs to the new API first (RED), then rename across lib (GREEN). Complete before/after for each lib file; specs follow mechanical transformation rules plus the explicit add list.
 
 **Files:** all lib + spec files listed above.
 
 **Interfaces:**
 - Produces: `MessageDescriptor#standalone?`, `MessageDescriptor.build(..., standalone: nil)`; `Axn::Failure#standalone?` / `EarlyCompletion#standalone`; `Context#__early_completion_standalone`; `Result#_fail_standalone?`; `MessageResolver#with_base` (renamed from `with_base_prefix`); DSL `error`/`success`/`fail!`/`done!` accept `standalone:` and `bare:`.
-- Consumes: existing `join:`/`combine`/`with_base_prefix` machinery from the merged `join:` work.
+- Consumes: the merged `join:`/`combine`/`with_base_prefix` machinery.
 
 - [ ] **Step 1: Port specs to the new API (RED)**
 
-Mechanical transformation across all spec files (apply everywhere the message-presentation flag appears — do NOT touch the unrelated field-namespacing `prefix:` kwarg):
+Mechanical transformation across all spec files (apply only to the message-presentation flag; never the field-namespacing `prefix:` kwarg). The polarity inverts:
 - `prefixed: false` → `standalone: true`
-- `prefixed: true` on a **conditional** entry → drop it (conditional reasons attach by default)
+- `prefixed: true` → `standalone: false`
 - `fail!(..., prefixed: false)` / `done!(..., prefixed: false)` → `standalone: true`
 - `.prefixed?` stub/expectation → `.standalone?` (and invert the stubbed boolean)
 - `build_descriptor(..., prefixed:)` helper param → `standalone:`
+- `with_base_prefix` references in specs → `with_base`
 
 Then make these explicit edits:
 
-In `spec/axn/core/messages_prefix_spec.rb` — **rename the file to `spec/axn/core/messages_standalone_spec.rb`** (`git mv`), update the top-level `RSpec.describe` string to `"Axn standalone message resolution"`, and:
-- **Remove** the promotion tests (the contexts exercising `error(prefixed: true, &:message)` and `error "detail", prefixed: true` as headline→reason promotion) — that behavior is gone.
-- **Add** a declaration-error test:
-```ruby
-  it "raises when standalone: is given on an unconditional headline" do
-    expect do
-      build_axn { error "Headline", standalone: true }
-    end.to raise_error(ArgumentError, /standalone: only applies to a reason/)
-  end
-```
-- **Add** `bare:` parity tests (the only `bare:` coverage):
+In `spec/axn/core/messages_prefix_spec.rb` — **rename the file to `spec/axn/core/messages_standalone_spec.rb`** (`git mv`) and update the top-level `RSpec.describe` string to `"Axn standalone message resolution"`. The existing promotion contexts stay — port `error(prefixed: true, &:message)` → `error(standalone: false, &:message)` and `error "detail", prefixed: true` → `error "detail", standalone: false`, asserting the **same** `"<base>: <detail>"` output. Add `bare:` parity tests (the only `bare:` coverage):
 ```ruby
   it "bare: is an alias for standalone: (fail!)" do
     action = build_axn do
@@ -80,13 +74,13 @@ In `spec/axn/core/messages_prefix_spec.rb` — **rename the file to `spec/axn/co
   end
 ```
 
-In `spec/axn/core/flow/handlers/resolvers/message_resolver_spec.rb` — the `build_descriptor` helper's `prefixed: nil` param → `standalone: nil` (and pass `standalone:` to `build`); rename the `with_base_prefix` describe/stub usage to `with_base`; invert any `prefixed?` stub to `standalone?`.
+In `spec/axn/core/flow/handlers/resolvers/message_resolver_spec.rb` — the `build_descriptor` helper's `prefixed: nil` param → `standalone: nil` (pass `standalone:` to `build`); rename the `with_base_prefix` describe/stub to `with_base`; invert any `prefixed?` stub to `standalone?`.
 
-In `spec/axn/core/reserved_attribute_names_spec.rb` (lines ~74-76) — update the comment to reference `standalone`/`bare` as the `fail!`/`done!` control kwargs, and change the list `%w[outcome exception elapsed_time finalized? __action__ prefixed]` → `%w[outcome exception elapsed_time finalized? __action__ standalone bare]`.
+In `spec/axn/core/reserved_attribute_names_spec.rb` (lines ~74-76) — update the comment to reference `standalone`/`bare` as the `fail!`/`done!` control kwargs, and change `%w[outcome exception elapsed_time finalized? __action__ prefixed]` → `%w[outcome exception elapsed_time finalized? __action__ standalone bare]`.
 
 Run: `bundle exec rspec spec/axn/core/messages_standalone_spec.rb` (and the others touched) — Expected: FAIL (`Unknown :standalone option` / `with_base` undefined / reserved-name mismatches).
 
-- [ ] **Step 2: `MessageDescriptor` — standalone, reason-only, drop promotion (GREEN begins)**
+- [ ] **Step 2: `MessageDescriptor` — invert to `standalone` (GREEN begins)**
 
 In `lib/axn/core/flow/handlers/descriptors/message_descriptor.rb`:
 
@@ -109,23 +103,23 @@ In `lib/axn/core/flow/handlers/descriptors/message_descriptor.rb`:
             def standalone? = @standalone
 ```
 
-`build` — accept `standalone:`, reject it on a headline, default false; role is pure conditionality (no promotion):
-
+`build` — invert the default rule; `base` now means "unconditional AND standalone":
 ```ruby
             def self.build(handler: nil, if: nil, unless: nil, standalone: nil, join: nil, **unsupported)
               reject_unsupported_options!(unsupported)
               matcher = Matcher.build(if:, unless:)
 
-              # standalone: opts a *reason* out of the base, so it only applies to a conditional entry.
-              # An unconditional entry is the base headline (role is pure conditionality now — there is
-              # no promotion). Reject standalone: on a headline rather than silently ignore it.
-              raise ArgumentError, "standalone: only applies to a reason (a conditional error/success)" if !standalone.nil? && matcher.static?
+              # Default by conditionality: an unconditional entry is the standalone base headline; a
+              # conditional entry is an attached reason. standalone: false on an unconditional entry
+              # promotes it into an attached reason (renders under the base); standalone: true on a
+              # conditional reason opts it out (renders on its own).
+              standalone = matcher.static? if standalone.nil?
 
-              standalone = false if standalone.nil?
-
-              # join: combines the base with its reasons, so it only belongs on the base (an
-              # unconditional headline). A conditional reason is rejected rather than silently ignored.
-              raise ArgumentError, "join: only applies to the base (an unconditional headline)" if join && !matcher.static?
+              # join: combines the base with its reasons, so it only belongs on the base — an
+              # unconditional, standalone headline. A reason (conditional, or a promoted standalone:false
+              # entry) is rejected rather than silently ignored.
+              base = matcher.static? && standalone
+              raise ArgumentError, "join: only applies to the base (an unconditional headline)" if join && !base
               raise ArgumentError, "join: must be a String or a callable ->(base, reason) {}" if join && !(join.is_a?(String) || join.respond_to?(:call))
 
               new(handler:, standalone:, join:, matcher:)
@@ -135,7 +129,6 @@ In `lib/axn/core/flow/handlers/descriptors/message_descriptor.rb`:
 - [ ] **Step 3: DSL — thread `standalone:` + `bare:` alias**
 
 In `lib/axn/core/flow/messages.rb`:
-
 ```ruby
           def _add_message(kind, message:, standalone: nil, bare: nil, join: nil, **kwargs, &block)
             Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.reject_unsupported_options!(kwargs.slice(:from, :prefix))
@@ -166,11 +159,11 @@ In `lib/axn/core/flow/messages.rb`:
           end
 ```
 
-- [ ] **Step 4: `MessageResolver` — invert resolution, drop promotion terms, rename `with_base_prefix` → `with_base`**
+- [ ] **Step 4: `MessageResolver` — invert resolution, rename `with_base_prefix` → `with_base`**
 
 In `lib/axn/core/flow/handlers/resolvers/message_resolver.rb`:
 
-`resolve_message` (attach unless standalone):
+`resolve_message` (render alone when standalone, else attach):
 ```ruby
             def resolve_message
               descriptor, reason = matched_reason
@@ -190,25 +183,25 @@ Rename the public method (update its comment to say "the base", not "prefix"):
             end
 ```
 
-`base_candidates` — all unconditional entries are headlines now (no promotion), so drop the `!d.prefixed?` term:
+`base_candidates` — a headline is unconditional AND standalone (a promoted `standalone: false` entry is excluded):
 ```ruby
-            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && d.handler }
+            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && d.standalone? && d.handler }
 ```
 
-`reason?` — a reason is just a conditional entry now (drop the `prefixed?` term):
+`reason?` — invert the `prefixed?` term:
 ```ruby
             def reason?(descriptor)
               return true unless base_descriptor
 
-              !descriptor.static?
+              !descriptor.standalone? || !descriptor.static?
             end
 ```
 
-Update the surrounding comments that say "prefixed"/"non-prefixed" to describe conditionality (e.g. "Unconditional entries are headlines; conditional entries are reasons").
+Update surrounding comments that say "prefixed"/"non-prefixed" to the `standalone` framing (e.g. "an unconditional, standalone entry is the base headline; a conditional or `standalone: false` entry is a reason").
 
 - [ ] **Step 5: `fail!`/`done!`, exceptions, executor, context — invert the runtime flag + alias**
 
-`lib/axn/core.rb`:
+`lib/axn/core.rb` (match the existing bodies; change only signature + coalesce + keyword):
 ```ruby
     def fail!(message = nil, standalone: false, bare: nil, **exposures)
       _expose_data(exposures, source: "fail!") if exposures.any?
@@ -222,7 +215,6 @@ Update the surrounding comments that say "prefixed"/"non-prefixed" to describe c
       raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 ```
-(Match the exact bodies already present around the existing `_expose_data`/raise lines — only the signature + coalesce + keyword change.)
 
 `lib/axn/exceptions.rb`:
 ```ruby
@@ -291,41 +283,41 @@ In `lib/axn/result.rb`:
 ```
 (Update the comments at ~174, ~197 that mention `prefixed:`.)
 
-- [ ] **Step 7: Migrate the model strategy off promotion**
+- [ ] **Step 7: Model strategy — port promotion to `standalone: false`**
 
 In `lib/axn/strategies/model.rb`:
-- line ~208: drop the redundant `prefixed: true` (a conditional reason already attaches):
+- line ~208: `error(if: ->..., prefixed: true)` → drop the now-redundant flag (a conditional reason already attaches by default):
 ```ruby
           error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }) do |exception = nil|
             __axn_invalid_record(exception).errors.full_messages.to_sentence
           end
 ```
-- line ~215: replace promotion with an always-on conditional reason, and update the comment:
+- line ~215: `success(prefixed: true) { ... }` → `success(standalone: false) { ... }` (promote the unconditional default into an attached reason); keep the comment's intent, updating the wording:
 ```ruby
-          # Default mode-aware success, installed as an always-on *reason* (not a headline) via an
-          # always-true condition, so a base `success "…"` declared after `use :model` attaches it
-          # ("<base>: Created Widget"), parallel to the error body above. Declare a conditional/
-          # standalone success to replace it instead.
-          success(if: -> { true }) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
+          # Default mode-aware success, installed as an attached *reason* (standalone: false, not a
+          # headline) so a base `success "…"` declared after `use :model` attaches it ("<base>: Created
+          # Widget"), parallel to the error body above. Declare a standalone success to replace it instead.
+          success(standalone: false) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 ```
 
 - [ ] **Step 8: Reserved exposure names**
 
-In `lib/axn/core/contract.rb`, `RESERVED_FIELD_NAMES_FOR_EXPOSURES` (around line 331): remove `prefixed`, add `standalone` and `bare` (both are now `fail!`/`done!` control kwargs). Check `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS` too; if `prefixed` is not there, leave it. (The spec edit in Step 1 already matches this.)
+In `lib/axn/core/contract.rb`, `RESERVED_FIELD_NAMES_FOR_EXPOSURES` (around line 331): remove `prefixed`, add `standalone` and `bare` (both are now `fail!`/`done!` control kwargs). Check `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS`; if `prefixed` isn't there, leave it. (Matches the Step 1 spec edit.)
 
 - [ ] **Step 9: Run the full suite (GREEN)**
 
 Run: `bundle exec rspec`
-Expected: PASS. Then `grep -rn "prefixed\|with_base_prefix" lib/ spec/` — Expected: no message-presentation hits remain (the only `prefix` hits left are the unrelated field-namespacing `prefix:` feature in `contract.rb`/`subfields`/`strategies/model` field logic, `_aj_`-prefixed comments, etc.). If a stray promotion test or `prefixed:` reference remains, fix and re-run.
+Expected: PASS. Then `grep -rn "prefixed\|with_base_prefix" lib/ spec/` — Expected: no message-presentation hits remain (the only `prefix` hits left are the unrelated field-namespacing `prefix:` feature, `_aj_`-prefixed comments, etc.). Fix any stray `prefixed:` reference and re-run.
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add lib spec
-git commit -m "refactor(messages): rename prefixed: to standalone: (opt-out-only) + bare: alias
+git commit -m "refactor(messages): rename prefixed: to standalone: (inverted) + bare: alias
 
-Inverts the flag, drops promotion (model strategy migrates to an always-on
-conditional reason), renames with_base_prefix -> with_base.
+Pure rename + polarity inversion (standalone: true == old prefixed: false;
+standalone: false == old prefixed: true, the promotion form). Renames
+with_base_prefix -> with_base. No behavior change.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -343,14 +335,14 @@ Update user-facing docs to `standalone:`; `bare:` stays undocumented.
 - [ ] **Step 1: `docs/usage/writing.md`**
 
 Read the current message-presentation section, then:
-- Replace the `prefixed: false` opt-out row/examples with `standalone: true` (the message renders on its own; action-scoped — a bubbled child still gets an ancestor's base).
-- **Remove** the promotion row/example (`error(prefixed: true, &:message)` / "Promote to an always-on reason") — that capability is gone. If an always-on detail under the base is still worth documenting, show the base-block form: `error { "Couldn't sync user: #{exception.message}" }`.
-- Note that `standalone:` is reason-only (raises on a base headline), mirroring `join:` being base-only.
+- Replace the `prefixed: false` opt-out row/examples with `standalone: true` (renders the reason on its own; action-scoped — a bubbled child still gets an ancestor's base).
+- Replace the promotion row/example (`prefixed: true`) with `standalone: false` ("attach an otherwise-headline entry under the base as a reason" — e.g. `error(standalone: false, &:message)` for an always-on detail rendered under the base).
+- Frame the flag as: `standalone: true` = render on its own; `standalone: false` = attach to the base; default follows conditionality.
 - Do **not** mention `bare:`.
 
 - [ ] **Step 2: `CHANGELOG.md` (Unreleased)**
 
-Amend the prefixing entry: the opt-out flag is `standalone:` (render a reason on its own; default attached; action-scoped), promotion is removed, base-only/reason-only symmetry with `join:`. Add a one-line note: "`bare:` is accepted as an undocumented alias for `standalone:`, to be collapsed to one name before the first non-alpha release." No `[BREAKING]` (unreleased).
+Amend the prefixing entry: the flag is `standalone:` (inverted — `standalone: true` renders a reason on its own; `standalone: false` attaches/promotes; default by conditionality). Add a one-line note: "`bare:` is accepted as an undocumented alias for `standalone:`, to be collapsed to one name before the first non-alpha release." No `[BREAKING]` (unreleased).
 
 - [ ] **Step 3: Verify + commit**
 
@@ -358,7 +350,7 @@ Run: `grep -rn "prefixed" docs --include="*.md" | grep -v "/.vitepress/"` → Ex
 
 ```bash
 git add docs/usage/writing.md CHANGELOG.md docs/reference
-git commit -m "docs(messages): document standalone: (opt-out), retire prefixed:/promotion
+git commit -m "docs(messages): document standalone: (inverted prefixed:)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -368,17 +360,15 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Self-Review
 
 **Spec coverage:**
-- `prefixed:` → `standalone:` rename + invert → Task 1 (Steps 2-6). ✓
-- `bare:` undocumented alias → Task 1 (Steps 1 bare-parity tests, 3, 5). ✓
-- Opt-out-only / promotion dropped / reason-only raise → Task 1 (Step 2 validation, Step 1 raise test + promotion-test removal). ✓
-- Model strategy migration → Task 1 (Step 7). ✓
+- `prefixed:` → `standalone:` rename + invert, valid on any entry → Task 1 (Steps 2-6). ✓
+- Default by conditionality; `standalone: false` promotes → Task 1 (Step 2 default rule; ported promotion tests Step 1). ✓
+- `bare:` undocumented alias → Task 1 (Steps 1 parity tests, 3, 5). ✓
+- Model strategy ports to `standalone: false` (no hack, no behavior change) → Task 1 (Step 7). ✓
 - `with_base_prefix` → `with_base` rename → Task 1 (Steps 4, 6). ✓
 - Reserved exposure name update → Task 1 (Steps 1, 8). ✓
 - Action-scoping preserved → `_fail_standalone?` keeps the `__originating_action` guard (Step 6). ✓
 - Docs + CHANGELOG, no `[BREAKING]`, bare undocumented → Task 2. ✓
 
-**Placeholder scan:** none — lib hotspots have full before/after; spec ports have explicit transformation rules + named add/remove tests.
+**Placeholder scan:** none — lib hotspots have full before/after; spec ports have explicit transformation rules + named add tests.
 
-**Type consistency:** `standalone?`/`standalone:` used consistently across descriptor, DSL, exceptions, context, result; `with_base` replaces `with_base_prefix` at all three Result call sites and in the resolver; `__early_completion_standalone` reader matches its setter; `_fail_standalone?` matches its single call site.
-
-**Note for the executor:** the model strategy's always-true success condition (`if: -> { true }`) is invoked through the matcher's arity-filtering Invoker on the success path (exception: nil); a zero-arity lambda is called with no args. If the suite surfaces an arity error there, that's the place to look.
+**Type/polarity consistency:** every site inverts together — `standalone? ? reason : with_base(reason)` (resolution), `static? && standalone?` (base_candidates), `!standalone? || !static?` (reason?), `standalone = matcher.static? if standalone.nil?` (default). `with_base` replaces `with_base_prefix` at all three `Result` call sites and in the resolver. `__early_completion_standalone` reader matches its setter; `_fail_standalone?` matches its single call site. No raises added (the flag is universal), so no new error-path tests.
