@@ -190,4 +190,15 @@ RSpec.describe "join: Proc raise-safety" do
     end
     expect(action.call.error).to eq("Outer: inner")
   end
+
+  it "supports a non-Proc callable object as join:" do
+    joiner = Class.new do
+      def call(base, reason) = "#{base} (#{reason})"
+    end.new
+    action = build_axn do
+      error "Outer", join: joiner
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer (inner)")
+  end
 end

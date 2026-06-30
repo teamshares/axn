@@ -83,15 +83,21 @@ module Axn
       Axn::Executor.new(self).run
     end
 
-    def fail!(message = nil, standalone: false, bare: nil, **exposures)
+    def fail!(message = nil, standalone: nil, bare: nil, **exposures)
       expose(**exposures) if exposures.any?
+      raise ArgumentError, "Provide either standalone: or bare: (aliases for the same flag), not both" if !standalone.nil? && !bare.nil?
+
       standalone = bare unless bare.nil?
+      standalone = false if standalone.nil?
       raise Axn::Failure.new(message, standalone:, action: self)
     end
 
-    def done!(message = nil, standalone: false, bare: nil, **exposures)
+    def done!(message = nil, standalone: nil, bare: nil, **exposures)
       expose(**exposures) if exposures.any?
+      raise ArgumentError, "Provide either standalone: or bare: (aliases for the same flag), not both" if !standalone.nil? && !bare.nil?
+
       standalone = bare unless bare.nil?
+      standalone = false if standalone.nil?
       raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 

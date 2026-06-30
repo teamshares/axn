@@ -101,7 +101,8 @@ module Axn
             # mirroring how a base-header block that raises falls back down the headline chain.
             def apply_join_proc(proc, base, reason)
               unless join_arity_accepts_two?(proc)
-                action.warn("join: Proc cannot accept (base, reason) (arity #{proc.arity}) — using default join")
+                reported_arity = proc.is_a?(Proc) || proc.is_a?(Method) ? proc.arity : proc.method(:call).arity
+                action.warn("join: callable cannot accept (base, reason) (arity #{reported_arity}) — using default join")
                 return "#{base}#{DEFAULT_JOIN}#{reason}"
               end
 
@@ -118,8 +119,11 @@ module Axn
             # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
             # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs
             # don't enforce arity themselves, so we check explicitly).
+            # Procs/Methods answer #arity directly. Any other callable (a plain object with #call)
+            # reports its arity via #call.arity — we must NOT use .method(:call).arity on a Proc
+            # because Proc#call is variadic (arity -1) and would defeat the check.
             def join_arity_accepts_two?(callable)
-              arity = callable.arity
+              arity = callable.is_a?(Proc) || callable.is_a?(Method) ? callable.arity : callable.method(:call).arity
               arity == 2 || (arity.negative? && (-arity - 1) <= 2)
             end
 

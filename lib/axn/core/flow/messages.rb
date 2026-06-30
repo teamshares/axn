@@ -26,6 +26,8 @@ module Axn
             raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
             raise ArgumentError, "Provide a message or a block" unless message || block_given?
 
+            raise ArgumentError, "Provide either standalone: or bare: (aliases for the same flag), not both" if !standalone.nil? && !bare.nil?
+
             standalone = bare unless bare.nil? # bare: is an undocumented alias for standalone:
             entry = _build_entry(message, standalone:, join:, kwargs:, block:, block_given: block_given?)
 

@@ -343,6 +343,17 @@ RSpec.describe "bare: alias for standalone:" do
     end
     expect(action.call.error).to eq("Vendor not found")
   end
+
+  it "raises when both standalone: and bare: are passed to a declaration" do
+    expect do
+      build_axn { error "x", if: ArgumentError, standalone: false, bare: true }
+    end.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
+  end
+
+  it "raises when both standalone: and bare: are passed to fail!" do
+    action = build_axn { def call = fail!("x", standalone: true, bare: true) }
+    expect { action.call! }.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
+  end
 end
 
 RSpec.describe "Axn join: Proc form" do
