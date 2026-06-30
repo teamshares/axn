@@ -201,4 +201,12 @@ RSpec.describe "join: Proc raise-safety" do
     end
     expect(action.call.error).to eq("Outer (inner)")
   end
+
+  it "falls back to the default join when the Proc returns a blank String" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { "" }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
 end

@@ -100,16 +100,17 @@ module Axn
             # mismatches arity, or returns a non-String falls back to the default join (and warns) —
             # mirroring how a base-header block that raises falls back down the headline chain.
             def apply_join_proc(proc, base, reason)
-              unless join_arity_accepts_two?(proc)
+              unless join_accepts_base_and_reason?(proc)
                 reported_arity = proc.is_a?(Proc) || proc.is_a?(Method) ? proc.arity : proc.method(:call).arity
                 action.warn("join: callable cannot accept (base, reason) (arity #{reported_arity}) — using default join")
                 return "#{base}#{DEFAULT_JOIN}#{reason}"
               end
 
               result = proc.call(base, reason)
-              return result if result.is_a?(String)
+              return result if result.is_a?(String) && result.present?
 
-              action.warn("join: Proc returned #{result.class} (expected String) — using default join")
+              detail = result.is_a?(String) ? "a blank String" : result.class.to_s
+              action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
             rescue StandardError => e
               action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
@@ -122,7 +123,7 @@ module Axn
             # Procs/Methods answer #arity directly. Any other callable (a plain object with #call)
             # reports its arity via #call.arity — we must NOT use .method(:call).arity on a Proc
             # because Proc#call is variadic (arity -1) and would defeat the check.
-            def join_arity_accepts_two?(callable)
+            def join_accepts_base_and_reason?(callable)
               arity = callable.is_a?(Proc) || callable.is_a?(Method) ? callable.arity : callable.method(:call).arity
               arity == 2 || (arity.negative? && (-arity - 1) <= 2)
             end
