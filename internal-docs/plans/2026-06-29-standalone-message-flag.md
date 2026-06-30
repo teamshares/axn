@@ -306,7 +306,7 @@ In `lib/axn/strategies/model.rb`:
           # always-true condition, so a base `success "…"` declared after `use :model` attaches it
           # ("<base>: Created Widget"), parallel to the error body above. Declare a conditional/
           # standalone success to replace it instead.
-          success(if: ->(*) { true }) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
+          success(if: -> { true }) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 ```
 
 - [ ] **Step 8: Reserved exposure names**
@@ -381,4 +381,4 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Type consistency:** `standalone?`/`standalone:` used consistently across descriptor, DSL, exceptions, context, result; `with_base` replaces `with_base_prefix` at all three Result call sites and in the resolver; `__early_completion_standalone` reader matches its setter; `_fail_standalone?` matches its single call site.
 
-**Note for the executor:** the model strategy's always-true success condition (`if: ->(*) { true }`) is invoked with the success-event arity (exception: nil); `->(*) { true }` accepts any args. If the suite surfaces an arity error there, that's the place to look.
+**Note for the executor:** the model strategy's always-true success condition (`if: -> { true }`) is invoked through the matcher's arity-filtering Invoker on the success path (exception: nil); a zero-arity lambda is called with no args. If the suite surfaces an arity error there, that's the place to look.
