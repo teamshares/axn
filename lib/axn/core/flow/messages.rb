@@ -35,7 +35,9 @@ module Axn
 
           def _build_entry(message, standalone:, join:, kwargs:, block:, block_given:)
             if message.is_a?(Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
-              raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor" if kwargs.any? || block_given || !standalone.nil? || join
+              if kwargs.any? || block_given || !standalone.nil? || !join.nil?
+                raise ArgumentError, "Cannot pass additional configuration with prebuilt descriptor"
+              end
 
               return message
             end

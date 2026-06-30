@@ -100,6 +100,11 @@ module Axn
             # mismatches arity, or returns a non-String falls back to the default join (and warns) —
             # mirroring how a base-header block that raises falls back down the headline chain.
             def apply_join_proc(proc, base, reason)
+              unless join_arity_accepts_two?(proc)
+                action.warn("join: Proc cannot accept (base, reason) (arity #{proc.arity}) — using default join")
+                return "#{base}#{DEFAULT_JOIN}#{reason}"
+              end
+
               result = proc.call(base, reason)
               return result if result.is_a?(String)
 
@@ -108,6 +113,14 @@ module Axn
             rescue StandardError => e
               action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
+            end
+
+            # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
+            # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs
+            # don't enforce arity themselves, so we check explicitly).
+            def join_arity_accepts_two?(callable)
+              arity = callable.arity
+              arity == 2 || (arity.negative? && (-arity - 1) <= 2)
             end
 
             def body_for(descriptor)

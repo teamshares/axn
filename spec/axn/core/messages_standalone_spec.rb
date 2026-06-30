@@ -381,6 +381,12 @@ RSpec.describe "Axn join: Proc form" do
       build_axn { error "Base", join: 5 }
     end.to raise_error(ArgumentError, /join: must be a String or a callable/)
   end
+
+  it "raises at declaration when join: false is given (false is not nil, String, or callable)" do
+    expect do
+      build_axn { error "Base", join: false }
+    end.to raise_error(ArgumentError, /join: must be a String or a callable/)
+  end
 end
 
 RSpec.describe "removed error options" do

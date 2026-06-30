@@ -58,8 +58,8 @@ module Axn
               # unconditional, standalone headline. A reason (conditional, or a promoted standalone:false
               # entry) is rejected rather than silently ignored.
               base = matcher.static? && standalone
-              raise ArgumentError, "join: only applies to the base (an unconditional headline)" if join && !base
-              raise ArgumentError, "join: must be a String or a callable ->(base, reason) {}" if join && !(join.is_a?(String) || join.respond_to?(:call))
+              raise ArgumentError, "join: only applies to the base (an unconditional headline)" if !join.nil? && !base
+              raise ArgumentError, "join: must be a String or a callable ->(base, reason) {}" if !join.nil? && !(join.is_a?(String) || join.respond_to?(:call))
 
               new(handler:, standalone:, join:, matcher:)
             end

@@ -182,4 +182,12 @@ RSpec.describe "join: Proc raise-safety" do
     end
     expect(action.call.success).to eq("All good: from cache")
   end
+
+  it "falls back to the default join when a non-lambda Proc has the wrong arity" do
+    action = build_axn do
+      error "Outer", join: proc { |base| base } # non-lambda, arity 1 — silently drops reason today
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
 end
