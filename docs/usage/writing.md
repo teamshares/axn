@@ -229,9 +229,9 @@ Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life i
 
 ### Prefixing failure reasons
 
-An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every failure *reason* — a conditional `error … if:`/`unless:`, an entry explicitly marked `prefixed: true`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every failure *reason* — a conditional `error … if:`/`unless:`, an entry explicitly marked `standalone: false`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
 
-What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `prefixed: true` (which promotes an unconditional entry to a prefixed reason) when you want something prefixed rather than treated as the headline.
+What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `standalone: false` (which promotes an unconditional entry to a prefixed reason) when you want something prefixed rather than treated as the headline.
 
 ```ruby
 class SyncUser
@@ -258,10 +258,10 @@ result.error  # => "Couldn't sync user: email already taken"
 | | |
 |---|---|
 | **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
-| **`prefixed: false` opt-out** | `error "Vendor not found", if: ArgumentError, prefixed: false` — or `fail!("msg", prefixed: false)` — renders the reason without the base prefix. Scoped to the action: a bubbled child `fail!(..., prefixed: false)` still receives the *caller's* base prefix |
+| **`standalone: true` opt-out** | `error "Vendor not found", if: ArgumentError, standalone: true` — or `fail!("msg", standalone: true)` — renders the reason on its own, without the base prefix. Scoped to the action: a bubbled child `fail!(..., standalone: true)` still receives the *caller's* base prefix |
 | **Custom join** | `error "Headline", join: " — "` changes the separator string (default is `": "`); or pass a Proc `join: ->(base, reason) { … }` for full control (wrapping, recasing). Only valid on the base — `join:` on a reason raises at declaration |
 | **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
-| **Promote to an always-on reason** | `error(prefixed: true, &:message)` (or `error "detail", prefixed: true`) — `prefixed: true` makes an otherwise-headline entry a prefixed reason, e.g. an always-on detail rendered under the base |
+| **Attach to base (`standalone: false`)** | `error(standalone: false, &:message)` (or `error "detail", standalone: false`) — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
 
 ```ruby
 # Reasons are checked last-declared-first.
@@ -269,15 +269,15 @@ class SyncUser
   include Axn
 
   error "Couldn't sync user", join: " — "              # base (custom separator)
-  error(prefixed: true, &:message)                     # dynamic detail — declared 2nd
-  error "vendor not found", if: ArgumentError, prefixed: false  # opt-out — declared last → highest priority
+  error(standalone: false, &:message)                     # dynamic detail — declared 2nd
+  error "vendor not found", if: ArgumentError, standalone: true  # opt-out — declared last → highest priority
 
   def call
     raise ArgumentError, "lookup failed"
   end
 end
 
-# ArgumentError raised — prefixed: false entry wins (declared last → checked first):
+# ArgumentError raised — standalone: true entry wins (declared last → checked first):
 SyncUser.call.error  # => "vendor not found"
 
 # If a non-ArgumentError is raised instead — conditional doesn't match; dynamic detail wins:
@@ -334,7 +334,7 @@ Reach for **`inner.call!`** when the inner action *must* succeed for the outer t
 Reach for the explicit **`r = inner.call; fail!(…) unless r.ok?`** idiom when the outer needs a say *before* failing:
 
 - **Inspect or forward the child result** — read `r.error`, `expose(r)` partial outputs (see [Forwarding to a nested action](#forwarding-to-a-nested-action-facades)), log, or run compensating logic.
-- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through *standalone* with `fail!(r.error, prefixed: false)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
+- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through standalone with `fail!(r.error, standalone: true)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
 - **Recover instead of aborting** — branch on `r.ok?` and continue without failing.
 - **Orchestrate several children** — collect multiple results, then decide.
 
@@ -395,15 +395,15 @@ The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) 
 
 ### Default with specific overrides
 
-A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `prefixed: false` reasons for known error classes. `prefixed: false` renders those specific messages **standalone** (without the base prefix), keeping them clean for user display:
+A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `standalone: true` reasons for known error classes. `standalone: true` renders those specific messages on their own (without the base prefix), keeping them clean for user display:
 
 ```ruby
 class CallExternalApi
   include Axn
 
-  error "External API request failed"                                  # fallback base
-  error "Record not found", if: RecordNotFoundError, prefixed: false  # standalone # [!code focus:2]
-  error "Permission denied", if: PermissionError, prefixed: false     # standalone
+  error "External API request failed"                                   # fallback base
+  error "Record not found", if: RecordNotFoundError, standalone: true  # standalone # [!code focus:2]
+  error "Permission denied", if: PermissionError, standalone: true     # standalone
 
   def call
     ExternalApi.fetch!(resource_id)
@@ -411,8 +411,8 @@ class CallExternalApi
 end
 
 CallExternalApi.call(...).error
-# RecordNotFoundError raised  → "Record not found"          (prefixed: false — standalone)
-# PermissionError raised      → "Permission denied"         (prefixed: false — standalone)
+# RecordNotFoundError raised  → "Record not found"          (standalone: true — on its own)
+# PermissionError raised      → "Permission denied"         (standalone: true — on its own)
 # any other error             → "External API request failed"  (fallback base)
 ```
 
@@ -422,7 +422,7 @@ Use this when specific error classes deserve their own user-facing copy and you 
 These are two different jobs, and the difference matters most when a failure bubbles up through `call!`:
 
 - A **base** (unconditional `error "X"`) is the **headline** — it *prefixes* whatever the failure resolved to, **including a nested child's whole chain**. Use it for uniform copy that *preserves* what failed: `error "Checkout failed"` over a child yields `"Checkout failed: Charge failed: card declined"`.
-- A **conditional reason** (`error "X", if: …`, or `fails_on [K], "X"`) is an **override for a matched failure mode** — when its condition matches the failure (yours *or a bubbled child's*), it *becomes* the message, **replacing** the child's chain, and the base then prefixes it (unless `prefixed: false`). Use it to *translate* a specific failure into your own copy: `error "Record not found", if: NotFoundError` over a child yields `"Checkout failed: Record not found"` — the child's own message is intentionally dropped.
+- A **conditional reason** (`error "X", if: …`, or `fails_on [K], "X"`) is an **override for a matched failure mode** — when its condition matches the failure (yours *or a bubbled child's*), it *becomes* the message, **replacing** the child's chain, and the base then prefixes it (unless `standalone: true`). Use it to *translate* a specific failure into your own copy: `error "Record not found", if: NotFoundError` over a child yields `"Checkout failed: Record not found"` — the child's own message is intentionally dropped.
 
 Because a conditional matches the *failure*, a **catch-all** `error "…", if: ->(_e){ true }` will override **every** bubbled child (and it doesn't even fire for your own `fail!("msg")`, which always wins at its own level). If you want "one friendly message for any failure" *while keeping* the child context, that's a **base**, not a catch-all conditional.
 :::
@@ -433,12 +433,12 @@ By default a child action's `result.error` is prepended by every ancestor's base
 
 **Drop the base entirely.** If an action declares no unconditional `error`, its failures render without their own header — the raw reason surfaces as the segment a caller will prefix. A caller's base still applies; it sees the inner action's already-rendered string as the reason and prepends its own header as usual.
 
-**Pass `prefixed: false` when re-raising.** Inspect the inner result with non-bang `call`, then re-raise with `prefixed: false` to keep the inner message standalone at the current level:
+**Pass `standalone: true` when re-raising.** Inspect the inner result with non-bang `call`, then re-raise with `standalone: true` to keep the inner message standalone at the current level:
 
 ```ruby
 def call
   r = InnerAction.call(**inputs)       # [!code focus:2]
-  fail!(r.error, prefixed: false) unless r.ok?  # inner message shown as-is, no caller prefix
+  fail!(r.error, standalone: true) unless r.ok?  # inner message shown as-is, no caller prefix
 end
 ```
 

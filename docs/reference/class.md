@@ -312,12 +312,12 @@ end
 
 ## Message Matching Order {#message-matching-order}
 
-Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `prefixed: true` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (prefixed by the base), or — when none matches — the base headline, or finally the generic default.
+Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `standalone: false` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (prefixed by the base), or — when none matches — the base headline, or finally the generic default.
 
 ### How It Works
 
 1. Entries are stored **last-defined-first** and evaluated in that order.
-2. The displayed message is the first matching **reason** (a conditional or `prefixed: true` entry), prefixed by the base.
+2. The displayed message is the first matching **reason** (a conditional or `standalone: false` entry), prefixed by the base.
 3. If no reason matches, the **base headline** is shown — it's found by shape, so **its declaration position doesn't matter**.
 4. Among multiple reasons that could match (or multiple unconditional headlines), the **most-recently declared wins** — so declare the most-specific reasons last.
 
