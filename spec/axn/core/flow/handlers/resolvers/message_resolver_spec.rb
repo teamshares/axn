@@ -6,11 +6,11 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
   let(:exception) { nil }
   let(:resolver) { described_class.new(registry, :success, action:, exception:) }
 
-  def build_descriptor(handler:, prefixed: false, delimiter: nil, if: nil, unless: nil)
+  def build_descriptor(handler:, standalone: nil, join: nil, if: nil, unless: nil)
     Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
       handler:,
-      prefixed:,
-      delimiter:,
+      standalone:,
+      join:,
       if: binding.local_variable_get(:if),
       unless: binding.local_variable_get(:unless),
     )
@@ -69,17 +69,17 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
 
       it "skips descriptors without handlers when finding base" do
         error_resolver = described_class.new(registry, :error, action:, exception:)
-        no_handler = double("no_handler", handler: nil, static?: true, prefixed?: false)
+        no_handler = double("no_handler", handler: nil, static?: true, standalone?: true)
         static = build_descriptor(handler: "static")
         allow(error_resolver).to receive(:candidate_entries).and_return([no_handler, static])
         expect(error_resolver.send(:base_descriptor)).to eq(static)
       end
 
-      it "skips prefixed? descriptors when finding base" do
+      it "skips standalone: false descriptors when finding base" do
         error_resolver = described_class.new(registry, :error, action:, exception:)
-        prefixed_d = build_descriptor(handler: "prefixed", prefixed: true, if: ArgumentError)
+        promoted_d = build_descriptor(handler: "promoted", standalone: false, if: ArgumentError)
         base_d = build_descriptor(handler: "base")
-        allow(error_resolver).to receive(:candidate_entries).and_return([prefixed_d, base_d])
+        allow(error_resolver).to receive(:candidate_entries).and_return([promoted_d, base_d])
         expect(error_resolver.send(:base_descriptor)).to eq(base_d)
       end
 
@@ -134,18 +134,79 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
     end
   end
 
-  describe "#with_base_prefix" do
-    it "returns reason prefixed with base when base_message present" do
+  describe "#with_base" do
+    it "returns reason combined with base when base_message present" do
       error_resolver = described_class.new(registry, :error, action:, exception:)
       allow(error_resolver).to receive(:base_message).and_return("Base")
-      allow(error_resolver).to receive(:delimiter).and_return(": ")
-      expect(error_resolver.with_base_prefix("reason")).to eq("Base: reason")
+      allow(error_resolver).to receive(:join).and_return(": ")
+      expect(error_resolver.with_base("reason")).to eq("Base: reason")
     end
 
     it "returns reason as-is when no base_message" do
       error_resolver = described_class.new(registry, :error, action:, exception:)
       allow(error_resolver).to receive(:base_message).and_return(nil)
-      expect(error_resolver.with_base_prefix("reason")).to eq("reason")
+      expect(error_resolver.with_base("reason")).to eq("reason")
     end
+  end
+end
+
+RSpec.describe "join: Proc raise-safety" do
+  it "falls back to the default join when the Proc raises" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise "kaboom in join" }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "falls back to the default join when the Proc has the wrong arity (lambda)" do
+    action = build_axn do
+      error "Outer", join: ->(only_one) { only_one }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "falls back to the default join when the Proc returns a non-String" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { 42 }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "falls back to the default join when the Proc raises (success/done! path)" do
+    action = build_axn do
+      success "All good", join: ->(_base, _reason) { raise "kaboom in join" }
+      def call = done!("from cache")
+    end
+    expect(action.call.success).to eq("All good: from cache")
+  end
+
+  it "falls back to the default join when a non-lambda Proc has the wrong arity" do
+    action = build_axn do
+      error "Outer", join: proc { |base| base } # non-lambda, arity 1 — silently drops reason today
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
+  end
+
+  it "supports a non-Proc callable object as join:" do
+    joiner = Class.new do
+      def call(base, reason) = "#{base} (#{reason})"
+    end.new
+    action = build_axn do
+      error "Outer", join: joiner
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer (inner)")
+  end
+
+  it "falls back to the default join when the Proc returns a blank String" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { "" }
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outer: inner")
   end
 end

@@ -204,15 +204,15 @@ module Axn
           end
           private :__axn_invalid_record
 
-          # Clean validation body, prefixed by the action's base error when one is declared.
-          error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }, prefixed: true) do |exception = nil|
+          # Clean validation body, attached to the action's base error when one is declared.
+          error(if: ->(exception: nil) { (rec = __axn_invalid_record(exception)) && rec.errors.any? }) do |exception = nil|
             __axn_invalid_record(exception).errors.full_messages.to_sentence
           end
 
-          # Default mode-aware success, installed as a prefixed *reason* (not a headline) so a base
-          # `success "…"` declared after `use :model` prefixes it ("<base>: Created Widget"), parallel
-          # to the error body above. Declare a conditional/standalone success to replace it instead.
-          success(prefixed: true) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
+          # Default mode-aware success, installed as an attached *reason* (standalone: false, not a
+          # headline) so a base `success "…"` declared after `use :model` attaches it ("<base>: Created
+          # Widget"), parallel to the error body above. Declare a standalone success to replace it instead.
+          success(standalone: false) { "#{__axn_model.previously_new_record? ? 'Created' : 'Updated'} #{__axn_model.class.model_name.human}" }
 
           # Safety net for a *raised* RecordInvalid (save!, association autosave, validate!, nested).
           fails_on(ActiveRecord::RecordInvalid)

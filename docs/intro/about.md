@@ -39,7 +39,7 @@ The core library provides many benefits for individual action calls, but also ai
   * The top-level action must `expose` its own layer (effectively documenting public vs private exposures, which drastically eases refactoring)
 * Ad hoc (called arbitrarily from within other actions)
   * Use `call!` to ensure any failure from a nested service raises an exception, or manually check `result.ok?` and handle failures appropriately
-  * Declare a base `error` to give a parent's failures a consistent headline that prefixes nested failures, or run children with `call` + `fail!` for per-call-site context
+  * Declare a base `error` to give a parent's failures a consistent headline that attaches to nested failures, or run children with `call` + `fail!` for per-call-site context
 
 ::: danger ALPHA
 * TODO: add links to sections showing usage guides/examples for the more complex flows

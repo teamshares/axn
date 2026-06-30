@@ -11,17 +11,18 @@ module Axn
           class MessageResolver < BaseResolver
             DEFAULT_ERROR = "Something went wrong"
             DEFAULT_SUCCESS = "Action completed successfully"
+            DEFAULT_JOIN = ": "
 
             def resolve_message
               descriptor, reason = matched_reason
               return base_message || fallback_message unless descriptor
 
-              descriptor.prefixed? ? with_base_prefix(reason) : reason
+              descriptor.standalone? ? reason : with_base(reason)
             end
 
             # The winning reason as [descriptor, body], or nil if no conditional/dynamic (or explicitly
-            # `prefixed:`) entry matches. Unconditional non-prefixed entries are headlines, excluded here
-            # and surfaced via base_message. filter_map captures each body once (body_for invokes the
+            # `standalone: false`) entry matches. Unconditional standalone entries are headlines, excluded
+            # here and surfaced via base_message. filter_map captures each body once (body_for invokes the
             # handler block), so the winning entry's message block runs a single time. Memoized — a
             # resolver is single-use — so an external caller (Result#_resolve_error, deciding whether a
             # parent override should beat a bubbled child message) and resolve_message share one pass.
@@ -38,51 +39,94 @@ module Axn
 
             def resolve_default_message = base_message || fallback_message
 
-            # Prefix an externally-supplied reason (e.g. a fail!/done! message) with the base.
-            def with_base_prefix(reason)
+            # Combine an externally-supplied reason (e.g. a fail!/done! message) with the base.
+            def with_base(reason)
               return reason unless base_message.present?
 
-              "#{base_message}#{delimiter}#{reason}"
+              combine(base_message, reason)
             end
 
             def base_message = resolved_base&.last
 
             private
 
-            # Unconditional, non-prefixed entries with a handler — the headline candidates. The handler
-            # kind (literal/block/symbol) is irrelevant; only conditionality + prefixed: decide the role.
-            # Applies to both :error and :success events. Memoized: a resolver is single-use, and this
-            # is consulted once per matching entry (via reason?/base_descriptor) plus once by resolved_base.
-            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && !d.prefixed? && d.handler }
+            # Unconditional, standalone entries with a handler — the headline candidates. The handler
+            # kind (literal/block/symbol) is irrelevant; only conditionality + standalone: decide the
+            # role. Applies to both :error and :success events. Memoized: a resolver is single-use, and
+            # this is consulted once per matching entry (via reason?/base_descriptor) plus once by
+            # resolved_base.
+            def base_candidates = @base_candidates ||= candidate_entries.select { |d| d.static? && d.standalone? && d.handler }
 
             # The headline that actually resolves, as [descriptor, body]. Headlines form a fallback chain
             # (most-recent first — see Registry): a headline whose block raises or returns blank falls
-            # back to an earlier one. The body AND its delimiter both come from this descriptor, so a
-            # blank/raising newer headline can't impose its delimiter on an earlier headline's text.
+            # back to an earlier one. The body AND its join both come from this descriptor, so a
+            # blank/raising newer headline can't impose its join on an earlier headline's text.
             def resolved_base
               return @resolved_base if defined?(@resolved_base)
 
               @resolved_base = base_candidates.lazy.filter_map { |d| (body = body_for(d)) && [d, body] }.first
             end
 
-            # Whether a base is *declared* (gates whether reasons are prefixed) — independent of whether
+            # Whether a base is *declared* (gates whether reasons are attached) — independent of whether
             # its body resolves to something present (the most-recently declared headline).
             def base_descriptor = base_candidates.first
 
             # A "reason" is an entry eligible to be selected as the displayed message: a conditional
-            # entry (if:/unless:) or one explicitly `prefixed:`. Unconditional non-prefixed entries are
-            # headlines (the base + any secondary headlines) — surfaced via base_message, never selected
-            # here. When no base exists, every entry is conditional/prefixed, so all qualify.
+            # entry (if:/unless:) or one explicitly promoted with `standalone: false`. Unconditional
+            # standalone entries are headlines (the base + any secondary headlines) — surfaced via
+            # base_message, never selected here. When no base exists, every entry is conditional or
+            # promoted, so all qualify.
             def reason?(descriptor)
               return true unless base_descriptor
 
-              descriptor.prefixed? || !descriptor.static?
+              !descriptor.standalone? || !descriptor.static?
             end
 
-            # The delimiter comes from the headline whose body we're actually showing (resolved_base),
-            # NOT the most-recent declared one. NOTE: no `.presence` — an explicit `delimiter: ""` is
-            # honored (join with no separator); only an unset (nil) delimiter falls back to the default.
-            def delimiter = resolved_base&.first&.delimiter || ": "
+            # The join comes from the headline whose body we're actually showing (resolved_base), NOT
+            # the most-recent declared one. nil → default; an explicit "" String is honored verbatim.
+            def join = resolved_base&.first&.join
+
+            # Combine base and reason. A String join is the infix separator; a Proc join receives
+            # (base, reason) and returns the combined string. DEFAULT_JOIN is used when unset.
+            def combine(base, reason)
+              j = join
+              return apply_join_proc(j, base, reason) if j.respond_to?(:call)
+              return "#{base}#{j}#{reason}" if j.is_a?(String)
+
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            end
+
+            # A join Proc runs on the presentation path, which must never raise. A Proc that raises,
+            # mismatches arity, or returns a non-String falls back to the default join (and warns) —
+            # mirroring how a base-header block that raises falls back down the headline chain.
+            def apply_join_proc(proc, base, reason)
+              unless join_accepts_base_and_reason?(proc)
+                reported_arity = proc.is_a?(Proc) || proc.is_a?(Method) ? proc.arity : proc.method(:call).arity
+                action.warn("join: callable cannot accept (base, reason) (arity #{reported_arity}) — using default join")
+                return "#{base}#{DEFAULT_JOIN}#{reason}"
+              end
+
+              result = proc.call(base, reason)
+              return result if result.is_a?(String) && result.present?
+
+              detail = result.is_a?(String) ? "a blank String" : result.class.to_s
+              action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            rescue StandardError => e
+              action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
+              "#{base}#{DEFAULT_JOIN}#{reason}"
+            end
+
+            # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
+            # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs
+            # don't enforce arity themselves, so we check explicitly).
+            # Procs/Methods answer #arity directly. Any other callable (a plain object with #call)
+            # reports its arity via #call.arity — we must NOT use .method(:call).arity on a Proc
+            # because Proc#call is variadic (arity -1) and would defeat the check.
+            def join_accepts_base_and_reason?(callable)
+              arity = callable.is_a?(Proc) || callable.is_a?(Method) ? callable.arity : callable.method(:call).arity
+              arity == 2 || (arity.negative? && (-arity - 1) <= 2)
+            end
 
             def body_for(descriptor)
               return nil unless descriptor

@@ -328,7 +328,8 @@ module Axn
           elapsed_time
           finalized?
           __action__
-          prefixed
+          standalone
+          bare
           inputs
         ].freeze
 

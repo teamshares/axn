@@ -4,10 +4,10 @@ module Axn
   module Internal
     # Internal only -- rescued before Axn::Result is returned
     class EarlyCompletion < StandardError
-      attr_reader :prefixed
+      attr_reader :standalone
 
-      def initialize(message = nil, prefixed: true)
-        @prefixed = prefixed
+      def initialize(message = nil, standalone: false)
+        @standalone = standalone
         super(message)
       end
     end
@@ -18,18 +18,18 @@ module Axn
     DEFAULT_MESSAGE = "Execution was halted"
 
     # The action whose `fail!` raised this. We hold the action OBJECT (compared by identity in
-    # Result#_fail_prefixed?), not its object_id — consistent with ExceptionClassification's
+    # Result#_fail_standalone?), not its object_id — consistent with ExceptionClassification's
     # identity keying, which deliberately avoids the freed-then-reused-object_id collision hazard.
-    # `prefixed:` is scoped to that action: an ancestor that catches a bubbled child Failure still
-    # applies its OWN base prefix (the child's opt-out is local).
+    # `standalone:` is scoped to that action: an ancestor that catches a bubbled child Failure still
+    # applies its OWN base (the child's opt-out is local).
     # NOTE: this pins the action (and its context/inputs) for the Failure's lifetime — only relevant
     # if a bare `result.exception` is retained beyond its result; results are normally short-lived.
     attr_reader :__originating_action, :raw_reason
 
-    def initialize(message = nil, prefixed: true, action: nil)
+    def initialize(message = nil, standalone: false, action: nil)
       @raw_reason = message
       @presentation = nil
-      @prefixed = prefixed
+      @standalone = standalone
       @__originating_action = action
       super(message)
     end
@@ -38,7 +38,7 @@ module Axn
     # the framework can keep re-resolving from the raw reason without double-prefixing.
     def __present_as(string) = @presentation = string.presence
 
-    def prefixed? = @prefixed
+    def standalone? = @standalone
     def message = @presentation.presence || @raw_reason.presence || DEFAULT_MESSAGE
     # Keyed off the RAW reason, not #message: once __present_as stamps the resolved presentation,
     # #message no longer reflects whether the caller supplied a reason. Post-run consumers read this
@@ -97,7 +97,7 @@ module Axn
     # `user_facing:` marks an inbound validation failure that the Executor has reclassified into the
     # failure bucket (see `expects ..., user_facing:`). The structured `errors` are preserved on the
     # exception either way; `user_facing_message` carries the (possibly overridden) message that
-    # surfaces on `result.error` as a prefixable reason — headlined by a declared base `error` just
+    # surfaces on `result.error` as an attachable reason — headlined by a declared base `error` just
     # like a `fail!` reason — leaving the dev-facing `#message` (full validation errors) intact.
     def initialize(errors, user_facing: false, user_facing_message: nil)
       @errors = errors

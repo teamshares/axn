@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-RSpec.describe "Axn error_prefix resolution" do
+RSpec.describe "Axn standalone message resolution" do
   subject(:error) { action.call.error }
 
-  context "declared reason with a base (prefixed by default)" do
+  context "declared reason with a base (attached by default)" do
     let(:action) do
       build_axn do
         error "Couldn't sync user"
@@ -14,11 +14,11 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user: is invalid") }
   end
 
-  context "reason opted out with prefixed: false" do
+  context "reason opted out with standalone: true" do
     let(:action) do
       build_axn do
         error "Couldn't sync user"
-        error "Vendor not found", if: ArgumentError, prefixed: false
+        error "Vendor not found", if: ArgumentError, standalone: true
         def call = raise ArgumentError, "boom"
       end
     end
@@ -35,10 +35,10 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("is invalid") }
   end
 
-  context "custom delimiter on the base" do
+  context "custom join on the base" do
     let(:action) do
       build_axn do
-        error "Couldn't sync user", delimiter: " — "
+        error "Couldn't sync user", join: " — "
         error "is invalid", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -46,10 +46,10 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user — is invalid") }
   end
 
-  context "explicit empty delimiter (join with no separator)" do
+  context "explicit empty join (no separator)" do
     let(:action) do
       build_axn do
-        error "Failed", delimiter: ""
+        error "Failed", join: ""
         error "reason", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -57,18 +57,18 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Failedreason") }
   end
 
-  context "unconditional dynamic detail with a base" do
+  context "unconditional dynamic detail with a base (promoted via standalone: false)" do
     let(:action) do
       build_axn do
         error "Couldn't sync user"
-        error(prefixed: true, &:message)
+        error(standalone: false, &:message)
         def call = raise ArgumentError, "boom"
       end
     end
     it { is_expected.to eq("Couldn't sync user: boom") }
   end
 
-  context "prebuilt conditional descriptor is prefixed by the base (like the DSL)" do
+  context "prebuilt conditional descriptor is attached to the base (like the DSL)" do
     let(:action) do
       prebuilt = Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "invalid", if: ArgumentError)
       build_axn do
@@ -82,7 +82,7 @@ RSpec.describe "Axn error_prefix resolution" do
 
   context "an unconditional dynamic message is a headline by default (handler kind is irrelevant)" do
     # A block/symbol with no condition is a headline just like a literal — the most-recently
-    # declared headline wins, so this replaces the earlier "Import failed" rather than prefixing it.
+    # declared headline wins, so this replaces the earlier "Import failed" rather than attaching.
     let(:action) do
       build_axn do
         error "Import failed"
@@ -93,11 +93,11 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("raw boom") }
   end
 
-  context "an unconditional dynamic message is prefixed only when opted in with prefixed: true" do
+  context "an unconditional dynamic message is attached only when promoted with standalone: false" do
     let(:action) do
       build_axn do
         error "Import failed"
-        error(prefixed: true, &:message)
+        error(standalone: false, &:message)
         def call = raise "raw boom"
       end
     end
@@ -115,14 +115,14 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Couldn't sync user") }
   end
 
-  context "delimiter comes from the headline that actually resolved, not a blank newer one" do
-    # The newest headline is a block that resolves blank but carries `delimiter: ""`. base_message
-    # falls back to the earlier "Base" headline, so the delimiter must come from "Base" (default
+  context "join comes from the headline that actually resolved, not a blank newer one" do
+    # The newest headline is a block that resolves blank but carries `join: ""`. base_message
+    # falls back to the earlier "Base" headline, so the join must come from "Base" (default
     # ": "), not the blank block — otherwise we'd render "Basedetail".
     let(:action) do
       build_axn do
         error "Base"
-        error(delimiter: "") { "" }
+        error(join: "") { "" }
         error "detail", if: ArgumentError
         def call = raise ArgumentError, "boom"
       end
@@ -130,7 +130,7 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Base: detail") }
   end
 
-  context "a headline block that RAISES falls back to an earlier headline (and that headline's delimiter)" do
+  context "a headline block that RAISES falls back to an earlier headline (and that headline's join)" do
     # The resolver promises "a headline whose block raises or returns blank falls back to an earlier
     # one" (message_resolver.rb). The blank case is covered above; this locks in the *raises* case,
     # which depends on body_for → Invoker.call rescuing internally.
@@ -145,9 +145,9 @@ RSpec.describe "Axn error_prefix resolution" do
     it { is_expected.to eq("Earlier base: detail") }
   end
 
-  context "a declared-but-blank base still gates reasons as prefixed, then drops the empty prefix" do
-    # The base IS declared (so the reason is treated as prefixed), but it resolves blank — so
-    # with_base_prefix must drop the empty prefix rather than render a leading ": ".
+  context "a declared-but-blank base still gates reasons as attached, then drops the empty base" do
+    # The base IS declared (so the reason is treated as attached), but it resolves blank — so
+    # with_base must drop the empty base rather than render a leading ": ".
     let(:action) do
       build_axn do
         error "" # base declared, resolves blank
@@ -172,10 +172,10 @@ RSpec.describe "Axn error_prefix resolution" do
   end
 end
 
-RSpec.describe "Axn error_prefix on fail!" do
+RSpec.describe "Axn standalone on fail!" do
   subject(:error) { action.call.error }
 
-  context "fail! prefixed by the base by default" do
+  context "fail! attached to the base by default" do
     let(:action) do
       build_axn do
         error "Couldn't sync user"
@@ -185,11 +185,11 @@ RSpec.describe "Axn error_prefix on fail!" do
     it { is_expected.to eq("Couldn't sync user: email taken") }
   end
 
-  context "fail! opting out with prefixed: false" do
+  context "fail! opting out with standalone: true" do
     let(:action) do
       build_axn do
         error "Couldn't sync user"
-        def call = fail!("Account is locked.", prefixed: false)
+        def call = fail!("Account is locked.", standalone: true)
       end
     end
     it { is_expected.to eq("Account is locked.") }
@@ -203,10 +203,10 @@ RSpec.describe "Axn error_prefix on fail!" do
   end
 end
 
-RSpec.describe "Axn success prefixing parity" do
+RSpec.describe "Axn standalone success parity" do
   subject(:success) { action.call.success }
 
-  context "done! prefixed by base success" do
+  context "done! attached to base success by default" do
     let(:action) do
       build_axn do
         success "User synced"
@@ -216,33 +216,33 @@ RSpec.describe "Axn success prefixing parity" do
     it { is_expected.to eq("User synced: from cache") }
   end
 
-  context "done! opting out" do
+  context "done! opting out with standalone: true" do
     let(:action) do
       build_axn do
         success "User synced"
-        def call = done!("Already current.", prefixed: false)
+        def call = done!("Already current.", standalone: true)
       end
     end
     it { is_expected.to eq("Already current.") }
   end
 
-  context "done!(nil, prefixed: false) — no message, opt-out is moot, base resolves cleanly" do
-    # The prefixed:false flag must be recorded (not silently dropped), but with no message there is
-    # no reason to prefix, so the base headline resolves as usual.
+  context "done!(nil, standalone: true) — no message, opt-out is moot, base resolves cleanly" do
+    # The standalone:true flag must be recorded (not silently dropped), but with no message there is
+    # no reason to attach, so the base headline resolves as usual.
     let(:action) do
       build_axn do
         success "User synced"
-        def call = done!(nil, prefixed: false)
+        def call = done!(nil, standalone: true)
       end
     end
     it { is_expected.to eq("User synced") }
   end
 
-  context "a child's done!(prefixed: false) does not suppress the PARENT's own success base" do
+  context "a child's done!(standalone: true) does not suppress the PARENT's own success base" do
     # The success opt-out is read from the context flag (not action-scoped) — safe because a child
     # early-completion never bubbles through the parent: call! swallows it and returns an ok result.
     let(:action) do
-      child = build_axn { def call = done!("from cache", prefixed: false) }
+      child = build_axn { def call = done!("from cache", standalone: true) }
       build_axn do
         success "User synced"
         define_method(:call) { child.call! } # child early-completes ok; parent resolves its own base
@@ -264,7 +264,7 @@ RSpec.describe "Axn success prefixing parity" do
     it { is_expected.to eq("User synced: from cache") }
   end
 
-  context "conditional success reason prefixed" do
+  context "conditional success reason attached" do
     let(:action) do
       build_axn do
         expects :n, type: Integer
@@ -306,23 +306,97 @@ RSpec.describe "explicit call + fail! child-error composition" do
   end
 end
 
-RSpec.describe "prefixed: false is scoped to the originating action" do
-  it "honors prefixed: false at the action's own level (local opt-out)" do
+RSpec.describe "standalone: true is scoped to the originating action" do
+  it "honors standalone: true at the action's own level (local opt-out)" do
     action = build_axn do
       error "Child base"
-      def call = fail!("card declined", prefixed: false)
+      def call = fail!("card declined", standalone: true)
     end
     expect(action.call.error).to eq("card declined") # the action's own base is not applied
   end
 
-  it "still applies the PARENT's base to a bubbled child fail!(prefixed: false) via call!" do
-    stub_const("OptOutChild", build_axn { def call = fail!("card declined", prefixed: false) })
+  it "still applies the PARENT's base to a bubbled child fail!(standalone: true) via call!" do
+    stub_const("OptOutChild", build_axn { def call = fail!("card declined", standalone: true) })
     parent = build_axn do
       error "Charging failed"
       def call = OptOutChild.call!
     end
-    # The child's local opt-out does not disable the caller's base prefix.
+    # The child's local opt-out does not disable the caller's base attachment.
     expect(parent.call.error).to eq("Charging failed: card declined")
+  end
+end
+
+RSpec.describe "bare: alias for standalone:" do
+  it "bare: is an alias for standalone: (fail!)" do
+    action = build_axn do
+      error "Couldn't sync user"
+      def call = fail!("card declined", bare: true)
+    end
+    expect(action.call.error).to eq("card declined")
+  end
+
+  it "bare: is an alias for standalone: (conditional error)" do
+    action = build_axn do
+      error "Couldn't sync user"
+      error "Vendor not found", if: ArgumentError, bare: true
+      def call = raise ArgumentError, "boom"
+    end
+    expect(action.call.error).to eq("Vendor not found")
+  end
+
+  it "raises when both standalone: and bare: are passed to a declaration" do
+    expect do
+      build_axn { error "x", if: ArgumentError, standalone: false, bare: true }
+    end.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
+  end
+
+  it "raises when both standalone: and bare: are passed to fail!" do
+    action = build_axn { def call = fail!("x", standalone: true, bare: true) }
+    expect { action.call! }.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
+  end
+end
+
+RSpec.describe "Axn join: Proc form" do
+  it "wraps the reason (error)" do
+    action = build_axn do
+      error "Outer error", join: ->(base, reason) { "#{base} (#{reason})" }
+      def call = fail!("inner error")
+    end
+    expect(action.call.error).to eq("Outer error (inner error)")
+  end
+
+  it "recases the reason's first letter (error)" do
+    action = build_axn do
+      error "Outer error", join: ->(base, reason) { "#{base}: #{reason[0].downcase}#{reason[1..]}" }
+      def call = fail!("Inner error")
+    end
+    expect(action.call.error).to eq("Outer error: inner error")
+  end
+
+  it "applies for success/done! identically" do
+    action = build_axn do
+      success "User synced", join: ->(base, reason) { "#{base} (#{reason})" }
+      def call = done!("from cache")
+    end
+    expect(action.call.success).to eq("User synced (from cache)")
+  end
+
+  it "raises at declaration when join: (Proc) is given on a reason" do
+    expect do
+      build_axn { error "x", if: ArgumentError, join: ->(b, r) { "#{b} #{r}" } }
+    end.to raise_error(ArgumentError, /join: only applies to the base/)
+  end
+
+  it "raises at declaration when join: is neither a String nor callable" do
+    expect do
+      build_axn { error "Base", join: 5 }
+    end.to raise_error(ArgumentError, /join: must be a String or a callable/)
+  end
+
+  it "raises at declaration when join: false is given (false is not nil, String, or callable)" do
+    expect do
+      build_axn { error "Base", join: false }
+    end.to raise_error(ArgumentError, /join: must be a String or a callable/)
   end
 end
 
@@ -354,68 +428,65 @@ RSpec.describe "removed error options" do
   end
 end
 
-RSpec.describe "Axn error_prefix DSL" do
+RSpec.describe "Axn standalone: DSL" do
   describe "declaration validation" do
-    it "allows prefixed: true on an unconditional message (promotes the headline to a prefixed reason)" do
+    it "allows standalone: false on an unconditional message (promotes the headline to an attached reason)" do
       expect do
-        build_axn { error "Headline", prefixed: true }
+        build_axn { error "Headline", standalone: false }
       end.not_to raise_error
     end
 
-    it "allows prefixed: true with a condition" do
+    it "allows standalone: false with a condition" do
       expect do
-        build_axn { error "boom", if: ArgumentError, prefixed: true }
+        build_axn { error "boom", if: ArgumentError, standalone: false }
       end.not_to raise_error
     end
 
-    it "allows prefixed: true with a dynamic (block) message and no condition" do
+    it "allows standalone: false with a dynamic (block) message and no condition" do
       expect do
-        build_axn { error(prefixed: true, &:message) }
+        build_axn { error(standalone: false, &:message) }
       end.not_to raise_error
     end
 
-    it "raises when delimiter: is given on a conditional reason" do
+    it "raises when join: is given on a conditional reason" do
       expect do
-        build_axn { error "x", if: ArgumentError, delimiter: " - " }
-      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+        build_axn { error "x", if: ArgumentError, join: " - " }
+      end.to raise_error(ArgumentError, /join: only applies to the base/)
     end
 
-    it "raises when delimiter: is given on a conditional reason that opted out with prefixed: false" do
-      # Still a reason (conditional), not the base — so delimiter: must be rejected, not ignored.
+    it "raises when join: is given on a conditional reason that opted out with standalone: true" do
       expect do
-        build_axn { error "x", if: ArgumentError, prefixed: false, delimiter: " - " }
-      end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+        build_axn { error "x", if: ArgumentError, standalone: true, join: " - " }
+      end.to raise_error(ArgumentError, /join: only applies to the base/)
     end
 
-    it "allows delimiter: on a base error (an unconditional headline)" do
+    it "allows join: on a base error (an unconditional standalone headline)" do
       expect do
-        build_axn { error "Headline", delimiter: " - " }
+        build_axn { error "Headline", join: " - " }
       end.not_to raise_error
     end
 
-    it "raises when delimiter: is combined with prefixed: true (which makes it a reason, not the base)" do
+    it "raises when join: is combined with standalone: false (which makes it a reason, not the base)" do
       expect do
-        build_axn { error "x", delimiter: " - ", prefixed: true }
-      end.to raise_error(ArgumentError, "delimiter: only applies to the base (an unprefixed headline)")
+        build_axn { error "x", join: " - ", standalone: false }
+      end.to raise_error(ArgumentError, "join: only applies to the base (an unconditional headline)")
     end
 
-    # The direct/Factory `MessageDescriptor.build` path (no DSL) must enforce the same validation,
-    # rather than silently ignoring an option that resolution never reads.
     describe "direct MessageDescriptor.build path" do
       let(:described) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
 
-      it "raises when delimiter: is given on a conditional reason" do
+      it "raises when join: is given on a conditional reason" do
         expect do
-          described.build(handler: "x", if: ArgumentError, delimiter: " - ")
-        end.to raise_error(ArgumentError, /delimiter: only applies to the base/)
+          described.build(handler: "x", if: ArgumentError, join: " - ")
+        end.to raise_error(ArgumentError, /join: only applies to the base/)
       end
 
-      it "allows prefixed: true on an unconditional headline (promotes it to a prefixed reason)" do
-        expect { described.build(handler: "Headline", prefixed: true) }.not_to raise_error
+      it "allows standalone: false on an unconditional headline (promotes it to an attached reason)" do
+        expect { described.build(handler: "Headline", standalone: false) }.not_to raise_error
       end
 
-      it "allows delimiter: on a base (unconditional headline) descriptor" do
-        expect { described.build(handler: "Headline", delimiter: " - ") }.not_to raise_error
+      it "allows join: on a base (unconditional standalone headline) descriptor" do
+        expect { described.build(handler: "Headline", join: " - ") }.not_to raise_error
       end
     end
   end

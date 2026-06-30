@@ -122,7 +122,7 @@ module Axn
               unless step_result.ok?
                 # Propagate the step's outcome *category*, not a flattened failure: a deliberate fail!
                 # (or a fails_on-classified exception) settles the parent as a failure with the
-                # prefixed message; an unclassified exception (a bug) re-raises the original object so
+                # resolved message; an unclassified exception (a bug) re-raises the original object so
                 # the parent settles as an exception too. The global report already fired at the step
                 # and is deduped per exception object, so re-raising never double-reports.
                 raise step_result.exception if step_result.outcome.exception?
