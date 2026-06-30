@@ -379,7 +379,7 @@ end
 # Error message becomes: "Custom: Input is invalid"
 ```
 
-If the orchestrating action declares its own base `error "…"`, that base prefixes the step failure on top of the step prefix, so a failed step renders as `"Parent base: validation: Input is invalid"`. See [base-error prefixing](/usage/writing#prefixing-failure-reasons) for how the cascade composes.
+If the orchestrating action declares its own base `error "…"`, that base is prepended to the step failure (on top of the step prefix), so a failed step renders as `"Parent base: validation: Input is invalid"`. See [base/reason attachment](/usage/writing#prefixing-failure-reasons) for how the cascade composes.
 
 ## Method Naming and Validation
 

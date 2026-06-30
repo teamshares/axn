@@ -186,7 +186,7 @@ expects :note, user_facing: :note_message   # call an action method to compute i
 expects :note, user_facing: ->(e) { ... }   # compute it from the InboundValidationError
 ```
 
-The value matches the `error`/`fail!`/`fails_on` handler shape — `true`, a String, a Symbol naming an action method, or a Proc; one that resolves blank falls back to the field's own validation message. The surfaced message is a failure **reason**, so a declared base `error` [prefixes it](/usage/writing#prefixing-failure-reasons) by default (standalone with no base), just like a `fail!` message. The field stays **required** (unlike `optional:`, which removes the check) — `user_facing:` changes who is blamed for a violation, not whether it's validated. In a mixed failure (a `user_facing:` field *and* a plain one both invalid), the dev-facing one dominates and the call still pages. **`user_facing:` is for top-level fields only:** it can't be declared on a subfield (`on:`), and it's rejected on a field that *has* nested expectations — subfields (`on:`) or a shape block (`do … end`). Those nested/member checks are always dev-facing, so mixing them with `user_facing:` is a declaration error. See [the narrative](/usage/writing#user-facing-contract-violations) for the full picture.
+The value matches the `error`/`fail!`/`fails_on` handler shape — `true`, a String, a Symbol naming an action method, or a Proc; one that resolves blank falls back to the field's own validation message. The surfaced message is a failure **reason**, so a declared base `error` [attaches it under the base](/usage/writing#prefixing-failure-reasons) by default (standalone with no base), just like a `fail!` message. The field stays **required** (unlike `optional:`, which removes the check) — `user_facing:` changes who is blamed for a violation, not whether it's validated. In a mixed failure (a `user_facing:` field *and* a plain one both invalid), the dev-facing one dominates and the call still pages. **`user_facing:` is for top-level fields only:** it can't be declared on a subfield (`on:`), and it's rejected on a field that *has* nested expectations — subfields (`on:`) or a shape block (`do … end`). Those nested/member checks are always dev-facing, so mixing them with `user_facing:` is a declaration error. See [the narrative](/usage/writing#user-facing-contract-violations) for the full picture.
 
 #### Nested/Subfield expectations
 
@@ -312,18 +312,18 @@ end
 
 ## Message Matching Order {#message-matching-order}
 
-Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `standalone: false` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (prefixed by the base), or — when none matches — the base headline, or finally the generic default.
+Messages follow the [base/reason model](/usage/writing#prefixing-failure-reasons): an **unconditional** `error`/`success` (literal or block) is the **base headline**, while a **conditional** (`if:`/`unless:`) or explicitly `standalone: false` entry is a **reason**. Resolution shows the most-recently-declared matching *reason* (attached under the base), or — when none matches — the base headline, or finally the generic default.
 
 ### How It Works
 
 1. Entries are stored **last-defined-first** and evaluated in that order.
-2. The displayed message is the first matching **reason** (a conditional or `standalone: false` entry), prefixed by the base.
+2. The displayed message is the first matching **reason** (a conditional or `standalone: false` entry), attached under the base.
 3. If no reason matches, the **base headline** is shown — it's found by shape, so **its declaration position doesn't matter**.
 4. Among multiple reasons that could match (or multiple unconditional headlines), the **most-recently declared wins** — so declare the most-specific reasons last.
 
 ### The base's position doesn't matter
 
-Because the base is identified by shape, it prefixes matching reasons no matter where it's declared — there is no "shadowing" to avoid (declaring it last is fine):
+Because the base is identified by shape, matching reasons are attached under it no matter where it's declared — there is no "shadowing" to avoid (declaring it last is fine):
 
 ```ruby
 class MyAction
@@ -374,8 +374,8 @@ error "Invalid params provided", if: ActiveRecord::InvalidRecord
 error(if: ArgumentError) { |e| "Argument error: #{e.message}" }
 error(if: -> { name == "bad" }) { "Bad input #{name}, result: #{result.status}" }
 
-# Base error prefixes a conditional reason by default
-error "Foo"                                    # base — never itself shown prefixed
+# Base error attaches to a conditional reason by default
+error "Foo"                                    # base — never itself shown as a reason
 error("bar", if: ArgumentError)                # ArgumentError => "Foo: bar"
 error(if: TypeError, &:message)                # TypeError     => "Foo: <exception.message>"
 # (reasons are checked last-declared-first; if two conditional reasons both match the same
@@ -420,7 +420,7 @@ You cannot use both `if:` and `unless:` for the same message - this will raise a
 
 ## Composing error messages across actions
 
-Most of the time you don't need to do anything special: declare a base `error` on the parent and it prefixes the parent's own failures *and* any child failure surfaced via `call!`. A child that fails via `fail!` re-raises the same `Axn::Failure` (no wrapping), so the base prepends to it automatically — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
+Most of the time you don't need to do anything special: declare a base `error` on the parent and it attaches to the parent's own failures *and* any child failure surfaced via `call!`. A child that fails via `fail!` re-raises the same `Axn::Failure` (no wrapping), so the base is prepended automatically — see [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
 ```ruby
 class OuterAction
@@ -435,7 +435,7 @@ end
 
 Reach for an explicit `call` + `fail!` only when the base headline isn't enough — specifically:
 
-- **Per-call-site context**, when a single class-level headline can't express what you need (e.g. distinguishing two invocations of the same child). Don't also repeat the headline in the `fail!` string — a declared base already prefixes it (`"<base>: validating: …"`).
+- **Per-call-site context**, when a single class-level headline can't express what you need (e.g. distinguishing two invocations of the same child). Don't also repeat the headline in the `fail!` string — a declared base already attaches to it (`"<base>: validating: …"`).
 
   ```ruby
   def call
@@ -624,5 +624,5 @@ class SubmitOrder
 end
 ```
 
-Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base-error prefixing and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
+Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 

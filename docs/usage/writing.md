@@ -229,21 +229,21 @@ Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life i
 
 ### Prefixing failure reasons
 
-An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and it automatically prefixes every failure *reason* — a conditional `error … if:`/`unless:`, an entry explicitly marked `standalone: false`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
+An **unconditional** `error "Headline"` acts as the **base**: it becomes the headline shown when no more specific reason matches, and every failure *reason* is automatically attached under it — a conditional `error … if:`/`unless:`, an entry explicitly marked `standalone: false`, and `fail!` messages — joined as `"Headline: reason"`. `success "…"` / `done!` work the same way.
 
-What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `standalone: false` (which promotes an unconditional entry to a prefixed reason) when you want something prefixed rather than treated as the headline.
+What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `standalone: false` (which promotes an unconditional entry to a reason attached under the base) when you want something attached to the base rather than treated as the headline.
 
 ```ruby
 class SyncUser
   include Axn
 
   error "Couldn't sync user"                      # base — also the fallback
-  error "email already taken", if: ArgumentError  # prefixed reason
-  error "account is locked", if: RuntimeError     # prefixed reason
+  error "email already taken", if: ArgumentError  # attached reason
+  error "account is locked", if: RuntimeError     # attached reason
 
   def call
     raise ArgumentError, "duplicate" if email_taken?
-    fail! "missing required field"                # also prefixed
+    fail! "missing required field"                # also attached
   end
 end
 
@@ -258,7 +258,7 @@ result.error  # => "Couldn't sync user: email already taken"
 | | |
 |---|---|
 | **Gated by a base** | No base declaration ⇒ reasons render standalone, unchanged |
-| **`standalone: true` opt-out** | `error "Vendor not found", if: ArgumentError, standalone: true` — or `fail!("msg", standalone: true)` — renders the reason on its own, without the base prefix. Scoped to the action: a bubbled child `fail!(..., standalone: true)` still receives the *caller's* base prefix |
+| **`standalone: true` opt-out** | `error "Vendor not found", if: ArgumentError, standalone: true` — or `fail!("msg", standalone: true)` — renders the reason on its own, without the base. Scoped to the action: a bubbled child `fail!(..., standalone: true)` still receives the *caller's* base |
 | **Custom join** | `error "Headline", join: " — "` changes the separator string (default is `": "`); or pass a Proc `join: ->(base, reason) { … }` for full control (wrapping, recasing). Only valid on the base — `join:` on a reason raises at declaration |
 | **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
 | **Attach to base (`standalone: false`)** | `error(standalone: false, &:message)` (or `error "detail", standalone: false`) — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
@@ -286,11 +286,11 @@ SyncUser.call.error  # => "vendor not found"
 ```
 
 ::: tip result.error vs Axn::Failure#message
-`result.error` is the uniform, user-facing presentation string (base prefix + reason, aggregated across all levels). For **Axn-owned** failures (`fail!`, and user-facing validation failures), the raised exception's `#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
+`result.error` is the uniform, user-facing presentation string (base attached to reason, aggregated across all levels). For **Axn-owned** failures (`fail!`, and user-facing validation failures), the raised exception's `#message` is stamped to equal `result.error`, so rescuing the exception from `call!` gives you the same string. Only **foreign** exceptions reclassified via `fails_on` carry a different (technical) `#message` — `result.error` still shows the resolved presentation, but `exception.message` reflects the original exception text.
 :::
 
 ::: tip Header aggregation across nested call!
-When an inner action fails and the outer action calls it with `call!`, the outer action's base header is prepended to whatever the inner action already produced, joined by the outer action's own `join:`. The outermost header comes first — every level contributes its base in order from outside in.
+When an inner action fails and the outer action calls it with `call!`, the outer action's base header is prepended to whatever the inner action already produced, joined by the outer action's own `join:`. The outermost header comes first — every level prepends its base in order from outside in.
 
 ```ruby
 class ChargeCard
@@ -329,16 +329,16 @@ This composition is **bucket-independent**: it applies whether the inner action 
 :::
 
 ::: tip Composing nested actions: `call!` vs explicit `.call` + `fail!`
-Reach for **`inner.call!`** when the inner action *must* succeed for the outer to continue. Its failure aborts the outer transparently, and `result.error` cascades automatically — the outer's base is prepended to the inner's already-resolved presentation (the aggregation above), with no per-call-site wiring. This is the default for a straight-line dependency.
+Reach for **`inner.call!`** when the inner action *must* succeed for the outer to continue. Its failure aborts the outer transparently, and `result.error` cascades automatically — the outer's base is attached to the inner's already-resolved presentation (the aggregation above), with no per-call-site wiring. This is the default for a straight-line dependency.
 
 Reach for the explicit **`r = inner.call; fail!(…) unless r.ok?`** idiom when the outer needs a say *before* failing:
 
 - **Inspect or forward the child result** — read `r.error`, `expose(r)` partial outputs (see [Forwarding to a nested action](#forwarding-to-a-nested-action-facades)), log, or run compensating logic.
-- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through as-is with `fail!(r.error, standalone: true)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
+- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through as-is with `fail!(r.error, standalone: true)` to skip the outer's base (see [Opting out of a caller's base](#opting-out-of-a-caller-s-base)).
 - **Recover instead of aborting** — branch on `r.ok?` and continue without failing.
 - **Orchestrate several children** — collect multiple results, then decide.
 
-Neither replaces the other: `call!` is transparent propagation with automatic cascade; `.call` + `fail!` is for when the outer must intervene. And when you're chaining several sub-actions in sequence, [`steps`](/usage/steps) is the purpose-built tool — it runs each child and composes the messages for you (prefixing each child's `result.error` with a step label, then the parent base), so you don't hand-write the per-step `call`/`fail!` at all.
+Neither replaces the other: `call!` is transparent propagation with automatic cascade; `.call` + `fail!` is for when the outer must intervene. And when you're chaining several sub-actions in sequence, [`steps`](/usage/steps) is the purpose-built tool — it runs each child and composes the messages for you (attaching the parent base to a step label and child reason), so you don't hand-write the per-step `call`/`fail!` at all.
 :::
 
 ::: warning Error/success message bodies are not redacted
@@ -395,7 +395,7 @@ The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) 
 
 ### Default with specific overrides
 
-A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `standalone: true` reasons for known error classes. `standalone: true` renders those specific messages on their own (without the base prefix), keeping them clean for user display:
+A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `standalone: true` reasons for known error classes. `standalone: true` renders those specific messages on their own (not attached under the base), keeping them clean for user display:
 
 ```ruby
 class CallExternalApi
@@ -421,28 +421,28 @@ Use this when specific error classes deserve their own user-facing copy and you 
 ::: tip Base vs. conditional, and how each treats a bubbled child
 These are two different jobs, and the difference matters most when a failure bubbles up through `call!`:
 
-- A **base** (unconditional `error "X"`) is the **headline** — it *prefixes* whatever the failure resolved to, **including a nested child's whole chain**. Use it for uniform copy that *preserves* what failed: `error "Checkout failed"` over a child yields `"Checkout failed: Charge failed: card declined"`.
-- A **conditional reason** (`error "X", if: …`, or `fails_on [K], "X"`) is an **override for a matched failure mode** — when its condition matches the failure (yours *or a bubbled child's*), it *becomes* the message, **replacing** the child's chain, and the base then prefixes it (unless `standalone: true`). Use it to *translate* a specific failure into your own copy: `error "Record not found", if: NotFoundError` over a child yields `"Checkout failed: Record not found"` — the child's own message is intentionally dropped.
+- A **base** (unconditional `error "X"`) is the **headline** — it *attaches to* whatever the failure resolved to, **including a nested child's whole chain**. Use it for uniform copy that *preserves* what failed: `error "Checkout failed"` over a child yields `"Checkout failed: Charge failed: card declined"`.
+- A **conditional reason** (`error "X", if: …`, or `fails_on [K], "X"`) is an **override for a matched failure mode** — when its condition matches the failure (yours *or a bubbled child's*), it *becomes* the message, **replacing** the child's chain, and the base then attaches to it (unless `standalone: true`). Use it to *translate* a specific failure into your own copy: `error "Record not found", if: NotFoundError` over a child yields `"Checkout failed: Record not found"` — the child's own message is intentionally dropped.
 
 Because a conditional matches the *failure*, a **catch-all** `error "…", if: ->(_e){ true }` will override **every** bubbled child (and it doesn't even fire for your own `fail!("msg")`, which always wins at its own level). If you want "one friendly message for any failure" *while keeping* the child context, that's a **base**, not a catch-all conditional.
 :::
 
-### Opting out of a caller's prefix
+### Opting out of a caller's base
 
 By default a child action's `result.error` is prepended by every ancestor's base header as it bubbles up through `call!`. There are two ways to opt out:
 
-**Drop the base entirely.** If an action declares no unconditional `error`, its failures render without their own header — the raw reason surfaces as the segment a caller will prefix. A caller's base still applies; it sees the inner action's already-rendered string as the reason and prepends its own header as usual.
+**Drop the base entirely.** If an action declares no unconditional `error`, its failures render without their own header — the raw reason surfaces as the segment a caller will attach its base to. A caller's base still applies; it sees the inner action's already-rendered string as the reason and prepends its own header as usual.
 
 **Pass `standalone: true` when re-raising.** Inspect the inner result with non-bang `call`, then re-raise with `standalone: true` to keep the inner message standalone at the current level:
 
 ```ruby
 def call
   r = InnerAction.call(**inputs)       # [!code focus:2]
-  fail!(r.error, standalone: true) unless r.ok?  # inner message shown as-is, no caller prefix
+  fail!(r.error, standalone: true) unless r.ok?  # inner message shown as-is, not attached under caller's base
 end
 ```
 
-Note this only suppresses the *current* action's base prefix — the inner action's own aggregation (its base + reason) is already baked into `r.error` before you re-raise.
+Note this only suppresses the *current* action's base — the inner action's own aggregation (its base + reason) is already baked into `r.error` before you re-raise.
 
 ## Reclassifying exceptions as failures
 
@@ -479,7 +479,7 @@ fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sen
 fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
 ```
 
-The message integrates with the standard message DSL (ordering, base-prefix semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations.
+The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations.
 
 ::: tip Callbacks receive the original exception
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.
@@ -539,7 +539,7 @@ Both `fail!` and `fails_on` land in the failure bucket and are never reported. O
 
 **Stickiness flows outward, not inward — `fails_on` must live where the exception is raised.** Each action classifies an exception in its *own* frame, and the global report fires at the *innermost* action that treats the exception as a bug. So `fails_on` on an **ancestor** does **not** suppress a report from an inner action that raised the exception without its own `fails_on`: by the time the exception bubbles up to the ancestor, the inner action has already reported it, and that report can't be un-sent — the ancestor only reclassifies its own `result.outcome` to `failure` from that point upward. The consequence is the sharp edge to watch for: an ancestor whose `result.outcome` is `failure` can still have produced a Honeybadger report from a deeper level. **To suppress the global report, declare `fails_on` on the action that actually raises the exception** (or absorb it with non-bang `call` + `fail!` there) — declaring it only on a caller is too late.
 
-Note the *message* follows the standard aggregation rule: when a `fails_on` failure bubbles up via `call!`, the ancestor's base prefixes the inner action's resolved `result.error` (the **Header aggregation across nested `call!`** rule above), so the inner's message **is** woven in — a baseless ancestor passes the inner's presentation through unchanged. The original exception is still preserved on `result.exception` with its own (technical) `#message`. Reach for non-bang `call` + `fail!("context: #{result.error}")` only when you want to author a *different* message than the automatic aggregation.
+Note the *message* follows the standard aggregation rule: when a `fails_on` failure bubbles up via `call!`, the ancestor's base is prepended to the inner action's resolved `result.error` (the **Header aggregation across nested `call!`** rule above), so the inner's message **is** woven in — a baseless ancestor passes the inner's presentation through unchanged. The original exception is still preserved on `result.exception` with its own (technical) `#message`. Reach for non-bang `call` + `fail!("context: #{result.error}")` only when you want to author a *different* message than the automatic aggregation.
 
 ::: tip Place `fails_on` on the action that owns the contract
 The inner action that makes the API call or database write is the right home for `fails_on` — it's the one that knows which exception classes are routine. An outer caller that knows nothing about `Faraday::BadRequestError` doesn't need to suppress it; the inner already has.
@@ -566,7 +566,7 @@ expects :note, user_facing: ->(e) { ... }   # compute it from the InboundValidat
 
 The value rides the same muscle memory as `fail!` / `error` / `fails_on` — `true`, a String, a Symbol naming an action method, or a block receiving the exception. (A String/Symbol/block that resolves blank falls back to the field's own validation message, so a user-facing failure never surfaces the generic dev-facing message.) The structured `InboundValidationError` is preserved on `result.exception` either way.
 
-The surfaced message is a failure **reason**, so it composes with a declared base `error` exactly like a `fail!` message — [prefixed by the headline](#prefixing-failure-reasons) by default, standalone when no base is declared:
+The surfaced message is a failure **reason**, so it composes with a declared base `error` exactly like a `fail!` message — [attached under the headline](#prefixing-failure-reasons) by default, standalone when no base is declared:
 
 ```ruby
 error "Couldn't save note"

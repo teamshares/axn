@@ -130,7 +130,7 @@ The strategy ships sensible defaults, resolved through the normal [message DSL](
 - **Success** (mode-aware): `"Created <Model>"` / `"Updated <Model>"`.
 - **Error**: the model's `errors.full_messages.to_sentence` (clean — not the raw `"Validation failed: …"`).
 
-To prefix the validation-error message, declare a base `error` after `use :model` — the strategy's validation body is prefixed automatically:
+To attach the base to the validation-error message, declare a base `error` after `use :model` — the strategy's validation body is attached under it automatically:
 
 ```ruby
 use :model, update: :user
@@ -138,12 +138,12 @@ error "Unable to update profile"
 # => "Unable to update profile: Name can't be blank"
 ```
 
-A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so an **unconditional** declaration (string **or** block — they behave identically) becomes the **base** and *prefixes* them, symmetrically for success and error:
+A declared `success`/`error` after `use :model` follows the same base/reason rules as the rest of the [message DSL](/usage/writing#customizing-messages). The strategy installs its mode-aware messages as *reasons*, so an **unconditional** declaration (string **or** block — they behave identically) becomes the **base** and *attaches to* them, symmetrically for success and error:
 
 ```ruby
 use :model, create: Widget
 success "Your widget is ready!"
-# => "Your widget is ready!: Created Widget"  (base prefixes the mode-aware body)
+# => "Your widget is ready!: Created Widget"  (base attaches to the mode-aware body)
 error "Unable to create the widget"
 # => "Unable to create the widget: Name can't be blank"
 ```
