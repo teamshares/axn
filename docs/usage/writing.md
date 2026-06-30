@@ -334,7 +334,7 @@ Reach for **`inner.call!`** when the inner action *must* succeed for the outer t
 Reach for the explicit **`r = inner.call; fail!(…) unless r.ok?`** idiom when the outer needs a say *before* failing:
 
 - **Inspect or forward the child result** — read `r.error`, `expose(r)` partial outputs (see [Forwarding to a nested action](#forwarding-to-a-nested-action-facades)), log, or run compensating logic.
-- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through standalone with `fail!(r.error, standalone: true)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
+- **Author a different message** — a custom string (`fail!("Charge step failed: #{r.error}")`), or pass the child's message through as-is with `fail!(r.error, standalone: true)` to skip the outer's base (see [Opting out of a caller's prefix](#opting-out-of-a-caller-s-prefix)).
 - **Recover instead of aborting** — branch on `r.ok?` and continue without failing.
 - **Orchestrate several children** — collect multiple results, then decide.
 
