@@ -94,7 +94,7 @@ GEM
     date (3.5.1)
     diff-lcs (1.5.1)
     drb (2.2.1)
-    erb (6.0.2)
+    erb (6.0.4)
     erubi (1.13.1)
     faraday (2.14.2)
       faraday-net_http (>= 2.0, < 3.5)
@@ -152,6 +152,7 @@ GEM
     pp (0.6.2)
       prettyprint
     prettyprint (0.2.0)
+    prism (1.9.0)
     pry (0.16.0)
       coderay (~> 1.1)
       method_source (~> 1.0)
@@ -159,9 +160,6 @@ GEM
     pry-byebug (3.12.0)
       byebug (~> 13.0)
       pry (>= 0.13, < 0.17)
-    psych (5.3.1)
-      date
-      stringio
     racc (1.8.1)
     rack (3.1.10)
     rack-session (2.1.1)
@@ -202,9 +200,14 @@ GEM
       zeitwerk (~> 2.6)
     rainbow (3.1.1)
     rake (13.2.1)
-    rdoc (7.2.0)
+    rbs (4.0.3)
+      logger
+      prism (>= 1.6.0)
+      tsort
+    rdoc (8.0.0)
       erb
-      psych (>= 4.0.0)
+      prism (>= 1.6.0)
+      rbs (>= 4.0.0)
       tsort
     regexp_parser (2.10.0)
     reline (0.6.3)
@@ -239,7 +242,6 @@ GEM
     sqlite3 (2.7.3)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.7.3-arm64-darwin)
-    stringio (3.2.0)
     thor (1.4.0)
     timeout (0.4.3)
     tsort (0.2.0)
@@ -269,7 +271,7 @@ DEPENDENCIES
   pry-byebug (= 3.12.0)
   rails (> 7.0)
   rake (~> 13.0)
-  rdoc (~> 7.2)
+  rdoc (~> 8.0)
   rspec (~> 3.2)
   rubocop (~> 1.21)
   sqlite3 (~> 2.0)
