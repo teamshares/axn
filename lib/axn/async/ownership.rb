@@ -87,10 +87,12 @@ module Axn
       # Recover the real job/action class name from a raw Sidekiq job hash. display_class (set at
       # enqueue via `.set(display_class: name)`) carries the real action for the generic worker;
       # wrapped carries the real job for ActiveJob-in-Sidekiq; class is the enqueued worker itself.
+      # `presence` (not bare `||`) so a blank value falls through to the next key rather than
+      # short-circuiting on it — an empty string is truthy in Ruby.
       def _ownership_job_hash_class_name(hash)
-        hash["display_class"] || hash[:display_class] ||
-          hash["wrapped"] || hash[:wrapped] ||
-          hash["class"] || hash[:class]
+        (hash["display_class"] || hash[:display_class]).presence ||
+          (hash["wrapped"] || hash[:wrapped]).presence ||
+          (hash["class"] || hash[:class]).presence
       end
     end
 

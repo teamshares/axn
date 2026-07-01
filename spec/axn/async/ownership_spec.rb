@@ -112,6 +112,11 @@ RSpec.describe Axn::Async, ".owned_by?" do
       expect(described_class.owned_by?(hash)).to be true
     end
 
+    it "falls through a blank display_class to the next recognizable key" do
+      hash = { "display_class" => "", "class" => "OwnershipSpec::RealAction::AxnSidekiqWorker" }
+      expect(described_class.owned_by?(hash)).to be true
+    end
+
     it "returns false for a hash whose class is a plain worker" do
       expect(described_class.owned_by?("class" => "OwnershipSpec::PlainWorker")).to be false
     end
