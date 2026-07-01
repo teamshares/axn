@@ -70,6 +70,9 @@ module Axn
     #
     #   <name>(value = UNSET)   # set a class-level override, or read the resolved value
     #   resolved_<name>         # resolve: nearest class override in the ancestry, else library config
+    #   raw_<name>               # nearest class override in the ancestry, or UNSET if none is set
+    #                             # (no config fallback, no Setting#resolve) — for a caller that needs
+    #                             # to distinguish "no override" from "resolves to the library default"
     #
     # Overrides are stored per-class and inherited by subclasses. Declaration
     # order doesn't matter: the accessors live on a shared module the action
@@ -107,21 +110,22 @@ module Axn
           end
         end
 
-        define_method(:"resolved_#{name}") do
+        define_method(:"raw_#{name}") do
           klass = self
-          found = UNSET
           while klass.is_a?(Module)
             if klass.instance_variable_defined?(:@_axn_config_overrides)
               store = klass.instance_variable_get(:@_axn_config_overrides)
-              if store.key?(name)
-                found = store[name]
-                break
-              end
+              return store[name] if store.key?(name)
             end
             break unless klass.is_a?(Class) && klass.superclass
 
             klass = klass.superclass
           end
+          UNSET
+        end
+
+        define_method(:"resolved_#{name}") do
+          found = public_send(:"raw_#{name}")
           UNSET.equal?(found) ? config_source.config.public_send(name) : setting.resolve(found)
         end
       end
