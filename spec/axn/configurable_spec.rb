@@ -186,6 +186,23 @@ RSpec.describe Axn::Configurable do
         expect(klass).not_to respond_to(:raw_default_model)
       end
     end
+
+    describe "consumer-defined accessor collisions" do
+      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+        action_class.mcp_text_content :message
+        action_class.define_singleton_method(:raw_mcp_text_content) { :hijacked }
+
+        expect(action_class.resolved_mcp_text_content).to eq(:message)
+        expect(action_class.mcp_text_content).to eq(:message)
+      end
+
+      it "reads via Axn's resolution even when the class shadows resolved_<name>" do
+        action_class.mcp_text_content :message
+        action_class.define_singleton_method(:resolved_mcp_text_content) { :hijacked }
+
+        expect(action_class.mcp_text_content).to eq(:message)
+      end
+    end
   end
 end
 
