@@ -148,6 +148,44 @@ RSpec.describe Axn::Configurable do
       klass.late :y
       expect(klass.resolved_late).to eq(:y)
     end
+
+    describe "raw_<name>: the override with no config fallback" do
+      it "returns UNSET when no override is set anywhere in the ancestry" do
+        expect(action_class.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+      end
+
+      it "returns the stored override, unresolved, without falling back to config" do
+        overridable.config.mcp_text_content = :message
+        action_class.mcp_text_content :message
+
+        expect(action_class.raw_mcp_text_content).to eq(:message)
+      end
+
+      it "inherits a parent's override without falling back to config" do
+        action_class.mcp_text_content :message
+        child = Class.new(action_class)
+
+        expect(child.raw_mcp_text_content).to eq(:message)
+      end
+
+      it "does not leak a sibling's override" do
+        action_class.mcp_text_content :message
+        mod = overridable.overrides
+        sibling = Class.new { include mod }
+
+        expect(sibling.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+      end
+
+      it "does not generate raw_<name> for non-overridable settings" do
+        plain = Module.new do
+          extend Axn::Configurable
+          setting :default_model, default: "x"
+        end
+        klass = Class.new { include plain.overrides }
+
+        expect(klass).not_to respond_to(:raw_default_model)
+      end
+    end
   end
 end
 
