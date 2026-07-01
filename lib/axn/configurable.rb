@@ -100,34 +100,42 @@ module Axn
       name = setting.name
       config_source = self
 
+      # Closure-captured helpers so the generated accessors reference each other
+      # through these lambdas rather than public method dispatch — a consumer
+      # class that happens to define its own `raw_<name>`/`resolved_<name>` class
+      # method can't shadow the internals the other accessors rely on.
+      raw_lookup = lambda do |start|
+        klass = start
+        while klass.is_a?(Module)
+          if klass.instance_variable_defined?(:@_axn_config_overrides)
+            store = klass.instance_variable_get(:@_axn_config_overrides)
+            return store[name] if store.key?(name)
+          end
+          break unless klass.is_a?(Class) && klass.superclass
+
+          klass = klass.superclass
+        end
+        UNSET
+      end
+
+      resolve_override = lambda do |start|
+        found = raw_lookup.call(start)
+        UNSET.equal?(found) ? config_source.config.public_send(name) : setting.resolve(found)
+      end
+
       _override_methods_module.module_eval do
         define_method(name) do |value = UNSET|
           if UNSET.equal?(value)
-            public_send(:"resolved_#{name}")
+            resolve_override.call(self)
           else
             setting.validate!(value)
             (@_axn_config_overrides ||= {})[name] = value
           end
         end
 
-        define_method(:"raw_#{name}") do
-          klass = self
-          while klass.is_a?(Module)
-            if klass.instance_variable_defined?(:@_axn_config_overrides)
-              store = klass.instance_variable_get(:@_axn_config_overrides)
-              return store[name] if store.key?(name)
-            end
-            break unless klass.is_a?(Class) && klass.superclass
+        define_method(:"raw_#{name}") { raw_lookup.call(self) }
 
-            klass = klass.superclass
-          end
-          UNSET
-        end
-
-        define_method(:"resolved_#{name}") do
-          found = public_send(:"raw_#{name}")
-          UNSET.equal?(found) ? config_source.config.public_send(name) : setting.resolve(found)
-        end
+        define_method(:"resolved_#{name}") { resolve_override.call(self) }
       end
     end
 
