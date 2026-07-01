@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# Loaded before adapters so adapter files can register their ownership predicates at require time.
+require "axn/async/ownership"
 require "axn/async/adapters"
 require "axn/async/batch_enqueue"
 require "axn/async/retry_context"
