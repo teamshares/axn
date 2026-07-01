@@ -126,3 +126,11 @@ module Axn
     end
   end
 end
+
+# Teach Axn::Async.owned_by? about this adapter's generic worker. Covers both the per-action
+# `<Action>::AxnSidekiqWorker` subclasses and the global `DefaultWorker` (all `< Worker`). Kept
+# here so the wrapper-detection knowledge lives with the adapter that defines the wrapper — a
+# future backend registers its own predicate the same way, with no downstream filter change.
+Axn::Async.register_ownership_predicate do |klass|
+  klass <= Axn::Async::Adapters::Sidekiq::Worker
+end
