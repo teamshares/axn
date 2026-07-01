@@ -44,6 +44,15 @@ RSpec.describe Axn::Async, ".owned_by?" do
     it "returns false for a plain (non-Axn) Sidekiq worker class" do
       expect(described_class.owned_by?(plain_worker)).to be false
     end
+
+    it "returns true for a resolved ActiveJobProxy class object (not < Axn itself)" do
+      # Mirrors the real proxy: a class whose overridden #name carries the ::ActiveJobProxy
+      # suffix but which does NOT inherit from Axn.
+      proxy = Class.new do
+        def self.name = "OwnershipSpec::RealAction::ActiveJobProxy"
+      end
+      expect(described_class.owned_by?(proxy)).to be true
+    end
   end
 
   describe "String input" do

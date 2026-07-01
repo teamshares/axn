@@ -61,10 +61,20 @@ module Axn
       def _ownership_resolve_class(candidate)
         case candidate
         when nil then nil
-        when Module then candidate
+        when Module then _ownership_normalize_module(candidate)
         when String then _ownership_constantize(candidate)
         when Hash then _ownership_constantize(_ownership_job_hash_class_name(candidate))
         end
+      end
+
+      # A resolved ActiveJob proxy class (`<Action>::ActiveJobProxy`) inherits from
+      # ActiveJob::Base, not Axn, so a caller that hands us the proxy Class directly (rather than
+      # its name String) must still resolve back to the real action — same as the String path.
+      def _ownership_normalize_module(mod)
+        name = mod.name
+        return mod unless name&.end_with?(ACTIVE_JOB_PROXY_SUFFIX)
+
+        _ownership_constantize(name)
       end
 
       def _ownership_constantize(name)
