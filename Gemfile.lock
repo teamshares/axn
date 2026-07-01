@@ -96,11 +96,11 @@ GEM
     drb (2.2.1)
     erb (6.0.4)
     erubi (1.13.1)
-    faraday (2.14.2)
+    faraday (2.14.3)
       faraday-net_http (>= 2.0, < 3.5)
       json
       logger
-    faraday-net_http (3.4.2)
+    faraday-net_http (3.4.4)
       net-http (~> 0.5)
     globalid (1.2.1)
       activesupport (>= 6.1)
