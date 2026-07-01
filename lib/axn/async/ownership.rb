@@ -32,7 +32,7 @@ module Axn
       #
       # @param candidate [Class, Module, String, Hash, nil]
       # @return [Boolean]
-      def owned_by?(candidate)
+      def owns?(candidate)
         klass = _ownership_resolve_class(candidate)
         return false unless klass.is_a?(Module)
         return true if klass < Axn
