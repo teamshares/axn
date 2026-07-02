@@ -52,3 +52,16 @@ RSpec.describe Axn::ExtensionConfig do
     end
   end
 end
+
+RSpec.describe "Axn::ExtensionConfig semantic hints" do
+  after { Axn.instance_variable_set(:@extension_config, nil) }
+
+  it "seeds the core semantic-hint vocabulary" do
+    expect(Axn.extension_config.registered_semantic_hints).to include(:read_only, :idempotent, :destructive)
+  end
+
+  it "lets an adapter register additional vocabulary" do
+    Axn.extension_config.register_semantic_hint(:open_world, :closed_world)
+    expect(Axn.extension_config.registered_semantic_hints).to include(:open_world, :closed_world)
+  end
+end

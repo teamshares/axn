@@ -15,6 +15,7 @@ require "axn/core/tagging"
 require "axn/core/use_strategy"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
+require "axn/core/extension_metadata"
 
 # CONSIDER: make class names match file paths?
 require "axn/core/validation/validators/model_validator"
@@ -71,6 +72,7 @@ module Axn
         include Core::UseStrategy
         include Core::Memoization
         include Core::DefaultCall
+        include Core::ExtensionMetadata
 
         # Internal: tracks nesting depth for logging and duplicate-log suppression
         include Core::NestingTracking
