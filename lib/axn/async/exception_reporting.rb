@@ -34,6 +34,17 @@ module Axn
             async: retry_context.to_h.merge(async_extra),
           ).merge(extra_context.except(:async))
 
+          # Attach declared observability facets (PRO-2853) so an exhausted/discarded-job report
+          # carries the same context[:tags]/context[:dimensions] as the synchronous executor path.
+          # There's no settled action instance here (the run died in a prior attempt), so facets are
+          # resolved best-effort against an instance reconstructed from the (deserialized) job_args:
+          # input-derived facets (company_id, record ids) resolve; output-derived ones find no exposes
+          # and are skipped per-facet — the same partial-resolution contract as the failure path.
+          # Assigned after the merge above, so the framework facets can't be shadowed by a job arg.
+          facets = resolve_facets(action_class:, job_args:)
+          context[:tags] = facets[:tags] if facets[:tags].any?
+          context[:dimensions] = facets[:dimensions] if facets[:dimensions].any?
+
           # Create proxy action for the on_exception interface
           proxy_action = DiscardedJobAction.new(action_class, exception)
 
@@ -41,6 +52,28 @@ module Axn
           Axn.config.on_exception(exception, action: proxy_action, context:)
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("in #{log_prefix}", exception: e)
+        end
+
+        private
+
+        # Best-effort resolution of an action's declared facets on the async exhaustion/discard path,
+        # where no live executed instance survives. Reconstructs a bare instance from job_args and
+        # resolves against it; Core::Tagging.resolve isolates each resolver (nil omits, a raise is
+        # swallowed), so unresolvable (e.g. output-derived) facets simply drop. The returned maps are
+        # freshly built and single-use, so no dup_facets copy is needed (unlike the executor path,
+        # where the map is memoized and shared across sinks). Returns empty maps on any failure —
+        # a facet-less report is always preferable to a lost one.
+        def resolve_facets(action_class:, job_args:)
+          return { tags: {}, dimensions: {} } unless action_class._tags.any? || action_class._dimensions.any?
+
+          instance = action_class.send(:new, **job_args)
+          {
+            tags: Core::Tagging.resolve(action_class._tags, action: instance),
+            dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance),
+          }
+        rescue StandardError => e
+          Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
+          { tags: {}, dimensions: {} }
         end
       end
 

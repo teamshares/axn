@@ -95,6 +95,72 @@ RSpec.describe Axn::Async::ExceptionReporting do
       expect(received[:_job_metadata]).to eq({ jid: "jid-456" })
     end
 
+    context "declared tag/dimension facets (PRO-2853)" do
+      it "attaches input-derived facets to context[:tags]/[:dimensions], resolved from job_args" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+          tag :region, "us5"
+          dimension(:tier) { company_id > 10 ? "big" : "small" }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 42 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 42, region: "us5")
+        expect(received[:dimensions]).to eq(tier: "big")
+      end
+
+      it "omits the facet keys entirely when the action declares none" do
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args:, extra_context: {},
+        )
+
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "skips an output-derived facet best-effort (no run happened) yet still reports" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          exposes :saved_id
+          tag :company_id, -> { company_id }
+          tag :saved_id, -> { saved_id } # output — unresolvable on the discard path
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 7 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 7)
+      end
+
+      it "still reports (without facet keys) if the action can't be reconstructed" do
+        action_class = build_axn do
+          expects :company_id
+          tag :company_id, -> { company_id }
+        end
+        allow(action_class).to receive(:new).and_raise("cannot build")
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 1 }, extra_context: {},
+        )
+
+        expect(Axn.config).to have_received(:on_exception)
+        expect(received).not_to have_key(:tags)
+      end
+    end
+
     context "when the exception class matches a fails_on declaration (discard/death-handler path)" do
       # This helper is the discard path: it only fires after retries are exhausted or a job is
       # discarded. A `fails_on` exception settles as `outcome.failure?` and is never re-raised by
