@@ -420,7 +420,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:status][:enum]).to eq(%w[open closed])
     end
 
-    it "keeps \"null\" in a nested parent's type when the allow_nil: true parent has subfields (build_input forces type: object)" do
+    it "types a parent with subfields as plain object even when allow_nil: true (Bug X: a nil parent can't yield its subfields at runtime)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
@@ -428,8 +428,67 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+      expect(schema[:properties][:payload][:type]).to eq("object")
       expect(schema[:properties][:payload][:properties]).to have_key(:name)
+    end
+  end
+
+  describe "a parent field with subfields is never nullable, even when allow_nil/allow_blank (Bug X)" do
+    it "types the parent as plain object (not [object, null]) when its only subfield is optional" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :nick, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+    end
+  end
+
+  describe "a parent field with subfields is required unless a default materializes it (Bug Y)" do
+    it "requires an optional (no-default) parent with an all-optional subfield (omitting still yields a nil parent, which raises at runtime)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, optional: true
+        expects :name, on: :payload, optional: true, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "does not require a defaulted parent whose subfields are all optional (the default materializes it before subfield validation)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+        expects :nick, on: :payload, optional: true, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "still requires a defaulted parent that has a required subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires a parent with no default at all (unchanged baseline)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
     end
   end
 

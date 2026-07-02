@@ -49,11 +49,20 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            apply_nested_subfields!(prop, config, subfields_by_parent[config.reader_as])
+            nested = subfields_by_parent[config.reader_as]
+            apply_nested_subfields!(prop, config, nested)
 
             properties[config.field] = prop.compact
-            parent_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
-            required << config.field.to_s unless optional_for_schema?(config) && !parent_has_required_child
+
+            if nested.present?
+              # A parent with subfields is only safely omittable when a default materializes it
+              # before subfield validation (allow_nil/allow_blank do NOT — a nil parent raises at
+              # runtime), and only when no child is itself required.
+              parent_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+              required << config.field.to_s unless default?(config) && !parent_has_required_child
+            else
+              required << config.field.to_s unless optional_for_schema?(config)
+            end
           end
         end
 
@@ -63,11 +72,13 @@ module Axn
       end
 
       # Mutates `prop` in place to nest `nested_subfields` (if any) as `prop[:properties]`/
-      # `prop[:required]`. Forces the parent to `type: object` since it now has structure.
-      def apply_nested_subfields!(prop, config, nested_subfields)
+      # `prop[:required]`. Forces the parent to `type: object` since it now has structure — never
+      # nullable, even when allow_nil/allow_blank: a nil parent can't yield its subfields at
+      # runtime (validate_subfields_contract! raises), so `null` must not be advertised here.
+      def apply_nested_subfields!(prop, _config, nested_subfields)
         return if nested_subfields.blank?
 
-        prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
+        prop[:type] = "object"
         prop.delete(:format)
         prop[:properties] ||= {}
         prop[:required] ||= []
