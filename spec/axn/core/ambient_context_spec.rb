@@ -8,6 +8,15 @@ RSpec.describe "Axn ambient_context (reader + subfield parent)" do
     expect(klass.input_schema[:properties]).not_to have_key(:ambient_context)
   end
 
+  it "the ambient_context reader returns {} when nothing is provided" do
+    klass = Class.new do
+      include Axn
+      exposes :ctx, allow_blank: true
+      def call = expose(ctx: ambient_context)
+    end
+    expect(klass.call.ctx).to eq({})
+  end
+
   it "reads an explicitly-passed ambient_context subfield" do
     klass = Class.new do
       include Axn
