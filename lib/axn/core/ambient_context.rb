@@ -33,25 +33,25 @@ module Axn
 
       private
 
-      # Resolution chain: explicit `ambient_context:` kwarg, else the configured provider (or
-      # `default_source` when no provider is configured), else {}. Explicit REPLACES the provider
-      # entirely — no merge. The result is filtered to declared ambient subfield keys.
+      # Resolution chain: explicit `ambient_context:` kwarg (even when explicitly `nil`), else the
+      # configured provider (or `default_source` when no provider is configured), else {}. Explicit
+      # REPLACES the provider entirely — no merge — which requires distinguishing "key absent" from
+      # "key present but nil"; a plain `nil` check can't tell those apart, since both read as `nil`.
+      # The result is filtered to declared ambient subfield keys.
       def _resolve_ambient_context
-        source = _explicit_ambient_context
-        source = _provider_source if source.nil?
-        source ||= {}
-        _filter_to_declared(source)
+        provided = @__context.provided_data
+        indifferent = provided.respond_to?(:with_indifferent_access) ? provided.with_indifferent_access : provided
+        source = if indifferent.key?(PARENT)
+                   indifferent[PARENT] || {} # explicit (even nil) replaces the provider; nil normalizes to {}
+                 else
+                   _provider_source
+                 end
+        _filter_to_declared(source || {})
       end
 
       def _provider_source
         provider = Axn.config.ambient_context_provider
         provider ? provider.call : Axn::Core::AmbientContext.default_source
-      end
-
-      def _explicit_ambient_context
-        raw = @__context.provided_data
-        key = raw.respond_to?(:with_indifferent_access) ? raw.with_indifferent_access : raw
-        key[PARENT]
       end
 
       # Only the declared ambient subfield keys survive — the hash never carries a process-wide dump.

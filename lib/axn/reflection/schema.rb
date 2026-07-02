@@ -50,18 +50,18 @@ module Axn
                 if subconfig.validations[:model]
                   id_field, subprop = model_id_property(subconfig)
                   prop[:properties][id_field] = subprop
-                  prop[:required] << id_field.to_s unless optional?(subconfig) || default?(subconfig)
+                  prop[:required] << id_field.to_s unless optional_for_schema?(subconfig)
                 else
                   subprop = build_property(subconfig)
                   prop[:properties][subconfig.field] = subprop
-                  prop[:required] << subconfig.field.to_s unless optional?(subconfig) || default?(subconfig)
+                  prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig)
                 end
               end
               prop[:required] = nil if prop[:required].empty?
             end
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless optional?(config) || default?(config)
+            required << config.field.to_s unless optional_for_schema?(config)
           end
         end
 
@@ -77,7 +77,7 @@ module Axn
         field_configs.each do |config|
           prop = build_property(config, for_output: true)
           properties[config.field] = prop.compact
-          required << config.field.to_s unless optional?(config)
+          required << config.field.to_s unless optional_for_schema?(config)
         end
 
         schema = { type: "object", properties: }
@@ -182,7 +182,7 @@ module Axn
       def build_model_property(config, properties, required)
         id_field, prop = model_id_property(config)
         properties[id_field] = prop
-        required << id_field.to_s unless optional?(config) || default?(config)
+        required << id_field.to_s unless optional_for_schema?(config)
       end
 
       def single_type_for(klass, for_output:)
@@ -243,6 +243,15 @@ module Axn
       # `allow_blank:`. Output (`exposes`) requiredness is unaffected: see build_output.
       def default?(config)
         config.respond_to?(:default) && !config.default.nil?
+      end
+
+      # A field is optional in the schema (client may omit it) iff it has a default, or a validation
+      # explicitly allows nil/blank. A typed field with neither (e.g. type: :boolean) is required —
+      # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
+      def optional_for_schema?(config)
+        return true if default?(config)
+
+        config.validations.values.any? { |opt| opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank]) }
       end
     end
   end

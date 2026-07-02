@@ -84,6 +84,42 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:limit]).to include(default: 20)
   end
 
+  it "marks a typed-but-no-presence boolean field as required (TypeValidator rejects nil)" do
+    klass = Class.new do
+      include Axn
+      expects :enabled, type: :boolean
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required]).to include("enabled")
+  end
+
+  it "marks a typed-but-no-presence params field as required (TypeValidator rejects nil)" do
+    klass = Class.new do
+      include Axn
+      expects :payload, type: :params
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required]).to include("payload")
+  end
+
+  it "does not mark a boolean field with allow_nil: true as required" do
+    klass = Class.new do
+      include Axn
+      expects :flag, type: :boolean, allow_nil: true
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required] || []).not_to include("flag")
+  end
+
+  it "does not mark a defaulted boolean field as required" do
+    klass = Class.new do
+      include Axn
+      expects :flag, type: :boolean, default: -> { false }
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required] || []).not_to include("flag")
+  end
+
   it "maps type: :params to an object" do
     klass = Class.new do
       include Axn

@@ -93,6 +93,12 @@ RSpec.describe "Axn ambient_context resolution" do
     result = klass.call
     expect(result).not_to be_ok
   end
+
+  it "explicit ambient_context: nil overrides the provider (does not fall back to it)" do
+    Axn.config.ambient_context_provider = -> { { company_id: 99 } }
+    result = klass.call(ambient_context: nil)
+    expect(result).not_to be_ok
+  end
 end
 
 RSpec.describe "Axn::Core::AmbientContext.default_source" do
