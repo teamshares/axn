@@ -246,7 +246,7 @@ module Axn
           return { type: "number" }
         end
 
-        return { type: "string" } if validations[:presence] || validations[:length]
+        return { type: "string" } if validations[:length]
 
         {}
       end
@@ -262,22 +262,33 @@ module Axn
         config.respond_to?(:default) && !config.default.nil?
       end
 
-      # A field is optional in the schema (client may omit it) iff it has a default, or a validation
-      # explicitly allows nil/blank. A typed field with neither (e.g. type: :boolean) is required —
+      # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
+      # requirement, and every validator that would run allows nil/blank. A single validator's
+      # allow_nil does NOT make the field nullable if another (presence, type, …) still rejects nil.
+      def nil_accepted?(config)
+        v = config.validations
+        return true if v.empty?
+        return false if v[:presence] == true
+
+        v.values.all? { |opt| !opt.is_a?(Hash) || opt[:allow_nil] || opt[:allow_blank] }
+      end
+
+      # A field is optional in the schema (client may omit it) iff it has a default, or no validation
+      # rejects a nil/omitted value. A typed field with neither (e.g. type: :boolean) is required —
       # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
       def optional_for_schema?(config, for_output: false)
         return true if !for_output && default?(config)
-        return true if config.validations.empty?
 
-        nil_allowed?(config)
+        nil_accepted?(config)
       end
 
-      # Whether a field's validations explicitly permit nil/blank (allow_nil:/allow_blank:).
-      # Used both to decide schema-optionality (input) and to add "null" to the emitted JSON
-      # Schema type (both input and output — an explicit nil is accepted at runtime regardless
-      # of direction).
+      # Whether a field's validations, taken together, permit nil/blank. Used both to decide
+      # schema-optionality (input) and to add "null" to the emitted JSON Schema type (both input
+      # and output — an explicit nil is accepted at runtime regardless of direction). A lone
+      # validator's allow_nil: does NOT count if another validator (e.g. presence, or the type
+      # validator itself) still rejects nil.
       def nil_allowed?(config)
-        config.validations.values.any? { |opt| opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank]) }
+        nil_accepted?(config)
       end
     end
   end

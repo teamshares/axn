@@ -432,4 +432,92 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:payload][:properties]).to have_key(:name)
     end
   end
+
+  describe "a single validator's allow_nil: does not make the whole field nullable/optional (Bug T)" do
+    it "does not treat a field as nullable/optional when only one of several validators allows nil" do
+      klass = Class.new do
+        include Axn
+        expects :age, type: Integer, numericality: { greater_than: 0, allow_nil: true }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("age")
+      expect(schema[:properties][:age][:type]).to eq("integer")
+    end
+
+    it "still treats a top-level allow_nil: true as nullable/optional (pushed into every validator)" do
+      klass = Class.new do
+        include Axn
+        expects :x, type: Integer, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("x")
+      expect(schema[:properties][:x][:type]).to eq(%w[integer null])
+    end
+
+    it "still treats optional: true (no validations) as optional" do
+      klass = Class.new do
+        include Axn
+        expects :coupon, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("coupon")
+    end
+
+    it "still requires a plain typed field with no allow_nil anywhere" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("name")
+      expect(schema[:properties][:name][:type]).to eq("string")
+    end
+
+    it "still requires a typed-but-no-presence boolean field" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("flag")
+    end
+  end
+
+  describe "presence alone does not infer type: string (Bug U)" do
+    it "leaves a presence-only field untyped (accepts any JSON value) but still required" do
+      klass = Class.new do
+        include Axn
+        expects :payload
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload]).not_to have_key(:type)
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still infers type: string for an explicitly typed String field" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:name]).to include(type: "string")
+    end
+
+    it "still infers type: string for a length:-only field (unchanged)" do
+      klass = Class.new do
+        include Axn
+        expects :code, length: { minimum: 2 }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:code]).to include(type: "string")
+    end
+  end
 end
