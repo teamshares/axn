@@ -71,10 +71,10 @@ RSpec.describe Axn do
     end
 
     context "with other reserved field names" do
-      # `standalone` and `bare` are reserved because they are control kwargs on `fail!`/`done!`;
-      # exposing them would let `fail!("msg", standalone: value)` silently bind to the option instead
+      # `standalone` is reserved because it is a control kwarg on `fail!`/`done!`;
+      # exposing it would let `fail!("msg", standalone: value)` silently bind to the option instead
       # of the exposure.
-      %w[outcome exception elapsed_time finalized? __action__ standalone bare].each do |field_name|
+      %w[outcome exception elapsed_time finalized? __action__ standalone].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do

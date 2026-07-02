@@ -326,36 +326,6 @@ RSpec.describe "standalone: true is scoped to the originating action" do
   end
 end
 
-RSpec.describe "bare: alias for standalone:" do
-  it "bare: is an alias for standalone: (fail!)" do
-    action = build_axn do
-      error "Couldn't sync user"
-      def call = fail!("card declined", bare: true)
-    end
-    expect(action.call.error).to eq("card declined")
-  end
-
-  it "bare: is an alias for standalone: (conditional error)" do
-    action = build_axn do
-      error "Couldn't sync user"
-      error "Vendor not found", if: ArgumentError, bare: true
-      def call = raise ArgumentError, "boom"
-    end
-    expect(action.call.error).to eq("Vendor not found")
-  end
-
-  it "raises when both standalone: and bare: are passed to a declaration" do
-    expect do
-      build_axn { error "x", if: ArgumentError, standalone: false, bare: true }
-    end.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
-  end
-
-  it "raises when both standalone: and bare: are passed to fail!" do
-    action = build_axn { def call = fail!("x", standalone: true, bare: true) }
-    expect { action.call! }.to raise_error(ArgumentError, /Provide either standalone: or bare:/)
-  end
-end
-
 RSpec.describe "Axn join: Proc form" do
   it "wraps the reason (error)" do
     action = build_axn do
