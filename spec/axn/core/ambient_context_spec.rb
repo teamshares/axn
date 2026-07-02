@@ -140,6 +140,40 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
   end
 end
 
+RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
+  it "preserves the <field>_id key when filtering a model ambient subfield" do
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, model: { klass: Struct.new(:id), finder: :find }
+    end
+    inst = klass.send(:new, ambient_context: { company_id: 7 })
+    filtered = inst.send(:_filter_to_declared, { company_id: 7 })
+    expect(filtered).to eq(company_id: 7)
+  end
+
+  it "still preserves the record key when a model ambient subfield is supplied by record" do
+    record_klass = Struct.new(:id)
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, model: { klass: record_klass, finder: :find }
+    end
+    rec = record_klass.new(7)
+    inst = klass.send(:new, ambient_context: { company: rec })
+    filtered = inst.send(:_filter_to_declared, { company: rec })
+    expect(filtered).to eq(company: rec)
+  end
+
+  it "does not add an _id key for a non-model ambient subfield" do
+    klass = Class.new do
+      include Axn
+      expects :tenant, on: :ambient_context, type: String
+    end
+    inst = klass.send(:new, ambient_context: { tenant: "acme", tenant_id: "x" })
+    filtered = inst.send(:_filter_to_declared, { tenant: "acme", tenant_id: "x" })
+    expect(filtered).to eq(tenant: "acme") # tenant_id NOT copied (non-model)
+  end
+end
+
 RSpec.describe "Axn ambient_context observability" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 

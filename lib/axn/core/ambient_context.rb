@@ -55,11 +55,18 @@ module Axn
       end
 
       # Only the declared ambient subfield keys survive — the hash never carries a process-wide dump.
+      # A `model:` subfield may be supplied either as a record (under `c.field`) or as an id (under
+      # `<c.field>_id`, which Axn's model subfield reader resolves from) — preserve whichever key(s)
+      # the source actually supplies.
       def _filter_to_declared(source)
         indifferent = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
         self.class.subfield_configs
             .select { |c| c.on.to_sym == PARENT }
-            .each_with_object({}) { |c, acc| acc[c.field] = indifferent[c.field] if indifferent.key?(c.field) }
+            .each_with_object({}) do |c, acc|
+              keys = [c.field]
+              keys << :"#{c.field}_id" if c.validations[:model]
+              keys.each { |k| acc[k] = indifferent[k] if indifferent.key?(k) }
+            end
       end
     end
   end
