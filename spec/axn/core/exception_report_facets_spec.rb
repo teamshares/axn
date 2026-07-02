@@ -96,6 +96,29 @@ RSpec.describe "Exception-report facets (on_exception context)" do
     ActiveSupport::Notifications.unsubscribe(sub)
   end
 
+  it "dups facet values so a handler mutating one in place can't corrupt the literal or other sinks" do
+    payload_region = nil
+    sub = ActiveSupport::Notifications.subscribe("axn.call") { |*args| payload_region = args.last[:tags]&.[](:region) }
+    Axn.config.instance_variable_set(:@on_exception, proc { |context:| context[:tags][:region].upcase! })
+    klass = Class.new do
+      include Axn
+      tag :region, +"us5" # unary plus → mutable literal, so upcase! would leak without the dup
+      def call = raise("boom")
+    end
+
+    klass.call
+    # the post-timing payload sink (resolves the same class-level literal) is unmutated...
+    expect(payload_region).to eq("us5")
+
+    # ...and a second call's report still sees the pristine literal (no cross-call corruption)
+    region_next = nil
+    Axn.config.instance_variable_set(:@on_exception, proc { |context:| region_next = context[:tags][:region] })
+    klass.call
+    expect(region_next).to eq("us5")
+  ensure
+    ActiveSupport::Notifications.unsubscribe(sub)
+  end
+
   it "lets the framework facet win over a user-supplied set_execution_context key" do
     ctx = capture_context do
       tag(:company_id) { 7 }

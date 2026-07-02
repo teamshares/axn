@@ -329,8 +329,7 @@ module Axn
         # Resolve FRESH for the report rather than through the memoized resolved_tags/resolved_dimensions.
         # trigger_on_exception runs inside with_timing, BEFORE its ensure sets result.elapsed_time, so
         # memoizing here would freeze a timing-dependent facet (e.g. `tag(:ms) { result.elapsed_time }`)
-        # as nil and poison the post-timing span/payload/emit_metrics that share the memo. A freshly
-        # resolved map is also inherently the reporter's private copy (no dup_facets needed).
+        # as nil and poison the post-timing span/payload/emit_metrics that share the memo.
         tags: resolve_report_facets(@action_class._tags),
         dimensions: resolve_report_facets(@action_class._dimensions),
       )

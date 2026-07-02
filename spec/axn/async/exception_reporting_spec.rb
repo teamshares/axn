@@ -198,6 +198,20 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(received[:tags]).to eq(company_id: 5)
       end
 
+      it "dups facet values so a reporter mutating one in place can't corrupt the shared literal" do
+        action_class = build_axn do
+          tag :region, +"us5" # mutable literal
+        end
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| context[:tags][:region].upcase! }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: {}, extra_context: {},
+        )
+
+        # the class-level literal the resolver returns is untouched, so the next report is pristine
+        expect(action_class._tags[:region]).to eq("us5")
+      end
+
       it "still reports (without facet keys) if the action can't be reconstructed" do
         action_class = build_axn do
           expects :company_id
