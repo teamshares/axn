@@ -235,3 +235,54 @@ def call
   result
 end
 ```
+
+## Axn/AmbientContextBypass
+
+This cop flags direct reads of `Current.<attr>` / `::Current.<attr>` and steers you toward declaring the dependency explicitly with `expects :<attr>, on: :ambient_context`. It only flags reads — assignments (`Current.company = c`) and calls with arguments (`Current.foo(bar)`) are left alone, since those aren't ambient-context bypasses.
+
+### Why This Rule Exists
+
+Reaching into `Current` directly inside an Axn hides a real dependency: the class's `expects`/`exposes` declarations no longer describe everything it depends on, callers can't tell what ambient state is required just by reading the class, and tests have to reach for `CurrentAttributes` (or similar) to reproduce behavior instead of just passing a value.
+
+### Usage Examples
+
+#### ❌ Bad - Reading `Current` directly
+
+```ruby
+class ChargeCard
+  include Axn
+
+  def call = do_thing(Current.company)
+end
+```
+
+#### ✅ Good - Declared via `expects ... on: :ambient_context`
+
+```ruby
+class ChargeCard
+  include Axn
+
+  expects :company, on: :ambient_context
+
+  def call = do_thing(company)
+end
+```
+
+### What the Cop Ignores
+
+- Assignments: `Current.company = c`
+- Calls with arguments: `Current.foo(bar)`
+- Unrelated receivers: `Time.current`, `SomeOther.current`, etc.
+
+### Configuration
+
+This cop is **opt-in** — axn ships no default config that enables it. Enable it explicitly in your `.rubocop.yml`:
+
+```yaml
+require:
+  - ./lib/rubocop/cop/axn/ambient_context_bypass
+
+Axn/AmbientContextBypass:
+  Enabled: true
+  Severity: warning
+```
