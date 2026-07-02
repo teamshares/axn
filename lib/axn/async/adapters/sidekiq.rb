@@ -42,6 +42,15 @@ module Axn
           configure_default_worker!(config: Axn.config._default_async_config, block: Axn.config._default_async_config_block)
         end
 
+        # Format a resolved facet map ({name => scalar-or-array-of-scalars}) into Sidekiq job-tag
+        # strings in "name:value" form. Array-valued facets fan out to one tag per element. Values
+        # are already coerced to legal scalars by Core::Tagging.coerce, so this only stringifies.
+        def self.job_tags_for(facets)
+          facets.flat_map do |name, value|
+            Array(value).map { |element| "#{name}:#{element}" }
+          end
+        end
+
         # Per-action setup, invoked from Axn::Async#async on every explicit `async :sidekiq`
         # declaration (so subclasses that re-declare get their own worker even though `include`
         # is a no-op for them). Builds a per-action `AxnSidekiqWorker` subclass carrying the
