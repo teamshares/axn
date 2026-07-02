@@ -92,6 +92,32 @@ RSpec.describe "Axn tagging integration" do
       build_axn { def call; end }.call
       expect(notifications.first).not_to have_key(:tags)
     end
+
+    it "resolves input-phase facets from pre-body inputs regardless of logger" do
+      # An input-phase facet resolves before the body runs, so a value the body later mutates in
+      # place is captured at its pre-body state — and that timing must not depend on whether a
+      # SemanticLogger is configured (the default here is a plain Logger).
+      action = build_axn do
+        expects :data
+        tag(:snapshot) { data[:v] }
+        def call = data[:v] = "mutated"
+      end
+      action.call(data: { v: "original" })
+      expect(notifications.first[:tags]).to eq(snapshot: "original")
+    end
+
+    it "snapshots a mutable string at resolution so in-place mutation during the body can't leak" do
+      # The resolver returns an input string by reference; coerce passes strings through unchanged.
+      # Resolution must copy it, or a later in-place mutation (String#replace) would rewrite the
+      # already-resolved snapshot before the sinks read it.
+      action = build_axn do
+        expects :data
+        tag(:name) { data[:name] }
+        def call = data[:name].replace("mutated")
+      end
+      action.call(data: { name: +"original" })
+      expect(notifications.first[:tags]).to eq(name: "original")
+    end
   end
 
   # --- Span attributes (OpenTelemetry mock harness) ---
