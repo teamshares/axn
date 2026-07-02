@@ -50,13 +50,24 @@ RSpec.describe Axn::Executor do
       expect(resolve(klass, company_id: 42)).to eq(company_id: 42)
     end
 
-    it "swallows an invalid-input failure and still resolves what it can" do
+    it "swallows a failure in the inbound pass and still resolves what it can" do
       klass = build_axn do
-        expects :company_id # required; omitted below → inbound validation fails, swallowed
+        expects :name, preprocess: ->(_v) { raise "boom" }
         tag(:region) { "us5" }
+        tag(:name) { name }
         def call; end
       end
-      expect(resolve(klass)).to eq(region: "us5")
+      expect(resolve(klass, name: "acme")).to eq(region: "us5", name: "acme")
+    end
+
+    it "omits a facet whose resolver raises, keeping the rest" do
+      klass = build_axn do
+        expects :company_id
+        tag(:company_id) { company_id }
+        tag(:boom) { raise "nope" }
+        def call; end
+      end
+      expect(resolve(klass, company_id: 42)).to eq(company_id: 42)
     end
   end
 end

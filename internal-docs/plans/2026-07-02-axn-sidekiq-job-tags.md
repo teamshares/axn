@@ -96,15 +96,15 @@ git commit -m "PRO-2855: add sidekiq_job_tag_sources config knob"
 
 ### Task 2: `Axn::Executor#resolve_inbound_facets`
 
-Adds the inputs-only resolution pass: run the inbound coercion phase (swallowed), then resolve the requested facet maps against the non-run instance.
+Adds the inputs-only resolution pass: run inbound preprocessing + inbound defaults (swallowed), then resolve the requested facet maps against the non-run instance. Inbound *validation* is deliberately NOT run here — see Step 3 below.
 
 **Files:**
-- Modify: `lib/axn/executor.rb` (add a public method; the coercion helpers `apply_inbound_preprocessing!`, `apply_defaults!`, `validate_contract!` and the memoized `resolved_tags`/`resolved_dimensions` already exist as private methods)
+- Modify: `lib/axn/executor.rb` (add a public method; the helpers `apply_inbound_preprocessing!`, `apply_defaults!` and the memoized `resolved_tags`/`resolved_dimensions` already exist as private methods)
 - Test: `spec/axn/executor_spec.rb` (new file)
 
 **Interfaces:**
 - Consumes: an `Axn::Executor` built around a throwaway instance — `Axn::Executor.new(action_instance)`.
-- Produces: `#resolve_inbound_facets(sources)` where `sources` is a subset of `%i[tag dimension]`; returns a `Hash{Symbol => (scalar|Array)}` — the merged resolved facets for the enabled sources (dimensions merged last, so on a name collision the dimension wins). Never raises for coercion/validation failures (swallowed); result-derived resolvers are omitted.
+- Produces: `#resolve_inbound_facets(sources)` where `sources` is a subset of `%i[tag dimension]`; returns a `Hash{Symbol => (scalar|Array)}` — the merged resolved facets for the enabled sources (dimensions merged last, so on a name collision the dimension wins). Never raises for preprocessing/default failures (swallowed) or for a facet resolver that raises; result-derived resolvers are omitted.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -163,13 +163,24 @@ RSpec.describe Axn::Executor do
       expect(resolve(klass, company_id: 42)).to eq(company_id: 42)
     end
 
-    it "swallows an invalid-input failure and still resolves what it can" do
+    it "swallows a failure in the inbound pass and still resolves what it can" do
       klass = build_axn do
-        expects :company_id # required; omitted below → inbound validation fails, swallowed
+        expects :name, preprocess: ->(_v) { raise "boom" }
         tag(:region) { "us5" }
+        tag(:name) { name }
         def call; end
       end
-      expect(resolve(klass)).to eq(region: "us5")
+      expect(resolve(klass, name: "acme")).to eq(region: "us5", name: "acme")
+    end
+
+    it "omits a facet whose resolver raises, keeping the rest" do
+      klass = build_axn do
+        expects :company_id
+        tag(:company_id) { company_id }
+        tag(:boom) { raise "nope" }
+        def call; end
+      end
+      expect(resolve(klass, company_id: 42)).to eq(company_id: 42)
     end
   end
 end
@@ -186,16 +197,19 @@ In `lib/axn/executor.rb`, add this method just above the `private` keyword (line
 
 ```ruby
     # Inputs-only facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there
-    # is no run to hang completion-time resolution on. Runs ONLY the inbound coercion phase
-    # (preprocess + inbound defaults + inbound validation), swallowing any failure so a bad-input
-    # enqueue still succeeds, then resolves the requested facet maps. Result-derived resolvers
-    # self-omit — reading result/an unexposed field returns nil or raises, and Core::Tagging.resolve
-    # skips those per-facet. `sources` is a subset of %i[tag dimension]. See PRO-2855.
+    # is no run to hang completion-time resolution on. Runs ONLY inbound preprocessing + inbound
+    # defaults (NOT inbound validation — validation only checks, it doesn't transform the data a
+    # facet resolver reads, so it would add cost — including a `model:` field's `.find` and any
+    # user `validate:` procs — for every enqueue with no benefit), swallowing any failure so a
+    # bad-input enqueue still succeeds, then resolves the requested facet maps. A `model:` field's
+    # record is loaded lazily (facade.rb) only if a facet resolver actually reads it. Result-derived
+    # resolvers self-omit — reading result/an unexposed field returns nil or raises, and
+    # Core::Tagging.resolve skips those per-facet. `sources` is a subset of %i[tag dimension].
+    # See PRO-2855.
     def resolve_inbound_facets(sources)
       begin
         apply_inbound_preprocessing!
         apply_defaults!(:inbound)
-        validate_contract!(:inbound)
       rescue StandardError => e
         Internal::PipingError.swallow("resolving inbound facets at enqueue", action: @action, exception: e)
       end
@@ -210,7 +224,7 @@ In `lib/axn/executor.rb`, add this method just above the `private` keyword (line
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bundle exec rspec spec/axn/executor_spec.rb`
-Expected: PASS (5 examples).
+Expected: PASS (6 examples).
 
 - [ ] **Step 5: Commit**
 

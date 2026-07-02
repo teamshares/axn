@@ -59,16 +59,19 @@ module Axn
     end
 
     # Inputs-only facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there
-    # is no run to hang completion-time resolution on. Runs ONLY the inbound coercion phase
-    # (preprocess + inbound defaults + inbound validation), swallowing any failure so a bad-input
-    # enqueue still succeeds, then resolves the requested facet maps. Result-derived resolvers
-    # self-omit — reading result/an unexposed field returns nil or raises, and Core::Tagging.resolve
-    # skips those per-facet. `sources` is a subset of %i[tag dimension]. See PRO-2855.
+    # is no run to hang completion-time resolution on. Runs ONLY inbound preprocessing + inbound
+    # defaults (NOT inbound validation — validation only checks, it doesn't transform the data a
+    # facet resolver reads, so it would add cost — including a `model:` field's `.find` and any
+    # user `validate:` procs — for every enqueue with no benefit), swallowing any failure so a
+    # bad-input enqueue still succeeds, then resolves the requested facet maps. A `model:` field's
+    # record is loaded lazily (facade.rb) only if a facet resolver actually reads it. Result-derived
+    # resolvers self-omit — reading result/an unexposed field returns nil or raises, and
+    # Core::Tagging.resolve skips those per-facet. `sources` is a subset of %i[tag dimension].
+    # See PRO-2855.
     def resolve_inbound_facets(sources)
       begin
         apply_inbound_preprocessing!
         apply_defaults!(:inbound)
-        validate_contract!(:inbound)
       rescue StandardError => e
         Internal::PipingError.swallow("resolving inbound facets at enqueue", action: @action, exception: e)
       end

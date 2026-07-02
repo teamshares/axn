@@ -394,5 +394,16 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       Actions::Async::TestActionSidekiqTaggedWithStatic.call_async(company_id: 42)
       expect(last_job_tags.call).to contain_exactly("static", "company_id:42")
     end
+
+    it "resolves a model:-derived facet via a real AR lookup" do
+      user = User.create!(name: "Ada Lovelace")
+
+      begin
+        Actions::Async::TestActionSidekiqModelTagged.call_async(user_id: user.id)
+        expect(last_job_tags.call).to contain_exactly("user_name:Ada Lovelace")
+      ensure
+        User.delete_all
+      end
+    end
   end
 end
