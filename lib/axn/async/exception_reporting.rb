@@ -42,7 +42,13 @@ module Axn
           # resolved best-effort against an instance reconstructed from the (deserialized) job_args:
           # input-derived facets (company_id, record ids) resolve; output-derived ones find no exposes
           # and are skipped per-facet — the same partial-resolution contract as the failure path.
-          # Assigned after the merge above, so the framework facets can't be shadowed by a job arg.
+          #
+          # Reserve the facet keys first: unlike the sync report (where inputs nest under :inputs and
+          # RESERVED_EXECUTION_CONTEXT_KEYS guards the top level), this path merges the job-arg slice
+          # in at the top level, so an action with an input literally named `tags`/`dimensions` would
+          # otherwise expose that user value under the framework key whenever no facet overwrites it.
+          # Strip, then assign only the resolved facets (when any) — framework owns these keys.
+          %i[tags dimensions].each { |key| context.delete(key) }
           facets = resolve_facets(action_class:, job_args:)
           context[:tags] = facets[:tags] if facets[:tags].any?
           context[:dimensions] = facets[:dimensions] if facets[:dimensions].any?

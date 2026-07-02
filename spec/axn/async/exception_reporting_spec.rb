@@ -212,6 +212,41 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(action_class._tags[:region]).to eq("us5")
       end
 
+      it "strips a job-arg named tags/dimensions so user input can't masquerade as facets" do
+        action_class = build_axn do
+          expects :tags
+          expects :dimensions
+          # no declared facets
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { tags: { user: "data" }, dimensions: { d: 1 } }, extra_context: {}
+        )
+
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "lets resolved facets win over a job-arg named tags" do
+        action_class = build_axn do
+          expects :tags
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { tags: { user: "data" }, company_id: 7 }, extra_context: {}
+        )
+
+        expect(received[:tags]).to eq(company_id: 7)
+      end
+
       it "still reports (without facet keys) if the action can't be reconstructed" do
         action_class = build_axn do
           expects :company_id
