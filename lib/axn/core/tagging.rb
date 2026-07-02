@@ -67,7 +67,7 @@ module Axn
 
             kwargs = kwargs.merge(name => value)
           elsif block
-            raise ArgumentError, "provide a block only with the single-name form, not the hash form"
+            raise ArgumentError, "provide a block only with the single-name form (e.g. `tag(:name) { ... }`)"
           end
 
           kwargs.transform_keys(&:to_sym)

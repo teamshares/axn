@@ -46,6 +46,7 @@ RSpec.describe "Axn tagging integration" do
       result = action.call
       expect(result).to be_ok
       expect(notifications.first[:tags]).to eq(good: "ok")
+      expect_piping_error_called(message_substring: "resolving observability facet bad", error_class: RuntimeError, error_message: "boom")
     end
 
     it "coerces non-primitive values to strings" do

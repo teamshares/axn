@@ -48,6 +48,10 @@ RSpec.describe Axn::Core::Tagging do
       expect { build_axn { tag(a: -> { 1 }) {} } }.to raise_error(ArgumentError)
     end
 
+    it "raises when given a block with no name" do
+      expect { build_axn { tag {} } }.to raise_error(ArgumentError)
+    end
+
     it "does not expose _parse_facets as a public class method" do
       expect(build_axn { tag :a, -> { 1 } }).not_to respond_to(:_parse_facets)
     end
