@@ -257,17 +257,17 @@ class ChargeCompany
 
   tag :company_id, -> { company.id }         # → span attribute axn.tag.company_id
   dimension :plan_tier, -> { company.plan }  # → span attribute axn.dimension.plan_tier (+ emit_metrics)
-  tag :charged_cents, -> { charged_cents }, result: true  # reads a settled output
+  tag :charged_cents, -> { charged_cents }, from: :result  # reads a settled output
 end
 ```
 
 Each `tag`/`dimension` declares one facet: a name plus a resolver — a block/lambda (evaluated in the action's context, so `expects`/`exposes` readers are in scope), a symbol naming an action method, or a literal. A resolver returning `nil` omits that facet for the call; a resolver that raises is swallowed and that one facet skipped, leaving the others intact.
 
-**Resolution phase (`result:`).** By default a facet resolves from **inputs**, early — before `call` runs. Pass `result: true` for a facet whose resolver reads a **settled output** (an `exposes` value, the result). The distinction matters for one sink only — in-flight logs (below); every other sink sees both. A default (input) facet that mistakenly reads an unset output just resolves to `nil` and is omitted, so mark such facets `result: true`.
+**Resolution phase (`from:`).** By default (`from: :inputs`) a facet resolves early — before `call` runs. Pass `from: :result` for a facet whose resolver reads a **settled output** (an `exposes` value, the result). The distinction matters for one sink only — in-flight logs (below); every other sink sees both. A `from: :inputs` facet that mistakenly reads an unset output just resolves to `nil` and is omitted, so mark such facets `from: :result`.
 
 **Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute and a log field (and, later, an exception detail) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — today `emit_metrics`, later Sentry/Sidekiq tags — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
 
-**Log annotation.** Declared facets also annotate [`auto_log`](#automatic-logging) output. When your configured logger is a [`SemanticLogger`](https://logger.rocketjob.io/) (e.g. via `rails_semantic_logger`), facets are forwarded to its tagged context as named tags — `axn.tag.<name>` / `axn.dimension.<name>` — so they become structured log fields, and dimensions are legible as Datadog log facets: **input-phase facets tag every log line emitted during `call`** (plus the completion line), while `result:` facets tag only the completion line (they aren't resolved until the result settles). With any other logger, facets are appended to the completion line as a readable suffix, e.g. `… [tags: {company_id: 7}] [dimensions: {plan_tier: "pro"}]`. Axn takes no dependency on `semantic_logger`; it forwards only when the configured logger is already one.
+**Log annotation.** Declared facets also annotate [`auto_log`](#automatic-logging) output. When your configured logger is a [`SemanticLogger`](https://logger.rocketjob.io/) (e.g. via `rails_semantic_logger`), facets are forwarded to its tagged context as named tags — `axn.tag.<name>` / `axn.dimension.<name>` — so they become structured log fields, and dimensions are legible as Datadog log facets: **input-phase facets tag every log line emitted during `call`** (plus the completion line), while `from: :result` facets tag only the completion line (they aren't resolved until the result settles). With any other logger, facets are appended to the completion line as a readable suffix, e.g. `… [tags: {company_id: 7}] [dimensions: {plan_tier: "pro"}]`. Axn takes no dependency on `semantic_logger`; it forwards only when the configured logger is already one.
 
 ## `emit_metrics`
 

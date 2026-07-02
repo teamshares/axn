@@ -116,8 +116,8 @@ RSpec.describe "auto-log facet annotation" do
 
     it "routes input facets to the in-flight context and adds result facets only at the completion line" do
       build_axn do
-        tag(:company_id) { 5 }             # input phase (default)
-        tag(:charged, result: true) { 9 }  # result phase
+        tag(:company_id) { 5 }               # input phase (default)
+        tag(:charged, from: :result) { 9 }   # result phase
         def call; end
       end.call
 

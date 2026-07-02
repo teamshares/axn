@@ -6,11 +6,13 @@ module Axn
     # `dimension` (bounded) share parsing/resolution; they differ only in which
     # sinks the executor routes them to.
     module Tagging
-      # A declared facet: its resolver plus which phase it resolves in. `result: false`
-      # (the default) is the input phase — resolved from inputs before the body runs, so it
-      # can annotate in-flight logs. `result: true` is the result phase — resolved at settle,
-      # so its resolver may read the settled result/outputs.
-      Facet = Data.define(:resolver, :result)
+      # A declared facet: its resolver plus which phase it resolves in. `from: :inputs`
+      # (the default) resolves from inputs before the body runs, so it can annotate in-flight
+      # logs. `from: :result` resolves at settle, so its resolver may read the settled
+      # result/outputs.
+      Facet = Data.define(:resolver, :from)
+
+      PHASES = %i[inputs result].freeze
 
       def self.included(base)
         base.class_eval do
@@ -24,10 +26,9 @@ module Axn
       # resolver runs independently; a nil result omits the facet, a raised error is swallowed
       # and that facet skipped (so an input-phase resolver that mistakenly reads an unset output
       # simply drops the facet rather than raising).
-      def self.resolve(facets, action:, phase:)
-        want_result = (phase == :result)
+      def self.resolve(facets, action:, from:)
         facets.each_with_object({}) do |(name, facet), acc|
-          next unless facet.result == want_result
+          next unless facet.from == from
 
           value = resolve_one(facet.resolver, action:)
           acc[name] = coerce(value) unless value.nil?
@@ -107,20 +108,21 @@ module Axn
       end
 
       module ClassMethods
-        def tag(*args, result: false, &block)
-          self._tags = _tags.merge(_parse_facet(args, block, result:))
+        def tag(*args, from: :inputs, &block)
+          self._tags = _tags.merge(_parse_facet(args, block, from:))
         end
 
-        def dimension(*args, result: false, &block)
-          self._dimensions = _dimensions.merge(_parse_facet(args, block, result:))
+        def dimension(*args, from: :inputs, &block)
+          self._dimensions = _dimensions.merge(_parse_facet(args, block, from:))
         end
 
         private
 
         # One facet per call: a name plus a single resolver (positional value or block),
         # mirroring Contract#expose's name+value form. Returns a one-entry symbol-keyed hash
-        # of name => Facet. `result:` selects the resolution phase (see Facet).
-        def _parse_facet(args, block, result:)
+        # of name => Facet. `from:` selects the resolution phase (see Facet / PHASES).
+        def _parse_facet(args, block, from:)
+          raise ArgumentError, "from: must be one of #{PHASES.inspect}" unless PHASES.include?(from)
           raise ArgumentError, "expected a name and a single resolver" unless args.size.between?(1, 2)
 
           name = args.first
@@ -134,7 +136,7 @@ module Axn
             resolver = args.last
           end
 
-          { name.to_sym => Facet.new(resolver:, result:) }
+          { name.to_sym => Facet.new(resolver:, from:) }
         end
       end
     end

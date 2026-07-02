@@ -52,8 +52,8 @@ RSpec.describe "auto-log facet annotation with a real SemanticLogger" do
 
   it "keeps result-phase facets off in-flight lines but on the completion line" do
     build_axn do
-      tag(:company_id) { 7 }               # input phase
-      tag(:charged, result: true) { 99 }   # result phase
+      tag(:company_id) { 7 } # input phase
+      tag(:charged, from: :result) { 99 } # result phase
       def call
         log("in-flight line")
       end

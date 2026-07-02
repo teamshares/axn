@@ -129,13 +129,13 @@ module Axn
     def resolved_tags = @resolved_tags ||= resolved_input_tags.merge(resolved_result_tags)
     def resolved_dimensions = @resolved_dimensions ||= resolved_input_dimensions.merge(resolved_result_dimensions)
 
-    def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :input)
+    def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :inputs)
     def resolved_result_tags = @resolved_result_tags ||= _resolve_facets(@action_class._tags, :result)
-    def resolved_input_dimensions = @resolved_input_dimensions ||= _resolve_facets(@action_class._dimensions, :input)
+    def resolved_input_dimensions = @resolved_input_dimensions ||= _resolve_facets(@action_class._dimensions, :inputs)
     def resolved_result_dimensions = @resolved_result_dimensions ||= _resolve_facets(@action_class._dimensions, :result)
 
-    def _resolve_facets(facets, phase)
-      facets.any? ? Core::Tagging.resolve(facets, action: @action, phase:) : {}
+    def _resolve_facets(facets, from)
+      facets.any? ? Core::Tagging.resolve(facets, action: @action, from:) : {}
     end
 
     # =========================================================================

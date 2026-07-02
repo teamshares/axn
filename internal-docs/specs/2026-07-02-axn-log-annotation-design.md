@@ -21,12 +21,12 @@ Any facet is one of {tag, dimension} × {input, result}.
 
 ## DSL
 
-Drop the multi-key hash form (`tag a: ->{}, b: ->{}`). Keep name+resolver and name+block; add a per-facet `result:` flag. With the hash form gone, keyword args unambiguously mean modifiers, and the parser simplifies.
+Drop the multi-key hash form (`tag a: ->{}, b: ->{}`). Keep name+resolver and name+block; add a per-facet `from:` flag (`:inputs` default / `:result`). With the hash form gone, keyword args unambiguously mean modifiers, and the parser simplifies.
 
 ```ruby
 tag :company_id, -> { company.id }                     # input phase (default)
 dimension(:plan_tier) { company.plan_tier }            # input phase (default)
-tag :charged_cents, -> { charged_cents }, result: true # result phase (reads a settled output)
+tag :charged_cents, -> { charged_cents }, from: :result # result phase (reads a settled output)
 ```
 
 Each `tag`/`dimension` call now declares exactly one facet. The removed hash form (both `a: ->{}` symbol-key and `"a" => ->{}` hashrocket) now raises `ArgumentError`.
@@ -55,11 +55,11 @@ The completion line gets its own tagged context (all facets) at emit time in `Ca
 
 ## Footgun (documented, non-crashing)
 
-Default input means a resolver reading a settled output without `result: true` resolves early and yields `nil` → the facet is silently omitted (per-facet swallow via `PipingError`, no crash). Docs steer: "reads only inputs? leave it; reads an exposed/result value? mark `result: true`."
+Default `from: :inputs` means a resolver reading a settled output without `from: :result` resolves early and yields `nil` → the facet is silently omitted (per-facet swallow via `PipingError`, no crash). Docs steer: "reads only inputs? leave it; reads an exposed/result value? mark `from: :result`."
 
 ## Mechanism
 
-- **`Core::Tagging`**: `Facet` data type; single-facet parser (no hash form) with `result:`; `resolve(..., phase:)`; `namespaced(tags:, dimensions:)` builds the symbol-keyed `axn.tag.*` / `axn.dimension.*` named-tags hash (shared by the body context and the completion line).
+- **`Core::Tagging`**: `Facet` data type (`resolver`, `from`); single-facet parser (no hash form) with `from:` (validated against `PHASES`); `resolve(..., from:)`; `namespaced(tags:, dimensions:)` builds the symbol-keyed `axn.tag.*` / `axn.dimension.*` named-tags hash (shared by the body context and the completion line).
 - **`Executor`**: split `resolved_input_tags` / `resolved_result_tags` (+ dimensions), memoized; `resolved_tags` / `resolved_dimensions` return the merge (unchanged read sites). New `with_facet_log_context` wraps the body invocation inside `with_contract` (after inbound validation) in `SemanticLogger.tagged` when the logger is semantic and input facets exist. `log_facets` (for the completion line) hands `dup_facets` copies of the merged maps.
 - **`Internal::CallLogger`**: `semantic_logger?` made public (executor reuses it); completion-line annotation uses `Core::Tagging.namespaced`; unchanged otherwise (named tags under a SemanticLogger, labeled suffix respecting `MAX_CONTEXT_LENGTH` otherwise).
 
@@ -71,14 +71,14 @@ Default input means a resolver reading a settled output without `result: true` r
 
 ## Testing
 
-- **DSL** (`spec/axn/core/tagging_spec.rb`): new single-facet forms; `result:` default/override; removed hash form raises.
+- **DSL** (`spec/axn/core/tagging_spec.rb`): new single-facet forms; `from:` default/override/validation; removed hash form raises.
 - **Resolution phase** (`spec/axn/internal/tracing/tagging_spec.rb` + a new phase spec): input facet resolved from inputs; result facet reads a settled output; an unmarked result-reading resolver yields nil.
 - **In-flight + completion-line logs** (`spec/axn/internal/call_logger_facets_spec.rb`, stubbed): input facets tag in-flight lines; result facets only the completion line; suffix path unaffected.
 - **Real SemanticLogger** (`spec_rails/dummy_app/.../call_logger_facets_spec.rb`): real `SemanticLogger::Logger`, capture in-flight + completion events, assert phase routing.
 
 ## Docs / CHANGELOG
 
-- `docs/reference/configuration.md` — drop the hash form; document the `result:` flag, the phase/timing model, in-flight vs completion-line tagging, and the nil-on-early footgun.
+- `docs/reference/configuration.md` — drop the hash form; document the `from:` flag, the phase/timing model, in-flight vs completion-line tagging, and the nil-on-early footgun.
 - `CHANGELOG.md` — update the #140 Unreleased entry (DSL/timing revised) and the facet-log-annotation entry.
 
 ## Scope note

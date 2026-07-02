@@ -31,19 +31,23 @@ RSpec.describe Axn::Core::Tagging do
       expect(action._dimensions.keys).to eq([:plan_tier])
     end
 
-    it "defaults a facet to the input phase" do
+    it "defaults a facet to the inputs phase" do
       action = build_axn { tag :company_id, -> { 1 } }
-      expect(action._tags[:company_id].result).to be(false)
+      expect(action._tags[:company_id].from).to eq(:inputs)
     end
 
-    it "marks a facet as result phase with result: true" do
-      action = build_axn { tag :charged, -> { 1 }, result: true }
-      expect(action._tags[:charged].result).to be(true)
+    it "marks a facet as result phase with from: :result" do
+      action = build_axn { tag :charged, -> { 1 }, from: :result }
+      expect(action._tags[:charged].from).to eq(:result)
     end
 
-    it "accepts result: with the block form" do
-      action = build_axn { tag(:charged, result: true) { 1 } }
-      expect(action._tags[:charged].result).to be(true)
+    it "accepts from: with the block form" do
+      action = build_axn { tag(:charged, from: :result) { 1 } }
+      expect(action._tags[:charged].from).to eq(:result)
+    end
+
+    it "raises for an unknown from: phase" do
+      expect { build_axn { tag :charged, -> { 1 }, from: :bogus } }.to raise_error(ArgumentError, /from:/)
     end
 
     it "raises when positional args are not exactly a name/value pair" do
@@ -81,9 +85,9 @@ RSpec.describe Axn::Core::Tagging do
       expect(action._dimensions.keys).to eq([:x])
     end
 
-    it "marks a dimension as result phase with result: true" do
-      action = build_axn { dimension :total, -> { 1 }, result: true }
-      expect(action._dimensions[:total].result).to be(true)
+    it "marks a dimension as result phase with from: :result" do
+      action = build_axn { dimension :total, -> { 1 }, from: :result }
+      expect(action._dimensions[:total].from).to eq(:result)
     end
   end
 
