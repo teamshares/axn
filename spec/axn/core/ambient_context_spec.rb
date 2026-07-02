@@ -128,4 +128,18 @@ RSpec.describe "Axn ambient_context observability" do
     instance._run
     expect(instance.inputs).not_to have_key(:ambient_context)
   end
+
+  it "filters a dynamically-sensitive ambient subfield in execution_context" do
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      expects :secret_id, on: :ambient_context, type: Integer, sensitive: -> { true }
+      def call = nil
+    end
+    instance = klass.send(:new, ambient_context: { company_id: 3, secret_id: 9 })
+    instance._run
+    ctx = instance.execution_context
+    expect(ctx[:ambient_context][:company_id]).to eq(3)
+    expect(ctx[:ambient_context][:secret_id]).to eq("[FILTERED]")
+  end
 end
