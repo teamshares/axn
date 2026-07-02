@@ -17,6 +17,9 @@ module Axn
         return {} unless defined?(ActiveSupport::CurrentAttributes)
 
         ActiveSupport::CurrentAttributes.descendants.each_with_object({}) do |klass, acc|
+          # When two CurrentAttributes classes declare the same attribute, last-descendant-wins
+          # silently (by design per spec — core filters to declared keys downstream, so undeclared
+          # collisions never surface).
           acc.merge!(klass.instance.attributes)
         end
       end

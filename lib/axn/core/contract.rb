@@ -331,6 +331,7 @@ module Axn
           __action__
           standalone
           inputs
+          ambient_context
         ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[

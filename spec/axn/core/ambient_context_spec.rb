@@ -49,6 +49,15 @@ RSpec.describe "Axn ambient_context (reader + subfield parent)" do
       end
     end.to raise_error(Axn::ContractViolation::ReservedAttributeError)
   end
+
+  it "rejects a user-declared ambient_context exposure" do
+    expect do
+      Class.new do
+        include Axn
+        exposes :ambient_context
+      end
+    end.to raise_error(Axn::ContractViolation::ReservedAttributeError)
+  end
 end
 
 RSpec.describe "Axn ambient_context resolution" do
