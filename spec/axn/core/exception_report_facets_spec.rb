@@ -57,6 +57,27 @@ RSpec.describe "Exception-report facets (on_exception context)" do
     ActiveSupport::Notifications.unsubscribe(sub)
   end
 
+  it "hands the reporter its own copy of dimensions too" do
+    captured = nil
+    payload_dims = nil
+    sub = ActiveSupport::Notifications.subscribe("axn.call") { |*args| payload_dims = args.last[:dimensions] }
+    Axn.config.instance_variable_set(:@on_exception, proc { |context:|
+      context[:dimensions][:plan] = "MUTATED"
+      captured = context[:dimensions]
+    })
+
+    Class.new do
+      include Axn
+      dimension(:plan) { "pro" }
+      def call = raise("boom")
+    end.call
+
+    expect(captured).to eq(plan: "MUTATED")
+    expect(payload_dims).to eq(plan: "pro")
+  ensure
+    ActiveSupport::Notifications.unsubscribe(sub)
+  end
+
   it "lets the framework facet win over a user-supplied set_execution_context key" do
     ctx = capture_context do
       tag(:company_id) { 7 }

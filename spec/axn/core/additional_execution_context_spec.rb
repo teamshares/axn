@@ -258,6 +258,31 @@ RSpec.describe "Additional execution context" do
 
       action.call(name: "test")
     end
+
+    it "strips reserved facet keys (:tags, :dimensions) returned by the hook" do
+      action = build_axn do
+        def call
+          raise "Failed"
+        end
+
+        private
+
+        def additional_execution_context
+          { tags: { hook_tag: 1 }, dimensions: { hook_dim: 2 }, hook_key: "allowed" }
+        end
+      end
+
+      expect(Axn.config).to receive(:on_exception).with(
+        anything,
+        hash_including(context: hash_including(hook_key: "allowed")),
+      ) do |_exception, options|
+        ctx = options[:context]
+        expect(ctx).not_to have_key(:tags)
+        expect(ctx).not_to have_key(:dimensions)
+      end.and_call_original
+
+      action.call
+    end
   end
 
   describe "set_execution_context and additional_execution_context together" do

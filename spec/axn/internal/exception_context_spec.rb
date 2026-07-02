@@ -76,6 +76,27 @@ RSpec.describe Axn::Internal::ExceptionContext do
                            })
     end
 
+    it "carries tags/dimensions alongside async retry context" do
+      action_class = build_axn do
+        expects :name, type: String
+        def call; end
+      end
+      stub_const("TestAction", action_class)
+      instance = TestAction.send(:new, name: "Alice")
+      retry_context = double("RetryContext", to_h: { attempt: 2, max_attempts: 5 })
+
+      result = described_class.build(
+        action: instance,
+        retry_context:,
+        tags: { company_id: 42 },
+        dimensions: { plan_tier: "pro" },
+      )
+
+      expect(result[:async]).to eq(attempt: 2, max_attempts: 5)
+      expect(result[:tags]).to eq(company_id: 42)
+      expect(result[:dimensions]).to eq(plan_tier: "pro")
+    end
+
     context "with unpersisted ActiveRecord-like objects" do
       let(:unpersisted_class) do
         Class.new do
