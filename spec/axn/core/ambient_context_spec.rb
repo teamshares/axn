@@ -112,6 +112,34 @@ RSpec.describe "Axn::Core::AmbientContext.default_source" do
   end
 end
 
+RSpec.describe "Axn ambient_context subfield restrictions" do
+  it "rejects preprocess: on an ambient_context subfield" do
+    expect do
+      Class.new do
+        include Axn
+        expects :company, on: :ambient_context, preprocess: ->(v) { v }
+      end
+    end.to raise_error(ArgumentError, /preprocess/)
+  end
+
+  it "rejects default: on an ambient_context subfield" do
+    expect do
+      Class.new do
+        include Axn
+        expects :company, on: :ambient_context, default: 5
+      end
+    end.to raise_error(ArgumentError, /default/)
+  end
+
+  it "still allows sensitive: on an ambient_context subfield" do
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, type: Integer, sensitive: -> { true }
+    end
+    expect(klass).to be_a(Class)
+  end
+end
+
 RSpec.describe "Axn ambient_context observability" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 

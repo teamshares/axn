@@ -69,6 +69,19 @@ module Axn
                   "user_facing: is for top-level fields without nested subfield expectations"
           end
 
+          # An `on: :ambient_context` subfield's value comes from the ambient provider / CurrentAttributes
+          # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
+          # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /
+          # #apply_inbound_preprocessing_for_subfields!), so `default:` would corrupt resolution and
+          # `preprocess:` would raise (extracting from a nil parent). `sensitive:` is filter-only and
+          # unaffected — it's relied on for ambient_context observability, so it must stay allowed.
+          if root == Axn::Core::AmbientContext::PARENT && (!default.nil? || !preprocess.nil?)
+            raise ArgumentError,
+                  "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
+                  "(the ambient parent is resolved per-invocation, not read from provided_data) — " \
+                  "compute defaults/preprocessing in your ambient_context_provider or a before hook. `sensitive:` is supported."
+          end
+
           # default:/preprocess: write into the parent, and sensitive: relies on the log filter
           # matching config.on to a top-level field — none of which support an arbitrary nested
           # path yet. A parent is nested whether reached via a dotted path ("address.billing") or by

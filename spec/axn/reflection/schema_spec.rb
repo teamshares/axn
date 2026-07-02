@@ -72,6 +72,40 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:limit]).to include(default: 20)
   end
 
+  it "does not mark a defaulted (non-optional) field as required, but still emits its default" do
+    klass = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :limit, type: Integer, default: 20
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required]).to include("name")
+    expect(schema[:required]).not_to include("limit")
+    expect(schema[:properties][:limit]).to include(default: 20)
+  end
+
+  it "maps type: :params to an object" do
+    klass = Class.new do
+      include Axn
+      expects :params, type: :params
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:properties][:params]).to include(type: "object")
+  end
+
+  it "nests subfields under a string on: parent" do
+    klass = Class.new do
+      include Axn
+      expects :payload, type: Hash
+      expects :name, on: "payload", type: String
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    payload = schema[:properties][:payload]
+    expect(payload).not_to be_nil
+    expect(payload[:properties]).to have_key(:name)
+  end
+
   it "nests subfields under the wire key when the parent field is aliased" do
     klass = Class.new do
       include Axn

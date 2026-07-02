@@ -33,7 +33,7 @@ module Axn
         properties = {}
         required = []
 
-        subfields_by_parent = subfield_configs.group_by(&:on)
+        subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
@@ -49,13 +49,13 @@ module Axn
               nested_subfields.each do |subconfig|
                 subprop = build_property(subconfig)
                 prop[:properties][subconfig.field] = subprop
-                prop[:required] << subconfig.field.to_s unless optional?(subconfig)
+                prop[:required] << subconfig.field.to_s unless optional?(subconfig) || default?(subconfig)
               end
               prop[:required] = nil if prop[:required].empty?
             end
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless optional?(config)
+            required << config.field.to_s unless optional?(config) || default?(config)
           end
         end
 
@@ -169,7 +169,7 @@ module Axn
         }
 
         properties[id_field] = prop.compact
-        required << id_field.to_s unless optional?(config)
+        required << id_field.to_s unless optional?(config) || default?(config)
       end
 
       def json_type_for(validations, for_output: false)
@@ -181,6 +181,7 @@ module Axn
           klass = klasses.first
           return { type: "boolean" } if klass == :boolean
           return { type: "string", format: "uuid" } if klass == :uuid
+          return { type: "object" } if klass == :params
 
           if TYPE_MAP.key?(klass)
             result = { type: TYPE_MAP[klass] }
@@ -218,6 +219,13 @@ module Axn
 
       def optional?(config)
         Axn::Internal::FieldConfig.optional?(config)
+      end
+
+      # A defaulted field is client-omittable (Axn applies inbound defaults before validation),
+      # so it must not be listed in an input schema's `required` — even when not `optional:`/
+      # `allow_blank:`. Output (`exposes`) requiredness is unaffected: see build_output.
+      def default?(config)
+        config.respond_to?(:default) && !config.default.nil?
       end
     end
   end
