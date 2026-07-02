@@ -39,6 +39,30 @@ RSpec.describe Axn::Core::Tagging do
     it "raises when positional args are not exactly a name/value pair" do
       expect { build_axn { tag :a, :b, :c } }.to raise_error(ArgumentError)
     end
+
+    it "raises when given a bare name with no resolver" do
+      expect { build_axn { tag :name } }.to raise_error(ArgumentError)
+    end
+
+    it "raises when given the hash form together with a block" do
+      expect { build_axn { tag(a: -> { 1 }) {} } }.to raise_error(ArgumentError)
+    end
+
+    it "does not expose _parse_facets as a public class method" do
+      expect(build_axn { tag :a, -> { 1 } }).not_to respond_to(:_parse_facets)
+    end
+  end
+
+  describe ".dimension declaration forms" do
+    it "accepts a name + block" do
+      action = build_axn { dimension(:x) { "value" } }
+      expect(action._dimensions.keys).to eq([:x])
+    end
+
+    it "accepts a hash of many at once" do
+      action = build_axn { dimension a: -> { 1 }, b: -> { 2 } }
+      expect(action._dimensions.keys).to eq(%i[a b])
+    end
   end
 
   describe "inheritance / mixin merge" do

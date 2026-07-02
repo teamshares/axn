@@ -111,6 +111,15 @@ RSpec.describe "Axn tagging integration" do
       build_axn { def call; end }.call
       expect(mock_span).not_to have_received(:set_attribute).with(a_string_starting_with("axn.tag."), anything)
     end
+
+    it "sets each declared dimension as an axn.dimension.<name> attribute" do
+      action = build_axn do
+        dimension :plan_tier, -> { "pro" }
+        def call; end
+      end
+      action.call
+      expect(mock_span).to have_received(:set_attribute).with("axn.dimension.plan_tier", "pro")
+    end
   end
 
   describe "dimensions" do

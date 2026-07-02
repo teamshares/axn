@@ -52,17 +52,22 @@ module Axn
           self._dimensions = _dimensions.merge(_parse_facets(args, kwargs, block))
         end
 
+        private
+
         # Dual form, mirroring Contract#expose: a name + positional/block value,
         # or a hash of name => resolver. Returns a symbol-keyed hash.
         def _parse_facets(args, kwargs, block)
           if args.any?
             raise ArgumentError, "expected a name and a single resolver (or a hash)" unless args.size <= 2
+            raise ArgumentError, "provide a resolver (positional, block, or hash), not both" if args.size == 2 && block
+            raise ArgumentError, "provide a resolver: a positional value, a block, or the hash form" if args.size == 1 && !block
 
             name = args.first
-            value = block || (args.size == 2 ? args.last : nil)
-            raise ArgumentError, "provide a resolver (positional, block, or hash), not both" if args.size == 2 && block
+            value = block || args.last
 
             kwargs = kwargs.merge(name => value)
+          elsif block
+            raise ArgumentError, "provide a block only with the single-name form, not the hash form"
           end
 
           kwargs.transform_keys(&:to_sym)
