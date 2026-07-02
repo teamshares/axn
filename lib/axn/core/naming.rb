@@ -8,7 +8,7 @@ module Axn
       def self.included(base)
         base.class_eval do
           # instance_accessor: false — this is a class-level DSL, not per-instance state.
-          class_attribute :_axn_name, instance_accessor: false, default: nil
+          class_attribute :_axn_name, :_axn_description, instance_accessor: false, default: nil
           extend ClassMethods
         end
       end
@@ -20,6 +20,12 @@ module Axn
           return _axn_name if value.equal?(NOT_SET)
 
           self._axn_name = value
+        end
+
+        def description(value = NOT_SET)
+          return _axn_description if value.equal?(NOT_SET)
+
+          self._axn_description = value
         end
 
         # The single canonical display name: explicit override, else Ruby's class name,

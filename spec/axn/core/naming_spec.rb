@@ -41,3 +41,35 @@ RSpec.describe "Axn axn_name" do
     expect(parent.resolved_axn_name).to eq("parent_tool")
   end
 end
+
+RSpec.describe "Axn class-level description" do
+  it "defaults to nil and stores a string" do
+    klass = Class.new { include Axn }
+    expect(klass.description).to be_nil
+    klass.description "Does a thing."
+    expect(klass.description).to eq("Does a thing.")
+  end
+
+  it "inherits and can be overridden" do
+    parent = Class.new do
+      include Axn
+      description "parent"
+    end
+    child = Class.new(parent)
+    expect(child.description).to eq("parent")
+    child.description "child"
+    expect(child.description).to eq("child")
+    expect(parent.description).to eq("parent")
+  end
+
+  it "does not collide with the field-level description: metadata key" do
+    klass = Class.new do
+      include Axn
+      description "class desc"
+      expects :foo, description: "field desc"
+    end
+    expect(klass.description).to eq("class desc")
+    config = klass.internal_field_configs.find { |c| c.field == :foo }
+    expect(config.description).to eq("field desc")
+  end
+end
