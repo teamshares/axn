@@ -144,6 +144,23 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     end
     expect(klass).to be_a(Class)
   end
+
+  it "rejects a dotted `on:` path rooted at ambient_context (deep ambient nesting is deferred)" do
+    expect do
+      Class.new do
+        include Axn
+        expects :ip, on: "ambient_context.request", type: String
+      end
+    end.to raise_error(ArgumentError, /dotted `on:` path rooted at :ambient_context/)
+  end
+
+  it "still allows a plain (non-dotted) on: :ambient_context subfield" do
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, type: Integer
+    end
+    expect(klass).to be_a(Class)
+  end
 end
 
 RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do

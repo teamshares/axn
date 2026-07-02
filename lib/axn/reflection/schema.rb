@@ -86,7 +86,7 @@ module Axn
         field_configs.each do |config|
           prop = build_property(config, for_output: true)
           properties[config.field] = prop.compact
-          required << config.field.to_s unless optional_for_schema?(config)
+          required << config.field.to_s unless optional_for_schema?(config, for_output: true)
         end
 
         schema = { type: "object", properties: }
@@ -99,10 +99,11 @@ module Axn
         prop[:description] = config.description if config.description
 
         type_info = json_type_for(config.validations, for_output:)
+        nullable = nil_allowed?(config)
         if type_info[:anyOf]
-          prop[:anyOf] = type_info[:anyOf]
-        else
-          prop[:type] = type_info[:type] if type_info[:type]
+          prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
+        elsif type_info[:type]
+          prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
           prop[:format] = type_info[:format] if type_info[:format]
         end
 
@@ -171,7 +172,7 @@ module Axn
         required = []
         members.each do |m|
           props[m.field] = build_property(m, for_output:).compact
-          required << m.field.to_s unless optional_for_schema?(m)
+          required << m.field.to_s unless optional_for_schema?(m, for_output:)
         end
         [props, required]
       end
@@ -257,10 +258,18 @@ module Axn
       # A field is optional in the schema (client may omit it) iff it has a default, or a validation
       # explicitly allows nil/blank. A typed field with neither (e.g. type: :boolean) is required —
       # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
-      def optional_for_schema?(config)
-        return true if default?(config)
+      def optional_for_schema?(config, for_output: false)
+        return true if !for_output && default?(config)
         return true if config.validations.empty?
 
+        nil_allowed?(config)
+      end
+
+      # Whether a field's validations explicitly permit nil/blank (allow_nil:/allow_blank:).
+      # Used both to decide schema-optionality (input) and to add "null" to the emitted JSON
+      # Schema type (both input and output — an explicit nil is accepted at runtime regardless
+      # of direction).
+      def nil_allowed?(config)
         config.validations.values.any? { |opt| opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank]) }
       end
     end

@@ -69,6 +69,19 @@ module Axn
                   "user_facing: is for top-level fields without nested subfield expectations"
           end
 
+          # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
+          # and `resolve_parent` can walk it at runtime, but `AmbientContext#_filter_to_declared` only
+          # keeps configs whose `on.to_sym == :ambient_context` exactly — a dotted ambient parent's
+          # data is silently stripped, so the subfield would always read from `{}`. Deep/dotted nesting
+          # is deferred project-wide (see the KNOWN LIMITATION note in reflection/schema.rb), so reject
+          # this at declaration rather than fail silently. Checked unconditionally (regardless of
+          # preprocess:/default:) since the underlying gap is in ambient resolution, not those options.
+          if root == Axn::Core::AmbientContext::PARENT && on.to_s.include?(".")
+            raise ArgumentError,
+                  "a dotted `on:` path rooted at :ambient_context (got #{on.inspect}) is not supported — " \
+                  "declare a single-level `on: :ambient_context` subfield (deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
+          end
+
           # An `on: :ambient_context` subfield's value comes from the ambient provider / CurrentAttributes
           # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
           # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /

@@ -12,7 +12,8 @@ RSpec.describe Axn::Reflection::Schema do
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
     expect(schema[:type]).to eq("object")
     expect(schema[:properties][:name]).to include(type: "string", description: "the name")
-    expect(schema[:properties][:limit]).to include(type: "integer", default: 20)
+    # optional: true implies allow_blank: true, so per Bug N the type now allows null too.
+    expect(schema[:properties][:limit]).to include(type: %w[integer null], default: 20)
     expect(schema[:required]).to eq(["name"])
   end
 
@@ -23,6 +24,25 @@ RSpec.describe Axn::Reflection::Schema do
     end
     schema = described_class.build_output(klass.external_field_configs)
     expect(schema[:properties][:active]).to include(type: "boolean")
+  end
+
+  it "keeps a defaulted exposure in output_schema[:required] (outbound defaults are always applied before validation/serialization)" do
+    klass = Class.new do
+      include Axn
+      exposes :status, type: String, default: "ok"
+      def call = nil
+    end
+    schema = described_class.build_output(klass.external_field_configs)
+    expect(schema[:required]).to include("status")
+  end
+
+  it "still keeps a defaulted expectation OUT of input_schema[:required] (input defaults make the field client-omittable)" do
+    klass = Class.new do
+      include Axn
+      expects :limit, type: Integer, default: 20
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required] || []).not_to include("limit")
   end
 
   it "excludes the ambient_context parent from the input schema" do
@@ -282,6 +302,39 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:properties][:name]).to include(type: "string")
       expect(schema[:properties][:name]).not_to have_key(:anyOf)
+    end
+  end
+
+  describe "allow_nil: true typed fields permit null in the schema" do
+    it "adds \"null\" to a scalar type's emitted type array" do
+      klass = Class.new do
+        include Axn
+        expects :age, type: Integer, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:age][:type]).to eq(%w[integer null])
+      expect(schema[:required] || []).not_to include("age")
+    end
+
+    it "does not add null to a type with no allow_nil/allow_blank" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:name][:type]).to eq("string")
+    end
+
+    it "adds a null branch to a union type's anyOf" do
+      klass = Class.new do
+        include Axn
+        expects :val, type: [String, Integer], allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:val][:anyOf]).to include(type: "null")
     end
   end
 end
