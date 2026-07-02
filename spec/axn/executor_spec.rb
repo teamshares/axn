@@ -39,12 +39,12 @@ RSpec.describe Axn::Executor do
       expect(resolve(klass, name: "acme")).to eq(name: "ACME", region: "us5")
     end
 
-    it "omits result-derived facets (no run has happened)" do
+    it "excludes result-phase facets (from: :result), keeping input-phase ones" do
       klass = build_axn do
         expects :company_id
         exposes :charge_id
         tag(:company_id) { company_id }
-        dimension(:charge) { result.charge_id } # nil before any run → omitted
+        dimension(:charge, from: :result) { result.charge_id } # result-phase → not resolved at enqueue
         def call; end
       end
       expect(resolve(klass, company_id: 42)).to eq(company_id: 42)
