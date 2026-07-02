@@ -51,7 +51,7 @@ module Axn
             prop = build_property(config)
             nested_subfields = subfields_by_parent[config.reader_as]
             if nested_subfields&.any?
-              prop[:type] = "object"
+              prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
               prop.delete(:format)
               prop[:properties] ||= {}
               prop[:required] ||= []
@@ -111,7 +111,9 @@ module Axn
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          prop[:enum] = enum_values if enum_values.is_a?(Array)
+          if enum_values.is_a?(Array)
+            prop[:enum] = nullable ? enum_values + [nil] : enum_values
+          end
         end
 
         apply_structured_schema!(prop, config, for_output:)
@@ -126,7 +128,7 @@ module Axn
         shape = config.validations[:shape]
         return unless of || shape
 
-        if prop[:type] == "array"
+        if Array(prop[:type]).include?("array")
           items = of ? items_schema_for(of, for_output:) : {}
           if shape
             member_props, required = member_properties(shape[:members], for_output:)

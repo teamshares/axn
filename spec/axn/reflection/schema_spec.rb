@@ -336,5 +336,60 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:properties][:val][:anyOf]).to include(type: "null")
     end
+
+    it "still emits items: for a nil-allowed array (type: becomes [\"array\", \"null\"], not the bare string)" do
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array, of: String, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:items][:type]).to eq(%w[array null])
+      expect(schema[:properties][:items][:items]).to eq(type: "string")
+    end
+
+    it "still emits items: for a non-nil array (unchanged baseline behavior)" do
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array, of: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:items][:type]).to eq("array")
+      expect(schema[:properties][:items][:items]).to eq(type: "string")
+    end
+
+    it "includes null in the enum for a nil-allowed inclusion field" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[open closed] }, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:status][:type]).to eq(%w[string null])
+      expect(schema[:properties][:status][:enum]).to eq(["open", "closed", nil])
+    end
+
+    it "does not add null to the enum for a non-nil-allowed inclusion field" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[open closed] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:status][:enum]).to eq(%w[open closed])
+    end
+
+    it "keeps \"null\" in a nested parent's type when the allow_nil: true parent has subfields (build_input forces type: object)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+      expect(schema[:properties][:payload][:properties]).to have_key(:name)
+    end
   end
 end
