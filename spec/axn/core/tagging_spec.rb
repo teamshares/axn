@@ -104,10 +104,15 @@ RSpec.describe Axn::Core::Tagging do
       expect(Axn::Core::Tagging.coerce([1, 2])).to eq([1, 2])
     end
 
-    it "stringifies non-uniform and boolean arrays to keep them homogeneous and legal" do
+    it "preserves homogeneous string, numeric (mixed int/float), and boolean arrays (all OTel-legal)" do
+      expect(Axn::Core::Tagging.coerce([1, 2.5])).to eq([1, 2.5])
+      expect(Axn::Core::Tagging.coerce([true, false])).to eq([true, false])
+      expect(Axn::Core::Tagging.coerce([true])).to eq([true])
+    end
+
+    it "stringifies genuinely mixed or nested arrays to keep them homogeneous and legal" do
       expect(Axn::Core::Tagging.coerce([1, :a])).to eq(%w[1 a])
-      expect(Axn::Core::Tagging.coerce([1, 2.5])).to eq(%w[1 2.5])
-      expect(Axn::Core::Tagging.coerce([true, false])).to eq(%w[true false])
+      expect(Axn::Core::Tagging.coerce([1, true])).to eq(%w[1 true])
       expect(Axn::Core::Tagging.coerce([[1, 2], 3])).to eq(["[1, 2]", "3"])
     end
   end

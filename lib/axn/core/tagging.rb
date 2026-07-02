@@ -60,10 +60,9 @@ module Axn
       #   - non-finite Floats (NaN / Infinity) → String (rejected at export)
       #   - Integers outside the int64 range → String (OTLP overflow)
       #   - BigDecimal / Rational / Symbol / any other object → String (#to_s)
-      #   - Array → each element coerced, then kept only if the elements are
-      #     uniformly one legal scalar type, else all stringified (see
-      #     #coerce_array) — which also covers boolean arrays ([true, false] is
-      #     non-homogeneous by class) and nested arrays.
+      #   - Array → each element coerced, then kept if the elements are uniformly
+      #     one legal category (String, numeric, or boolean), else all stringified
+      #     (see #coerce_array).
       def self.coerce(value)
         case value
         when String, true, false then value
@@ -75,12 +74,13 @@ module Axn
       end
 
       # Coerce each element (so `[:trial, :paid]` becomes `["trial", "paid"]`,
-      # consistent with scalar coercion). OTel array attributes must be homogeneous
-      # in a single scalar type, so keep the array only when every coerced element
-      # is the same legal scalar type; otherwise stringify all of them.
+      # consistent with scalar coercion). The OTel SDK accepts an array only when
+      # its elements are uniformly String, numeric (Integer/Float, mixable), or
+      # boolean (true/false, mixable); keep those as-is, otherwise stringify every
+      # element so the array stays homogeneous and legal.
       def self.coerce_array(array)
         coerced = array.map { |element| coerce(element) }
-        return coerced if coerced.all?(String) || coerced.all?(Integer) || coerced.all?(Float)
+        return coerced if coerced.all?(String) || coerced.all?(Numeric) || coerced.all? { |element| [true, false].include?(element) }
 
         coerced.map(&:to_s)
       end
