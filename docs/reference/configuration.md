@@ -246,6 +246,24 @@ The `opentelemetry-sdk` gem is required — not just `opentelemetry-api`. The Da
 
 With this setup, all Axn actions will automatically create spans that appear in Datadog APM as children of your Rails request traces.
 
+### Tagging spans with domain context (`tag` / `dimension`)
+
+Any action can declare domain facets that are resolved once per execution and attached to its `axn.call` span (and notification payload). Use `tag` for high-cardinality facets (ids, references) and `dimension` for bounded ones (a small, known set of values).
+
+```ruby
+class ChargeCompany
+  include Axn
+  expects :company
+
+  tag :company_id, -> { company.id }        # → span attribute axn.tag.company_id
+  dimension :plan_tier, -> { company.plan } # → span attribute axn.dimension.plan_tier (+ emit_metrics)
+end
+```
+
+Each facet takes a resolver: a block/lambda (evaluated in the action's context, so `expects`/`exposes` readers are in scope), a symbol naming an action method, or a literal. Resolvers run at completion, so both input- and result-derived values are available. A resolver returning `nil` omits that facet for the call; a resolver that raises is swallowed and that one facet skipped, leaving the others intact.
+
+**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute (and, later, a log field / exception detail) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — today `emit_metrics`, later Sentry/Sidekiq tags — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
+
 ## `emit_metrics`
 
 If you're using a metrics provider, you can emit custom metrics after each action completes using the `emit_metrics` hook. This is a post-execution hook that receives the action result—do NOT call any blocks.
@@ -283,6 +301,16 @@ You can also define `emit_metrics` to only receive the arguments you need:
     # kwargs will contain both :resource and :result
   end
 ```
+
+`emit_metrics` also receives `dimensions:` — the resolved `dimension` facets for the action (an empty hash if none). Merge them into your metric tags to get per-action bounded dimensions for free:
+
+```ruby
+c.emit_metrics = proc do |resource:, result:, dimensions:|
+  TS::Metrics.increment("axn.call", tags: { resource:, outcome: result.outcome.to_s, **dimensions })
+end
+```
+
+`dimensions:` is opt-in: existing blocks that only declare `resource:`/`result:` are unaffected. Keep dimension values bounded (see the cardinality note above) — they become metric tags.
 
 **Important:** When using `result:` in your `emit_metrics` hook, be careful about cardinality. Avoid creating metrics with unbounded tag values from the result (e.g., user IDs, email addresses, or other high-cardinality data). Instead, use bounded values like `result.outcome.to_s` or aggregate data. High-cardinality metrics can cause performance issues and increased costs with metrics providers.
 

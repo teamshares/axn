@@ -10,6 +10,7 @@ require "axn/core/hooks"
 require "axn/core/logging"
 require "axn/core/flow"
 require "axn/core/automatic_logging"
+require "axn/core/tagging"
 require "axn/core/use_strategy"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
@@ -61,6 +62,7 @@ module Axn
         include Core::Hooks
         include Core::Logging
         include Core::AutomaticLogging
+        include Core::Tagging
         include Core::Flow
         include Core::Contract
         include Core::ContractForSubfields

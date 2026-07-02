@@ -25,6 +25,8 @@ Tag only with values from a known, finite set — `resource` (the set of action 
 
 If you also want latency, emit a distribution from `result.elapsed_time` under the same tag schema (e.g. `axn.call.duration`). Distributions cost more per series than counts, so confirm your `resource` set is bounded first — but at the scale of "number of action classes," it's negligible.
 
+Per-action facets ride on top of this schema. A `dimension` declared on an action flows into `emit_metrics` as `dimensions:`, so merging it into your tag set adds a bounded, per-action metric dimension without touching the global hook. A `tag` (high-cardinality) does not reach metrics — it lands on the `axn.tag.*` span attributes instead, for filtering traces in APM.
+
 ## Two dashboards, two altitudes
 
 A pair of dashboards covers most needs:
