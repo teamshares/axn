@@ -24,4 +24,14 @@ RSpec.describe "Axn extension_metadata" do
     expect(child.extension_metadata(:mcp)).to eq(title: "child")
     expect(parent.extension_metadata(:mcp)).to eq(title: "parent")
   end
+
+  it "does not leak mutation of the returned hash into the stored metadata (Bug W)" do
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, title: "T")
+
+    m = klass.extension_metadata(:mcp)
+    m[:extra] = 1
+
+    expect(klass.extension_metadata(:mcp)).to eq(title: "T")
+  end
 end

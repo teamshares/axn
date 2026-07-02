@@ -14,7 +14,7 @@ module Axn
 
       module ClassMethods
         def extension_metadata(adapter)
-          _axn_extension_metadata[adapter.to_sym] || {}
+          (_axn_extension_metadata[adapter.to_sym] || {}).dup
         end
 
         # Copy-on-write: never mutate the inherited Hash in place (class_attribute shares the

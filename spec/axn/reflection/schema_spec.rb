@@ -488,6 +488,42 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a parent with a required subfield must itself be required (Bug V)" do
+    it "marks a defaulted/optional-looking parent as required when it has a required subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+      expect(schema[:properties][:payload][:required]).to include("name")
+    end
+
+    it "does not mark a defaulted parent as required when its only subfield is optional" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+        expects :nick, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "still marks a plain required parent (with a subfield) as required exactly once" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required].count("payload")).to eq(1)
+    end
+  end
+
   describe "presence alone does not infer type: string (Bug U)" do
     it "leaves a presence-only field untyped (accepts any JSON value) but still required" do
       klass = Class.new do

@@ -49,34 +49,42 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            nested_subfields = subfields_by_parent[config.reader_as]
-            if nested_subfields&.any?
-              prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
-              prop.delete(:format)
-              prop[:properties] ||= {}
-              prop[:required] ||= []
-              nested_subfields.each do |subconfig|
-                if subconfig.validations[:model]
-                  id_field, subprop = model_id_property(subconfig)
-                  prop[:properties][id_field] = subprop
-                  prop[:required] << id_field.to_s unless optional_for_schema?(subconfig)
-                else
-                  subprop = build_property(subconfig)
-                  prop[:properties][subconfig.field] = subprop
-                  prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig)
-                end
-              end
-              prop[:required] = nil if prop[:required].empty?
-            end
+            apply_nested_subfields!(prop, config, subfields_by_parent[config.reader_as])
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless optional_for_schema?(config)
+            parent_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+            required << config.field.to_s unless optional_for_schema?(config) && !parent_has_required_child
           end
         end
 
         schema = { type: "object", properties: }
         schema[:required] = required unless required.empty?
         schema
+      end
+
+      # Mutates `prop` in place to nest `nested_subfields` (if any) as `prop[:properties]`/
+      # `prop[:required]`. Forces the parent to `type: object` since it now has structure.
+      def apply_nested_subfields!(prop, config, nested_subfields)
+        return if nested_subfields.blank?
+
+        prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
+        prop.delete(:format)
+        prop[:properties] ||= {}
+        prop[:required] ||= []
+
+        nested_subfields.each do |subconfig|
+          if subconfig.validations[:model]
+            id_field, subprop = model_id_property(subconfig)
+            prop[:properties][id_field] = subprop
+            prop[:required] << id_field.to_s unless optional_for_schema?(subconfig)
+          else
+            subprop = build_property(subconfig)
+            prop[:properties][subconfig.field] = subprop
+            prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig)
+          end
+        end
+
+        prop[:required] = nil if prop[:required].empty?
       end
 
       def build_output(field_configs)
