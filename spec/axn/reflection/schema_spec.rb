@@ -132,4 +132,64 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:channel]).not_to have_key(:enum)
     end.not_to raise_error
   end
+
+  describe "model: fields" do
+    it "emits a nested <field>_id (not the field itself) for a nested model: subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      payload = schema[:properties][:payload]
+      expect(payload[:properties]).to have_key(:company_id)
+      expect(payload[:properties]).not_to have_key(:company)
+      expect(payload[:properties][:company_id]).to include(type: "integer")
+    end
+
+    it "leaves the <field>_id type unconstrained for a custom finder" do
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), finder: :find_by_token }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:company_id]).not_to have_key(:type)
+    end
+
+    it "still types <field>_id as integer for the default :find finder" do
+      klass = Class.new do
+        include Axn
+        expects :user, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:user_id]).to include(type: "integer")
+    end
+  end
+
+  describe "union type: [A, B]" do
+    it "preserves all classes as anyOf, not just the first" do
+      klass = Class.new do
+        include Axn
+        expects :val, type: [String, Integer]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:val][:anyOf]).to eq([{ type: "string" }, { type: "integer" }])
+      expect(schema[:properties][:val]).not_to have_key(:type)
+    end
+
+    it "still yields a plain type for a single-class type:" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:name]).to include(type: "string")
+      expect(schema[:properties][:name]).not_to have_key(:anyOf)
+    end
+  end
 end

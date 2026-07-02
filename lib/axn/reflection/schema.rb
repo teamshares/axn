@@ -47,9 +47,15 @@ module Axn
               prop[:properties] ||= {}
               prop[:required] ||= []
               nested_subfields.each do |subconfig|
-                subprop = build_property(subconfig)
-                prop[:properties][subconfig.field] = subprop
-                prop[:required] << subconfig.field.to_s unless optional?(subconfig) || default?(subconfig)
+                if subconfig.validations[:model]
+                  id_field, subprop = model_id_property(subconfig)
+                  prop[:properties][id_field] = subprop
+                  prop[:required] << id_field.to_s unless optional?(subconfig) || default?(subconfig)
+                else
+                  subprop = build_property(subconfig)
+                  prop[:properties][subconfig.field] = subprop
+                  prop[:required] << subconfig.field.to_s unless optional?(subconfig) || default?(subconfig)
+                end
               end
               prop[:required] = nil if prop[:required].empty?
             end
@@ -84,8 +90,12 @@ module Axn
         prop[:description] = config.description if config.description
 
         type_info = json_type_for(config.validations, for_output:)
-        prop[:type] = type_info[:type] if type_info[:type]
-        prop[:format] = type_info[:format] if type_info[:format]
+        if type_info[:anyOf]
+          prop[:anyOf] = type_info[:anyOf]
+        else
+          prop[:type] = type_info[:type] if type_info[:type]
+          prop[:format] = type_info[:format] if type_info[:format]
+        end
 
         prop[:default] = config.default if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
 
@@ -157,41 +167,48 @@ module Axn
         [props, required]
       end
 
-      def build_model_property(config, properties, required)
+      # Returns [id_field_symbol, prop_hash] for a model: config. Integer only for the default :find
+      # finder (id-based PK); a custom finder's token type is unknown, so leave it unconstrained.
+      def model_id_property(config)
         model_opts = config.validations[:model]
         klass = model_opts[:klass]
         klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
-
         id_field = :"#{config.field}_id"
-        prop = {
-          type: "integer",
-          description: config.description || "ID of the #{klass_name} record",
-        }
+        prop = { description: config.description || "ID of the #{klass_name} record" }
+        prop[:type] = "integer" if model_opts[:finder] == :find
+        [id_field, prop.compact]
+      end
 
-        properties[id_field] = prop.compact
+      def build_model_property(config, properties, required)
+        id_field, prop = model_id_property(config)
+        properties[id_field] = prop
         required << id_field.to_s unless optional?(config) || default?(config)
+      end
+
+      def single_type_for(klass, for_output:)
+        return { type: "boolean" } if klass == :boolean
+        return { type: "string", format: "uuid" } if klass == :uuid
+        return { type: "object" } if klass == :params
+
+        if TYPE_MAP.key?(klass)
+          result = { type: TYPE_MAP[klass] }
+          result[:format] = FORMAT_MAP[klass] if FORMAT_MAP.key?(klass)
+          return result
+        end
+
+        return { type: "object" } if for_output
+
+        { type: "string" }
       end
 
       def json_type_for(validations, for_output: false)
         if validations[:type]
           type_opt = validations[:type]
           klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-          klasses = Array(klass)
+          type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
+          return type_hashes.first if type_hashes.size == 1
 
-          klass = klasses.first
-          return { type: "boolean" } if klass == :boolean
-          return { type: "string", format: "uuid" } if klass == :uuid
-          return { type: "object" } if klass == :params
-
-          if TYPE_MAP.key?(klass)
-            result = { type: TYPE_MAP[klass] }
-            result[:format] = FORMAT_MAP[klass] if FORMAT_MAP.key?(klass)
-            return result
-          end
-
-          return { type: "object" } if for_output
-
-          return { type: "string" }
+          return { anyOf: type_hashes }
         end
 
         if validations[:inclusion]
