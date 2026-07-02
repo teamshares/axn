@@ -29,6 +29,13 @@ module Axn
 
       module_function
 
+      # KNOWN LIMITATION: only single-level subfields are nested — those whose `on:` names a
+      # top-level field's reader (`on: :address`, incl. an `as:`/`prefix:` alias). Deeper nesting
+      # is intentionally NOT represented in the schema: a dotted parent (`on: "address.billing"`)
+      # or a subfield-of-a-subfield (`on: :some_subfield`) validates and reads fine at runtime but
+      # is omitted here. Deferred until an adapter (axn-mcp PRO-2844 / axn-ruby_llm PRO-2845)
+      # actually needs deep tool-input schemas — at which point the nesting can be built as a full
+      # `on:`-path walk informed by the real consumer. See those tickets.
       def build_input(field_configs, subfield_configs = [])
         properties = {}
         required = []
