@@ -69,6 +69,28 @@ RSpec.describe Axn::Core::Tagging do
     end
   end
 
+  describe ".coerce" do
+    it "passes OpenTelemetry-legal scalars through unchanged" do
+      expect(Axn::Core::Tagging.coerce("us5")).to eq("us5")
+      expect(Axn::Core::Tagging.coerce(7)).to eq(7)
+      expect(Axn::Core::Tagging.coerce(1.5)).to eq(1.5)
+      expect(Axn::Core::Tagging.coerce(true)).to be(true)
+    end
+
+    it "stringifies a non-scalar value" do
+      expect(Axn::Core::Tagging.coerce(:active)).to eq("active")
+    end
+
+    it "coerces each element of an array (consistent with scalar coercion)" do
+      expect(Axn::Core::Tagging.coerce(%i[trial paid])).to eq(%w[trial paid])
+      expect(Axn::Core::Tagging.coerce([1, 2])).to eq([1, 2])
+    end
+
+    it "stringifies a mixed-type array to keep it OpenTelemetry-legal" do
+      expect(Axn::Core::Tagging.coerce([1, :a])).to eq(%w[1 a])
+    end
+  end
+
   describe "inheritance / mixin merge" do
     it "accumulates parent and subclass declarations, subclass overriding same key" do
       parent = build_axn { tag :a, -> { 1 } }

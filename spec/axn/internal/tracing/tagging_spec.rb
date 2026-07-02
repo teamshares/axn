@@ -79,6 +79,15 @@ RSpec.describe "Axn tagging integration" do
       expect(notifications.first[:tags]).to eq(sym: "active")
     end
 
+    it "coerces array elements before they reach the payload" do
+      action = build_axn do
+        tag(:states) { %i[trial paid] }
+        def call; end
+      end
+      action.call
+      expect(notifications.first[:tags]).to eq(states: %w[trial paid])
+    end
+
     it "sets no :tags key when no tags are declared" do
       build_axn { def call; end }.call
       expect(notifications.first).not_to have_key(:tags)

@@ -34,13 +34,26 @@ module Axn
         end
       end
 
-      # OpenTelemetry attributes accept only String / Numeric / Boolean / arrays
-      # of those. Pass those through; coerce anything else to a String.
+      # OpenTelemetry attributes accept only String / Numeric / Boolean, or a
+      # homogeneous array of one of those. Pass scalars through; coerce anything
+      # else to a String; coerce array elements (see #coerce_array).
       def self.coerce(value)
         case value
-        when String, Numeric, true, false, Array then value
+        when String, Numeric, true, false then value
+        when Array then coerce_array(value)
         else value.to_s
         end
+      end
+
+      # Coerce each element (so `[:trial, :paid]` becomes `["trial", "paid"]`,
+      # consistent with scalar coercion). OTel array attributes must be homogeneous
+      # in a single scalar type, so if per-element coercion still leaves a mix
+      # (e.g. `[1, :a]`), stringify every element to keep the array legal.
+      def self.coerce_array(array)
+        coerced = array.map { |element| coerce(element) }
+        return coerced if coerced.all?(String) || coerced.all?(Numeric) || coerced.all? { |e| [true, false].include?(e) }
+
+        coerced.map(&:to_s)
       end
 
       module ClassMethods
