@@ -11,6 +11,8 @@ module Axn
         #
         # @param action [Axn::Core] The action instance
         # @param retry_context [Axn::Async::RetryContext, nil] Optional async retry context
+        # @param tags [Hash] Optional declared observability tags (attached verbatim, omitted if empty)
+        # @param dimensions [Hash] Optional declared observability dimensions (attached verbatim, omitted if empty)
         # @return [Hash] Enhanced context with structure:
         #   {
         #     inputs: { ... },              # User's action inputs (filtered for sensitive data, always formatted)
@@ -19,7 +21,7 @@ module Axn
         #     current_attributes: { ... },  # Optional: Current.attributes if defined and present
         #     async: { ... }                # Optional: async retry context if applicable
         #   }
-        def build(action:, retry_context: nil)
+        def build(action:, retry_context: nil, tags: {}, dimensions: {})
           # Get structured execution context (inputs, outputs, and extra keys at top level)
           exec_ctx = action.execution_context
 
@@ -51,6 +53,15 @@ module Axn
             # Only include if the hash has any non-nil values
             context[:current_attributes] = format_hash_values(current_attrs) if current_attrs.present? && current_attrs.any? { |_k, v| !v.nil? }
           end
+
+          # Declared observability facets (PRO-2853), attached under reserved namespaced keys so a
+          # consumer's on_exception can route tag → freeform extra, dimension → indexed tags. Values
+          # arrive already coerced (Core::Tagging.coerce) and pre-duped (Core::Tagging.dup_facets) by
+          # the Executor, so they are attached verbatim — NOT re-run through format_hash_values (which
+          # would diverge from what the span/metrics observe) — and a handler mutating them can't
+          # corrupt the memoized maps. Omitted when empty, mirroring the other optional keys above.
+          context[:tags] = tags if tags.any?
+          context[:dimensions] = dimensions if dimensions.any?
 
           context
         end
