@@ -329,7 +329,6 @@ module Axn
           finalized?
           __action__
           standalone
-          bare
           inputs
         ].freeze
 
