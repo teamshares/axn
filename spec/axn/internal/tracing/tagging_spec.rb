@@ -1,0 +1,115 @@
+# frozen_string_literal: true
+
+RSpec.describe "Axn tagging integration" do
+  # --- Notification payload (no OpenTelemetry needed) ---
+  describe "payload[:tags]" do
+    let(:notifications) { [] }
+
+    before do
+      ActiveSupport::Notifications.subscribe("axn.call") do |_name, _start, _finish, _id, payload|
+        notifications << payload
+      end
+    end
+
+    after { ActiveSupport::Notifications.unsubscribe("axn.call") }
+
+    it "includes resolved tags from proc, symbol, and literal resolvers" do
+      action = build_axn do
+        expects :n
+        tag :from_proc, -> { n * 2 }
+        tag :from_symbol, :computed
+        tag :from_literal, "us5"
+        def computed = 42
+        def call; end
+      end
+      action.call(n: 5)
+      expect(notifications.first[:tags]).to eq(from_proc: 10, from_symbol: 42, from_literal: "us5")
+    end
+
+    it "omits a tag whose resolver returns nil (conditional escape hatch)" do
+      action = build_axn do
+        tag(:present) { "yes" }
+        tag(:absent) { nil }
+        def call; end
+      end
+      action.call
+      expect(notifications.first[:tags]).to eq(present: "yes")
+    end
+
+    it "isolates a raising resolver — siblings still land" do
+      allow(Axn::Internal::PipingError).to receive(:swallow)
+      action = build_axn do
+        tag(:good) { "ok" }
+        tag(:bad) { raise "boom" }
+        def call; end
+      end
+      result = action.call
+      expect(result).to be_ok
+      expect(notifications.first[:tags]).to eq(good: "ok")
+    end
+
+    it "coerces non-primitive values to strings" do
+      action = build_axn do
+        tag(:sym) { :active }
+        def call; end
+      end
+      action.call
+      expect(notifications.first[:tags]).to eq(sym: "active")
+    end
+
+    it "sets no :tags key when no tags are declared" do
+      build_axn { def call; end }.call
+      expect(notifications.first).not_to have_key(:tags)
+    end
+  end
+
+  # --- Span attributes (OpenTelemetry mock harness) ---
+  describe "axn.tag.<name> span attributes" do
+    let(:mock_tracer) { instance_double("OpenTelemetry::Trace::Tracer") }
+    let(:mock_span) { instance_double("OpenTelemetry::Trace::Span") }
+    let(:mock_tracer_provider) { instance_double("OpenTelemetry::Trace::TracerProvider") }
+
+    before do
+      @original_otel = defined?(OpenTelemetry) ? OpenTelemetry : nil
+      otel_module = Module.new { def self.tracer_provider; end }
+      trace_module = Module.new
+      status_class = Class.new
+      mock_status = instance_double("Status")
+      status_class.define_singleton_method(:error) { |_msg| mock_status }
+      trace_module.const_set(:Status, status_class)
+      otel_module.const_set(:Trace, trace_module)
+      stub_const("OpenTelemetry", otel_module)
+      allow(OpenTelemetry).to receive(:tracer_provider).and_return(mock_tracer_provider)
+      allow(mock_tracer_provider).to receive(:tracer).with("axn", Axn::VERSION).and_return(mock_tracer)
+      allow(mock_tracer).to receive(:in_span).and_yield(mock_span)
+      allow(mock_span).to receive(:set_attribute)
+      allow(mock_span).to receive(:record_exception)
+      allow(mock_span).to receive(:status=)
+    end
+
+    after do
+      Axn::Internal::Tracing.instance_variable_set(:@tracer, nil)
+      Axn::Internal::Tracing.instance_variable_set(:@tracer_provider, nil)
+      Axn::Internal::Tracing.instance_variable_set(:@supports_record_exception, nil)
+      if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
+        RSpec::Mocks.space.proxy_for(OpenTelemetry).reset
+        Object.send(:remove_const, :OpenTelemetry) if defined?(OpenTelemetry)
+        Object.const_set(:OpenTelemetry, @original_otel)
+      end
+    end
+
+    it "sets each declared tag as an axn.tag.<name> attribute" do
+      action = build_axn do
+        tag :company_id, -> { 123 }
+        def call; end
+      end
+      action.call
+      expect(mock_span).to have_received(:set_attribute).with("axn.tag.company_id", 123)
+    end
+
+    it "sets no axn.tag.* attribute when none declared" do
+      build_axn { def call; end }.call
+      expect(mock_span).not_to have_received(:set_attribute).with(a_string_starting_with("axn.tag."), anything)
+    end
+  end
+end

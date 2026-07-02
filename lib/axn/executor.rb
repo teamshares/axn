@@ -61,6 +61,7 @@ module Axn
         payload[:result] = result
         payload[:elapsed_time] = result.elapsed_time
         payload[:exception] = result.exception if result.exception
+        payload[:tags] = resolved_tags if @action_class._tags.any?
       rescue StandardError => e
         Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
       end
@@ -88,6 +89,8 @@ module Axn
               error_message = result.exception.message || result.exception.class.name
               span.status = OpenTelemetry::Trace::Status.error(error_message)
             end
+
+            resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
           rescue StandardError => e
             Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
           end
@@ -105,6 +108,12 @@ module Axn
       rescue StandardError => e
         Internal::PipingError.swallow("calling emit_metrics while tracing axn.call", action: @action, exception: e)
       end
+    end
+
+    def resolved_tags
+      return @resolved_tags if defined?(@resolved_tags)
+
+      @resolved_tags = @action_class._tags.any? ? Core::Tagging.resolve(@action_class._tags, action: @action) : {}
     end
 
     # =========================================================================
