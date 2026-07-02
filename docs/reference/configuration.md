@@ -60,8 +60,8 @@ The `context` hash is automatically formatted and contains:
   # ... any extra keys from set_execution_context or additional_execution_context hook
   # e.g. client_strategy__last_request: { url: ..., method: ..., status: ... }
   current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
-  tags: { ... }                 # Resolved `tag` facets (only when the action declares any)
-  dimensions: { ... }           # Resolved `dimension` facets (only when the action declares any)
+  tags: { ... },                # Resolved `tag` facets (only when the action declares any)
+  dimensions: { ... },          # Resolved `dimension` facets (only when the action declares any)
   async: { ... }                # Async retry info (only present in async context)
 }
 ```
