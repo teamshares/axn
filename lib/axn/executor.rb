@@ -61,8 +61,8 @@ module Axn
         payload[:result] = result
         payload[:elapsed_time] = result.elapsed_time
         payload[:exception] = result.exception if result.exception
-        payload[:tags] = resolved_tags if @action_class._tags.any?
-        payload[:dimensions] = resolved_dimensions if @action_class._dimensions.any?
+        payload[:tags] = Core::Tagging.dup_facets(resolved_tags) if @action_class._tags.any?
+        payload[:dimensions] = Core::Tagging.dup_facets(resolved_dimensions) if @action_class._dimensions.any?
       rescue StandardError => e
         Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
       end
@@ -97,7 +97,8 @@ module Axn
         emit_metrics_proc = Axn.config.emit_metrics
         if emit_metrics_proc
           result = @action.result
-          Internal::Callable.call_with_desired_shape(emit_metrics_proc, kwargs: { resource:, result:, dimensions: resolved_dimensions })
+          Internal::Callable.call_with_desired_shape(emit_metrics_proc,
+                                                     kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
         end
       rescue StandardError => e
         Internal::PipingError.swallow("calling emit_metrics while tracing axn.call", action: @action, exception: e)

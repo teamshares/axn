@@ -26,6 +26,22 @@ module Axn
         end
       end
 
+      # A private copy of a resolved facet map for one external consumer. The
+      # memoized maps are shared across sinks (notification payload, span
+      # attributes, emit_metrics), so a subscriber or emit_metrics block that
+      # mutates what it's handed would otherwise corrupt what the other sinks
+      # see. Values are only scalars or flat arrays of scalars (guaranteed by
+      # #coerce), so duping the map plus any Array/String values is a full copy.
+      def self.dup_facets(map)
+        map.transform_values do |value|
+          case value
+          when Array then value.map { |element| element.is_a?(String) ? element.dup : element }
+          when String then value.dup
+          else value
+          end
+        end
+      end
+
       def self.resolve_one(resolver, action:)
         case resolver
         when Proc then action.instance_exec(&resolver)
@@ -34,14 +50,25 @@ module Axn
         end
       end
 
-      # OpenTelemetry attributes accept only String / Integer / Float / Boolean,
-      # or a homogeneous array of one of those. Pass those scalars through; coerce
-      # anything else to a String (notably non-Integer/Float numerics like
-      # BigDecimal/Rational, which the OTel SDK drops); coerce array elements
-      # (see #coerce_array).
+      # OTLP int64 bounds — Integers outside this overflow at export.
+      INT64_RANGE = (-9_223_372_036_854_775_808..9_223_372_036_854_775_807)
+
+      # OpenTelemetry attributes accept only a String, Integer, Float, or Boolean,
+      # or a *homogeneous* array of those — anything else is silently dropped by
+      # the SDK. Since this is a framework primitive whose resolvers can return
+      # anything, coerce defensively so the result is always legal:
+      #   - non-finite Floats (NaN / Infinity) → String (rejected at export)
+      #   - Integers outside the int64 range → String (OTLP overflow)
+      #   - BigDecimal / Rational / Symbol / any other object → String (#to_s)
+      #   - Array → each element coerced, then kept only if the elements are
+      #     uniformly one legal scalar type, else all stringified (see
+      #     #coerce_array) — which also covers boolean arrays ([true, false] is
+      #     non-homogeneous by class) and nested arrays.
       def self.coerce(value)
         case value
-        when String, Integer, Float, true, false then value
+        when String, true, false then value
+        when Integer then INT64_RANGE.cover?(value) ? value : value.to_s
+        when Float then value.finite? ? value : value.to_s
         when Array then coerce_array(value)
         else value.to_s
         end
@@ -49,11 +76,11 @@ module Axn
 
       # Coerce each element (so `[:trial, :paid]` becomes `["trial", "paid"]`,
       # consistent with scalar coercion). OTel array attributes must be homogeneous
-      # in a single scalar type, so if per-element coercion still leaves a mix
-      # (e.g. `[1, :a]`), stringify every element to keep the array legal.
+      # in a single scalar type, so keep the array only when every coerced element
+      # is the same legal scalar type; otherwise stringify all of them.
       def self.coerce_array(array)
         coerced = array.map { |element| coerce(element) }
-        return coerced if coerced.all?(String) || coerced.all?(Numeric) || coerced.all? { |e| [true, false].include?(e) }
+        return coerced if coerced.all?(String) || coerced.all?(Integer) || coerced.all?(Float)
 
         coerced.map(&:to_s)
       end

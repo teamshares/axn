@@ -151,6 +151,24 @@ RSpec.describe "Axn tagging integration" do
       action.call
       expect(mock_span).to have_received(:set_attribute).with("axn.dimension.plan_tier", "pro")
     end
+
+    it "does not let a subscriber mutating the payload leak into span attributes" do
+      # A subscriber receives its own copy of the facet maps, so clearing/mutating
+      # them must not affect the (memoized) values the span reads afterward.
+      sub = ActiveSupport::Notifications.subscribe("axn.call") do |_n, _s, _f, _i, payload|
+        payload[:tags]&.clear
+        payload[:tags][:injected] = "leaked" if payload[:tags]
+      end
+      action = build_axn do
+        tag(:company_id) { 123 }
+        def call; end
+      end
+      action.call
+      expect(mock_span).to have_received(:set_attribute).with("axn.tag.company_id", 123)
+      expect(mock_span).not_to have_received(:set_attribute).with("axn.tag.injected", anything)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(sub)
+    end
   end
 
   describe "dimensions" do

@@ -87,13 +87,43 @@ RSpec.describe Axn::Core::Tagging do
       expect(Axn::Core::Tagging.coerce(BigDecimal("1.5"))).to be_a(String)
     end
 
+    it "stringifies non-finite floats (NaN / Infinity), which OpenTelemetry rejects" do
+      expect(Axn::Core::Tagging.coerce(Float::INFINITY)).to eq("Infinity")
+      expect(Axn::Core::Tagging.coerce(-Float::INFINITY)).to eq("-Infinity")
+      expect(Axn::Core::Tagging.coerce(Float::NAN)).to eq("NaN")
+    end
+
+    it "stringifies integers outside the OTLP int64 range, passing in-range ones through" do
+      expect(Axn::Core::Tagging.coerce(2**62)).to eq(2**62)
+      expect(Axn::Core::Tagging.coerce(2**63)).to eq((2**63).to_s)
+      expect(Axn::Core::Tagging.coerce(-(2**63) - 1)).to eq((-(2**63) - 1).to_s)
+    end
+
     it "coerces each element of an array (consistent with scalar coercion)" do
       expect(Axn::Core::Tagging.coerce(%i[trial paid])).to eq(%w[trial paid])
       expect(Axn::Core::Tagging.coerce([1, 2])).to eq([1, 2])
     end
 
-    it "stringifies a mixed-type array to keep it OpenTelemetry-legal" do
+    it "stringifies non-uniform and boolean arrays to keep them homogeneous and legal" do
       expect(Axn::Core::Tagging.coerce([1, :a])).to eq(%w[1 a])
+      expect(Axn::Core::Tagging.coerce([1, 2.5])).to eq(%w[1 2.5])
+      expect(Axn::Core::Tagging.coerce([true, false])).to eq(%w[true false])
+      expect(Axn::Core::Tagging.coerce([[1, 2], 3])).to eq(["[1, 2]", "3"])
+    end
+  end
+
+  describe ".dup_facets" do
+    it "returns an independent copy so mutation cannot leak back to the source" do
+      source = { states: %w[trial paid], name: +"acme", count: 3 }
+      copy = Axn::Core::Tagging.dup_facets(source)
+
+      copy[:states] << "churned"
+      copy[:states][0] << "!"
+      copy[:name] << "!"
+
+      expect(source[:states]).to eq(%w[trial paid])
+      expect(source[:name]).to eq("acme")
+      expect(copy[:count]).to eq(3)
     end
   end
 
