@@ -257,11 +257,11 @@ class ChargeCompany
 
   tag :company_id, -> { company.id }         # → span attribute axn.tag.company_id
   dimension :plan_tier, -> { company.plan }  # → span attribute axn.dimension.plan_tier (+ emit_metrics)
-  tag :charged_cents, -> { charged_cents }, from: :result  # reads a settled output
+  tag :charged_cents, -> { result.charged_cents }, from: :result  # reads a settled output
 end
 ```
 
-Each `tag`/`dimension` declares one facet: a name plus a resolver — a block/lambda (evaluated in the action's context, so `expects`/`exposes` readers are in scope), a symbol naming an action method, or a literal. A resolver returning `nil` omits that facet for the call; a resolver that raises is swallowed and that one facet skipped, leaving the others intact.
+Each `tag`/`dimension` declares one facet: a name plus a resolver — a block/lambda (evaluated in the action's context, so `expects` readers are in scope), a symbol naming an action method, or a literal. Note that `exposes` fields are **not** in-action readers (read them via `result.<name>`), so a `from: :result` facet that needs an exposed value reads it off `result` — see the `charged_cents` example above. A resolver returning `nil` omits that facet for the call; a resolver that raises is swallowed and that one facet skipped, leaving the others intact.
 
 **Resolution phase (`from:`).** By default (`from: :inputs`) a facet resolves early — before `call` runs. Pass `from: :result` for a facet whose resolver reads a **settled output** (an `exposes` value, the result). The distinction matters for one sink only — in-flight logs (below); every other sink sees both. A `from: :inputs` facet that mistakenly reads an unset output just resolves to `nil` and is omitted, so mark such facets `from: :result`.
 

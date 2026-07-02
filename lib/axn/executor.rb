@@ -333,16 +333,19 @@ module Axn
       trigger_on_success
     end
 
-    # Wrap the action body in a SemanticLogger tagged context carrying the input-phase facets, so
-    # every log line emitted during `call` is annotated with them (axn.tag.<name> / axn.dimension.<name>).
-    # No-op unless the configured logger is a SemanticLogger and at least one input-phase facet resolved
-    # — result-phase facets aren't available yet and only annotate the settle-time completion line.
+    # Resolve input-phase facets here — after inbound validation, before the body — so their values
+    # reflect pre-body inputs. This happens unconditionally (memoized, reused by the settle-time
+    # sinks), so the phase contract holds regardless of logger: without this, a plain-logger run
+    # would first resolve them later at the completion sinks, making a mutable input's value depend
+    # on the logger. Then, only if the configured logger is a SemanticLogger, wrap the body in a
+    # tagged context so every log line emitted during `call` is annotated (axn.tag.<name> /
+    # axn.dimension.<name>). Result-phase facets aren't available yet — they only annotate the
+    # settle-time completion line.
     def with_facet_log_context(&body)
       return body.call unless @action_class._tags.any? || @action_class._dimensions.any?
-      return body.call unless Internal::CallLogger.semantic_logger?
 
       named = Core::Tagging.namespaced(tags: resolved_input_tags, dimensions: resolved_input_dimensions)
-      return body.call unless named.any?
+      return body.call unless named.any? && Internal::CallLogger.semantic_logger?
 
       SemanticLogger.tagged(**named, &body)
     end
