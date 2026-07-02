@@ -262,7 +262,9 @@ end
 
 Each facet takes a resolver: a block/lambda (evaluated in the action's context, so `expects`/`exposes` readers are in scope), a symbol naming an action method, or a literal. Resolvers run at completion, so both input- and result-derived values are available. A resolver returning `nil` omits that facet for the call; a resolver that raises is swallowed and that one facet skipped, leaving the others intact.
 
-**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute (and, later, a log field / exception detail) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — today `emit_metrics`, later Sentry/Sidekiq tags — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
+**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute and a log field (and, later, an exception detail) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — today `emit_metrics`, later Sentry/Sidekiq tags — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
+
+**Log annotation.** Declared facets also annotate the [`auto_log`](#automatic-logging) completion line. When your configured logger is a [`SemanticLogger`](https://logger.rocketjob.io/) (e.g. via `rails_semantic_logger`), the facets are forwarded to its tagged context as named tags — `axn.tag.<name>` / `axn.dimension.<name>` — so they become structured log fields, and dimensions are legible as Datadog log facets. With any other logger they're appended as a readable suffix, e.g. `… [tags: {company_id: 7}] [dimensions: {plan_tier: "pro"}]`. Axn takes no dependency on `semantic_logger`; it forwards only when the configured logger is already one.
 
 ## `emit_metrics`
 

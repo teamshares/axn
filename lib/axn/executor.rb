@@ -177,7 +177,20 @@ module Axn
         error_context: "logging after hook",
         context_direction: :outbound,
         context_instance: @action,
+        facets: log_facets,
       )
+    end
+
+    # Copies (never the memoized maps) of the resolved facets for the log sink, so a suffix/tagged
+    # annotation can never mutate what the span / payload / emit_metrics sinks share. Omitted
+    # entirely when nothing is declared, so an action with no facets does zero extra work here.
+    def log_facets
+      return nil unless @action_class._tags.any? || @action_class._dimensions.any?
+
+      {
+        tags: Core::Tagging.dup_facets(resolved_tags),
+        dimensions: Core::Tagging.dup_facets(resolved_dimensions),
+      }
     end
 
     def top_level_separator

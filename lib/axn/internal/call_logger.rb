@@ -22,7 +22,8 @@ module Axn
       # @param context_direction [Symbol, nil] Direction for context logging (:inbound or :outbound)
       # @param context_instance [Object, nil] Action instance for instance-level context_for_logging
       # @param context_data [Hash, nil] Raw data for class-level context_for_logging
-      def log_at_level(
+      # @param facets [Hash, nil] Resolved observability facets ({ tags:, dimensions: }) to annotate the line with
+      def log_at_level( # rubocop:disable Metrics/ParameterLists
         action_class,
         level:,
         message_parts:,
@@ -33,7 +34,8 @@ module Axn
         prefix: nil,
         context_direction: nil,
         context_instance: nil,
-        context_data: nil
+        context_data: nil,
+        facets: nil
       )
         return unless level
 
@@ -55,12 +57,54 @@ module Axn
         full_message_parts = context_str ? message_parts + [context_str] : message_parts
         message = full_message_parts.compact.join(join_string)
 
-        action_class.public_send(level, message, before:, after:, prefix:)
+        # Annotate with resolved tag/dimension facets: structured named tags when the configured
+        # logger is a SemanticLogger (legible as log fields / Datadog facets), otherwise a readable
+        # suffix on the plain line. Mutually exclusive — semantic_logger's own formatter renders the
+        # named tags, so the suffix would be redundant there.
+        named_tags = facets ? facet_named_tags(facets) : {}
+
+        if named_tags.any? && semantic_logger?
+          SemanticLogger.tagged(**named_tags) do
+            action_class.public_send(level, message, before:, after:, prefix:)
+          end
+        else
+          message += facet_suffix(facets) if named_tags.any?
+          action_class.public_send(level, message, before:, after:, prefix:)
+        end
       rescue StandardError => e
         Axn::Internal::PipingError.swallow(error_context, action: action_class, exception: e)
       end
 
       private
+
+      # True only when the logger that will actually emit is a SemanticLogger — merely having the
+      # gem loaded isn't enough, since its thread-local tagged context is read only by SemanticLogger
+      # instances (see design: gating on the configured logger avoids facets vanishing from a line
+      # emitted by a plain Logger).
+      def semantic_logger?
+        defined?(SemanticLogger::Logger) && Axn.config.logger.is_a?(SemanticLogger::Logger)
+      end
+
+      # Flat, namespaced merge of both facet maps, mirroring the span-attribute convention
+      # (axn.tag.<name> / axn.dimension.<name>) so the two namespaces never collide.
+      def facet_named_tags(facets)
+        named = {}
+        facets[:tags]&.each { |name, value| named[:"axn.tag.#{name}"] = value }
+        facets[:dimensions]&.each { |name, value| named[:"axn.dimension.#{name}"] = value }
+        named
+      end
+
+      # Labeled readable suffix for the plain line, each group rendered with the same
+      # format_object + MAX_CONTEXT_LENGTH truncation as inbound/outbound context. An empty
+      # (or absent) group is omitted entirely.
+      def facet_suffix(facets)
+        return "" unless facets
+
+        %i[tags dimensions].filter_map do |key|
+          formatted = format_context(facets[key])
+          " [#{key}: #{formatted}]" if formatted
+        end.join
+      end
 
       # Formats context data for logging, with truncation if needed
       def format_context(data)
