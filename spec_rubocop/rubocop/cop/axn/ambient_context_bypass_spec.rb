@@ -32,4 +32,20 @@ RSpec.describe RuboCop::Cop::Axn::AmbientContextBypass do
   it "does not flag a Current call with arguments" do
     expect_no_offenses("Current.foo(bar)")
   end
+
+  it "does not flag Current.reset (lifecycle API, not an attribute read)" do
+    expect_no_offenses("Current.reset")
+  end
+
+  it "does not flag Current.instance (lifecycle API, not an attribute read)" do
+    expect_no_offenses("Current.instance")
+  end
+
+  it "does not flag Current.attributes (lifecycle API, not an attribute read)" do
+    expect_no_offenses("Current.attributes")
+  end
+
+  it "does not flag ::Current.reset (lifecycle API, not an attribute read)" do
+    expect_no_offenses("::Current.reset")
+  end
 end

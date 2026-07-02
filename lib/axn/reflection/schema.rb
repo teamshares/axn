@@ -138,7 +138,11 @@ module Axn
           end
           prop[:items] = items unless items.empty?
         elsif shape
-          # Hash / class field — shape: members are the object's own properties.
+          # Hash / class field — shape: members are the object's own properties. A shaped
+          # object field IS an object, even when the field's declared type: (e.g. a
+          # Data.define subclass) isn't in TYPE_MAP and json_type_for fell back to "string".
+          prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
+          prop.delete(:format)
           # If the field type is a Data.define subclass, use its members as the bare
           # baseline so unannotated members still appear (same enrich logic as of:).
           member_props, required = member_properties(shape[:members], for_output:)

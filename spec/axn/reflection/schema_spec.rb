@@ -280,6 +280,45 @@ RSpec.describe Axn::Reflection::Schema do
       expect(props[:required]).to include("enabled")
       expect(props[:required]).to include("label")
     end
+
+    it "types a class-shaped field as object, not the string fallback from json_type_for" do
+      cfg_klass = Data.define(:name)
+      klass = Class.new do
+        include Axn
+        expects :cfg, type: cfg_klass do
+          field :name, type: String
+        end
+      end
+      prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:cfg]
+
+      expect(prop[:type]).to eq("object")
+      expect(prop[:properties]).to have_key(:name)
+    end
+
+    it "allows null alongside object for a nil-allowed class-shaped field" do
+      cfg_klass = Data.define(:name)
+      klass = Class.new do
+        include Axn
+        expects :cfg, type: cfg_klass, allow_nil: true do
+          field :name, type: String
+        end
+      end
+      prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:cfg]
+
+      expect(prop[:type]).to eq(%w[object null])
+    end
+
+    it "still types an explicit Hash shape as object" do
+      klass = Class.new do
+        include Axn
+        expects :cfg, type: Hash do
+          field :name, type: String
+        end
+      end
+      prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:cfg]
+
+      expect(prop[:type]).to eq("object")
+    end
   end
 
   describe "union type: [A, B]" do
