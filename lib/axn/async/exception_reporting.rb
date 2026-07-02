@@ -66,11 +66,11 @@ module Axn
 
         # Best-effort resolution of an action's declared facets on the async exhaustion/discard path,
         # where no live executed instance survives. Reconstructs a bare instance from job_args and
-        # resolves against it; Core::Tagging.resolve isolates each resolver (nil omits, a raise is
-        # swallowed), so unresolvable (e.g. output-derived) facets simply drop. Values are dup_facets-
-        # copied before handing them to the reporter (a literal resolver returns a shared class-level
-        # object, so an in-place mutation would otherwise leak). Returns empty maps on any failure —
-        # a facet-less report is always preferable to a lost one.
+        # resolves both facet phases against it; Core::Tagging.resolve isolates each resolver (nil
+        # omits, a raise is swallowed), so unresolvable facets (a `from: :result` reader with no
+        # settled result) simply drop. resolve dups each value at resolution, so the maps are already
+        # the reporter's private, mutation-safe copies (a literal resolver returns a shared class-level
+        # object otherwise). Returns empty maps on any failure — a facet-less report beats a lost one.
         def resolve_facets(action_class:, job_args:)
           return { tags: {}, dimensions: {} } unless action_class._tags.any? || action_class._dimensions.any?
 
@@ -78,16 +78,20 @@ module Axn
           # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
           # preprocessed inputs resolve as the worker saw them (not the raw job args).
           Axn::Executor.new(instance).prepare_inbound_for_facets!
-          # dup_facets deep-copies values so a reporter mutating one in place (e.g. `.upcase!` on a
-          # literal `tag :region, "us5"`, which resolves to the shared class-level String) can't
-          # corrupt that literal for subsequent reports — mirrors the sync executor report path.
           {
-            tags: Core::Tagging.dup_facets(Core::Tagging.resolve(action_class._tags, action: instance)),
-            dimensions: Core::Tagging.dup_facets(Core::Tagging.resolve(action_class._dimensions, action: instance)),
+            tags: _resolve_both_phases(action_class._tags, instance),
+            dimensions: _resolve_both_phases(action_class._dimensions, instance),
           }
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
           { tags: {}, dimensions: {} }
+        end
+
+        # Resolve both facet phases (input- and result-phase, see Core::Tagging::Facet) and merge.
+        # On this path there's no settled result, so result-phase resolvers reading it drop out.
+        def _resolve_both_phases(map, instance)
+          Core::Tagging.resolve(map, action: instance, from: :inputs)
+                       .merge(Core::Tagging.resolve(map, action: instance, from: :result))
         end
 
         # Restore the job args to the same live form the worker's `.call` would see, so a facet that

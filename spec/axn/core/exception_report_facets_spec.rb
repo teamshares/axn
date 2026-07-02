@@ -85,7 +85,7 @@ RSpec.describe "Exception-report facets (on_exception context)" do
 
     Class.new do
       include Axn
-      tag(:ms) { result.elapsed_time }
+      tag(:ms, from: :result) { result.elapsed_time } # result-phase: reads settled state
       def call = raise("boom")
     end.call
 

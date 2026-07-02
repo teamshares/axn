@@ -149,7 +149,7 @@ RSpec.describe Axn::Async::ExceptionReporting do
           expects :company_id, type: Integer
           exposes :saved_id
           tag :company_id, -> { company_id }
-          tag :saved_id, -> { saved_id } # output — unresolvable on the discard path
+          tag(:saved_id, from: :result) { result.saved_id } # output — unresolvable on the discard path
         end
         received = nil
         allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
@@ -209,7 +209,7 @@ RSpec.describe Axn::Async::ExceptionReporting do
         )
 
         # the class-level literal the resolver returns is untouched, so the next report is pristine
-        expect(action_class._tags[:region]).to eq("us5")
+        expect(action_class._tags[:region].resolver).to eq("us5")
       end
 
       it "strips a job-arg named tags/dimensions so user input can't masquerade as facets" do
