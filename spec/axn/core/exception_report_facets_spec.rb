@@ -35,9 +35,13 @@ RSpec.describe "Exception-report facets (on_exception context)" do
   end
 
   it "hands the reporter its own copy — mutation can't corrupt other sinks" do
+    captured_tags = nil
     payload_tags = nil
     sub = ActiveSupport::Notifications.subscribe("axn.call") { |*args| payload_tags = args.last[:tags] }
-    Axn.config.instance_variable_set(:@on_exception, proc { |context:| context[:tags][:company_id] = "MUTATED" })
+    Axn.config.instance_variable_set(:@on_exception, proc { |context:|
+      context[:tags][:company_id] = "MUTATED"
+      captured_tags = context[:tags]
+    })
 
     Class.new do
       include Axn
@@ -45,8 +49,9 @@ RSpec.describe "Exception-report facets (on_exception context)" do
       def call = raise("boom")
     end.call
 
-    # on_exception mutated its dup before the notification payload was built from a fresh dup of the
-    # untouched memoized map, so the subscriber still sees the real value.
+    # The reporter really received a live, mutable copy...
+    expect(captured_tags).to eq(company_id: "MUTATED")
+    # ...but its mutation didn't reach the independent notification-payload sink.
     expect(payload_tags).to eq(company_id: 7)
   ensure
     ActiveSupport::Notifications.unsubscribe(sub)
