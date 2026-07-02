@@ -50,3 +50,55 @@ RSpec.describe "Axn ambient_context (reader + subfield parent)" do
     end.to raise_error(Axn::ContractViolation::ReservedAttributeError)
   end
 end
+
+RSpec.describe "Axn ambient_context resolution" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  let(:klass) do
+    Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      exposes :ctx, allow_blank: true
+      def call = expose(ctx: ambient_context)
+    end
+  end
+
+  it "filters the hash to declared ambient keys (explicit path)" do
+    result = klass.call(ambient_context: { company_id: 7, secret: "leak" })
+    expect(result.ctx).to eq(company_id: 7)
+  end
+
+  it "falls back to the configured provider, then filters to declared keys" do
+    Axn.config.ambient_context_provider = -> { { company_id: 99, other: "x" } }
+    result = klass.call
+    expect(result.ctx).to eq(company_id: 99)
+  end
+
+  it "explicit REPLACES the provider (no silent merge)" do
+    Axn.config.ambient_context_provider = -> { { company_id: 99 } }
+    result = klass.call(ambient_context: { company_id: 1 })
+    expect(result.ctx).to eq(company_id: 1)
+  end
+
+  it "fails inbound validation for a required ambient subfield when empty" do
+    result = klass.call
+    expect(result).not_to be_ok
+  end
+end
+
+RSpec.describe "Axn::Core::AmbientContext.default_source" do
+  it "merges attributes across registered CurrentAttributes descendants" do
+    skip "ActiveSupport::CurrentAttributes required" unless defined?(ActiveSupport::CurrentAttributes)
+
+    # ActiveSupport::CurrentAttributes keys its per-class instance storage off the class's `name`,
+    # so an anonymous class silently breaks `.instance`/`.reset` — stub_const both gives it a name
+    # and guarantees the constant doesn't leak into other specs.
+    current = Class.new(ActiveSupport::CurrentAttributes) { attribute :company_id }
+    stub_const("AmbientContextSpecCurrent", current)
+    current.instance.company_id = 5
+    merged = Axn::Core::AmbientContext.default_source
+    expect(merged[:company_id]).to eq(5)
+  ensure
+    current&.reset
+  end
+end

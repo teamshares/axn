@@ -9,6 +9,18 @@ module Axn
     module AmbientContext
       PARENT = :ambient_context
 
+      # Default ambient-context source: a live view over every registered `ActiveSupport::
+      # CurrentAttributes`. Core filters the result down to each Axn's declared ambient keys
+      # (see `_filter_to_declared`), so returning everything here is safe — undeclared keys are
+      # never readable and never injected.
+      def self.default_source
+        return {} unless defined?(ActiveSupport::CurrentAttributes)
+
+        ActiveSupport::CurrentAttributes.descendants.each_with_object({}) do |klass, acc|
+          acc.merge!(klass.instance.attributes)
+        end
+      end
+
       # Instance reader used by ContractForSubfields.resolve_parent (public_send(:ambient_context)).
       def ambient_context
         return @__ambient_context if defined?(@__ambient_context)
@@ -18,15 +30,33 @@ module Axn
 
       private
 
-      # Overridden in Task 9 with the full explicit → provider → {} resolution + declared-only filter.
+      # Resolution chain: explicit `ambient_context:` kwarg, else the configured provider (or
+      # `default_source` when no provider is configured), else {}. Explicit REPLACES the provider
+      # entirely — no merge. The result is filtered to declared ambient subfield keys.
       def _resolve_ambient_context
-        _explicit_ambient_context || {}
+        source = _explicit_ambient_context
+        source = _provider_source if source.nil?
+        source ||= {}
+        _filter_to_declared(source)
+      end
+
+      def _provider_source
+        provider = Axn.config.ambient_context_provider
+        provider ? provider.call : Axn::Core::AmbientContext.default_source
       end
 
       def _explicit_ambient_context
         raw = @__context.provided_data
         key = raw.respond_to?(:with_indifferent_access) ? raw.with_indifferent_access : raw
         key[PARENT]
+      end
+
+      # Only the declared ambient subfield keys survive — the hash never carries a process-wide dump.
+      def _filter_to_declared(source)
+        indifferent = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
+        self.class.subfield_configs
+            .select { |c| c.on.to_sym == PARENT }
+            .each_with_object({}) { |c, acc| acc[c.field] = indifferent[c.field] if indifferent.key?(c.field) }
       end
     end
   end
