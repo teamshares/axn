@@ -122,16 +122,20 @@ module Axn
       Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
     end
 
-    def resolved_tags
-      return @resolved_tags if defined?(@resolved_tags)
+    # Facets resolve in two phases (see Core::Tagging::Facet): input-phase facets resolve from
+    # inputs (eagerly, before the body — so they can annotate in-flight logs), result-phase facets
+    # resolve at settle. Each phase is memoized and resolved once; the settle-time sinks (span,
+    # payload, emit_metrics, completion-line log) read the merged view.
+    def resolved_tags = @resolved_tags ||= resolved_input_tags.merge(resolved_result_tags)
+    def resolved_dimensions = @resolved_dimensions ||= resolved_input_dimensions.merge(resolved_result_dimensions)
 
-      @resolved_tags = @action_class._tags.any? ? Core::Tagging.resolve(@action_class._tags, action: @action) : {}
-    end
+    def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :input)
+    def resolved_result_tags = @resolved_result_tags ||= _resolve_facets(@action_class._tags, :result)
+    def resolved_input_dimensions = @resolved_input_dimensions ||= _resolve_facets(@action_class._dimensions, :input)
+    def resolved_result_dimensions = @resolved_result_dimensions ||= _resolve_facets(@action_class._dimensions, :result)
 
-    def resolved_dimensions
-      return @resolved_dimensions if defined?(@resolved_dimensions)
-
-      @resolved_dimensions = @action_class._dimensions.any? ? Core::Tagging.resolve(@action_class._dimensions, action: @action) : {}
+    def _resolve_facets(facets, phase)
+      facets.any? ? Core::Tagging.resolve(facets, action: @action, phase:) : {}
     end
 
     # =========================================================================
@@ -308,13 +312,15 @@ module Axn
     # CONTRACT (Inside zone)
     # =========================================================================
 
-    def with_contract(&)
+    def with_contract(&block)
       return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
 
       validate_contract!(:inbound)
 
-      if handle_early_completion_if_raised(&)
+      # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
+      # resolve — wrap the body so in-flight log lines inherit them under a SemanticLogger.
+      if handle_early_completion_if_raised { with_facet_log_context(&block) }
         apply_defaults!(:outbound)
         validate_contract!(:outbound)
         return
@@ -325,6 +331,20 @@ module Axn
 
       @context.__finalize!
       trigger_on_success
+    end
+
+    # Wrap the action body in a SemanticLogger tagged context carrying the input-phase facets, so
+    # every log line emitted during `call` is annotated with them (axn.tag.<name> / axn.dimension.<name>).
+    # No-op unless the configured logger is a SemanticLogger and at least one input-phase facet resolved
+    # — result-phase facets aren't available yet and only annotate the settle-time completion line.
+    def with_facet_log_context(&body)
+      return body.call unless @action_class._tags.any? || @action_class._dimensions.any?
+      return body.call unless Internal::CallLogger.semantic_logger?
+
+      named = Core::Tagging.namespaced(tags: resolved_input_tags, dimensions: resolved_input_dimensions)
+      return body.call unless named.any?
+
+      SemanticLogger.tagged(**named, &body)
     end
 
     def handle_early_completion_if_raised

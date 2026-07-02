@@ -61,7 +61,7 @@ module Axn
         # logger is a SemanticLogger (legible as log fields / Datadog facets), otherwise a readable
         # suffix on the plain line. Mutually exclusive — semantic_logger's own formatter renders the
         # named tags, so the suffix would be redundant there.
-        named_tags = facets ? facet_named_tags(facets) : {}
+        named_tags = facets ? Axn::Core::Tagging.namespaced(tags: facets[:tags] || {}, dimensions: facets[:dimensions] || {}) : {}
 
         if named_tags.any? && semantic_logger?
           SemanticLogger.tagged(**named_tags) do
@@ -75,24 +75,15 @@ module Axn
         Axn::Internal::PipingError.swallow(error_context, action: action_class, exception: e)
       end
 
-      private
-
       # True only when the logger that will actually emit is a SemanticLogger — merely having the
       # gem loaded isn't enough, since its thread-local tagged context is read only by SemanticLogger
       # instances (see design: gating on the configured logger avoids facets vanishing from a line
-      # emitted by a plain Logger).
+      # emitted by a plain Logger). Public so the Executor can gate the in-flight body context on it.
       def semantic_logger?
         defined?(SemanticLogger::Logger) && Axn.config.logger.is_a?(SemanticLogger::Logger)
       end
 
-      # Flat, namespaced merge of both facet maps, mirroring the span-attribute convention
-      # (axn.tag.<name> / axn.dimension.<name>) so the two namespaces never collide.
-      def facet_named_tags(facets)
-        named = {}
-        facets[:tags]&.each { |name, value| named[:"axn.tag.#{name}"] = value }
-        facets[:dimensions]&.each { |name, value| named[:"axn.dimension.#{name}"] = value }
-        named
-      end
+      private
 
       # Labeled readable suffix for the plain line, each group rendered with the same
       # format_object + MAX_CONTEXT_LENGTH truncation as inbound/outbound context. An empty

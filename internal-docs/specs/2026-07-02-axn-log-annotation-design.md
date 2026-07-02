@@ -1,88 +1,86 @@
-# Axn log annotation (`tag` / `dimension` on auto-log lines) — design
+# Axn log annotation + facet resolution phases — design
 
 **Ticket:** [PRO-2854 — \[Axn\] Annotate log lines with tag/dimension facets](https://linear.app/teamshares/issue/PRO-2854/axn-annotate-log-lines-with-tagdimension-facets)
 
-**Foundation:** [PR #140](https://github.com/teamshares/axn/pull/140) (merged) — the `tag`/`dimension` facet system ([PRO-2850](https://linear.app/teamshares/issue/PRO-2850/axn-support-tagging) / [PRO-2852](https://linear.app/teamshares/issue/PRO-2852/axn-add-dimension-support-for-bounded-tags)). Predecessor: [os-app#4976](https://github.com/teamshares/os-app/pull/4976).
+**Foundation:** [PR #140](https://github.com/teamshares/axn/pull/140) (merged, unreleased) — the `tag`/`dimension` facet system ([PRO-2850](https://linear.app/teamshares/issue/PRO-2850/axn-support-tagging) / [PRO-2852](https://linear.app/teamshares/issue/PRO-2852/axn-add-dimension-support-for-bounded-tags)). This design **revises #140's resolution timing and DSL** (safe: nothing is released yet). Predecessor: [os-app#4976](https://github.com/teamshares/os-app/pull/4976).
 
 ## Problem
 
-PR #140 landed `tag` (high-cardinality) and `dimension` (bounded) as declarative observability facets and wired them into three sinks: the `axn.call` OpenTelemetry span (`axn.tag.<name>` / `axn.dimension.<name>` attributes), the `axn.call` notification payload (`payload[:tags]` / `payload[:dimensions]`), and — for `dimension` — the `emit_metrics` hook. The resolved key→value maps were deliberately made surface-neutral so follow-on sinks could consume them without re-resolving.
+PR #140 resolved every `tag`/`dimension` facet once, at settle-time, so resolvers could read the settled result. That was the right call for the span / payload / `emit_metrics` sinks, but it permanently forecloses the original os-app goal: tagging an action's **in-flight log lines** with its domain context (so every `log`/`info` during `call` carries `company_id` etc.). In-flight tagging needs the facets resolved *before* the body runs — which settle-time resolution can't provide.
 
-Log annotation is the next such sink, and the original os-app goal. `EventHandlers::Base#log` once wrapped every log line in `SemanticLogger.tagged({ ddtags: "company_name:…,event:…" })` to correlate event-handler logs with a company/event in Datadog; it was hand-wired at one call site, never consumed, and os-app#4976 removed it. This does the same idea at the framework layer: axn's own `auto_log` output should carry the facets the action already declares, with no per-call wiring.
+Since most facets are input-derived in practice (`company.id`, record ids), and since result-derived resolution can't reach in-flight logs, defaulting to settle-time backs us into a corner we can't leave without a breaking change. This design introduces a per-facet **resolution phase** so the common case (input-derived) resolves early and the rare case (result-derived) opts in — decided now, while unreleased.
 
-## Decision
+## Two orthogonal axes
 
-Annotate the `auto_log` **after-line** (the `Execution completed …` line emitted by `Internal::CallLogger`, driven by `auto_log`) with the resolved `tag`/`dimension` facets.
+A facet is described by two independent choices:
 
-Only the after-line is annotated. Facets resolve at the settled-result point (`Executor#with_logging`'s `ensure` calls `log_after` after `elapsed_time` is settled and before span close), reading the same lazy/memoized `resolved_tags` / `resolved_dimensions` that the span and payload sinks read. The before-line (`About to execute`) runs before resolution, so it carries no facets and is unchanged.
+- **Cardinality** (`tag` vs `dimension`, from #140): governs sink routing. `dimension` is bounded and additionally feeds `emit_metrics`. Unchanged.
+- **Resolution phase** (`:input` default, `:result` opt-in, new): governs *when* the resolver runs and whether it can reach in-flight logs.
 
-Routing depends on whether the configured logger is a `SemanticLogger` (or `rails_semantic_logger`, which is built on it):
+Any facet is one of {tag, dimension} × {input, result}.
 
-- **Configured logger is a `SemanticLogger`** → forward the facets to its tagged context as **named tags**, so they land as structured log fields (and, for `dimension`, legible Datadog log facets). The plain message is not decorated with a suffix — semantic_logger's own formatter renders named tags.
-- **Otherwise** (plain `Logger`, or any non-semantic logger) → append a readable, labeled suffix to the plain message line.
+## DSL
 
-Axn takes **no dependency** on `semantic_logger`. The gem is used only if the *configured logger* is already an instance of it.
+Drop the multi-key hash form (`tag a: ->{}, b: ->{}`). Keep name+resolver and name+block; add a per-facet `result:` flag. With the hash form gone, keyword args unambiguously mean modifiers, and the parser simplifies.
 
-### Why gate on the configured logger, not `defined?(SemanticLogger)`
+```ruby
+tag :company_id, -> { company.id }                     # input phase (default)
+dimension(:plan_tier) { company.plan_tier }            # input phase (default)
+tag :charged_cents, -> { charged_cents }, result: true # result phase (reads a settled output)
+```
 
-`SemanticLogger.tagged` sets a thread-local context that only a `SemanticLogger` *consumes*. If we gated on the constant merely being defined, an app that loads semantic_logger as a transitive dependency but configures `Axn.config.logger` to a plain `Logger` would set a tagged context nothing reads — the facets would vanish from that line, with no readable suffix to fall back on. Gating on `Axn.config.logger.is_a?(SemanticLogger::Logger)` makes the two paths mutually exclusive and guarantees every annotated line carries the facets somewhere. (If `Rails.logger` is an `ActiveSupport::BroadcastLogger` wrapping a semantic logger, `is_a?` is false and we fall back to the suffix — correct, just not structured.)
+Each `tag`/`dimension` call now declares exactly one facet. The removed hash form (both `a: ->{}` symbol-key and `"a" => ->{}` hashrocket) now raises `ArgumentError`.
+
+## Resolution timing
+
+- **Input facets** resolve eagerly, right after inbound validation/defaults (inputs are canonical), lazily memoized. If the body never runs (inbound validation failure), they resolve lazily at settle instead — inputs are present either way.
+- **Result facets** resolve at settle (today's timing).
+- Each facet resolves **exactly once** — its phase selects the single pass it runs in. No double-resolution.
+
+Storage: `_tags` / `_dimensions` map `name → Facet(resolver:, result:)` (a `Data`). `Core::Tagging.resolve(facets, action:, phase:)` filters by phase and returns the coerced `name → value` map for that phase.
+
+## Sink routing
+
+| Sink | Input facets | Result facets |
+|---|---|---|
+| Span attrs / payload / `emit_metrics` | ✓ | ✓ |
+| Auto-log **completion line** | ✓ | ✓ |
+| **In-flight logs** during `call` (semantic_logger only) | ✓ | ✗ (unresolved when the line fires) |
+
+The span, payload, `emit_metrics`, and completion line all read the **merged** (input+result) maps at settle — the same read sites as #140, now unioning both phases. `resolved_tags` = `resolved_input_tags.merge(resolved_result_tags)` (and likewise dimensions).
+
+The new capability is **in-flight tagging**: when the configured logger is a `SemanticLogger`, the executor wraps the body (`with_hooks { call }`) in `SemanticLogger.tagged(**input_named_tags)`, so every log line emitted during `call` inherits the input-phase facets as named tags (`axn.tag.<name>` / `axn.dimension.<name>`). Result facets can't reach those lines — they don't exist yet when the lines fire.
+
+The completion line gets its own tagged context (all facets) at emit time in `CallLogger`; the body context has already closed by then, so there's no double-nesting.
+
+## Footgun (documented, non-crashing)
+
+Default input means a resolver reading a settled output without `result: true` resolves early and yields `nil` → the facet is silently omitted (per-facet swallow via `PipingError`, no crash). Docs steer: "reads only inputs? leave it; reads an exposed/result value? mark `result: true`."
 
 ## Mechanism
 
-### Executor
+- **`Core::Tagging`**: `Facet` data type; single-facet parser (no hash form) with `result:`; `resolve(..., phase:)`; `namespaced(tags:, dimensions:)` builds the symbol-keyed `axn.tag.*` / `axn.dimension.*` named-tags hash (shared by the body context and the completion line).
+- **`Executor`**: split `resolved_input_tags` / `resolved_result_tags` (+ dimensions), memoized; `resolved_tags` / `resolved_dimensions` return the merge (unchanged read sites). New `with_facet_log_context` wraps the body invocation inside `with_contract` (after inbound validation) in `SemanticLogger.tagged` when the logger is semantic and input facets exist. `log_facets` (for the completion line) hands `dup_facets` copies of the merged maps.
+- **`Internal::CallLogger`**: `semantic_logger?` made public (executor reuses it); completion-line annotation uses `Core::Tagging.namespaced`; unchanged otherwise (named tags under a SemanticLogger, labeled suffix respecting `MAX_CONTEXT_LENGTH` otherwise).
 
-`Executor#log_after_at_level` already calls `Internal::CallLogger.log_at_level` and already owns the memoized `resolved_tags` / `resolved_dimensions`. It passes them in via a new `facets:` kwarg, handing **copies** (per constraint) so the log sink can never mutate what the span/payload/`emit_metrics` sinks share:
+## Constraints (from ticket, still honored)
 
-```ruby
-facets: {
-  tags: Core::Tagging.dup_facets(resolved_tags),
-  dimensions: Core::Tagging.dup_facets(resolved_dimensions),
-}
-```
-
-Only the after-line passes `facets:`. `log_before` and the class-level async-invocation logging path leave it defaulted (nil/empty), so they are unchanged.
-
-### CallLogger
-
-`log_at_level` gains a `facets:` keyword (default `nil`). When present and non-empty, after the message is assembled but before emit:
-
-1. Build `named_tags`, the namespaced flat merge of both maps — keys mirror the span-attribute convention for cross-sink parity:
-   - `tags[:company_id] = 5` → `"axn.tag.company_id" => 5`
-   - `dimensions[:plan] = "trial"` → `"axn.dimension.plan" => "trial"`
-
-   Distinct namespaces mean `tag :x` and `dimension :x` coexist without collision (same as the span sink). Values are already coerced to OTLP-legal scalars/arrays by `Core::Tagging.coerce`, so no formatting is needed for the structured path.
-
-2. Route:
-   - **Semantic logger** (`defined?(SemanticLogger::Logger) && Axn.config.logger.is_a?(SemanticLogger::Logger)`): wrap the existing emit in `SemanticLogger.tagged(**named_tags) { … }`. The wrapped `action_class.public_send(level, …)` emits inside that thread-local context, so the after-line carries the named tags.
-   - **Otherwise**: append a labeled suffix to the message string. Each group is rendered with the existing `format_object` + `MAX_CONTEXT_LENGTH` truncation (reusing `format_context`), and a group is omitted entirely when its map is empty:
-
-     ```
-     Execution completed (with outcome: success) in 1.2 milliseconds. Set: {…} [tags: {company_id: 5}] [dimensions: {plan: trial}]
-     ```
-
-   The suffix attaches to `message` before the `after:` separator (which `Core::Logging#log` appends), so the `\n------\n` top-level separator still trails the whole line.
-
-When `facets:` is nil or both maps are empty, behavior is byte-for-byte identical to today — no suffix, no wrapper, no `SemanticLogger` reference touched.
-
-## Constraints (from ticket)
-
-- **No `semantic_logger` dependency.** Used only via `is_a?`, guarded by `defined?(SemanticLogger::Logger)`.
-- **Respect `MAX_CONTEXT_LENGTH` / formatting.** The readable suffix reuses `format_object` + the existing truncation path per facet group.
-- **Hand a copy.** The Executor passes `Core::Tagging.dup_facets(...)`, never the memoized map.
-
-## Non-goals
-
-- Before-line annotation (facets aren't resolved yet at before-time).
-- Threading a structured payload through `Core::Logging#log` (would break the plain `Logger` path, which treats a second positional arg differently). The `SemanticLogger.tagged` block leaves `Core::Logging` untouched.
-- The remaining deferred sinks from PR #140 (exception-report context/extra, Sidekiq job tags) — separate follow-ups.
+- No `semantic_logger` dependency — used only via `is_a?`, guarded by `defined?`.
+- Readable suffix reuses `format_object` + `MAX_CONTEXT_LENGTH` truncation.
+- Copies (`Core::Tagging.dup_facets`), never the memoized maps, cross the sink boundary.
 
 ## Testing
 
-- **Non-Rails (`spec/`):** with a plain `Logger`, assert the after-line carries `[tags: {…}]` / `[dimensions: {…}]`; empty groups omitted; before-line unchanged; no facets declared → no suffix; truncation honored for oversized values.
-- **Semantic-logger path:** with `Axn.config.logger` stubbed to a `SemanticLogger::Logger` double, assert `SemanticLogger.tagged` receives the namespaced named-tags hash and no suffix is appended. If exercising the real gem is warranted, the Rails dummy app (`spec_rails/`) is the place.
-- Reuse the `automatic_logging_spec.rb` capture harness for message assertions.
+- **DSL** (`spec/axn/core/tagging_spec.rb`): new single-facet forms; `result:` default/override; removed hash form raises.
+- **Resolution phase** (`spec/axn/internal/tracing/tagging_spec.rb` + a new phase spec): input facet resolved from inputs; result facet reads a settled output; an unmarked result-reading resolver yields nil.
+- **In-flight + completion-line logs** (`spec/axn/internal/call_logger_facets_spec.rb`, stubbed): input facets tag in-flight lines; result facets only the completion line; suffix path unaffected.
+- **Real SemanticLogger** (`spec_rails/dummy_app/.../call_logger_facets_spec.rb`): real `SemanticLogger::Logger`, capture in-flight + completion events, assert phase routing.
 
 ## Docs / CHANGELOG
 
-- `docs/reference/configuration.md` — in the logging / `auto_log` section (and cross-referenced from the tag/dimension docs added in PR #140), note that declared facets annotate the after-line: named tags when the logger is a `SemanticLogger`, a labeled suffix otherwise.
-- `CHANGELOG.md` — Unreleased `[FEAT]` entry for auto-log facet annotation.
+- `docs/reference/configuration.md` — drop the hash form; document the `result:` flag, the phase/timing model, in-flight vs completion-line tagging, and the nil-on-early footgun.
+- `CHANGELOG.md` — update the #140 Unreleased entry (DSL/timing revised) and the facet-log-annotation entry.
+
+## Scope note
+
+The phase axis is broader than PRO-2854's "annotate log lines" title. It's landed here because in-flight tagging is what motivates it and it revises the same just-merged code; flag whether it warrants a companion ticket for tracking.

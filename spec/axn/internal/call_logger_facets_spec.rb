@@ -101,16 +101,30 @@ RSpec.describe "auto-log facet annotation" do
       allow(Axn.config).to receive(:logger).and_return(logger)
     end
 
-    it "forwards namespaced named tags to SemanticLogger.tagged for the after line" do
+    it "forwards namespaced named tags to SemanticLogger.tagged" do
       build_axn do
         tag(:company_id) { 5 }
         dimension(:plan) { "trial" }
         def call; end
       end.call
 
-      expect(tagged_calls).to contain_exactly(
-        { "axn.tag.company_id": 5, "axn.dimension.plan": "trial" },
-      )
+      # Two tagged contexts open: the in-flight body context and the completion line. Both carry
+      # the (input-phase) facets here, since neither is marked result:.
+      expect(tagged_calls).not_to be_empty
+      expect(tagged_calls).to all(eq({ "axn.tag.company_id": 5, "axn.dimension.plan": "trial" }))
+    end
+
+    it "routes input facets to the in-flight context and adds result facets only at the completion line" do
+      build_axn do
+        tag(:company_id) { 5 }             # input phase (default)
+        tag(:charged, result: true) { 9 }  # result phase
+        def call; end
+      end.call
+
+      # The in-flight body context opens first (before the body) with input facets only; the
+      # completion-line context opens at settle with the merged (input + result) facets.
+      expect(tagged_calls.first).to eq({ "axn.tag.company_id": 5 })
+      expect(tagged_calls.last).to eq({ "axn.tag.company_id": 5, "axn.tag.charged": 9 })
     end
 
     it "does not append a readable suffix when forwarding to the semantic logger" do

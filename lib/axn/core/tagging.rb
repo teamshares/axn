@@ -6,6 +6,12 @@ module Axn
     # `dimension` (bounded) share parsing/resolution; they differ only in which
     # sinks the executor routes them to.
     module Tagging
+      # A declared facet: its resolver plus which phase it resolves in. `result: false`
+      # (the default) is the input phase — resolved from inputs before the body runs, so it
+      # can annotate in-flight logs. `result: true` is the result phase — resolved at settle,
+      # so its resolver may read the settled result/outputs.
+      Facet = Data.define(:resolver, :result)
+
       def self.included(base)
         base.class_eval do
           extend ClassMethods
@@ -14,16 +20,31 @@ module Axn
         end
       end
 
-      # Resolve a declared map against a running action instance, at the
-      # settled-result point. Each resolver runs independently; a nil result
-      # omits the facet, a raised error is swallowed and that facet skipped.
-      def self.resolve(map, action:)
-        map.each_with_object({}) do |(name, resolver), acc|
-          value = resolve_one(resolver, action:)
+      # Resolve the facets belonging to one phase against a running action instance. Each
+      # resolver runs independently; a nil result omits the facet, a raised error is swallowed
+      # and that facet skipped (so an input-phase resolver that mistakenly reads an unset output
+      # simply drops the facet rather than raising).
+      def self.resolve(facets, action:, phase:)
+        want_result = (phase == :result)
+        facets.each_with_object({}) do |(name, facet), acc|
+          next unless facet.result == want_result
+
+          value = resolve_one(facet.resolver, action:)
           acc[name] = coerce(value) unless value.nil?
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("resolving observability facet #{name}", action:, exception: e)
         end
+      end
+
+      # Flat, namespaced merge of resolved tag/dimension maps, mirroring the span-attribute
+      # convention (axn.tag.<name> / axn.dimension.<name>). Symbol keys, so the result splats
+      # cleanly into SemanticLogger.tagged as named tags. Shared by the in-flight body context
+      # and the completion-line annotation.
+      def self.namespaced(tags:, dimensions:)
+        named = {}
+        tags.each { |name, value| named[:"axn.tag.#{name}"] = value }
+        dimensions.each { |name, value| named[:"axn.dimension.#{name}"] = value }
+        named
       end
 
       # A private copy of a resolved facet map for one external consumer. The
@@ -86,33 +107,34 @@ module Axn
       end
 
       module ClassMethods
-        def tag(*args, **kwargs, &block)
-          self._tags = _tags.merge(_parse_facets(args, kwargs, block))
+        def tag(*args, result: false, &block)
+          self._tags = _tags.merge(_parse_facet(args, block, result:))
         end
 
-        def dimension(*args, **kwargs, &block)
-          self._dimensions = _dimensions.merge(_parse_facets(args, kwargs, block))
+        def dimension(*args, result: false, &block)
+          self._dimensions = _dimensions.merge(_parse_facet(args, block, result:))
         end
 
         private
 
-        # Dual form, mirroring Contract#expose: a name + positional/block value,
-        # or a hash of name => resolver. Returns a symbol-keyed hash.
-        def _parse_facets(args, kwargs, block)
-          if args.any?
-            raise ArgumentError, "expected a name and a single resolver (or a hash)" unless args.size <= 2
-            raise ArgumentError, "provide a resolver (positional, block, or hash), not both" if args.size == 2 && block
-            raise ArgumentError, "provide a resolver: a positional value, a block, or the hash form" if args.size == 1 && !block
+        # One facet per call: a name plus a single resolver (positional value or block),
+        # mirroring Contract#expose's name+value form. Returns a one-entry symbol-keyed hash
+        # of name => Facet. `result:` selects the resolution phase (see Facet).
+        def _parse_facet(args, block, result:)
+          raise ArgumentError, "expected a name and a single resolver" unless args.size.between?(1, 2)
 
-            name = args.first
-            value = block || args.last
+          name = args.first
+          if block
+            raise ArgumentError, "provide a resolver as a positional value OR a block, not both" if args.size == 2
 
-            kwargs = kwargs.merge(name => value)
-          elsif block
-            raise ArgumentError, "provide a block only with the single-name form (e.g. `tag(:name) { ... }`)"
+            resolver = block
+          else
+            raise ArgumentError, "provide a resolver: a positional value or a block" if args.size == 1
+
+            resolver = args.last
           end
 
-          kwargs.transform_keys(&:to_sym)
+          { name.to_sym => Facet.new(resolver:, result:) }
         end
       end
     end

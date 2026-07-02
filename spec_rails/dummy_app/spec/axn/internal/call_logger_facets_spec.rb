@@ -38,6 +38,32 @@ RSpec.describe "auto-log facet annotation with a real SemanticLogger" do
     expect(after_event["named_tags"]).to eq("axn.tag.company_id" => 7, "axn.dimension.plan" => "pro")
   end
 
+  it "annotates in-flight log lines during call with input-phase facets" do
+    build_axn do
+      tag(:company_id) { 7 }
+      def call
+        log("in-flight line")
+      end
+    end.call
+
+    inflight = events.find { |e| e["message"].to_s.include?("in-flight line") }
+    expect(inflight["named_tags"]).to eq("axn.tag.company_id" => 7)
+  end
+
+  it "keeps result-phase facets off in-flight lines but on the completion line" do
+    build_axn do
+      tag(:company_id) { 7 }               # input phase
+      tag(:charged, result: true) { 99 }   # result phase
+      def call
+        log("in-flight line")
+      end
+    end.call
+
+    inflight = events.find { |e| e["message"].to_s.include?("in-flight line") }
+    expect(inflight["named_tags"]).to eq("axn.tag.company_id" => 7)
+    expect(after_event["named_tags"]).to eq("axn.tag.company_id" => 7, "axn.tag.charged" => 99)
+  end
+
   it "does not append the readable suffix when forwarding to a SemanticLogger" do
     build_axn do
       tag(:company_id) { 7 }
