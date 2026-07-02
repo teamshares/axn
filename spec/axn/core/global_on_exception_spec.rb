@@ -295,7 +295,12 @@ RSpec.describe "Global on_exception handler" do
 
     describe "automatic formatting" do
       it "always formats complex objects in context and includes outputs" do
-        expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
+        # NOTE: the stub block must accept `**kwargs` (not a fixed `context:` keyword list) — the
+        # real call site passes `action:` too, and a block that declares only the keywords it expects
+        # raises ArgumentError on the extra one. That error is a StandardError, so it gets silently
+        # swallowed by the executor's on_exception rescue, and the assertions inside never run.
+        expect(Axn.config).to receive(:on_exception) do |_e, **kwargs|
+          context = kwargs[:context]
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
           expect(context[:outputs]).to eq({})
         end
@@ -304,35 +309,30 @@ RSpec.describe "Global on_exception handler" do
       end
     end
 
-    describe "automatic Current.attributes inclusion" do
-      before do
-        # Define a mock Current class
-        stub_const("Current", Class.new do
-          class << self
-            attr_accessor :request_id
+    describe "ambient_context inclusion" do
+      let(:action) do
+        stub_const("TestEnhancedContextAmbientAction", build_axn do
+          expects :name, type: String
+          expects :value, type: Integer
+          expects :user_id, on: :ambient_context, type: Integer, optional: true
 
-            def attributes
-              { request_id: }
-            end
+          def call
+            raise "Test error"
           end
         end)
-
-        Current.request_id = "test-request-123"
       end
 
-      it "automatically includes Current.attributes when defined and present" do
-        expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context[:current_attributes]).to eq({ request_id: "test-request-123" })
+      it "includes the declared, resolved ambient_context in the reported context" do
+        expect(Axn.config).to receive(:on_exception) do |_e, **kwargs|
+          expect(kwargs[:context][:ambient_context]).to eq({ user_id: 456 })
         end
 
-        action.call(name: "test", value: 42)
+        action.call(name: "test", value: 42, ambient_context: { user_id: 456 })
       end
 
-      it "does not include Current.attributes when empty" do
-        Current.request_id = nil
-
-        expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context[:current_attributes]).to be_nil
+      it "does not include ambient_context when it resolves empty" do
+        expect(Axn.config).to receive(:on_exception) do |_e, **kwargs|
+          expect(kwargs[:context]).not_to have_key(:ambient_context)
         end
 
         action.call(name: "test", value: 42)
@@ -340,29 +340,28 @@ RSpec.describe "Global on_exception handler" do
     end
 
     describe "combined features" do
-      before do
-        stub_const("Current", Class.new do
-          class << self
-            attr_accessor :user_id
+      let(:action) do
+        stub_const("TestEnhancedContextCombinedAction", build_axn do
+          expects :name, type: String
+          expects :value, type: Integer
+          expects :user_id, on: :ambient_context, type: Integer, optional: true
 
-            def attributes
-              { user_id: }
-            end
+          def call
+            raise "Test error"
           end
         end)
-
-        Current.user_id = 456
       end
 
-      it "includes all context enhancements (formatting always on, Current auto-detected)" do
-        expect(Axn.config).to receive(:on_exception) do |_e, _action, context:|
-          expect(context.keys).to contain_exactly(:inputs, :outputs, :current_attributes)
+      it "includes all context enhancements (formatting always on, ambient_context resolved)" do
+        expect(Axn.config).to receive(:on_exception) do |_e, **kwargs|
+          context = kwargs[:context]
+          expect(context.keys).to contain_exactly(:inputs, :outputs, :ambient_context)
           expect(context[:inputs]).to eq({ name: "test", value: 42 })
           expect(context[:outputs]).to eq({})
-          expect(context[:current_attributes]).to eq({ user_id: 456 })
+          expect(context[:ambient_context]).to eq({ user_id: 456 })
         end
 
-        action.call(name: "test", value: 42)
+        action.call(name: "test", value: 42, ambient_context: { user_id: 456 })
       end
     end
   end

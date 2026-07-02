@@ -551,11 +551,11 @@ module Axn
 
       # Keys the framework owns in the execution/exception-report context, so they can't be set via
       # set_execution_context or the additional_execution_context hook: :inputs/:outputs are the
-      # structural pair, and :async/:current_attributes/:axn_stack/:tags/:dimensions are
-      # framework-populated in Internal::ExceptionContext.build — reserving them here prevents a user
-      # value from being silently overwritten when build assigns them after merging the user's extra
-      # keys. :tags/:dimensions carry the resolved `tag`/`dimension` facets (PRO-2853).
-      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async current_attributes axn_stack tags dimensions].freeze
+      # structural pair, and :async/:ambient_context/:axn_stack/:tags/:dimensions are
+      # framework-populated in execution_context / Internal::ExceptionContext.build — reserving them
+      # here prevents a user value from being silently overwritten when they're assigned after merging
+      # the user's extra keys. :tags/:dimensions carry the resolved `tag`/`dimension` facets (PRO-2853).
+      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async ambient_context axn_stack tags dimensions].freeze
 
       module InstanceMethods
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
@@ -620,14 +620,18 @@ module Axn
         end
 
         # Returns a structured hash for exception reporting and handlers.
-        # Contains :inputs, :outputs, and any extra keys from set_execution_context / additional_execution_context hook.
+        # Contains :inputs, :outputs, any extra keys from set_execution_context / additional_execution_context
+        # hook, and (when present) a sensitive-filtered :ambient_context.
         # Framework-owned keys (RESERVED_EXECUTION_CONTEXT_KEYS) from extra context are stripped before merging.
         def execution_context
           explicit_context = @__additional_execution_context || {}
           hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
-          { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
+          ctx = { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
+          ambient = self.class.inspection_filter.filter(ambient_context)
+          ctx[:ambient_context] = ambient if ambient.present?
+          ctx
         end
 
         private
