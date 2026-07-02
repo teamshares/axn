@@ -31,7 +31,10 @@ module Axn
           next unless facet.from == from
 
           value = resolve_one(facet.resolver, action:)
-          acc[name] = coerce(value) unless value.nil?
+          # dup at resolution so a resolver returning a mutable input (a String, or String elements
+          # in an Array) is snapshotted here — otherwise a later in-place mutation during the body
+          # (e.g. String#replace) would rewrite the already-resolved value before the sinks read it.
+          acc[name] = dup_value(coerce(value)) unless value.nil?
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("resolving observability facet #{name}", action:, exception: e)
         end
@@ -55,12 +58,18 @@ module Axn
       # see. Values are only scalars or flat arrays of scalars (guaranteed by
       # #coerce), so duping the map plus any Array/String values is a full copy.
       def self.dup_facets(map)
-        map.transform_values do |value|
-          case value
-          when Array then value.map { |element| element.is_a?(String) ? element.dup : element }
-          when String then value.dup
-          else value
-          end
+        map.transform_values { |value| dup_value(value) }
+      end
+
+      # Independent copy of a single coerced facet value. Values are only scalars or flat arrays of
+      # scalars (guaranteed by #coerce), so duping the value plus any Array/String contents is a full
+      # copy. Used both at resolution (to snapshot mutable inputs) and at each sink boundary (so a
+      # consumer mutating what it's handed can't corrupt what the other sinks see).
+      def self.dup_value(value)
+        case value
+        when Array then value.map { |element| element.is_a?(String) ? element.dup : element }
+        when String then value.dup
+        else value
         end
       end
 
