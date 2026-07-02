@@ -316,6 +316,7 @@ module Axn
           default_success
           action_name
           inputs
+          ambient_context
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[

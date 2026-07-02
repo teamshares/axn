@@ -27,6 +27,7 @@ require "axn/core/validation/validators/of_validator"
 require "axn/core/validation/validators/shape_validator"
 
 require "axn/core/field_resolvers"
+require "axn/core/ambient_context"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
 require "axn/core/default_call"
@@ -69,6 +70,7 @@ module Axn
         include Core::AutomaticLogging
         include Core::Tagging
         include Core::Flow
+        include Core::AmbientContext
         include Core::Contract
         include Core::ContractForSubfields
         include Core::UseStrategy

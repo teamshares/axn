@@ -52,7 +52,7 @@ module Axn
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
-          unless (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+          unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
             raise ArgumentError,
                   "expects called with `on: #{on}`, but no such reader exists " \
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
