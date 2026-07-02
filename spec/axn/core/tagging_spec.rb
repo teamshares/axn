@@ -81,6 +81,12 @@ RSpec.describe Axn::Core::Tagging do
       expect(Axn::Core::Tagging.coerce(:active)).to eq("active")
     end
 
+    it "stringifies non-Integer/Float numerics (BigDecimal/Rational), which OpenTelemetry drops" do
+      require "bigdecimal"
+      expect(Axn::Core::Tagging.coerce(Rational(3, 2))).to eq("3/2")
+      expect(Axn::Core::Tagging.coerce(BigDecimal("1.5"))).to be_a(String)
+    end
+
     it "coerces each element of an array (consistent with scalar coercion)" do
       expect(Axn::Core::Tagging.coerce(%i[trial paid])).to eq(%w[trial paid])
       expect(Axn::Core::Tagging.coerce([1, 2])).to eq([1, 2])

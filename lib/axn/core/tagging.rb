@@ -34,12 +34,14 @@ module Axn
         end
       end
 
-      # OpenTelemetry attributes accept only String / Numeric / Boolean, or a
-      # homogeneous array of one of those. Pass scalars through; coerce anything
-      # else to a String; coerce array elements (see #coerce_array).
+      # OpenTelemetry attributes accept only String / Integer / Float / Boolean,
+      # or a homogeneous array of one of those. Pass those scalars through; coerce
+      # anything else to a String (notably non-Integer/Float numerics like
+      # BigDecimal/Rational, which the OTel SDK drops); coerce array elements
+      # (see #coerce_array).
       def self.coerce(value)
         case value
-        when String, Numeric, true, false then value
+        when String, Integer, Float, true, false then value
         when Array then coerce_array(value)
         else value.to_s
         end
