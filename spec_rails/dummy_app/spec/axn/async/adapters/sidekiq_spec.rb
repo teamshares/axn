@@ -362,4 +362,37 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(dispatch_and_capture(action)).to be false
     end
   end
+
+  describe "job tags from facets (PRO-2855)" do
+    around { |ex| Sidekiq::Testing.fake! { ex.run } }
+    before { Sidekiq::Job.clear_all }
+
+    let(:last_job_tags) { -> { Sidekiq::Job.jobs.last["tags"] } }
+
+    it "surfaces tag + dimension facets as name:value job tags" do
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("company_id:42", "plan:pro")
+    end
+
+    it "applies inbound defaults before resolving" do
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 7)
+      expect(last_job_tags.call).to contain_exactly("company_id:7", "plan:free")
+    end
+
+    it "honors sidekiq_job_tag_sources = [:dimension] (bounded only)" do
+      allow(Axn.config).to receive(:sidekiq_job_tag_sources).and_return(%i[dimension])
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+    end
+
+    it "adds no tags key when the action declares no facets" do
+      Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+      expect(last_job_tags.call).to be_nil
+    end
+
+    it "unions facet tags with the worker's static sidekiq_options tags" do
+      Actions::Async::TestActionSidekiqTaggedWithStatic.call_async(company_id: 42)
+      expect(last_job_tags.call).to contain_exactly("static", "company_id:42")
+    end
+  end
 end

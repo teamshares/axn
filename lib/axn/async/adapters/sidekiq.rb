@@ -105,19 +105,22 @@ module Axn
             # Convert kwargs to string keys and handle GlobalID conversion
             job_kwargs = Axn::Internal::AsyncSerialization.serialize(kwargs)
 
-            job = if _async_via_default
-                    # Global default: no per-action subclass exists in a fresh worker, so route through the
-                    # dedicated default worker (which carries the default's kwargs AND block — including
-                    # server-side hooks). display_class keeps the Web UI showing the real action.
-                    Axn::Async::Adapters::Sidekiq.default_worker.set(display_class: name)
-                  else
-                    # Explicit async: the per-action subclass already carries the full config
-                    # (sidekiq_options + block). Only display_class needs to ride along per-enqueue.
-                    # Inherited lookup (no `false`): a child that inherits async config without
-                    # redeclaring reuses the parent's subclass — the generic perform(name, …) still
-                    # runs THIS action by name. A child that redeclares gets its own (built in included).
-                    const_get(:AxnSidekiqWorker).set(display_class: name)
-                  end
+            # The generic worker for this enqueue: the shared DefaultWorker on the global-default
+            # path, else this action's dedicated subclass. Inherited const lookup (no `false`) so a
+            # child that inherits async config without redeclaring reuses the parent's subclass; the
+            # generic perform(name, …) still runs THIS action by name. display_class keeps the Web
+            # UI showing the real action name in both cases.
+            worker = _async_via_default ? Axn::Async::Adapters::Sidekiq.default_worker : const_get(:AxnSidekiqWorker)
+
+            set_options = { display_class: name }
+
+            # Surface declared facets as Sidekiq job tags (enqueue-time, inputs-only — PRO-2855).
+            # Union with any static tags the worker already carries: `.set` overrides the class
+            # default, so re-include them explicitly rather than letting them be dropped.
+            facet_tags = _resolve_sidekiq_job_tags(kwargs)
+            set_options[:tags] = (Array(worker.get_sidekiq_options["tags"]) + facet_tags).uniq if facet_tags.any?
+
+            job = worker.set(**set_options)
 
             # Process normalized async options if present
             if normalized_options
@@ -129,6 +132,26 @@ module Axn
             end
 
             job.perform_async(name, job_kwargs)
+          end
+
+          # Resolve declared facets to Sidekiq job-tag strings at enqueue time. Inputs-only: builds a
+          # throwaway (non-run) instance from the cleaned kwargs, runs the inbound coercion pass, and
+          # resolves the facet maps enabled by Axn.config.sidekiq_job_tag_sources. Best-effort — never
+          # breaks the enqueue. Skips all work (no instance, no coercion) when the sink is disabled or
+          # the action declares no facets for the enabled sources. See PRO-2855.
+          def _resolve_sidekiq_job_tags(kwargs)
+            sources = Axn.config.sidekiq_job_tag_sources
+            return [] if sources.empty?
+
+            declares_facets = (sources.include?(:tag) && _tags.any?) || (sources.include?(:dimension) && _dimensions.any?)
+            return [] unless declares_facets
+
+            action = send(:new, **kwargs)
+            facets = Axn::Executor.new(action).resolve_inbound_facets(sources)
+            Axn::Async::Adapters::Sidekiq.job_tags_for(facets)
+          rescue StandardError => e
+            Axn::Internal::PipingError.swallow("resolving Sidekiq job tags at enqueue", exception: e)
+            []
           end
         end
       end
