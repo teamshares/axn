@@ -50,7 +50,9 @@ module Axn
           else
             prop = build_property(config)
             nested_subfields = subfields_by_parent[config.reader_as]
-            if nested_subfields&.any? && prop[:type] == "object"
+            if nested_subfields&.any?
+              prop[:type] = "object"
+              prop.delete(:format)
               prop[:properties] ||= {}
               prop[:required] ||= []
               nested_subfields.each do |subconfig|
@@ -169,7 +171,7 @@ module Axn
         required = []
         members.each do |m|
           props[m.field] = build_property(m, for_output:).compact
-          required << m.field.to_s unless optional?(m)
+          required << m.field.to_s unless optional_for_schema?(m)
         end
         [props, required]
       end
@@ -257,6 +259,7 @@ module Axn
       # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
       def optional_for_schema?(config)
         return true if default?(config)
+        return true if config.validations.empty?
 
         config.validations.values.any? { |opt| opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank]) }
       end

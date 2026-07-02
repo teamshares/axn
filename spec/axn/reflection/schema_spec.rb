@@ -120,6 +120,33 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required] || []).not_to include("flag")
   end
 
+  it "does not mark an optional: true field with no other validator as required (empty validations)" do
+    klass = Class.new do
+      include Axn
+      expects :coupon, optional: true
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required] || []).not_to include("coupon")
+  end
+
+  it "does not mark an allow_nil: true field with no other validator as required (empty validations)" do
+    klass = Class.new do
+      include Axn
+      expects :note, allow_nil: true
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required] || []).not_to include("note")
+  end
+
+  it "still marks an untyped, unvalidated field as required by default" do
+    klass = Class.new do
+      include Axn
+      expects :name, type: String
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required]).to include("name")
+  end
+
   it "maps type: :params to an object" do
     klass = Class.new do
       include Axn
@@ -139,6 +166,19 @@ RSpec.describe Axn::Reflection::Schema do
 
     payload = schema[:properties][:payload]
     expect(payload).not_to be_nil
+    expect(payload[:properties]).to have_key(:name)
+  end
+
+  it "forces an untyped parent with declared subfields to be typed object, and still nests them" do
+    klass = Class.new do
+      include Axn
+      expects :payload
+      expects :name, on: :payload, type: String
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    payload = schema[:properties][:payload]
+    expect(payload[:type]).to eq("object")
     expect(payload[:properties]).to have_key(:name)
   end
 
@@ -202,6 +242,22 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:properties][:user_id]).to include(type: "integer")
+    end
+  end
+
+  describe "shape: members" do
+    it "marks a typed-but-no-presence boolean shape member as required" do
+      klass = Class.new do
+        include Axn
+        expects :cfg, type: Hash do
+          field :enabled, type: :boolean
+          field :label, type: String
+        end
+      end
+      props = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:cfg]
+
+      expect(props[:required]).to include("enabled")
+      expect(props[:required]).to include("label")
     end
   end
 
