@@ -133,6 +133,19 @@ RSpec.describe "Additional execution context" do
 
       action.call
     end
+
+    it "strips reserved facet keys (:tags, :dimensions) from set_execution_context" do
+      instance = build_axn do
+        def call; end
+      end.send(:new)
+
+      instance.send(:set_execution_context, tags: { user_tag: 1 }, dimensions: { user_dim: 2 }, keep: "ok")
+      ctx = instance.execution_context
+
+      expect(ctx).not_to have_key(:tags)
+      expect(ctx).not_to have_key(:dimensions)
+      expect(ctx).to include(keep: "ok")
+    end
   end
 
   describe "additional_execution_context hook method" do
