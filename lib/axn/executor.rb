@@ -297,7 +297,14 @@ module Axn
       # would describe the wrong action anyway). Deterministic regardless of nesting depth.
       Internal::ExceptionClassification.mark_reported!(exception)
 
-      context = Internal::ExceptionContext.build(action: @action, retry_context:)
+      context = Internal::ExceptionContext.build(
+        action: @action,
+        retry_context:,
+        # dup so a reporter callback mutating these can't corrupt the maps the span/metrics read
+        # (same memoized values, same guarantee as with_tracing / emit_metrics).
+        tags: Core::Tagging.dup_facets(resolved_tags),
+        dimensions: Core::Tagging.dup_facets(resolved_dimensions),
+      )
       Axn.config.on_exception(exception, action: @action, context:)
 
       # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
