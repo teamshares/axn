@@ -62,6 +62,7 @@ module Axn
         payload[:elapsed_time] = result.elapsed_time
         payload[:exception] = result.exception if result.exception
         payload[:tags] = resolved_tags if @action_class._tags.any?
+        payload[:dimensions] = resolved_dimensions if @action_class._dimensions.any?
       rescue StandardError => e
         Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
       end
@@ -79,21 +80,7 @@ module Axn
         Internal::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
           instrument_block.call
         ensure
-          begin
-            result = @action.result
-            outcome = result.outcome.to_s
-            span.set_attribute("axn.outcome", outcome)
-
-            if %w[failure exception].include?(outcome) && result.exception
-              span.record_exception(result.exception)
-              error_message = result.exception.message || result.exception.class.name
-              span.status = OpenTelemetry::Trace::Status.error(error_message)
-            end
-
-            resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
-          rescue StandardError => e
-            Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
-          end
+          finalize_span(span)
         end
       else
         instrument_block.call
@@ -103,17 +90,40 @@ module Axn
         emit_metrics_proc = Axn.config.emit_metrics
         if emit_metrics_proc
           result = @action.result
-          Internal::Callable.call_with_desired_shape(emit_metrics_proc, kwargs: { resource:, result: })
+          Internal::Callable.call_with_desired_shape(emit_metrics_proc, kwargs: { resource:, result:, dimensions: resolved_dimensions })
         end
       rescue StandardError => e
         Internal::PipingError.swallow("calling emit_metrics while tracing axn.call", action: @action, exception: e)
       end
     end
 
+    def finalize_span(span)
+      result = @action.result
+      outcome = result.outcome.to_s
+      span.set_attribute("axn.outcome", outcome)
+
+      if %w[failure exception].include?(outcome) && result.exception
+        span.record_exception(result.exception)
+        error_message = result.exception.message || result.exception.class.name
+        span.status = OpenTelemetry::Trace::Status.error(error_message)
+      end
+
+      resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
+      resolved_dimensions.each { |name, value| span.set_attribute("axn.dimension.#{name}", value) }
+    rescue StandardError => e
+      Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
+    end
+
     def resolved_tags
       return @resolved_tags if defined?(@resolved_tags)
 
       @resolved_tags = @action_class._tags.any? ? Core::Tagging.resolve(@action_class._tags, action: @action) : {}
+    end
+
+    def resolved_dimensions
+      return @resolved_dimensions if defined?(@resolved_dimensions)
+
+      @resolved_dimensions = @action_class._dimensions.any? ? Core::Tagging.resolve(@action_class._dimensions, action: @action) : {}
     end
 
     # =========================================================================

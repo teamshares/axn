@@ -112,4 +112,69 @@ RSpec.describe "Axn tagging integration" do
       expect(mock_span).not_to have_received(:set_attribute).with(a_string_starting_with("axn.tag."), anything)
     end
   end
+
+  describe "dimensions" do
+    describe "emit_metrics dimensions: kwarg" do
+      let(:calls) { [] }
+      after { Axn.configure { |c| c.emit_metrics = nil } }
+
+      it "passes resolved dimensions to a block that declares dimensions:" do
+        Axn.configure { |c| c.emit_metrics = proc { |resource:, result:, dimensions:| calls << { resource:, result:, dimensions: } } }
+        action = build_axn do
+          dimension :plan_tier, -> { "pro" }
+          def call; end
+        end
+        action.call
+        expect(calls.first[:dimensions]).to eq(plan_tier: "pro")
+      end
+
+      it "leaves an existing resource:/result: block untouched (backward compatible)" do
+        Axn.configure { |c| c.emit_metrics = proc { |resource:, result:| calls << { resource:, result: } } }
+        action = build_axn do
+          dimension :plan_tier, -> { "pro" }
+          def call; end
+        end
+        expect { action.call }.not_to raise_error
+        expect(calls.first.keys.sort).to eq(%i[resource result])
+      end
+
+      it "passes an empty dimensions hash when none declared" do
+        Axn.configure { |c| c.emit_metrics = proc { |dimensions:| calls << dimensions } }
+        build_axn { def call; end }.call
+        expect(calls.first).to eq({})
+      end
+
+      it "never passes tags to emit_metrics" do
+        Axn.configure { |c| c.emit_metrics = proc { |dimensions:| calls << dimensions } }
+        action = build_axn do
+          tag :company_id, -> { 1 }
+          def call; end
+        end
+        action.call
+        expect(calls.first).to eq({})
+      end
+    end
+
+    describe "payload[:dimensions]" do
+      let(:notifications) { [] }
+      before { ActiveSupport::Notifications.subscribe("axn.call") { |*, payload| notifications << payload } }
+      after { ActiveSupport::Notifications.unsubscribe("axn.call") }
+
+      it "keeps tags and dimensions in separate payload keys and namespaces" do
+        action = build_axn do
+          tag :company_id, -> { 1 }
+          dimension :company_id, -> { "bounded" } # same name, independent
+          def call; end
+        end
+        action.call
+        expect(notifications.first[:tags]).to eq(company_id: 1)
+        expect(notifications.first[:dimensions]).to eq(company_id: "bounded")
+      end
+
+      it "sets no :dimensions key when none declared" do
+        build_axn { def call; end }.call
+        expect(notifications.first).not_to have_key(:dimensions)
+      end
+    end
+  end
 end
