@@ -42,7 +42,7 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            nested_subfields = subfields_by_parent[config.field]
+            nested_subfields = subfields_by_parent[config.reader_as]
             if nested_subfields&.any? && prop[:type] == "object"
               prop[:properties] ||= {}
               prop[:required] ||= []
@@ -87,11 +87,11 @@ module Axn
         prop[:type] = type_info[:type] if type_info[:type]
         prop[:format] = type_info[:format] if type_info[:format]
 
-        prop[:default] = config.default if config.respond_to?(:default) && !config.default.nil?
+        prop[:default] = config.default if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          prop[:enum] = enum_values if enum_values
+          prop[:enum] = enum_values if enum_values.is_a?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)
@@ -196,7 +196,7 @@ module Axn
         if validations[:inclusion]
           inclusion = validations[:inclusion]
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          if enum_values&.any?
+          if enum_values.is_a?(Array) && enum_values.any?
             sample = enum_values.first
             return { type: "string" } if sample.is_a?(String)
             return { type: "integer" } if sample.is_a?(Integer)
