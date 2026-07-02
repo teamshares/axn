@@ -58,6 +58,27 @@ module Axn
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
     end
 
+    # Inputs-only facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there
+    # is no run to hang completion-time resolution on. Runs ONLY the inbound coercion phase
+    # (preprocess + inbound defaults + inbound validation), swallowing any failure so a bad-input
+    # enqueue still succeeds, then resolves the requested facet maps. Result-derived resolvers
+    # self-omit — reading result/an unexposed field returns nil or raises, and Core::Tagging.resolve
+    # skips those per-facet. `sources` is a subset of %i[tag dimension]. See PRO-2855.
+    def resolve_inbound_facets(sources)
+      begin
+        apply_inbound_preprocessing!
+        apply_defaults!(:inbound)
+        validate_contract!(:inbound)
+      rescue StandardError => e
+        Internal::PipingError.swallow("resolving inbound facets at enqueue", action: @action, exception: e)
+      end
+
+      facets = {}
+      facets.merge!(resolved_tags) if sources.include?(:tag)
+      facets.merge!(resolved_dimensions) if sources.include?(:dimension)
+      facets
+    end
+
     private
 
     # =========================================================================
