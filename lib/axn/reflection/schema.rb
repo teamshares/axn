@@ -179,15 +179,16 @@ module Axn
         [props, required]
       end
 
-      # Returns [id_field_symbol, prop_hash] for a model: config. Integer only for the default :find
-      # finder (id-based PK); a custom finder's token type is unknown, so leave it unconstrained.
+      # Returns [id_field_symbol, prop_hash] for a model: config.
       def model_id_property(config)
         model_opts = config.validations[:model]
         klass = model_opts[:klass]
         klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
         id_field = :"#{config.field}_id"
+        # No type constraint: `find` (and custom finders) accept any nonblank PK token — integer,
+        # UUID, or string PKs are all valid — and inferring the real PK type would require a DB/schema
+        # load (not allowed from reflection). The description carries the "record id" semantics.
         prop = { description: config.description || "ID of the #{klass_name} record" }
-        prop[:type] = "integer" if model_opts[:finder] == :find
         [id_field, prop.compact]
       end
 

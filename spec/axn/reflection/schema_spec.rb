@@ -241,7 +241,7 @@ RSpec.describe Axn::Reflection::Schema do
       payload = schema[:properties][:payload]
       expect(payload[:properties]).to have_key(:company_id)
       expect(payload[:properties]).not_to have_key(:company)
-      expect(payload[:properties][:company_id]).to include(type: "integer")
+      expect(payload[:properties][:company_id]).not_to have_key(:type)
     end
 
     it "leaves the <field>_id type unconstrained for a custom finder" do
@@ -254,14 +254,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:company_id]).not_to have_key(:type)
     end
 
-    it "still types <field>_id as integer for the default :find finder" do
+    it "leaves the <field>_id type unconstrained for the default :find finder too (PK may be integer, UUID, or string)" do
       klass = Class.new do
         include Axn
         expects :user, model: { klass: Struct.new(:id), finder: :find }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:user_id]).to include(type: "integer")
+      expect(schema[:properties][:user_id]).not_to have_key(:type)
+      expect(schema[:properties][:user_id]).to include(description: a_string_matching(/ID of the/))
     end
   end
 
