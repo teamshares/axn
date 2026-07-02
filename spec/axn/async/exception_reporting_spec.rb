@@ -126,6 +126,24 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(received).not_to have_key(:dimensions)
       end
 
+      it "applies inbound defaults and preprocessing before resolving (matches what the worker saw)" do
+        action_class = build_axn do
+          expects :region, default: "us5"
+          expects :name, preprocess: ->(v) { v.to_s.upcase }
+          tag(:region) { region }
+          tag(:name) { name }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        # region omitted from the job args → the default must still surface; name must be preprocessed.
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { name: "bob" }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(region: "us5", name: "BOB")
+      end
+
       it "skips an output-derived facet best-effort (no run happened) yet still reports" do
         action_class = build_axn do
           expects :company_id, type: Integer

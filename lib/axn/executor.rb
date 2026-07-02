@@ -44,6 +44,20 @@ module Axn
       end
     end
 
+    # Best-effort inbound preparation for OUT-OF-BAND facet resolution — the async exhaustion/discard
+    # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args and
+    # never executed. Applies the same inbound preprocessing and defaults a normal `.call` would, so a
+    # facet reading a defaulted/preprocessed input resolves the value the worker saw rather than the
+    # raw constructor value. Deliberately does NOT validate (a report on already-dead work must never
+    # raise) and does NOT run the action; model: readers still resolve lazily on read. Any failure is
+    # swallowed — a partially-prepared instance still yields more facets than a bare one.
+    def prepare_inbound_for_facets!
+      apply_inbound_preprocessing!
+      apply_defaults!(:inbound)
+    rescue StandardError => e
+      Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
+    end
+
     private
 
     # =========================================================================
@@ -128,6 +142,18 @@ module Axn
     # payload, emit_metrics, completion-line log) read the merged view.
     def resolved_tags = @resolved_tags ||= resolved_input_tags.merge(resolved_result_tags)
     def resolved_dimensions = @resolved_dimensions ||= resolved_input_dimensions.merge(resolved_result_dimensions)
+
+    # Resolve both phases of a declared facet map for the exception report ONLY, without touching the
+    # memoized resolved_* the span/payload/emit_metrics share. trigger_on_exception runs inside
+    # with_timing, BEFORE its ensure sets result.elapsed_time, so memoizing here would freeze a
+    # result-phase facet reading elapsed_time as nil and poison those post-timing sinks. Core::Tagging.resolve
+    # dups each value at resolution, so the fresh map is already the reporter's private, mutation-safe copy.
+    def resolve_report_facets(map)
+      return {} unless map.any?
+
+      Core::Tagging.resolve(map, action: @action, from: :inputs)
+                   .merge(Core::Tagging.resolve(map, action: @action, from: :result))
+    end
 
     def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :inputs)
     def resolved_result_tags = @resolved_result_tags ||= _resolve_facets(@action_class._tags, :result)
@@ -300,10 +326,13 @@ module Axn
       context = Internal::ExceptionContext.build(
         action: @action,
         retry_context:,
-        # dup so a reporter callback mutating these can't corrupt the maps the span/metrics read
-        # (same memoized values, same guarantee as with_tracing / emit_metrics).
-        tags: Core::Tagging.dup_facets(resolved_tags),
-        dimensions: Core::Tagging.dup_facets(resolved_dimensions),
+        # Resolve FRESH for the report rather than through the memoized resolved_tags/resolved_dimensions.
+        # trigger_on_exception runs inside with_timing, BEFORE its ensure sets result.elapsed_time, so
+        # memoizing here would freeze a timing-dependent facet (e.g. `tag(:ms) { result.elapsed_time }`)
+        # as nil and poison the post-timing span/payload/emit_metrics that share the memo. A freshly
+        # resolved map is also inherently the reporter's private copy (no dup_facets needed).
+        tags: resolve_report_facets(@action_class._tags),
+        dimensions: resolve_report_facets(@action_class._dimensions),
       )
       Axn.config.on_exception(exception, action: @action, context:)
 

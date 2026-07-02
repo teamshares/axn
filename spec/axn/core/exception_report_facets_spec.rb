@@ -78,6 +78,24 @@ RSpec.describe "Exception-report facets (on_exception context)" do
     ActiveSupport::Notifications.unsubscribe(sub)
   end
 
+  it "does not poison the shared facet memo with pre-timing values (span/payload still see elapsed_time)" do
+    payload_tags = nil
+    sub = ActiveSupport::Notifications.subscribe("axn.call") { |*args| payload_tags = args.last[:tags] }
+    Axn.config.instance_variable_set(:@on_exception, proc {})
+
+    Class.new do
+      include Axn
+      tag(:ms) { result.elapsed_time }
+      def call = raise("boom")
+    end.call
+
+    # The report resolves before with_timing's ensure runs, so it can't know elapsed_time — but that
+    # must not memoize a nil facet that the post-timing notification payload then inherits.
+    expect(payload_tags[:ms]).not_to be_nil
+  ensure
+    ActiveSupport::Notifications.unsubscribe(sub)
+  end
+
   it "lets the framework facet win over a user-supplied set_execution_context key" do
     ctx = capture_context do
       tag(:company_id) { 7 }

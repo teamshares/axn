@@ -69,6 +69,9 @@ module Axn
           return { tags: {}, dimensions: {} } unless action_class._tags.any? || action_class._dimensions.any?
 
           instance = action_class.send(:new, **_deserialize_job_args(job_args))
+          # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
+          # preprocessed inputs resolve as the worker saw them (not the raw job args).
+          Axn::Executor.new(instance).prepare_inbound_for_facets!
           {
             tags: Core::Tagging.resolve(action_class._tags, action: instance),
             dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance),
