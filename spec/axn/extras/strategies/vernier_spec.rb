@@ -229,12 +229,42 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
       it "calls Vernier.profile with a profile name and options" do
         expect(Vernier).to receive(:profile).with(
           hash_including(
-            out: match(/axn_AnonymousAction_\d+\.json$/),
+            out: match(/axn_Anonymous_Axn_\d+\.json$/),
             allocation_sample_rate: 100,
           ),
         ).and_yield
 
         action.send(:_with_vernier_profiling) { "test" }
+      end
+
+      it "sanitizes a namespaced/custom resolved_axn_name into a filename-safe segment" do
+        stub_const("Some::Namespaced::Action", action_class)
+        namespaced_action = action_class.send(:new, name: "World")
+
+        expect(Vernier).to receive(:profile).with(
+          hash_including(out: match(/axn_Some_Namespaced_Action_\d+\.json$/)),
+        ).and_yield
+
+        namespaced_action.send(:_with_vernier_profiling) { "test" }
+      end
+
+      it "sanitizes a custom axn_name (e.g. with punctuation) into a filename-safe segment" do
+        named_action_class = build_axn do
+          use :vernier
+          axn_name "custom-tool"
+          expects :name
+
+          def call
+            "Hello, #{name}!"
+          end
+        end
+        named_action = named_action_class.send(:new, name: "World")
+
+        expect(Vernier).to receive(:profile).with(
+          hash_including(out: match(/axn_custom_tool_\d+\.json$/)),
+        ).and_yield
+
+        named_action.send(:_with_vernier_profiling) { "test" }
       end
 
       it "yields the block to Vernier.profile" do
@@ -259,7 +289,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
     it "profiles the complete action execution via around hook" do
       expect(Vernier).to receive(:profile).with(
         hash_including(
-          out: match(/axn_AnonymousAction_\d+\.json$/),
+          out: match(/axn_Anonymous_Axn_\d+\.json$/),
           allocation_sample_rate: 100,
         ),
       ).and_yield
@@ -270,7 +300,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
     it "includes the action class name in the profile name" do
       expect(Vernier).to receive(:profile).with(
         hash_including(
-          out: match(/axn_AnonymousAction_\d+\.json$/),
+          out: match(/axn_Anonymous_Axn_\d+\.json$/),
           allocation_sample_rate: 100,
         ),
       ).and_yield

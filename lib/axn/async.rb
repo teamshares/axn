@@ -115,7 +115,7 @@ module Axn
       private
 
       def _emit_call_async_notification(kwargs)
-        resource = name || "AnonymousClass"
+        resource = resolved_axn_name
         # Use dup to ensure kwargs modifications don't affect the notification payload
         payload = { resource:, action_class: self, kwargs: kwargs.dup, adapter: _async_adapter_name }
 
@@ -132,7 +132,7 @@ module Axn
           message_parts: ["Enqueueing async execution via #{adapter_name}"],
           join_string: " with: ",
           before: _async_log_separator,
-          prefix: "[#{name.presence || 'Anonymous Class'}]",
+          prefix: "[#{resolved_axn_name}]",
           error_context: "logging async invocation",
           context_direction: :inbound,
           context_data: kwargs,

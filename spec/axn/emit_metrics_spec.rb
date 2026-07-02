@@ -21,7 +21,7 @@ RSpec.describe "Action axn.call notification metrics" do
         result = action.call
         expect(notifications.length).to eq(1)
         expect(notifications.first[:payload][:action].result.outcome.success?).to be true
-        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
         expect(notifications.first[:payload][:action].result.elapsed_time).to be_a(Float)
         expect(notifications.first[:payload][:action].result.elapsed_time).to be >= 0
         expect(notifications.first[:payload][:action].result).to eq(result)

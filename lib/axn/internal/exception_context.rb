@@ -42,7 +42,7 @@ module Axn
           # is still on the stack). Omitted for a single (non-nested) action. :axn_stack is a
           # RESERVED_EXECUTION_CONTEXT_KEY, so this never clobbers a user-supplied value.
           stack = Core::NestingTracking._current_axn_stack
-          context[:axn_stack] = stack.map { |a| a.class.name || "AnonymousClass" } if stack.length > 1
+          context[:axn_stack] = stack.map { |a| a.class.resolved_axn_name } if stack.length > 1
 
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context

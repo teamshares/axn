@@ -20,7 +20,7 @@ RSpec.describe "Action axn.call notification" do
       it "emits axn.call notification with correct resource and outcome" do
         result = action.call
         expect(notifications.length).to eq(1)
-        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
         expect(notifications.first[:payload][:action].result.outcome.to_s).to eq("success")
         expect(notifications.first[:payload][:action].result).to eq(result)
         expect(notifications.first[:payload][:action].result.elapsed_time).to be_a(Float)
@@ -130,9 +130,18 @@ RSpec.describe "Action axn.call notification" do
     context "with anonymous class" do
       let(:action) { build_axn }
 
-      it "includes AnonymousClass as resource name" do
+      it "includes 'Anonymous Axn' as resource name" do
         action.call
-        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
+      end
+    end
+
+    context "with a custom axn_name" do
+      let(:action) { build_axn { axn_name "custom_tool" } }
+
+      it "uses the resolved axn_name as resource name" do
+        action.call
+        expect(notifications.first[:payload][:resource]).to eq("custom_tool")
       end
     end
   end

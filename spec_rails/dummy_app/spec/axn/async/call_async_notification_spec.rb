@@ -64,10 +64,10 @@ RSpec.describe "Action axn.call_async notification (Sidekiq)", :sidekiq do
       expect(notifications.first[:payload][:resource]).to eq("CallAsyncNotificationNamed")
     end
 
-    it "includes AnonymousClass as the resource name for an anonymous action" do
+    it "includes 'Anonymous Axn' as the resource name for an anonymous action" do
       # Anonymous actions cannot enqueue to the generic Worker (needs a constant name),
-      # but the notification still fires first and reports AnonymousClass. The subsequent
-      # enqueue raises, which we ignore here — we only assert the emitted payload.
+      # but the notification still fires first and reports the resolved_axn_name fallback.
+      # The subsequent enqueue raises, which we ignore here — we only assert the emitted payload.
       anon = Class.new do
         include Axn
         async :sidekiq
@@ -80,7 +80,19 @@ RSpec.describe "Action axn.call_async notification (Sidekiq)", :sidekiq do
         # expected: cannot enqueue an anonymous Axn action to Sidekiq
       end
 
-      expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+      expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
+    end
+
+    it "uses the resolved axn_name as the resource name when set" do
+      named_via_axn_name = stub_const("CallAsyncNotificationCustomName", Class.new do
+        include Axn
+        axn_name "custom_async_tool"
+        async :sidekiq
+        def call = nil
+      end)
+
+      named_via_axn_name.call_async(name: "World")
+      expect(notifications.first[:payload][:resource]).to eq("custom_async_tool")
     end
   end
 end

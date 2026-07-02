@@ -23,7 +23,7 @@ RSpec.describe "Axn::Internal::Tracing emit_metrics" do
     it "calls emit_metrics with success outcome" do
       result = action.call
       expect(metrics_calls.length).to eq(1)
-      expect(metrics_calls.first[:resource]).to eq("AnonymousClass")
+      expect(metrics_calls.first[:resource]).to eq("Anonymous Axn")
       expect(metrics_calls.first[:result]).to eq(result)
       expect(metrics_calls.first[:result].outcome.success?).to be true
     end
@@ -41,7 +41,7 @@ RSpec.describe "Axn::Internal::Tracing emit_metrics" do
     it "calls emit_metrics with failure outcome" do
       result = action.call
       expect(metrics_calls.length).to eq(1)
-      expect(metrics_calls.first[:resource]).to eq("AnonymousClass")
+      expect(metrics_calls.first[:resource]).to eq("Anonymous Axn")
       expect(metrics_calls.first[:result]).to eq(result)
       expect(metrics_calls.first[:result].outcome.failure?).to be true
     end
@@ -59,7 +59,7 @@ RSpec.describe "Axn::Internal::Tracing emit_metrics" do
     it "calls emit_metrics with exception outcome" do
       result = action.call
       expect(metrics_calls.length).to eq(1)
-      expect(metrics_calls.first[:resource]).to eq("AnonymousClass")
+      expect(metrics_calls.first[:resource]).to eq("Anonymous Axn")
       expect(metrics_calls.first[:result]).to eq(result)
       expect(metrics_calls.first[:result].outcome.exception?).to be true
     end
@@ -115,7 +115,7 @@ RSpec.describe "Axn::Internal::Tracing emit_metrics" do
       action.call
       expect(received_args.length).to eq(1)
       expect(received_args.first.keys).to eq([:resource])
-      expect(received_args.first[:resource]).to eq("AnonymousClass")
+      expect(received_args.first[:resource]).to eq("Anonymous Axn")
     end
   end
 
@@ -165,7 +165,7 @@ RSpec.describe "Axn::Internal::Tracing emit_metrics" do
       result = action.call
       expect(received_args.length).to eq(1)
       expect(received_args.first.keys.sort).to eq(%i[dimensions resource result])
-      expect(received_args.first[:resource]).to eq("AnonymousClass")
+      expect(received_args.first[:resource]).to eq("Anonymous Axn")
       expect(received_args.first[:result]).to eq(result)
       expect(received_args.first[:dimensions]).to eq({})
     end

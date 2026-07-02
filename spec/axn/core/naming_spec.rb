@@ -40,6 +40,30 @@ RSpec.describe "Axn axn_name" do
     expect(child.resolved_axn_name).to eq("child_tool")
     expect(parent.resolved_axn_name).to eq("parent_tool")
   end
+
+  describe "axn_name validation" do
+    it "accepts a non-blank String" do
+      klass = Class.new { include Axn }
+      expect { klass.axn_name "ok" }.not_to raise_error
+      expect(klass.axn_name).to eq("ok")
+      expect(klass.resolved_axn_name).to eq("ok")
+    end
+
+    it "raises ArgumentError for a non-String value" do
+      klass = Class.new { include Axn }
+      expect { klass.axn_name 123 }.to raise_error(ArgumentError, /axn_name must be a non-blank String/)
+    end
+
+    it "raises ArgumentError for an empty string" do
+      klass = Class.new { include Axn }
+      expect { klass.axn_name "" }.to raise_error(ArgumentError, /axn_name must be a non-blank String/)
+    end
+
+    it "raises ArgumentError for a blank (whitespace-only) string" do
+      klass = Class.new { include Axn }
+      expect { klass.axn_name "  " }.to raise_error(ArgumentError, /axn_name must be a non-blank String/)
+    end
+  end
 end
 
 RSpec.describe "Axn class-level description" do

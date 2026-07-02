@@ -84,7 +84,7 @@ module Axn
     # =========================================================================
 
     def with_tracing(&block)
-      resource = @action_class.name || "AnonymousClass"
+      resource = @action_class.resolved_axn_name
       payload = { resource:, action: @action }
 
       update_payload = proc do

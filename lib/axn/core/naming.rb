@@ -19,6 +19,8 @@ module Axn
         def axn_name(value = NOT_SET)
           return _axn_name if value.equal?(NOT_SET)
 
+          raise ArgumentError, "axn_name must be a non-blank String (got #{value.inspect})" unless value.is_a?(String) && !value.strip.empty?
+
           self._axn_name = value
         end
 

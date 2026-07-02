@@ -48,7 +48,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     it "creates OpenTelemetry span with correct name and attributes" do
       action.call
       expect(mock_tracer_provider).to have_received(:tracer).with("axn", Axn::VERSION)
-      expect(mock_tracer).to have_received(:in_span).with("axn.call", hash_including(attributes: { "axn.resource" => "AnonymousClass" }))
+      expect(mock_tracer).to have_received(:in_span).with("axn.call", hash_including(attributes: { "axn.resource" => "Anonymous Axn" }))
     end
 
     it "sets #{outcome} outcome attribute on span" do
@@ -148,7 +148,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
         action.call
         expect(mock_tracer).to have_received(:in_span).with(
           "axn.call",
-          attributes: { "axn.resource" => "AnonymousClass" },
+          attributes: { "axn.resource" => "Anonymous Axn" },
           record_exception: false,
         )
       end
@@ -164,7 +164,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
         action.call
         expect(mock_tracer).to have_received(:in_span).with(
           "axn.call",
-          attributes: { "axn.resource" => "AnonymousClass" },
+          attributes: { "axn.resource" => "Anonymous Axn" },
         )
       end
     end

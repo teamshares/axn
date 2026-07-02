@@ -42,7 +42,7 @@ RSpec.describe "Action axn.call_async notification" do
         action_class.call_async(name: "World", age: 25)
         expect(notifications.length).to eq(1)
         expect(notifications.first[:name]).to eq("axn.call_async")
-        expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+        expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
         expect(notifications.first[:payload][:action_class]).to eq(action_class)
         expect(notifications.first[:payload][:kwargs]).to eq({ name: "World", age: 25 })
         expect(notifications.first[:payload][:adapter]).to eq("active_job")
