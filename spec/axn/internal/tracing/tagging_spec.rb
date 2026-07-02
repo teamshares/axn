@@ -13,6 +13,27 @@ RSpec.describe "Axn tagging integration" do
 
     after { ActiveSupport::Notifications.unsubscribe("axn.call") }
 
+    it "populates tags/dimensions on the payload before the event is published (readable at callback time)" do
+      seen = {}
+      sub = ActiveSupport::Notifications.subscribe("axn.call") do |_name, _start, _finish, _id, payload|
+        # Read by value inside the callback — a real subscriber can only see what's on the
+        # payload at publish time, not mutations applied after `instrument` returns.
+        seen[:tags] = payload[:tags]
+        seen[:dimensions] = payload[:dimensions]
+        seen[:outcome] = payload[:outcome]
+      end
+      build_axn do
+        tag(:company_id) { 7 }
+        dimension(:plan) { "pro" }
+        def call; end
+      end.call
+      expect(seen[:tags]).to eq(company_id: 7)
+      expect(seen[:dimensions]).to eq(plan: "pro")
+      expect(seen[:outcome]).to eq("success")
+    ensure
+      ActiveSupport::Notifications.unsubscribe(sub)
+    end
+
     it "includes resolved tags from proc, symbol, and literal resolvers" do
       action = build_axn do
         expects :n

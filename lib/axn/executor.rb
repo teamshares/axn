@@ -50,7 +50,7 @@ module Axn
     # TRACING (Outside zone - result is settled)
     # =========================================================================
 
-    def with_tracing(&)
+    def with_tracing(&block)
       resource = @action_class.name || "AnonymousClass"
       payload = { resource:, action: @action }
 
@@ -67,10 +67,17 @@ module Axn
         Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
       end
 
+      # Enrich the payload from inside the instrument block — after the action settles but
+      # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
+      # full payload. Running update_payload after `instrument` returns (its own ensure) would
+      # publish first and mutate after, leaving subscribers with outcome/result/tags/dimensions
+      # missing at callback time.
       instrument_block = proc do
-        ActiveSupport::Notifications.instrument("axn.call", payload, &)
-      ensure
-        update_payload.call
+        ActiveSupport::Notifications.instrument("axn.call", payload) do
+          block.call
+        ensure
+          update_payload.call
+        end
       end
 
       if defined?(OpenTelemetry)
