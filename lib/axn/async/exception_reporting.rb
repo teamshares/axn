@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/async_serialization"
+
 module Axn
   module Async
     # Shared utilities for async exception reporting across adapters.
@@ -66,7 +68,7 @@ module Axn
         def resolve_facets(action_class:, job_args:)
           return { tags: {}, dimensions: {} } unless action_class._tags.any? || action_class._dimensions.any?
 
-          instance = action_class.send(:new, **job_args)
+          instance = action_class.send(:new, **_deserialize_job_args(job_args))
           {
             tags: Core::Tagging.resolve(action_class._tags, action: instance),
             dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance),
@@ -74,6 +76,19 @@ module Axn
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
           { tags: {}, dimensions: {} }
+        end
+
+        # Restore the job args to the same live form the worker's `.call` would see, so a facet that
+        # reads a GlobalID/model input (or a generated `<field>_id` reader) resolves the real record
+        # rather than the serialized `_aj_globalid`/`_as_global_id` wrapper. The Sidekiq death handler
+        # hands us the raw serialized payload (only symbolize_keys'd); we re-stringify keys because
+        # the fallback GlobalID decoder matches on the `_as_global_id` string suffix. On the ActiveJob
+        # path the discard args are already ActiveJob-deserialized (live objects) and re-running the
+        # decoder raises ("can only deserialize primitive arguments") — so fall back to the args as-is.
+        def _deserialize_job_args(job_args)
+          Axn::Internal::AsyncSerialization.deserialize(job_args.transform_keys(&:to_s))
+        rescue StandardError
+          job_args
         end
       end
 

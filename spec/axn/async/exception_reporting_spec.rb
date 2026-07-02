@@ -143,6 +143,43 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(received[:tags]).to eq(company_id: 7)
       end
 
+      it "deserializes job_args before rebuilding the instance (so GlobalID/model inputs restore)" do
+        action_class = build_axn do
+          expects :company
+          tag(:company_id) { company.id }
+        end
+        # Sidekiq death-handler args are the serialized payload; the real value is restored by
+        # AsyncSerialization.deserialize (keys re-stringified first for the fallback GID decoder).
+        allow(Axn::Internal::AsyncSerialization).to receive(:deserialize)
+          .with({ "company_as_global_id" => "gid://app/Company/42" })
+          .and_return(company: double("Company", id: 42))
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { company_as_global_id: "gid://app/Company/42" }, extra_context: {}
+        )
+
+        expect(received[:tags]).to eq(company_id: 42)
+      end
+
+      it "falls back to the raw args if deserialization raises (already-live ActiveJob discard args)" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+        end
+        allow(Axn::Internal::AsyncSerialization).to receive(:deserialize).and_raise("can only deserialize primitive arguments")
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 5 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 5)
+      end
+
       it "still reports (without facet keys) if the action can't be reconstructed" do
         action_class = build_axn do
           expects :company_id
