@@ -17,6 +17,13 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value(3.14)).to be_a(Float).and eq(3.14)
     end
 
+    it "serializes a Symbol as its String form (Codex review: matches TYPE_MAP's Symbol => \"string\")" do
+      # JSON has no symbol type — a Symbol must render as a String, matching the schema's
+      # `type: Symbol` => "string" mapping (Axn::Reflection::Schema::TYPE_MAP), not fall through
+      # to the generic `to_s` else-branch incidentally.
+      expect(described_class.serialize_value(:ok)).to be_a(String).and eq("ok")
+    end
+
     it "serializes other Numeric subclasses (BigDecimal, Rational) as JSON numbers (Float), matching the schema's number type" do
       # Regression: BigDecimal/Rational aren't Integer/Float, so without an explicit Numeric case
       # they fall through to as_json/to_s, producing STRINGS ("0.314e1", "1/3") that violate an

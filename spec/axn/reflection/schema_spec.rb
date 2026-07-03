@@ -186,6 +186,25 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:params]).to include(type: "object")
   end
 
+  it "maps type: Symbol to a JSON string on input (Codex review: TYPE_MAP entry, matches serialize_exposed rendering a Symbol as its string form)" do
+    klass = Class.new do
+      include Axn
+      expects :status, type: Symbol
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:properties][:status]).to include(type: "string")
+  end
+
+  it "maps type: Symbol to a JSON string on output, not the object fallback (Codex review: schema said object while serialize_exposed emits a string)" do
+    klass = Class.new do
+      include Axn
+      exposes :status, type: Symbol
+      def call = expose!(status: :ok)
+    end
+    schema = described_class.build_output(klass.external_field_configs)
+    expect(schema[:properties][:status]).to include(type: "string")
+  end
+
   it "nests subfields under a string on: parent" do
     klass = Class.new do
       include Axn

@@ -24,6 +24,11 @@ module Axn
         case value
         when nil, String, Integer, Float, TrueClass, FalseClass
           value
+        when Symbol
+          # JSON has no symbol type — render deterministically as its String form, matching
+          # the schema's `type: Symbol` => "string" mapping (Axn::Reflection::Schema::TYPE_MAP),
+          # rather than relying on the generic `to_s` fallback below (which happens to agree).
+          value.to_s
         when Numeric
           # BigDecimal / Rational etc. — emit a JSON number so output matches the schema's "number" type.
           # JSON has no decimal type (any JSON number is a double), so a Float representation is the correct

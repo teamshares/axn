@@ -7,6 +7,7 @@ module Axn
     module Schema
       TYPE_MAP = {
         String => "string",
+        Symbol => "string",
         Integer => "integer",
         Float => "number",
         Numeric => "number",
