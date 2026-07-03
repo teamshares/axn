@@ -260,6 +260,62 @@ RSpec.describe "Axn ambient_context exception-context hardening (Bug DD)" do
   end
 end
 
+RSpec.describe "Axn ambient_context provider memoization (Bug EE)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  it "does not re-raise from execution_context when a dynamic sensitive: predicate on another " \
+     "ambient subfield re-reads ambient_context during logging-filter construction" do
+    Axn.config.ambient_context_provider = -> { raise "provider boom" }
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      expects :secret_id, on: :ambient_context, type: Integer,
+                          sensitive: -> { respond_to?(:secret_id) && !secret_id.nil? }
+      def call = nil
+    end
+
+    result = klass.call
+    expect(result).not_to be_ok
+
+    instance = klass.send(:new)
+    instance._run
+    expect { instance.execution_context }.not_to raise_error
+  end
+
+  it "still surfaces the provider failure as the action's exception on first resolution" do
+    Axn.config.ambient_context_provider = -> { raise "provider boom" }
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      def call = nil
+    end
+
+    result = klass.call
+    expect(result).not_to be_ok
+    expect(result.exception).to be_a(StandardError)
+  end
+
+  it "invokes the provider at most once even when ambient_context is read multiple times after failure" do
+    call_count = 0
+    Axn.config.ambient_context_provider = lambda {
+      call_count += 1
+      raise "provider boom"
+    }
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      def call = nil
+    end
+
+    instance = klass.send(:new)
+    instance._run
+    3.times { instance.execution_context }
+    instance.send(:ambient_context)
+
+    expect(call_count).to eq(1)
+  end
+end
+
 RSpec.describe "Axn ambient_context observability" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 

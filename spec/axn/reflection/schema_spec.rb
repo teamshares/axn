@@ -503,6 +503,44 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:limit][:default]).to eq(20)
     end
 
+    it "does not leak a mutation of a returned String default back into the contract's stored default (Bug FF)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: "abc"
+      end
+      schema = klass.input_schema
+      schema[:properties][:name][:default].upcase!
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:name][:default]).to eq("abc")
+      expect(klass.internal_field_configs.find { |c| c.field == :name }.default).to eq("abc")
+    end
+
+    it "does not leak a mutation of a nested value inside a returned Hash default (Bug FF)" do
+      klass = Class.new do
+        include Axn
+        expects :opts, type: Hash, default: { a: { b: 1 } }
+      end
+      schema = klass.input_schema
+      schema[:properties][:opts][:default][:a][:b] = 99
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:opts][:default]).to eq(a: { b: 1 })
+    end
+
+    it "does not leak a mutation of a returned enum element back into the contract's inclusion validation (Bug FF)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[open closed] }
+      end
+      schema = klass.input_schema
+      schema[:properties][:status][:enum][0] << "X"
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:status][:enum]).to eq(%w[open closed])
+      expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
+    end
+
     it "types a parent with subfields as plain object even when allow_nil: true (Bug X: a nil parent can't yield its subfields at runtime)" do
       klass = Class.new do
         include Axn

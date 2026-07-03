@@ -113,6 +113,18 @@ module Axn
         schema
       end
 
+      # Recursively copy a reflected JSON-ish value so a consumer can't mutate the stored contract
+      # through the returned schema. Dups Hash/Array structure and mutable String leaves; shares
+      # immutable leaves (Integer/Float/Symbol/true/false/nil).
+      def deep_copy_value(value)
+        case value
+        when Hash then value.transform_values { |v| deep_copy_value(v) }
+        when Array then value.map { |v| deep_copy_value(v) }
+        when String then value.dup
+        else value
+        end
+      end
+
       def build_property(config, for_output: false)
         prop = {}
         prop[:description] = config.description if config.description
@@ -127,22 +139,21 @@ module Axn
         end
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
-          default_value = config.default
-          # A literal Array/Hash default: is a mutable object stored directly on the contract's
-          # FieldConfig — shallow-dup it so a caller mutating the returned schema (e.g.
-          # `schema[:properties][:opts][:default][:b] = 2`) can't reach back into the runtime
-          # contract. Scalars are immutable, so no copy is needed for them.
-          prop[:default] = default_value.is_a?(Array) || default_value.is_a?(Hash) ? default_value.dup : default_value
+          # The default is a value stored directly on the contract's FieldConfig — deep-copy it so
+          # a caller mutating the returned schema (e.g. `schema[:properties][:opts][:default][:b] = 2`,
+          # or mutating a String default in place via `upcase!`) can't reach back into the runtime
+          # contract. Immutable leaves (Integer/Float/Symbol/true/false/nil) are shared, not copied.
+          prop[:default] = deep_copy_value(config.default)
         end
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
           if enum_values.is_a?(Array)
             # Same reasoning as default: above — `enum_values` here is the actual array stored in
-            # the contract's validations hash (`config.validations[:inclusion][:in]`), so the
-            # non-nullable branch must return a copy rather than the object itself. The nullable
-            # branch already copies via `+`.
-            prop[:enum] = nullable ? enum_values + [nil] : enum_values.dup
+            # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and
+            # any mutable elements within it, e.g. String members) must be deep-copied rather than
+            # shared with the returned schema.
+            prop[:enum] = deep_copy_value(nullable ? enum_values + [nil] : enum_values)
           end
         end
 

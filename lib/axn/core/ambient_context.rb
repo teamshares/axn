@@ -28,7 +28,15 @@ module Axn
       def ambient_context
         return @__ambient_context if defined?(@__ambient_context)
 
-        @__ambient_context = _resolve_ambient_context
+        begin
+          @__ambient_context = _resolve_ambient_context
+        rescue StandardError
+          # Memoize empty so later reads (logging sensitive-predicate evaluation, exception-context
+          # building) never re-run the provider — but still surface the failure on this first resolution
+          # (it becomes the action's exception during validation).
+          @__ambient_context = {}
+          raise
+        end
       end
 
       private
