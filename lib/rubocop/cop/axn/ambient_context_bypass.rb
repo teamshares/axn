@@ -56,16 +56,18 @@ module RuboCop
 
         private
 
-        # Walks `node`'s ancestors looking for an enclosing class/module whose OWN body includes
-        # `include Axn`. Wrapped in a rescue like unchecked_result.rb so malformed AST can't
-        # crash the cop.
+        # Walks `node`'s ancestors looking for the INNERMOST enclosing class/module and returns
+        # whether ITS OWN body includes `include Axn`. Wrapped in a rescue like unchecked_result.rb
+        # so malformed AST can't crash the cop.
         def within_axn_class?(node)
           current_node = node
           while current_node.parent
             current_node = current_node.parent
             next unless %i[class module].include?(current_node.type)
 
-            return true if body_includes_axn?(current_node)
+            # Only the innermost enclosing class/module decides — a Current read in a nested helper
+            # class under an Axn action isn't fixable via the outer action's contract.
+            return body_includes_axn?(current_node)
           end
           false
         rescue StandardError => _e

@@ -742,6 +742,83 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "nil-tolerant validators (absence/acceptance) do not make a field required (Bug LL)" do
+    it "does not require a field validated with absence: true alongside presence: false" do
+      klass = Class.new do
+        include Axn
+        expects :archived_at, presence: false, absence: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("archived_at")
+    end
+
+    it "does not require a field validated with acceptance: true alongside presence: false" do
+      # NOTE: acceptance: true alone is still required, because Axn auto-adds `presence: true`
+      # to any field without an explicit `presence:` key (contract.rb `_parse_field_validations`)
+      # — verified at runtime: `expects :flag, acceptance: true` alone rejects a nil/blank value
+      # with "Flag can't be blank". Nil-tolerance for acceptance only surfaces once presence is
+      # explicitly disabled, same as the absence: true case above.
+      klass = Class.new do
+        include Axn
+        expects :flag, presence: false, acceptance: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("flag")
+    end
+
+    it "still requires amount when a bare non-nil-tolerant validator is active alongside presence: false (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :amount, numericality: true, presence: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("amount")
+    end
+
+    it "still requires a plain typed field with no allow_nil anywhere (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("name")
+    end
+
+    it "still requires a typed-but-no-presence boolean field (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :flag2, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("flag2")
+    end
+
+    it "does not mark an allow_nil: true typed field as required (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :age, type: Integer, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("age")
+    end
+
+    it "does not mark an optional: true field as required (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :coupon, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("coupon")
+    end
+  end
+
   describe "a parent with a required subfield must itself be required (Bug V)" do
     it "marks a defaulted/optional-looking parent as required when it has a required subfield" do
       klass = Class.new do
