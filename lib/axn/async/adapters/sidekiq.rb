@@ -134,11 +134,12 @@ module Axn
             job.perform_async(name, job_kwargs)
           end
 
-          # Resolve declared facets to Sidekiq job-tag strings at enqueue time. Inputs-only: builds a
-          # throwaway (non-run) instance from the cleaned kwargs, runs the inbound coercion pass, and
-          # resolves the facet maps enabled by Axn.config.sidekiq_job_tag_sources. Best-effort — never
-          # breaks the enqueue. Skips all work (no instance, no coercion) when the sink is disabled or
-          # the action declares no facets for the enabled sources. See PRO-2855.
+          # Resolve declared facets to Sidekiq job-tag strings at enqueue time. Input-phase only:
+          # builds a throwaway (non-run) instance from the cleaned kwargs and resolves `from: :inputs`
+          # facets from the raw inputs (no preprocess/defaults — see Executor#resolve_inbound_facets),
+          # for the sources enabled by Axn.config.sidekiq_job_tag_sources. Best-effort — never breaks
+          # the enqueue. Skips all work (no instance built) when the sink is disabled or the action
+          # declares no facets for the enabled sources. See PRO-2855.
           def _resolve_sidekiq_job_tags(kwargs)
             sources = Axn.config.sidekiq_job_tag_sources
             return [] if sources.empty?
@@ -147,8 +148,10 @@ module Axn
             return [] unless declares_facets
 
             action = send(:new, **kwargs)
-            facets = Axn::Executor.new(action).resolve_inbound_facets(sources)
-            Axn::Async::Adapters::Sidekiq.job_tags_for(facets)
+            # One resolved map per enabled source (tags/dimensions), kept separate so a name declared
+            # as both survives — format each independently and concatenate rather than merging maps.
+            maps = Axn::Executor.new(action).resolve_inbound_facets(sources)
+            maps.flat_map { |map| Axn::Async::Adapters::Sidekiq.job_tags_for(map) }
           rescue StandardError => e
             Axn::Internal::PipingError.swallow("resolving Sidekiq job tags at enqueue", exception: e)
             []

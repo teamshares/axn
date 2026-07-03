@@ -374,9 +374,16 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(last_job_tags.call).to contain_exactly("company_id:42", "plan:pro")
     end
 
-    it "applies inbound defaults before resolving" do
+    it "resolves from raw enqueued inputs (an omitted defaulted field yields no tag)" do
+      # `plan` has `default: "free"`, but defaults are not applied at enqueue (they'd double-run at
+      # perform and could drift), so an omitted `plan` produces no tag rather than "plan:free".
       Actions::Async::TestActionSidekiqTagged.call_async(company_id: 7)
-      expect(last_job_tags.call).to contain_exactly("company_id:7", "plan:free")
+      expect(last_job_tags.call).to contain_exactly("company_id:7")
+    end
+
+    it "keeps a same-named tag and dimension as two distinct job tags" do
+      Actions::Async::TestActionSidekiqDupFacetName.call_async(account_id: 7, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("account:7", "account:pro")
     end
 
     it "honors sidekiq_job_tag_sources = [:dimension] (bounded only)" do

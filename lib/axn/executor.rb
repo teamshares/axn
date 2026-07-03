@@ -60,25 +60,21 @@ module Axn
 
     # Input-phase facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there is
     # no run to hang completion-time resolution on. Resolves only `from: :inputs` facets (via the
-    # memoized resolved_input_* readers) — `from: :result` facets can't resolve before the body runs
-    # and are correctly excluded. Runs ONLY inbound preprocessing + inbound defaults first (NOT
-    # inbound validation — validation only checks, it doesn't transform the data a facet resolver
-    # reads, so it would add cost — including a `model:` field's `.find` and any user `validate:`
-    # procs — for every enqueue with no benefit), swallowing any failure so a bad-input enqueue
-    # still succeeds. A `model:` field's record is loaded lazily (facade.rb) only if an input-phase
-    # resolver actually reads it. `sources` is a subset of %i[tag dimension]. See PRO-2855.
+    # memoized resolved_input_* readers) against the RAW enqueued inputs. It deliberately does NOT
+    # run preprocess/defaults: those are user hooks that must execute once, at perform — a dynamic
+    # `default:`/`preprocess:` run here would both double-execute (enqueue AND perform) and compute
+    # a value that can differ from the run, so the facet would drift from its own job. Resolving
+    # from raw inputs keeps the facet in lockstep with the serialized payload the worker receives.
+    # `from: :result` facets are excluded by construction (they can't resolve before the body runs);
+    # a `model:` field's record still loads lazily (facade.rb) if a resolver reads it. Returns one
+    # resolved map per enabled source (tags, then dimensions), kept SEPARATE so a name declared as
+    # both a tag and a dimension yields two facets rather than one clobbering the other. `sources`
+    # is a subset of %i[tag dimension]. See PRO-2855.
     def resolve_inbound_facets(sources)
-      begin
-        apply_inbound_preprocessing!
-        apply_defaults!(:inbound)
-      rescue StandardError => e
-        Internal::PipingError.swallow("resolving inbound facets at enqueue", action: @action, exception: e)
-      end
-
-      facets = {}
-      facets.merge!(resolved_input_tags) if sources.include?(:tag)
-      facets.merge!(resolved_input_dimensions) if sources.include?(:dimension)
-      facets
+      maps = []
+      maps << resolved_input_tags if sources.include?(:tag)
+      maps << resolved_input_dimensions if sources.include?(:dimension)
+      maps
     end
 
     private
