@@ -159,7 +159,9 @@ module Axn
         end
 
         def _static_sensitive_fields
-          (internal_field_configs + external_field_configs + subfield_configs).select { |c| c.sensitive == true }.map(&:field)
+          (internal_field_configs + external_field_configs + subfield_configs)
+            .select { |c| c.sensitive == true }
+            .flat_map { |c| _sensitive_field_keys(c) }
         end
 
         def _has_dynamic_sensitive_fields?
@@ -171,9 +173,17 @@ module Axn
         def _resolve_sensitive_fields(action_instance)
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
-          (internal_field_configs + external_field_configs + subfield_configs).select do |config|
-            _resolve_sensitive_value(config.sensitive, action_instance)
-          end.map(&:field)
+          (internal_field_configs + external_field_configs + subfield_configs)
+            .select { |config| _resolve_sensitive_value(config.sensitive, action_instance) }
+            .flat_map { |c| _sensitive_field_keys(c) }
+        end
+
+        # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as
+        # sensitive as the record). Non-model fields contribute only their own key.
+        def _sensitive_field_keys(config)
+          keys = [config.field]
+          keys << :"#{config.field}_id" if config.validations[:model]
+          keys
         end
 
         def _resolve_sensitive_value(sensitive, action_instance)

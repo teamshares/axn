@@ -405,4 +405,24 @@ RSpec.describe "Axn ambient_context observability" do
     expect(ctx[:ambient_context][:company_id]).to eq(3)
     expect(ctx[:ambient_context][:secret_id]).to eq("[FILTERED]")
   end
+
+  # A sensitive `model:` ambient subfield resolves from `<field>_id`, and `_filter_to_declared`
+  # preserves that id key in the resolved ambient hash (see the `#_filter_to_declared` spec above).
+  # `_static_sensitive_fields`/`_resolve_sensitive_fields` are keyed on the declared field NAME
+  # (`:company`), so the ParameterFilter redacted `company` but let the raw `company_id` id leak
+  # into execution_context/on_exception — a P1 leak for a supposedly-sensitive record reference.
+  it "redacts the generated <field>_id alias for a sensitive model: ambient subfield (P1 leak)" do
+    company_klass = Class.new do
+      def self.find(_id) = new
+      def id = 42
+    end
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, model: { klass: company_klass, finder: :find }, sensitive: true
+      def call = nil
+    end
+    inst = klass.send(:new, ambient_context: { company_id: 42 })
+    inst._run
+    expect(inst.execution_context[:ambient_context][:company_id]).to eq("[FILTERED]")
+  end
 end
