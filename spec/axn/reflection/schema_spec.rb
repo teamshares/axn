@@ -846,6 +846,53 @@ RSpec.describe Axn::Reflection::Schema do
       expect(foo[:properties]).not_to have_key("deep.path")
       expect(foo[:properties]).not_to have_key(:"deep.path")
     end
+
+    it "requires an optional (no-default) parent whose only subfield is a dotted name, matching its shallow analog (Codex review regression)" do
+      shallow = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects :bar, on: :foo, type: String, optional: true
+      end
+      dotted = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects "bar.baz", on: :foo, type: String, optional: true
+      end
+
+      shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
+      dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
+
+      # Parity is the correctness criterion: a dotted-only subfield must not relax the parent's
+      # requiredness relative to the shallow case — runtime validates both identically (a nil/omitted
+      # parent raises trying to extract the child from it).
+      expect(shallow_schema[:required]).to include("foo")
+      expect(dotted_schema[:required]).to include("foo")
+
+      # The dotted subfield's own SHAPE is still omitted (prior fix preserved).
+      expect(dotted_schema[:properties][:foo][:properties] || {}).not_to have_key("bar.baz")
+    end
+
+    it "does not require a defaulted parent with only an optional dotted child (default materializes it)" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash, default: {}
+        expects "bar.baz", on: :foo, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("foo")
+    end
+
+    it "still requires the parent when its only child is a REQUIRED dotted subfield (deep required key not provably covered)" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash, default: {}
+        expects "bar.baz", on: :foo, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("foo")
+    end
   end
 
   describe "a bare/active validator rejects nil even alongside a disabled presence (Bug KK)" do

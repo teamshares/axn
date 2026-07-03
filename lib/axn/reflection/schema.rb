@@ -41,12 +41,13 @@ module Axn
         properties = {}
         required = []
 
-        # A dotted subfield NAME (`expects "bar.baz", on: :foo`) denotes a DEEP extraction path
-        # (runtime reads foo[:bar][:baz]); single-level nesting can't represent it, so it's dropped
-        # from the schema — same treatment as the dotted-parent / subfield-of-subfield cases noted in
-        # the KNOWN LIMITATION above (deferred to PRO-2844/PRO-2845). The runtime contract is unaffected.
-        subfield_configs = subfield_configs.reject { |c| c.field.to_s.include?(".") }
-
+        # Group ALL subfields for the parent-requiredness decision below — runtime's
+        # validate_subfields_contract! validates EVERY declared subfield (incl. dotted deep paths),
+        # so an omitted parent fails exactly as it would for a shallow subfield. Property NESTING,
+        # though, is built only from single-level (non-dotted) subfields: a dotted subfield NAME
+        # (`expects "bar.baz", on: :foo`) is a deep extraction path we can't represent at one level
+        # (see KNOWN LIMITATION above; deferred to PRO-2844/PRO-2845), so its shape is omitted — but
+        # its parent's requiredness must still match runtime.
         subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
 
         field_configs.each do |config|
@@ -56,20 +57,28 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            nested = subfields_by_parent[config.reader_as]
-            apply_nested_subfields!(prop, config, nested)
+            all_nested = subfields_by_parent[config.reader_as]
+            shallow_nested = all_nested&.reject { |c| c.field.to_s.include?(".") }
+            apply_nested_subfields!(prop, config, shallow_nested)
 
             properties[config.field] = prop.compact
 
-            if nested.present?
-              parent_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+            if all_nested.present?
+              # prop[:required] holds only the SHALLOW required children (apply_nested_subfields! built it
+              # from shallow_nested). A dotted deep-path child is omitted from the schema shape but still
+              # validated at runtime, so count it here too — else a parent with only dotted (or only
+              # optional) children would be wrongly relaxed.
+              shallow_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+              dotted_has_required_child = all_nested.any? { |c| c.field.to_s.include?(".") && !optional_for_schema?(c, subfield: true) }
+              parent_has_required_child = shallow_has_required_child || dotted_has_required_child
               # Omitting the parent is safe only if something materializes it before subfield validation:
-              # a top-level default on the parent, or a truthy default on a subfield (apply_defaults_for_subfields!).
-              parent_materialized = default?(config) || nested.any? { |sc| !!sc.default }
-              # A required child is fine to omit-with-the-parent if the parent's own literal Hash
-              # default already supplies that child's key (runtime applies the default before
-              # subfield validation, so the key is present even though the caller never set it).
-              covered = !parent_has_required_child || default_covers_required?(config.default, prop[:required])
+              # a top-level default on the parent, or a truthy default on a subfield.
+              parent_materialized = default?(config) || all_nested.any? { |sc| !!sc.default }
+              # A required child is fine to omit-with-the-parent only if the parent's own literal Hash
+              # default supplies that child's key. Coverage is checked against SHALLOW required keys only;
+              # a dotted required child (deep path) can't be verified that way, so it keeps the parent required.
+              covered = !parent_has_required_child ||
+                        (!dotted_has_required_child && default_covers_required?(config.default, prop[:required]))
               required << config.field.to_s unless parent_materialized && covered
             else
               required << config.field.to_s unless optional_for_schema?(config)
