@@ -42,13 +42,18 @@ module Axn
         required = []
 
         # Group ALL subfields for the parent-requiredness decision below — runtime's
-        # validate_subfields_contract! validates EVERY declared subfield (incl. dotted deep paths),
-        # so an omitted parent fails exactly as it would for a shallow subfield. Property NESTING,
-        # though, is built only from single-level (non-dotted) subfields: a dotted subfield NAME
-        # (`expects "bar.baz", on: :foo`) is a deep extraction path we can't represent at one level
-        # (see KNOWN LIMITATION above; deferred to PRO-2844/PRO-2845), so its shape is omitted — but
-        # its parent's requiredness must still match runtime.
-        subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
+        # validate_subfields_contract! validates EVERY declared subfield (incl. dotted deep paths,
+        # subfield-of-subfield chains, and dotted `on:` parents), so an omitted top-level root fails
+        # exactly as it would for a shallow subfield. Every subfield is attributed to the top-level
+        # field its `on:` chain ULTIMATELY roots at — a dotted parent (`on: "address.billing"`)
+        # rolls up to :address, and a subfield whose `on:` points at another subfield (rather than a
+        # top-level field) rolls up through that subfield's own `on:` to whatever top-level field it
+        # ultimately reads from. Property NESTING, though, is built only from DIRECT single-level
+        # children — those whose `on:` names the parent's reader exactly and whose own field name
+        # isn't dotted (see KNOWN LIMITATION above; deferred to PRO-2844/PRO-2845) — so a deep
+        # descendant's shape is omitted, but its root's requiredness must still match runtime.
+        field_readers = field_configs.map(&:reader_as)
+        subfields_by_root = subfield_configs.group_by { |c| top_level_root_reader(c, subfield_configs, field_readers) }
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
@@ -57,29 +62,19 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            all_nested = subfields_by_parent[config.reader_as]
-            shallow_nested = all_nested&.reject { |c| c.field.to_s.include?(".") }
+            all_nested = subfields_by_root[config.reader_as]
+            # Direct shallow children: `on:` names THIS field's reader exactly (not a dotted path, and
+            # not another subfield), and the child's own field name isn't dotted. Everything else that
+            # rolls up to this root — a dotted `on:` path, an `on:` pointing at another subfield, or a
+            # dotted field name — is a deep descendant: still counted for requiredness below, but its
+            # shape is omitted from the nested properties.
+            shallow_nested = all_nested&.select { |c| c.on.to_sym == config.reader_as && !c.field.to_s.include?(".") }
             apply_nested_subfields!(prop, config, shallow_nested)
 
             properties[config.field] = prop.compact
 
             if all_nested.present?
-              # prop[:required] holds only the SHALLOW required children (apply_nested_subfields! built it
-              # from shallow_nested). A dotted deep-path child is omitted from the schema shape but still
-              # validated at runtime, so count it here too — else a parent with only dotted (or only
-              # optional) children would be wrongly relaxed.
-              shallow_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
-              dotted_has_required_child = all_nested.any? { |c| c.field.to_s.include?(".") && !optional_for_schema?(c, subfield: true) }
-              parent_has_required_child = shallow_has_required_child || dotted_has_required_child
-              # Omitting the parent is safe only if something materializes it before subfield validation:
-              # a top-level default on the parent, or a truthy default on a subfield.
-              parent_materialized = default?(config) || all_nested.any? { |sc| !!sc.default }
-              # A required child is fine to omit-with-the-parent only if the parent's own literal Hash
-              # default supplies that child's key. Coverage is checked against SHALLOW required keys only;
-              # a dotted required child (deep path) can't be verified that way, so it keeps the parent required.
-              covered = !parent_has_required_child ||
-                        (!dotted_has_required_child && default_covers_required?(config.default, prop[:required]))
-              required << config.field.to_s unless parent_materialized && covered
+              required << config.field.to_s if subfield_root_required?(config, all_nested, shallow_nested, prop)
             else
               required << config.field.to_s unless optional_for_schema?(config)
             end
@@ -89,6 +84,48 @@ module Axn
         schema = { type: "object", properties: }
         schema[:required] = required.uniq unless required.empty?
         schema
+      end
+
+      # Whether a top-level root that has nested subfields must be listed in the input schema's
+      # `required`. prop[:required] holds only the SHALLOW required children (apply_nested_subfields!
+      # built it from shallow_nested). A deep descendant (dotted `on:` path, nested subfield, or dotted
+      # field name) is omitted from the schema SHAPE but still validated at runtime, so it's counted
+      # here too — else a root with only deep (or only optional) descendants would be wrongly relaxed.
+      def subfield_root_required?(config, all_nested, shallow_nested, prop)
+        deep_nested = all_nested - (shallow_nested || [])
+        shallow_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+        deep_has_required_child = deep_nested.any? { |c| !optional_for_schema?(c, subfield: true) }
+        parent_has_required_child = shallow_has_required_child || deep_has_required_child
+        # Omitting the root is safe only if something materializes it before subfield validation:
+        # a top-level default on the root, or a truthy default on any descendant subfield.
+        parent_materialized = default?(config) || all_nested.any? { |sc| !!sc.default }
+        # A required child is fine to omit-with-the-root only if the root's own literal Hash default
+        # supplies that child's key. Coverage is checked against SHALLOW required keys only; a deep
+        # required child (dotted path/nested subfield) can't be verified that way, so it keeps the root
+        # required.
+        covered = !parent_has_required_child ||
+                  (!deep_has_required_child && default_covers_required?(config.default, prop[:required]))
+        !(parent_materialized && covered)
+      end
+
+      # The top-level field reader a subfield's on:-path ultimately roots at. `on:` may be a dotted path
+      # ("address.billing" → root :address) or point at another subfield's reader (walk up to its parent).
+      # Returns nil if the chain never reaches a top-level reader (malformed contract) — such a subfield is
+      # then attributed to no field and omitted, matching today's behavior. Cycle-guarded.
+      def top_level_root_reader(config, subfield_configs, field_readers)
+        seen = []
+        current = config
+        loop do
+          root_segment = current.on.to_s.split(".").first.to_sym
+          return root_segment if field_readers.include?(root_segment)
+          return nil if seen.include?(root_segment)
+
+          seen << root_segment
+          parent = subfield_configs.find { |c| c.reader_as == root_segment }
+          return nil unless parent
+
+          current = parent
+        end
       end
 
       # Mutates `prop` in place to nest `nested_subfields` (if any) as `prop[:properties]`/

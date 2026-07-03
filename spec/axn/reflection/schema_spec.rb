@@ -895,6 +895,64 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a dotted `on:` PARENT or an `on:` pointing at another subfield rolls up to its top-level " \
+           "root field for requiredness (Codex review)" do
+    it "requires an allow_nil parent whose only subfield roots through a dotted on: parent, matching its " \
+       "shallow analog (runtime raises identically for both when the parent is omitted)" do
+      shallow = Class.new do
+        include Axn
+        expects :address, allow_nil: true
+        expects :zip, on: :address
+      end
+      dotted = Class.new do
+        include Axn
+        expects :address, allow_nil: true
+        expects :zip, on: "address.billing"
+      end
+
+      shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
+      dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
+
+      expect(shallow_schema[:required]).to include("address")
+      expect(dotted_schema[:required]).to include("address")
+
+      # The dotted parent's deep shape (an "address.billing" or "billing"/"zip" property nested under
+      # :address) is not represented — only requiredness rolls up.
+      address_props = dotted_schema[:properties][:address][:properties] || {}
+      expect(address_props).not_to have_key("address.billing")
+      expect(address_props).not_to have_key(:billing)
+      expect(address_props).not_to have_key(:zip)
+    end
+
+    it "requires the top-level root when a required leaf is declared on: a subfield-of-a-subfield chain" do
+      klass = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects :mid, on: :foo
+        expects :leaf, on: :mid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("foo")
+      # :mid still nests directly under :foo (it's a shallow child of :foo); :leaf's shape (a deep
+      # descendant rooted through :mid) is omitted.
+      expect(schema[:properties][:foo][:properties]).to have_key(:mid)
+      expect(schema[:properties][:foo][:properties]).not_to have_key(:leaf)
+    end
+
+    it "does not require a defaulted top-level root whose only descendant is an optional dotted-parent " \
+       "subfield (default materializes the root)" do
+      klass = Class.new do
+        include Axn
+        expects :address, type: Hash, default: {}
+        expects :zip, on: "address.billing", optional: true, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("address")
+    end
+  end
+
   describe "a bare/active validator rejects nil even alongside a disabled presence (Bug KK)" do
     it "still requires amount and does not null its type: a bare numericality validator rejects nil regardless of presence: false" do
       klass = Class.new do
