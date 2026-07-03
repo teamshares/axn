@@ -7,45 +7,118 @@ RSpec.describe RuboCop::Cop::Axn::AmbientContextBypass do
   include RuboCop::RSpec::ExpectOffense
   subject(:cop) { described_class.new }
 
-  it "flags a direct Current attribute read" do
+  it "flags a direct Current attribute read inside an Axn class" do
     expect_offense(<<~RUBY)
-      do_thing(Current.company)
-               ^^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :company, on: :ambient_context` instead of `Current` directly.
+      class Foo
+        include Axn
+        def call
+          do_thing(Current.company)
+                   ^^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :company, on: :ambient_context` instead of `Current` directly.
+        end
+      end
     RUBY
   end
 
-  it "flags a top-level ::Current read" do
+  it "flags a top-level ::Current read inside an Axn class" do
     expect_offense(<<~RUBY)
-      x = ::Current.user
-          ^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :user, on: :ambient_context` instead of `Current` directly.
+      class Foo
+        include Axn
+        def call
+          x = ::Current.user
+              ^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :user, on: :ambient_context` instead of `Current` directly.
+        end
+      end
     RUBY
+  end
+
+  it "does not flag a Current read in a plain class that does not include Axn (false-positive guard)" do
+    expect_no_offenses(<<~RUBY)
+      class UsersController
+        def show
+          Current.user
+        end
+      end
+    RUBY
+  end
+
+  it "does not flag a bare Current read outside any class (no enclosing Axn class)" do
+    expect_no_offenses("do_thing(Current.company)")
   end
 
   it "does not flag unrelated receivers" do
-    expect_no_offenses("x = Time.current")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          x = Time.current
+        end
+      end
+    RUBY
   end
 
   it "does not flag a Current assignment (setup, not a bypass read)" do
-    expect_no_offenses("Current.company = c")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          Current.company = c
+        end
+      end
+    RUBY
   end
 
   it "does not flag a Current call with arguments" do
-    expect_no_offenses("Current.foo(bar)")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          Current.foo(bar)
+        end
+      end
+    RUBY
   end
 
   it "does not flag Current.reset (lifecycle API, not an attribute read)" do
-    expect_no_offenses("Current.reset")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          Current.reset
+        end
+      end
+    RUBY
   end
 
   it "does not flag Current.instance (lifecycle API, not an attribute read)" do
-    expect_no_offenses("Current.instance")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          Current.instance
+        end
+      end
+    RUBY
   end
 
   it "does not flag Current.attributes (lifecycle API, not an attribute read)" do
-    expect_no_offenses("Current.attributes")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          Current.attributes
+        end
+      end
+    RUBY
   end
 
   it "does not flag ::Current.reset (lifecycle API, not an attribute read)" do
-    expect_no_offenses("::Current.reset")
+    expect_no_offenses(<<~RUBY)
+      class Foo
+        include Axn
+        def call
+          ::Current.reset
+        end
+      end
+    RUBY
   end
 end

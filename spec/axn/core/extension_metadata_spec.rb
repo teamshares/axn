@@ -55,6 +55,15 @@ RSpec.describe "Axn extension_metadata" do
     expect(klass.extension_metadata(:mcp)[:tags]).to eq(%w[a b])
   end
 
+  it "does not leak mutation of a String leaf value into the stored metadata (Bug II)" do
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, title: "T")
+
+    klass.extension_metadata(:mcp)[:title].upcase!
+
+    expect(klass.extension_metadata(:mcp)[:title]).to eq("T")
+  end
+
   it "preserves a Class-ref metadata value by identity (Bug BB — no Marshal/deep_dup)" do
     some_class = Struct.new(:foo)
     klass = Class.new { include Axn }

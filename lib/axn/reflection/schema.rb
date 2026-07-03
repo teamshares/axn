@@ -89,7 +89,7 @@ module Axn
             prop[:properties][id_field] = subprop
             prop[:required] << id_field.to_s unless optional_for_schema?(subconfig, subfield: true)
           else
-            subprop = build_property(subconfig)
+            subprop = build_property(subconfig, subfield: true)
             prop[:properties][subconfig.field] = subprop
             prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig, subfield: true)
           end
@@ -125,7 +125,7 @@ module Axn
         end
       end
 
-      def build_property(config, for_output: false)
+      def build_property(config, for_output: false, subfield: false)
         prop = {}
         prop[:description] = config.description if config.description
 
@@ -143,7 +143,13 @@ module Axn
           # a caller mutating the returned schema (e.g. `schema[:properties][:opts][:default][:b] = 2`,
           # or mutating a String default in place via `upcase!`) can't reach back into the runtime
           # contract. Immutable leaves (Integer/Float/Symbol/true/false/nil) are shared, not copied.
-          prop[:default] = deep_copy_value(config.default)
+          #
+          # For a SUBFIELD, only a truthy default is ever applied at runtime
+          # (`Executor#apply_defaults_for_subfields!` does `next unless config.default`), so a
+          # falsey `default: false` subfield must not advertise a `default:` the runtime never
+          # applies. Top-level fields are unaffected — their defaults are applied by key-presence.
+          emit_default = subfield ? !!config.default : true
+          prop[:default] = deep_copy_value(config.default) if emit_default
         end
 
         if (inclusion = config.validations[:inclusion])

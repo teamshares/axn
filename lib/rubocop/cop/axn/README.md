@@ -238,7 +238,7 @@ end
 
 ## Axn/AmbientContextBypass
 
-This cop flags direct reads of `Current.<attr>` / `::Current.<attr>` and steers you toward declaring the dependency explicitly with `expects :<attr>, on: :ambient_context`. It only flags reads — assignments (`Current.company = c`) and calls with arguments (`Current.foo(bar)`) are left alone, since those aren't ambient-context bypasses.
+This cop flags direct reads of `Current.<attr>` / `::Current.<attr>` and steers you toward declaring the dependency explicitly with `expects :<attr>, on: :ambient_context`. It only flags reads — assignments (`Current.company = c`) and calls with arguments (`Current.foo(bar)`) are left alone, since those aren't ambient-context bypasses. It also only flags reads inside a class/module that `include Axn` — `expects ..., on: :ambient_context` is only a fix available to Axn classes, so a `Current` read in a controller, model, or plain job is left alone (an unfixable false positive otherwise).
 
 ### Why This Rule Exists
 
@@ -273,6 +273,7 @@ end
 - Assignments: `Current.company = c`
 - Calls with arguments: `Current.foo(bar)`
 - Unrelated receivers: `Time.current`, `SomeOther.current`, etc.
+- `Current` reads outside a class/module that `include Axn` (e.g. controllers, models, plain jobs) — there's no `expects ..., on: :ambient_context` fix available there
 
 ### Configuration
 

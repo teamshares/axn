@@ -728,6 +728,40 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a falsey subfield default is not emitted in the schema (Bug HH)" do
+    it "does not emit default: false for a subfield with a falsey default (runtime never applies it)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :flag, on: :payload, type: :boolean, default: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:properties][:flag]).not_to have_key(:default)
+    end
+
+    it "still emits default: for a subfield with a truthy default" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :name, on: :payload, type: String, default: "anon"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:properties][:name]).to include(default: "anon")
+    end
+
+    it "still emits default: false for a TOP-LEVEL field (unaffected by subfield gating)" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean, default: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:flag]).to include(default: false)
+    end
+  end
+
   describe "a subfield's truthy default materializes the parent, making it omittable (Bug Z3)" do
     it "does not require the parent when a subfield default materializes it and no child is required" do
       klass = Class.new do
