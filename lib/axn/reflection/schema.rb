@@ -67,7 +67,7 @@ module Axn
         end
 
         schema = { type: "object", properties: }
-        schema[:required] = required unless required.empty?
+        schema[:required] = required.uniq unless required.empty?
         schema
       end
 
@@ -109,7 +109,7 @@ module Axn
         end
 
         schema = { type: "object", properties: }
-        schema[:required] = required unless required.empty?
+        schema[:required] = required.uniq unless required.empty?
         schema
       end
 

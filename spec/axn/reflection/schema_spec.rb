@@ -331,6 +331,18 @@ RSpec.describe Axn::Reflection::Schema do
       # model: field each independently contribute a required "company_id" entry.
       expect(schema[:required].count("company_id")).to eq(1)
     end
+
+    it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+        expects :company_id, type: :uuid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required].count("company_id")).to eq(1)
+      expect(schema[:properties][:company_id]).to include(type: "string", format: "uuid")
+    end
   end
 
   describe "shape: members" do
