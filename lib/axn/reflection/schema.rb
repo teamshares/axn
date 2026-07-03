@@ -86,7 +86,10 @@ module Axn
         nested_subfields.each do |subconfig|
           if subconfig.validations[:model]
             id_field, subprop = model_id_property(subconfig)
-            prop[:properties][id_field] = subprop
+            # A user may declare an explicit nested `<field>_id` subfield before the `model:`
+            # subfield (mirrors build_model_property's top-level handling) — don't clobber the
+            # caller's already-built property with the generic model-generated one.
+            prop[:properties][id_field] ||= subprop
             prop[:required] << id_field.to_s unless optional_for_schema?(subconfig, subfield: true)
           else
             subprop = build_property(subconfig, subfield: true)
@@ -95,6 +98,7 @@ module Axn
           end
         end
 
+        prop[:required] = prop[:required].uniq
         prop[:required] = nil if prop[:required].empty?
       end
 

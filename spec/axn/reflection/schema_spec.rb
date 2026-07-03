@@ -293,6 +293,28 @@ RSpec.describe Axn::Reflection::Schema do
       expect(payload[:properties][:company_id]).not_to have_key(:type)
     end
 
+    it "preserves an explicitly-declared nested <field>_id subfield instead of clobbering it with the " \
+       "model-generated one, and does not duplicate the parent's required (declaration order: explicit id " \
+       "subfield before the model: subfield — the reverse order is rejected at declaration time with " \
+       "'expects does not support duplicate sub-keys')" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :company_id, on: :payload, type: :uuid
+        expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :find }
+      end
+      payload = described_class.build_input(klass.internal_field_configs,
+                                            klass.subfield_configs)[:properties][:payload]
+
+      # The explicit uuid type/format survives — NOT overwritten by the generic, unconstrained
+      # model-id property that `expects :company, on: :payload, model:` would otherwise generate.
+      expect(payload[:properties][:company_id]).to include(type: "string", format: "uuid")
+
+      # The parent's `required` lists company_id exactly once, even though both the explicit
+      # subfield and the model: subfield each independently contribute a required entry.
+      expect(Array(payload[:required]).count("company_id")).to eq(1)
+    end
+
     it "leaves the <field>_id type unconstrained for a custom finder" do
       klass = Class.new do
         include Axn
