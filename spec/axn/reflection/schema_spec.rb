@@ -313,6 +313,24 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:user_id]).not_to have_key(:type)
       expect(schema[:properties][:user_id]).to include(description: a_string_matching(/ID of the/))
     end
+
+    it "preserves an explicitly-declared <field>_id property instead of clobbering it with the model-generated one, and does not duplicate required" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: :uuid
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      # The explicit uuid type/format survives — NOT overwritten by the generic, unconstrained
+      # model-id property that `expects :company, model:` would otherwise generate.
+      expect(schema[:properties][:company_id]).to include(type: "string", format: "uuid")
+      expect(schema[:properties][:company_id]).not_to have_key(:description)
+
+      # `required` lists company_id exactly once, even though both the explicit field and the
+      # model: field each independently contribute a required "company_id" entry.
+      expect(schema[:required].count("company_id")).to eq(1)
+    end
   end
 
   describe "shape: members" do

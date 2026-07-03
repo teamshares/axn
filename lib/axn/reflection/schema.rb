@@ -245,8 +245,11 @@ module Axn
 
       def build_model_property(config, properties, required)
         id_field, prop = model_id_property(config)
-        properties[id_field] = prop
-        required << id_field.to_s unless optional_for_schema?(config)
+        # A user may declare an explicit `<field>_id` field before the `model:` field (the runtime's
+        # generated model-id reader then defers to it, per `_reader_name_available?`) — don't clobber
+        # the caller's already-built property, and don't double-add to `required`.
+        properties[id_field] ||= prop
+        required << id_field.to_s unless required.include?(id_field.to_s) || optional_for_schema?(config)
       end
 
       def single_type_for(klass, for_output:)
