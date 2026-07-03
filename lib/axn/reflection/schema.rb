@@ -55,11 +55,11 @@ module Axn
             properties[config.field] = prop.compact
 
             if nested.present?
-              # A parent with subfields is only safely omittable when a default materializes it
-              # before subfield validation (allow_nil/allow_blank do NOT — a nil parent raises at
-              # runtime), and only when no child is itself required.
               parent_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
-              required << config.field.to_s unless default?(config) && !parent_has_required_child
+              # Omitting the parent is safe only if something materializes it before subfield validation:
+              # a top-level default on the parent, or a truthy default on a subfield (apply_defaults_for_subfields!).
+              parent_materialized = default?(config) || nested.any? { |sc| !!sc.default }
+              required << config.field.to_s unless parent_materialized && !parent_has_required_child
             else
               required << config.field.to_s unless optional_for_schema?(config)
             end
@@ -87,11 +87,11 @@ module Axn
           if subconfig.validations[:model]
             id_field, subprop = model_id_property(subconfig)
             prop[:properties][id_field] = subprop
-            prop[:required] << id_field.to_s unless optional_for_schema?(subconfig)
+            prop[:required] << id_field.to_s unless optional_for_schema?(subconfig, subfield: true)
           else
             subprop = build_property(subconfig)
             prop[:properties][subconfig.field] = subprop
-            prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig)
+            prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig, subfield: true)
           end
         end
 
@@ -295,8 +295,14 @@ module Axn
       # A field is optional in the schema (client may omit it) iff it has a default, or no validation
       # rejects a nil/omitted value. A typed field with neither (e.g. type: :boolean) is required —
       # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
-      def optional_for_schema?(config, for_output: false)
-        return true if !for_output && default?(config)
+      #
+      # `subfield:` narrows what counts as a "usable" default: `Executor#apply_defaults_for_subfields!`
+      # only applies a subfield's default when it's truthy (`next unless config.default`), so a falsey
+      # subfield default (`false`/`nil`) is never actually applied and must NOT make the field optional
+      # here. Top-level defaults are applied by key-presence, so `default?` (non-nil) is correct there.
+      def optional_for_schema?(config, for_output: false, subfield: false)
+        has_usable_default = subfield ? !!config.default : default?(config)
+        return true if !for_output && has_usable_default
 
         nil_accepted?(config)
       end

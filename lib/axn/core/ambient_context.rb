@@ -39,13 +39,11 @@ module Axn
       # "key present but nil"; a plain `nil` check can't tell those apart, since both read as `nil`.
       # The result is filtered to declared ambient subfield keys.
       def _resolve_ambient_context
+        return {} unless self.class.subfield_configs.any? { |c| c.on.to_sym == PARENT }
+
         provided = @__context.provided_data
         indifferent = provided.respond_to?(:with_indifferent_access) ? provided.with_indifferent_access : provided
-        source = if indifferent.key?(PARENT)
-                   indifferent[PARENT] || {} # explicit (even nil) replaces the provider; nil normalizes to {}
-                 else
-                   _provider_source
-                 end
+        source = indifferent.key?(PARENT) ? (indifferent[PARENT] || {}) : _provider_source
         _filter_to_declared(source || {})
       end
 

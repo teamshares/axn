@@ -197,6 +197,48 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
   end
 end
 
+RSpec.describe "Axn ambient_context provider short-circuit (Bug Z1)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  it "does not invoke the provider when no ambient subfields are declared" do
+    Axn.config.ambient_context_provider = -> { raise "boom" }
+    klass = Class.new do
+      include Axn
+      expects :x, type: String
+      def call = nil
+    end
+
+    result = nil
+    expect { result = klass.call(x: "y") }.not_to raise_error
+    expect(result).to be_ok
+  end
+
+  it "does not raise from the provider when building execution_context for an action with no ambient subfields" do
+    Axn.config.ambient_context_provider = -> { raise "boom" }
+    klass = Class.new do
+      include Axn
+      expects :x, type: String
+      def call = nil
+    end
+
+    instance = klass.send(:new, x: "y")
+    instance._run
+    expect { instance.execution_context }.not_to raise_error
+  end
+
+  it "still calls the provider when an ambient subfield IS declared (a raising provider surfaces as a failure)" do
+    Axn.config.ambient_context_provider = -> { raise "boom" }
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      def call = nil
+    end
+
+    result = klass.call
+    expect(result).not_to be_ok
+  end
+end
+
 RSpec.describe "Axn ambient_context observability" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 

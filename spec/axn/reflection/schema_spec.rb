@@ -583,6 +583,65 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "falsey subfield defaults are not optional-making in the schema (Bug Z2)" do
+    it "still requires a nested subfield whose default is falsey (runtime only applies truthy subfield defaults)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :flag, on: :payload, type: :boolean, default: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:required]).to include("flag")
+    end
+
+    it "does not require a nested subfield whose default is truthy" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :flag2, on: :payload, type: :boolean, default: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:required] || []).not_to include("flag2")
+    end
+  end
+
+  describe "a subfield's truthy default materializes the parent, making it omittable (Bug Z3)" do
+    it "does not require the parent when a subfield default materializes it and no child is required" do
+      klass = Class.new do
+        include Axn
+        expects :payload
+        expects :name, on: :payload, default: "anon"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "still requires the parent when the subfield has no default at all" do
+      klass = Class.new do
+        include Axn
+        expects :payload
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the only subfield default is falsey (not applied at runtime)" do
+      klass = Class.new do
+        include Axn
+        expects :payload
+        expects :flag, on: :payload, type: :boolean, default: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+  end
+
   describe "presence alone does not infer type: string (Bug U)" do
     it "leaves a presence-only field untyped (accepts any JSON value) but still required" do
       klass = Class.new do
