@@ -362,4 +362,55 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(dispatch_and_capture(action)).to be false
     end
   end
+
+  describe "job tags from facets (PRO-2855)" do
+    around { |ex| Sidekiq::Testing.fake! { ex.run } }
+    before { Sidekiq::Job.clear_all }
+
+    let(:last_job_tags) { -> { Sidekiq::Job.jobs.last["tags"] } }
+
+    it "surfaces tag + dimension facets as name:value job tags" do
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("company_id:42", "plan:pro")
+    end
+
+    it "resolves from raw enqueued inputs (an omitted defaulted field yields no tag)" do
+      # `plan` has `default: "free"`, but defaults are not applied at enqueue (they'd double-run at
+      # perform and could drift), so an omitted `plan` produces no tag rather than "plan:free".
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 7)
+      expect(last_job_tags.call).to contain_exactly("company_id:7")
+    end
+
+    it "keeps a same-named tag and dimension as two distinct job tags" do
+      Actions::Async::TestActionSidekiqDupFacetName.call_async(account_id: 7, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("account:7", "account:pro")
+    end
+
+    it "honors sidekiq_job_tag_sources = [:dimension] (bounded only)" do
+      allow(Axn.config).to receive(:sidekiq_job_tag_sources).and_return(%i[dimension])
+      Actions::Async::TestActionSidekiqTagged.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+    end
+
+    it "adds no tags key when the action declares no facets" do
+      Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+      expect(last_job_tags.call).to be_nil
+    end
+
+    it "unions facet tags with the worker's static sidekiq_options tags" do
+      Actions::Async::TestActionSidekiqTaggedWithStatic.call_async(company_id: 42)
+      expect(last_job_tags.call).to contain_exactly("static", "company_id:42")
+    end
+
+    it "resolves a model:-derived facet via a real AR lookup" do
+      user = User.create!(name: "Ada Lovelace")
+
+      begin
+        Actions::Async::TestActionSidekiqModelTagged.call_async(user_id: user.id)
+        expect(last_job_tags.call).to contain_exactly("user_name:Ada Lovelace")
+      ensure
+        User.delete_all
+      end
+    end
+  end
 end

@@ -24,6 +24,15 @@ module Axn
     # When explicitly set, this value overrides the adapter's default for retry context tracking.
     setting :async_max_retries
 
+    # Which declared facet types surface as Sidekiq per-job `tags` at enqueue (PRO-2855).
+    # Sidekiq tags are ephemeral job-payload strings shown/searched in the web UI — they carry
+    # no metrics-billing cost, so high-cardinality `tag`s are welcome here (unlike metrics).
+    # Default is both; set %i[dimension] for bounded-only, or [] to disable the sink.
+    SIDEKIQ_JOB_TAG_SOURCES = %i[tag dimension].freeze
+    setting :sidekiq_job_tag_sources,
+            default: %i[tag dimension],
+            validate: ->(v) { v.is_a?(Array) && v.all? { |s| SIDEKIQ_JOB_TAG_SOURCES.include?(s) } }
+
     attr_writer :logger, :env, :on_exception, :rails
 
     # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).

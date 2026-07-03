@@ -58,6 +58,25 @@ module Axn
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
     end
 
+    # Input-phase facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there is
+    # no run to hang completion-time resolution on. Resolves only `from: :inputs` facets (via the
+    # memoized resolved_input_* readers) against the RAW enqueued inputs. It deliberately does NOT
+    # run preprocess/defaults: those are user hooks that must execute once, at perform — a dynamic
+    # `default:`/`preprocess:` run here would both double-execute (enqueue AND perform) and compute
+    # a value that can differ from the run, so the facet would drift from its own job. Resolving
+    # from raw inputs keeps the facet in lockstep with the serialized payload the worker receives.
+    # `from: :result` facets are excluded by construction (they can't resolve before the body runs);
+    # a `model:` field's record still loads lazily (facade.rb) if a resolver reads it. Returns one
+    # resolved map per enabled source (tags, then dimensions), kept SEPARATE so a name declared as
+    # both a tag and a dimension yields two facets rather than one clobbering the other. `sources`
+    # is a subset of %i[tag dimension]. See PRO-2855.
+    def resolve_inbound_facets(sources)
+      maps = []
+      maps << resolved_input_tags if sources.include?(:tag)
+      maps << resolved_input_dimensions if sources.include?(:dimension)
+      maps
+    end
+
     private
 
     # =========================================================================

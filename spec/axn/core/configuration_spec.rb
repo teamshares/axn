@@ -184,4 +184,28 @@ RSpec.describe Axn::Configuration do
       expect(called).to eq([exception, nil])
     end
   end
+
+  describe "#sidekiq_job_tag_sources" do
+    it "defaults to [:tag, :dimension]" do
+      expect(config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    end
+
+    it "accepts a bounded-only subset" do
+      config.sidekiq_job_tag_sources = %i[dimension]
+      expect(config.sidekiq_job_tag_sources).to eq(%i[dimension])
+    end
+
+    it "accepts an empty array (disables the sink)" do
+      config.sidekiq_job_tag_sources = []
+      expect(config.sidekiq_job_tag_sources).to eq([])
+    end
+
+    it "raises on an unknown source" do
+      expect { config.sidekiq_job_tag_sources = %i[tag bogus] }.to raise_error(ArgumentError)
+    end
+
+    it "raises on a non-array value" do
+      expect { config.sidekiq_job_tag_sources = :tag }.to raise_error(ArgumentError)
+    end
+  end
 end

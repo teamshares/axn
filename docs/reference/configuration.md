@@ -267,7 +267,7 @@ Each `tag`/`dimension` declares one facet: a name plus a resolver — a block/la
 
 **Resolution phase (`from:`).** By default (`from: :inputs`) a facet resolves early — before `call` runs. Pass `from: :result` for a facet whose resolver reads a **settled output** (an `exposes` value, the result). The distinction matters for one sink only — in-flight logs (below); every other sink sees both. A `from: :inputs` facet that mistakenly reads an unset output just resolves to `nil` and is omitted, so mark such facets `from: :result`.
 
-**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute, a log field, and an exception-report facet (`context[:tags]`) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — `emit_metrics` and the exception report's `context[:dimensions]`, meant for indexed tags (e.g. Sentry/Honeybadger tags) — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
+**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute, a log field, and an exception-report facet (`context[:tags]`) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to **metrics-style** indexing sinks (`emit_metrics` and the exception report's `context[:dimensions]`, meant for indexed tags like Sentry/Honeybadger) where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word. **Sidekiq job tags are the exception:** they carry no metrics-billing cost, so by default *both* `tag` and `dimension` surface there (see below).
 
 **Log annotation.** Declared facets also annotate [`auto_log`](#automatic-logging) output. When your configured logger is a [`SemanticLogger`](https://logger.rocketjob.io/) (e.g. via `rails_semantic_logger`), facets are forwarded to its tagged context as named tags — `axn.tag.<name>` / `axn.dimension.<name>` — so they become structured log fields, and dimensions are legible as Datadog log facets: **input-phase facets tag every log line emitted during `call`** (plus the completion line), while `from: :result` facets tag only the completion line (they aren't resolved until the result settles). With any other logger, facets are appended to the completion line as a readable suffix, e.g. `… [tags: {company_id: 7}] [dimensions: {plan_tier: "pro"}]`. Axn takes no dependency on `semantic_logger`; it forwards only when the configured logger is already one.
 
@@ -282,6 +282,18 @@ end
 ```
 
 They appear only when the action declares facets; a handler that just forwards `context` wholesale picks up `context[:tags]`/`context[:dimensions]` automatically.
+
+### Surfacing facets as Sidekiq job tags
+
+When an action runs as a Sidekiq job, its declared facets are also attached to the enqueued job's Sidekiq `tags`, so you can find and filter jobs in the Sidekiq web UI (e.g. every job for a given company). Each facet becomes a `name:value` tag; an array-valued facet fans out to one tag per element.
+
+```ruby
+Axn.config.sidekiq_job_tag_sources # => default %i[tag dimension]
+```
+
+Because Sidekiq tags are ephemeral job-payload strings (gone when the job finishes) with no per-value metrics cost, both `tag` and `dimension` surface here by default — unlike the metrics sink. Set `%i[dimension]` for bounded-only, or `[]` to disable the sink entirely.
+
+**Enqueue-time limitation (important).** Unlike the span/`emit_metrics` sinks — which resolve at completion, when results are available — Sidekiq `tags` are set at *enqueue*, before the job runs, in a different process. So only **input-phase** facets (`from: :inputs`) become job tags, resolved from the **raw enqueued inputs**; **result-phase** facets (`from: :result` — reading `exposes`/the result) cannot and are silently omitted. `preprocess:`/`default:` are deliberately **not** applied at enqueue (those hooks run once, at perform — applying them here would double-run side effects and could compute a value that drifts from the run), so a facet derived from a defaulted/preprocessed field reflects the raw input, or is omitted when that field was absent. Resolution is best-effort: a failure never breaks the enqueue. This sink is **Sidekiq-specific** — ActiveJob has no native tag concept, and its per-execution facets are already carried on the `axn.call` APM span.
 
 ## `emit_metrics`
 
