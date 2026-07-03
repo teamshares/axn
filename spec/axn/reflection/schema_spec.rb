@@ -229,6 +229,55 @@ RSpec.describe Axn::Reflection::Schema do
     end.not_to raise_error
   end
 
+  describe "mixed-type inclusion enums (Bug AA)" do
+    it "infers a single type for a same-typed string enum" do
+      klass = Class.new do
+        include Axn
+        expects :v, inclusion: { in: %w[open closed] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:v]).to include(type: "string", enum: %w[open closed])
+    end
+
+    it "infers a single type for a same-typed integer enum" do
+      klass = Class.new do
+        include Axn
+        expects :v, inclusion: { in: [1, 2] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:v]).to include(type: "integer", enum: [1, 2])
+    end
+
+    it "emits no :type for a mixed Integer/Float enum, letting :enum constrain" do
+      klass = Class.new do
+        include Axn
+        expects :v, inclusion: { in: [1, 1.5] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:v]).not_to have_key(:type)
+      expect(schema[:properties][:v]).to include(enum: [1, 1.5])
+    end
+
+    it "emits no :type for a mixed String/Integer enum, letting :enum constrain" do
+      klass = Class.new do
+        include Axn
+        expects :v, inclusion: { in: ["open", 1] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:v]).not_to have_key(:type)
+      expect(schema[:properties][:v]).to include(enum: ["open", 1])
+    end
+
+    it "is unaffected by an explicit type: (short-circuits before the inclusion branch)" do
+      klass = Class.new do
+        include Axn
+        expects :v, type: String, inclusion: { in: %w[open closed] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:v]).to include(type: "string", enum: %w[open closed])
+    end
+  end
+
   describe "model: fields" do
     it "emits a nested <field>_id (not the field itself) for a nested model: subfield" do
       klass = Class.new do

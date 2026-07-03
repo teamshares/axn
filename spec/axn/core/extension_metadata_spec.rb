@@ -34,4 +34,32 @@ RSpec.describe "Axn extension_metadata" do
 
     expect(klass.extension_metadata(:mcp)).to eq(title: "T")
   end
+
+  it "does not leak mutation of a nested Hash value into the stored metadata (Bug BB)" do
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, annotations: { read_only_hint: true })
+
+    m = klass.extension_metadata(:mcp)
+    m[:annotations][:extra] = 1
+
+    expect(klass.extension_metadata(:mcp)[:annotations]).to eq(read_only_hint: true)
+  end
+
+  it "does not leak mutation of a nested Array value into the stored metadata (Bug BB)" do
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, tags: %w[a b])
+
+    m = klass.extension_metadata(:mcp)
+    m[:tags] << "c"
+
+    expect(klass.extension_metadata(:mcp)[:tags]).to eq(%w[a b])
+  end
+
+  it "preserves a Class-ref metadata value by identity (Bug BB — no Marshal/deep_dup)" do
+    some_class = Struct.new(:foo)
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, model: some_class)
+
+    expect(klass.extension_metadata(:mcp)[:model]).to be(some_class)
+  end
 end

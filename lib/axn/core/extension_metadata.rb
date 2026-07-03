@@ -14,7 +14,7 @@ module Axn
 
       module ClassMethods
         def extension_metadata(adapter)
-          (_axn_extension_metadata[adapter.to_sym] || {}).dup
+          _deep_dup_containers(_axn_extension_metadata[adapter.to_sym] || {})
         end
 
         # Copy-on-write: never mutate the inherited Hash in place (class_attribute shares the
@@ -23,6 +23,18 @@ module Axn
           adapter = adapter.to_sym
           merged = (_axn_extension_metadata[adapter] || {}).merge(kwargs)
           self._axn_extension_metadata = _axn_extension_metadata.merge(adapter => merged)
+        end
+
+        # Deep-copies only Hash/Array container structure so a caller mutating the returned
+        # metadata (or a nested Hash/Array within it) can't leak into the stored copy or into
+        # subclasses. Deliberately NOT Marshal/ActiveSupport#deep_dup: metadata values can be
+        # Class references or Procs, which must stay shared by identity, not be cloned.
+        def _deep_dup_containers(obj)
+          case obj
+          when Hash then obj.transform_values { |v| _deep_dup_containers(v) }
+          when Array then obj.map { |v| _deep_dup_containers(v) }
+          else obj
+          end
         end
       end
     end

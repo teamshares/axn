@@ -251,10 +251,11 @@ module Axn
           inclusion = validations[:inclusion]
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
           if enum_values.is_a?(Array) && enum_values.any?
-            sample = enum_values.first
-            return { type: "string" } if sample.is_a?(String)
-            return { type: "integer" } if sample.is_a?(Integer)
-            return { type: "number" } if sample.is_a?(Float)
+            types = enum_values.map { |v| enum_scalar_type(v) }.uniq
+            return { type: types.first } if types.size == 1 && types.first
+
+            # mixed (or unrecognized) value types → let `enum` constrain; emit no `type`
+            return {}
           end
         end
 
@@ -268,6 +269,14 @@ module Axn
         return { type: "string" } if validations[:length]
 
         {}
+      end
+
+      def enum_scalar_type(value)
+        return "string" if value.is_a?(String)
+        return "integer" if value.is_a?(Integer)
+        return "number" if value.is_a?(Float)
+
+        nil
       end
 
       def optional?(config)
