@@ -82,6 +82,43 @@ RSpec.describe Axn::Reflection::Values do
       end
       expect(described_class.serialize_value(to_s_obj)).to eq("S")
     end
+
+    it "recurses the as_json result so nested Date/Time leaves and symbol keys are made JSON-safe" do
+      # Regression (Codex P2): the `to_h` fallback branch already recurses
+      # (`serialize_value(value.to_h)`), but the `as_json` branch used to return its result
+      # verbatim. A value object's `as_json` can legitimately return a Hash/Array containing
+      # symbol keys and/or raw Date/Time/Numeric leaves (as_json only promises "JSON-ish", not
+      # fully JSON-safe/string-keyed) — those must be re-run through serialize_value exactly like
+      # to_h's result is, or serialize_exposed's JSON-safe contract is broken.
+      obj = Object.new
+      def obj.as_json(*) = { created_at: Date.new(2026, 7, 3), nested: { at: Time.utc(2026, 7, 3, 4, 5, 6) } }
+
+      result = described_class.serialize_value(obj)
+      expect(result).to eq(
+        "created_at" => Date.new(2026, 7, 3).iso8601,
+        "nested" => { "at" => Time.utc(2026, 7, 3, 4, 5, 6).iso8601 },
+      )
+      expect(result).to eq("created_at" => "2026-07-03", "nested" => { "at" => "2026-07-03T04:05:06Z" })
+    end
+
+    it "recurses an as_json result that is an Array containing a Time" do
+      obj = Object.new
+      def obj.as_json(*) = [1, Time.utc(2026, 7, 3, 4, 5, 6), { updated_at: Date.new(2026, 7, 3) }]
+
+      result = described_class.serialize_value(obj)
+      expect(result).to eq([1, "2026-07-03T04:05:06Z", { "updated_at" => "2026-07-03" }])
+    end
+
+    it "leaves an already-JSON-safe as_json result unchanged (e.g. an ActiveRecord-like model)" do
+      # Regression: an AR model's as_json already returns string-keyed JSON-safe scalars (it
+      # formats Date/Time itself). Recursing through serialize_value must be a no-op for that shape.
+      ar_like_obj = Object.new
+      def ar_like_obj.as_json(*) = { "id" => 1, "name" => "widget", "active" => true, "note" => nil }
+
+      expect(described_class.serialize_value(ar_like_obj)).to eq(
+        "id" => 1, "name" => "widget", "active" => true, "note" => nil,
+      )
+    end
   end
 
   describe ".serialize_exposed" do

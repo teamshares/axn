@@ -45,7 +45,7 @@ module Axn
           value.iso8601
         else
           if value.respond_to?(:as_json)
-            value.as_json
+            serialize_value(value.as_json)
           elsif value.respond_to?(:to_h)
             serialize_value(value.to_h)
           else
