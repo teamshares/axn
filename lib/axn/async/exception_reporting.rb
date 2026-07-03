@@ -73,7 +73,11 @@ module Axn
         # dups each value at resolution, so the maps are already the reporter's private, mutation-safe
         # copies. Returns empty maps on any failure — a facet-less report beats a lost one.
         def resolve_facets(action_class:, job_args:)
-          return { tags: {}, dimensions: {} } unless action_class._tags.any? || action_class._dimensions.any?
+          # Only input-phase facets are resolvable here (result-phase omitted above). If none are
+          # declared, skip reconstruction entirely — otherwise prepare_inbound_for_facets! would re-run
+          # inbound preprocess/default procs (side effects, swallowed contract errors) at report time
+          # for a result-only declaration that adds no context.
+          return { tags: {}, dimensions: {} } unless _has_input_phase_facets?(action_class)
 
           instance = action_class.send(:new, **_deserialize_job_args(job_args))
           # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
@@ -86,6 +90,12 @@ module Axn
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
           { tags: {}, dimensions: {} }
+        end
+
+        # True iff any declared tag/dimension resolves in the input phase — the only phase this path
+        # can resolve (there's no settled result). Facet is a Data with a `from` reader.
+        def _has_input_phase_facets?(action_class)
+          (action_class._tags.values + action_class._dimensions.values).any? { |facet| facet.from == :inputs }
         end
 
         # Restore the job args to the same live form the worker's `.call` would see, so a facet that

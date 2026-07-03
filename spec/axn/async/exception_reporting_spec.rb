@@ -144,6 +144,25 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(received[:tags]).to eq(region: "us5", name: "BOB")
       end
 
+      it "does not reconstruct the action when every declared facet is result-phase" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          dimension(:outcome, from: :result) { result.outcome } # ONLY result-phase → nothing to resolve here
+        end
+        allow(action_class).to receive(:new).and_call_original
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 7 }, extra_context: {},
+        )
+
+        # reconstruction (and its inbound preprocess/default side effects) is skipped entirely
+        expect(action_class).not_to have_received(:new)
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
       it "omits result-phase facets (the reconstructed instance's result would fabricate values)" do
         action_class = build_axn do
           expects :company_id, type: Integer
