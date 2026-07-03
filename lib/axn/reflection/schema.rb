@@ -126,12 +126,23 @@ module Axn
           prop[:format] = type_info[:format] if type_info[:format]
         end
 
-        prop[:default] = config.default if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
+        if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
+          default_value = config.default
+          # A literal Array/Hash default: is a mutable object stored directly on the contract's
+          # FieldConfig — shallow-dup it so a caller mutating the returned schema (e.g.
+          # `schema[:properties][:opts][:default][:b] = 2`) can't reach back into the runtime
+          # contract. Scalars are immutable, so no copy is needed for them.
+          prop[:default] = default_value.is_a?(Array) || default_value.is_a?(Hash) ? default_value.dup : default_value
+        end
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
           if enum_values.is_a?(Array)
-            prop[:enum] = nullable ? enum_values + [nil] : enum_values
+            # Same reasoning as default: above — `enum_values` here is the actual array stored in
+            # the contract's validations hash (`config.validations[:inclusion][:in]`), so the
+            # non-nullable branch must return a copy rather than the object itself. The nullable
+            # branch already copies via `+`.
+            prop[:enum] = nullable ? enum_values + [nil] : enum_values.dup
           end
         end
 

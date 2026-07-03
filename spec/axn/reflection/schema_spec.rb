@@ -469,6 +469,40 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:status][:enum]).to eq(%w[open closed])
     end
 
+    it "does not leak a mutation of the returned enum array back into the contract's inclusion validation (Bug CC)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[open closed] }
+      end
+      schema = klass.input_schema
+      schema[:properties][:status][:enum] << "hacked"
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:status][:enum]).to eq(%w[open closed])
+      expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
+    end
+
+    it "does not leak a mutation of the returned Hash default back into the contract's stored default (Bug CC)" do
+      klass = Class.new do
+        include Axn
+        expects :opts, type: Hash, default: { a: 1 }
+      end
+      schema = klass.input_schema
+      schema[:properties][:opts][:default][:b] = 2
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:opts][:default]).to eq(a: 1)
+    end
+
+    it "still emits a scalar default unchanged (Bug CC regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :limit, type: Integer, default: 20, optional: true
+      end
+      schema = klass.input_schema
+      expect(schema[:properties][:limit][:default]).to eq(20)
+    end
+
     it "types a parent with subfields as plain object even when allow_nil: true (Bug X: a nil parent can't yield its subfields at runtime)" do
       klass = Class.new do
         include Axn

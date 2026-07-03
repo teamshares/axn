@@ -239,6 +239,27 @@ RSpec.describe "Axn ambient_context provider short-circuit (Bug Z1)" do
   end
 end
 
+RSpec.describe "Axn ambient_context exception-context hardening (Bug DD)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  it "does not re-raise from a failing provider when building execution_context after the failure" do
+    Axn.config.ambient_context_provider = -> { raise "provider boom" }
+    klass = Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      def call = nil
+    end
+
+    instance = klass.send(:new)
+    instance._run
+    expect(instance.result).not_to be_ok
+
+    ctx = nil
+    expect { ctx = instance.execution_context }.not_to raise_error
+    expect(ctx).not_to have_key(:ambient_context)
+  end
+end
+
 RSpec.describe "Axn ambient_context observability" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 

@@ -630,8 +630,19 @@ module Axn
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
           ctx = { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
-          ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
-          ambient = ambient_filter.filter(ambient_context)
+
+          # Resolving/filtering ambient context can raise (e.g. a failing ambient_context_provider
+          # that already caused the action's real exception, but whose failure wasn't memoized — see
+          # Axn::Core::AmbientContext#ambient_context). Building exception-report context must never
+          # itself raise, or the real exception never reaches Axn.config.on_exception, so omit
+          # ambient_context here rather than propagate.
+          ambient =
+            begin
+              ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
+              ambient_filter.filter(ambient_context)
+            rescue StandardError
+              {}
+            end
           ctx[:ambient_context] = ambient if ambient.present?
           ctx
         end
