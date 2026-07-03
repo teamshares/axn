@@ -133,6 +133,18 @@ module Axn
         end
       end
 
+      # Build the `enum:` member list for an inclusion validator's declared `in:`/`within:` set.
+      # `nullable` (nil_allowed?) is the runtime truth: when false, an explicit nil is REJECTED even
+      # if the declared set happens to list it (Axn's auto presence validator still fires without
+      # `presence: false`/`allow_nil`) — so a literal `nil` member must be dropped from the enum to
+      # match. When true, add `nil` only if it isn't already a member, to avoid a duplicate.
+      def enum_for_inclusion(enum_values, nullable:)
+        members = deep_copy_value(enum_values)
+        return members.compact unless nullable
+
+        members.include?(nil) ? members : members + [nil]
+      end
+
       def build_property(config, for_output: false, subfield: false)
         prop = {}
         prop[:description] = config.description if config.description
@@ -162,13 +174,11 @@ module Axn
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          if enum_values.is_a?(Array)
-            # Same reasoning as default: above — `enum_values` here is the actual array stored in
-            # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and
-            # any mutable elements within it, e.g. String members) must be deep-copied rather than
-            # shared with the returned schema.
-            prop[:enum] = deep_copy_value(nullable ? enum_values + [nil] : enum_values)
-          end
+          # Same reasoning as default: above — `enum_values` here is the actual array stored in
+          # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and
+          # any mutable elements within it, e.g. String members) must be deep-copied rather than
+          # shared with the returned schema.
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.is_a?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)

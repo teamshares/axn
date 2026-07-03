@@ -26,6 +26,16 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:active]).to include(type: "boolean")
   end
 
+  it "drops nil from an output enum too when the field is not nullable (Codex review, build_output shares build_property)" do
+    klass = Class.new do
+      include Axn
+      exposes :status, inclusion: { in: [nil, "open"] }
+      def call = expose!(status: "open")
+    end
+    schema = described_class.build_output(klass.external_field_configs)
+    expect(schema[:properties][:status][:enum]).to eq(["open"])
+  end
+
   it "keeps a defaulted exposure in output_schema[:required] (outbound defaults are always applied before validation/serialization)" do
     klass = Class.new do
       include Axn
@@ -519,6 +529,45 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:properties][:status][:enum]).to eq(%w[open closed])
+    end
+
+    it "drops nil from the enum when the inclusion set contains it but the field is not nullable (Codex review): " \
+       "an explicit nil is actually REJECTED at runtime here (auto presence, no presence: false/allow_nil)" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [nil, "open"] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      config = klass.internal_field_configs.find { |c| c.field == :status }
+
+      # Regression guard: nullable is already false for this config (auto presence rejects nil), so
+      # the type union omits "null" independently of this fix — this test is only about the enum.
+      expect(described_class.nil_allowed?(config)).to be(false)
+      expect(schema[:properties][:status][:enum]).to eq(["open"])
+      expect(Array(schema[:properties][:status][:type])).not_to include("null")
+    end
+
+    it "includes null exactly once in the enum when the inclusion set already contains nil and the field is nullable " \
+       "(Codex review, avoids a duplicate nil)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: [nil, "open"] }, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:status][:enum].count(nil)).to eq(1)
+      expect(schema[:properties][:status][:enum]).to include(nil, "open")
+      expect(Array(schema[:properties][:status][:type])).to include("null")
+    end
+
+    it "still appends null exactly once when nullable via allow_nil: true and the inclusion set does not already contain it" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[a b] }, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:status][:enum]).to eq(["a", "b", nil])
     end
 
     it "does not leak a mutation of the returned enum array back into the contract's inclusion validation (Bug CC)" do
