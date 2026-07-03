@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "date"
+require "time"
+
 # NOTE: do NOT require "active_support/core_ext/object/json" here. Doing so makes EVERY object
 # respond_to?(:as_json), which would short-circuit the to_h/to_s fallbacks below and change
 # serialization behavior versus the axn-mcp original. Rely on objects that define as_json themselves
@@ -25,6 +28,11 @@ module Axn
           value.transform_keys(&:to_s).transform_values { |v| serialize_value(v) }
         when Array
           value.map { |v| serialize_value(v) }
+        when Time, DateTime, Date
+          # Rendered as RFC3339/ISO-8601 regardless of Rails, matching the schema's
+          # `date`/`date-time` `format:` (see Reflection::Schema::FORMAT_MAP) — both inside and
+          # outside Rails, so `serialize_exposed` output validates against the reflected schema.
+          value.iso8601
         else
           if value.respond_to?(:as_json)
             value.as_json
