@@ -95,6 +95,196 @@ RSpec.describe Axn::Async::ExceptionReporting do
       expect(received[:_job_metadata]).to eq({ jid: "jid-456" })
     end
 
+    context "declared tag/dimension facets (PRO-2853)" do
+      it "attaches input-derived facets to context[:tags]/[:dimensions], resolved from job_args" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+          tag :region, "us5"
+          dimension(:tier) { company_id > 10 ? "big" : "small" }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 42 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 42, region: "us5")
+        expect(received[:dimensions]).to eq(tier: "big")
+      end
+
+      it "omits the facet keys entirely when the action declares none" do
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args:, extra_context: {},
+        )
+
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "applies inbound defaults and preprocessing before resolving (matches what the worker saw)" do
+        action_class = build_axn do
+          expects :region, default: "us5"
+          expects :name, preprocess: ->(v) { v.to_s.upcase }
+          tag(:region) { region }
+          tag(:name) { name }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        # region omitted from the job args → the default must still surface; name must be preprocessed.
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { name: "bob" }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(region: "us5", name: "BOB")
+      end
+
+      it "does not reconstruct the action when every declared facet is result-phase" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          dimension(:outcome, from: :result) { result.outcome } # ONLY result-phase → nothing to resolve here
+        end
+        allow(action_class).to receive(:new).and_call_original
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 7 }, extra_context: {},
+        )
+
+        # reconstruction (and its inbound preprocess/default side effects) is skipped entirely
+        expect(action_class).not_to have_received(:new)
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "omits result-phase facets (the reconstructed instance's result would fabricate values)" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }                     # input-phase → resolves
+          dimension(:outcome, from: :result) { result.outcome }  # result-phase → would read "success"
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 7 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 7)
+        # the never-run result defaults to outcome "success"; that must NOT be fabricated into the report
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "deserializes job_args before rebuilding the instance (so GlobalID/model inputs restore)" do
+        action_class = build_axn do
+          expects :company
+          tag(:company_id) { company.id }
+        end
+        # Sidekiq death-handler args are the serialized payload; the real value is restored by
+        # AsyncSerialization.deserialize (keys re-stringified first for the fallback GID decoder).
+        allow(Axn::Internal::AsyncSerialization).to receive(:deserialize)
+          .with({ "company_as_global_id" => "gid://app/Company/42" })
+          .and_return(company: double("Company", id: 42))
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { company_as_global_id: "gid://app/Company/42" }, extra_context: {}
+        )
+
+        expect(received[:tags]).to eq(company_id: 42)
+      end
+
+      it "falls back to the raw args if deserialization raises (already-live ActiveJob discard args)" do
+        action_class = build_axn do
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+        end
+        allow(Axn::Internal::AsyncSerialization).to receive(:deserialize).and_raise("can only deserialize primitive arguments")
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 5 }, extra_context: {},
+        )
+
+        expect(received[:tags]).to eq(company_id: 5)
+      end
+
+      it "dups facet values so a reporter mutating one in place can't corrupt the shared literal" do
+        action_class = build_axn do
+          tag :region, +"us5" # mutable literal
+        end
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| context[:tags][:region].upcase! }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: {}, extra_context: {},
+        )
+
+        # the class-level literal the resolver returns is untouched, so the next report is pristine
+        expect(action_class._tags[:region].resolver).to eq("us5")
+      end
+
+      it "strips a job-arg named tags/dimensions so user input can't masquerade as facets" do
+        action_class = build_axn do
+          expects :tags
+          expects :dimensions
+          # no declared facets
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { tags: { user: "data" }, dimensions: { d: 1 } }, extra_context: {}
+        )
+
+        expect(received).not_to have_key(:tags)
+        expect(received).not_to have_key(:dimensions)
+      end
+
+      it "lets resolved facets win over a job-arg named tags" do
+        action_class = build_axn do
+          expects :tags
+          expects :company_id, type: Integer
+          tag :company_id, -> { company_id }
+        end
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:,
+          job_args: { tags: { user: "data" }, company_id: 7 }, extra_context: {}
+        )
+
+        expect(received[:tags]).to eq(company_id: 7)
+      end
+
+      it "still reports (without facet keys) if the action can't be reconstructed" do
+        action_class = build_axn do
+          expects :company_id
+          tag :company_id, -> { company_id }
+        end
+        allow(action_class).to receive(:new).and_raise("cannot build")
+        received = nil
+        allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
+
+        described_class.trigger_on_exception(
+          exception:, action_class:, retry_context:, job_args: { company_id: 1 }, extra_context: {},
+        )
+
+        expect(Axn.config).to have_received(:on_exception)
+        expect(received).not_to have_key(:tags)
+      end
+    end
+
     context "when the exception class matches a fails_on declaration (discard/death-handler path)" do
       # This helper is the discard path: it only fires after retries are exhausted or a job is
       # discarded. A `fails_on` exception settles as `outcome.failure?` and is never re-raised by

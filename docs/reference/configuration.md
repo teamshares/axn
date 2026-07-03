@@ -60,6 +60,8 @@ The `context` hash is automatically formatted and contains:
   # ... any extra keys from set_execution_context or additional_execution_context hook
   # e.g. client_strategy__last_request: { url: ..., method: ..., status: ... }
   current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
+  tags: { ... },                # Resolved `tag` facets (only when the action declares any)
+  dimensions: { ... },          # Resolved `dimension` facets (only when the action declares any)
   async: { ... }                # Async retry info (only present in async context)
 }
 ```
@@ -265,9 +267,21 @@ Each `tag`/`dimension` declares one facet: a name plus a resolver — a block/la
 
 **Resolution phase (`from:`).** By default (`from: :inputs`) a facet resolves early — before `call` runs. Pass `from: :result` for a facet whose resolver reads a **settled output** (an `exposes` value, the result). The distinction matters for one sink only — in-flight logs (below); every other sink sees both. A `from: :inputs` facet that mistakenly reads an unset output just resolves to `nil` and is omitted, so mark such facets `from: :result`.
 
-**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute and a log field (and, later, an exception detail) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — today `emit_metrics`, later Sentry/Sidekiq tags — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
+**Cardinality mapping.** An Axn `tag` is high-cardinality and becomes a span attribute, a log field, and an exception-report facet (`context[:tags]`) — safe for per-call values like ids. An Axn `dimension` is bounded and additionally flows to indexing sinks — `emit_metrics` and the exception report's `context[:dimensions]`, meant for indexed tags (e.g. Sentry/Honeybadger tags) — where unbounded values are costly. This is the reverse of "tag" in Datadog/Sentry/Sidekiq (where a tag is the bounded thing); pick the Axn macro by cardinality, not by the downstream tool's word.
 
 **Log annotation.** Declared facets also annotate [`auto_log`](#automatic-logging) output. When your configured logger is a [`SemanticLogger`](https://logger.rocketjob.io/) (e.g. via `rails_semantic_logger`), facets are forwarded to its tagged context as named tags — `axn.tag.<name>` / `axn.dimension.<name>` — so they become structured log fields, and dimensions are legible as Datadog log facets: **input-phase facets tag every log line emitted during `call`** (plus the completion line), while `from: :result` facets tag only the completion line (they aren't resolved until the result settles). With any other logger, facets are appended to the completion line as a readable suffix, e.g. `… [tags: {company_id: 7}] [dimensions: {plan_tier: "pro"}]`. Axn takes no dependency on `semantic_logger`; it forwards only when the configured logger is already one.
+
+**Exception reports.** Both facet maps also ride along in the `on_exception` `context`, so a handler routes them onto its reporter:
+
+```ruby
+c.on_exception = proc do |e, context:| # [!code focus:5]
+  Honeybadger.notify(e,
+    context: context, # tags land here as freeform extra
+    tags: context[:dimensions]&.values&.join(", ")) # dimensions → indexed tags
+end
+```
+
+They appear only when the action declares facets; a handler that just forwards `context` wholesale picks up `context[:tags]`/`context[:dimensions]` automatically.
 
 ## `emit_metrics`
 

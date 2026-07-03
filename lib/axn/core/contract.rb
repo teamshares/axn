@@ -550,10 +550,11 @@ module Axn
 
       # Keys the framework owns in the execution/exception-report context, so they can't be set via
       # set_execution_context or the additional_execution_context hook: :inputs/:outputs are the
-      # structural pair, and :async/:current_attributes/:axn_stack are framework-populated in
-      # Internal::ExceptionContext.build — reserving them here prevents a user value from being
-      # silently overwritten when build assigns them after merging the user's extra keys.
-      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async current_attributes axn_stack].freeze
+      # structural pair, and :async/:current_attributes/:axn_stack/:tags/:dimensions are
+      # framework-populated in Internal::ExceptionContext.build — reserving them here prevents a user
+      # value from being silently overwritten when build assigns them after merging the user's extra
+      # keys. :tags/:dimensions carry the resolved `tag`/`dimension` facets (PRO-2853).
+      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async current_attributes axn_stack tags dimensions].freeze
 
       module InstanceMethods
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)

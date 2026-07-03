@@ -44,6 +44,20 @@ module Axn
       end
     end
 
+    # Best-effort inbound preparation for OUT-OF-BAND facet resolution — the async exhaustion/discard
+    # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args and
+    # never executed. Applies the same inbound preprocessing and defaults a normal `.call` would, so a
+    # facet reading a defaulted/preprocessed input resolves the value the worker saw rather than the
+    # raw constructor value. Deliberately does NOT validate (a report on already-dead work must never
+    # raise) and does NOT run the action; model: readers still resolve lazily on read. Any failure is
+    # swallowed — a partially-prepared instance still yields more facets than a bare one.
+    def prepare_inbound_for_facets!
+      apply_inbound_preprocessing!
+      apply_defaults!(:inbound)
+    rescue StandardError => e
+      Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
+    end
+
     private
 
     # =========================================================================
@@ -128,6 +142,20 @@ module Axn
     # payload, emit_metrics, completion-line log) read the merged view.
     def resolved_tags = @resolved_tags ||= resolved_input_tags.merge(resolved_result_tags)
     def resolved_dimensions = @resolved_dimensions ||= resolved_input_dimensions.merge(resolved_result_dimensions)
+
+    # Build a declared facet map for the exception report. REUSE the pre-body input-phase snapshot
+    # (`input_snapshot`, memoized in with_facet_log_context before `call`) so the report matches the
+    # value the span/payload/logs captured — even if the body then mutated an input. Resolve only the
+    # RESULT-phase facets freshly here, and deliberately NOT through the memoized resolved_result_*:
+    # trigger_on_exception runs inside with_timing, before its ensure sets result.elapsed_time, so
+    # memoizing now would freeze a result-phase facet reading elapsed_time as nil and poison those
+    # post-timing sinks. dup the whole merge so a reporter mutating a value can't corrupt the shared
+    # input snapshot the other sinks read (the fresh result-phase values are already private).
+    def resolve_report_facets(input_snapshot, map)
+      return {} unless map.any?
+
+      Core::Tagging.dup_facets(input_snapshot.merge(Core::Tagging.resolve(map, action: @action, from: :result)))
+    end
 
     def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :inputs)
     def resolved_result_tags = @resolved_result_tags ||= _resolve_facets(@action_class._tags, :result)
@@ -297,7 +325,13 @@ module Axn
       # would describe the wrong action anyway). Deterministic regardless of nesting depth.
       Internal::ExceptionClassification.mark_reported!(exception)
 
-      context = Internal::ExceptionContext.build(action: @action, retry_context:)
+      context = Internal::ExceptionContext.build(
+        action: @action,
+        retry_context:,
+        # Pre-body input snapshot (memoized) + freshly-resolved result-phase facets; see resolve_report_facets.
+        tags: resolve_report_facets(resolved_input_tags, @action_class._tags),
+        dimensions: resolve_report_facets(resolved_input_dimensions, @action_class._dimensions),
+      )
       Axn.config.on_exception(exception, action: @action, context:)
 
       # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the

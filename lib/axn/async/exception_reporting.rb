@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/async_serialization"
+
 module Axn
   module Async
     # Shared utilities for async exception reporting across adapters.
@@ -34,6 +36,23 @@ module Axn
             async: retry_context.to_h.merge(async_extra),
           ).merge(extra_context.except(:async))
 
+          # Attach declared observability facets (PRO-2853) so an exhausted/discarded-job report
+          # carries the same context[:tags]/context[:dimensions] as the synchronous executor path.
+          # There's no settled action instance here (the run died in a prior attempt), so facets are
+          # resolved best-effort against an instance reconstructed from the (deserialized) job_args:
+          # input-derived facets (company_id, record ids) resolve; output-derived ones find no exposes
+          # and are skipped per-facet — the same partial-resolution contract as the failure path.
+          #
+          # Reserve the facet keys first: unlike the sync report (where inputs nest under :inputs and
+          # RESERVED_EXECUTION_CONTEXT_KEYS guards the top level), this path merges the job-arg slice
+          # in at the top level, so an action with an input literally named `tags`/`dimensions` would
+          # otherwise expose that user value under the framework key whenever no facet overwrites it.
+          # Strip, then assign only the resolved facets (when any) — framework owns these keys.
+          %i[tags dimensions].each { |key| context.delete(key) }
+          facets = resolve_facets(action_class:, job_args:)
+          context[:tags] = facets[:tags] if facets[:tags].any?
+          context[:dimensions] = facets[:dimensions] if facets[:dimensions].any?
+
           # Create proxy action for the on_exception interface
           proxy_action = DiscardedJobAction.new(action_class, exception)
 
@@ -41,6 +60,55 @@ module Axn
           Axn.config.on_exception(exception, action: proxy_action, context:)
         rescue StandardError => e
           Axn::Internal::PipingError.swallow("in #{log_prefix}", exception: e)
+        end
+
+        private
+
+        # Best-effort resolution of an action's declared facets on the async exhaustion/discard path,
+        # where no live executed instance survives. Reconstructs a bare instance from job_args and
+        # resolves ONLY the input-phase facets against it. Result-phase facets are deliberately omitted:
+        # the reconstructed action never ran, so its `result` reads back default (unrun) state — e.g.
+        # `result.outcome` is "success" — which would fabricate values on a dead-job report rather than
+        # drop out. Core::Tagging.resolve isolates each resolver (nil omits, a raise is swallowed) and
+        # dups each value at resolution, so the maps are already the reporter's private, mutation-safe
+        # copies. Returns empty maps on any failure — a facet-less report beats a lost one.
+        def resolve_facets(action_class:, job_args:)
+          # Only input-phase facets are resolvable here (result-phase omitted above). If none are
+          # declared, skip reconstruction entirely — otherwise prepare_inbound_for_facets! would re-run
+          # inbound preprocess/default procs (side effects, swallowed contract errors) at report time
+          # for a result-only declaration that adds no context.
+          return { tags: {}, dimensions: {} } unless _has_input_phase_facets?(action_class)
+
+          instance = action_class.send(:new, **_deserialize_job_args(job_args))
+          # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
+          # preprocessed inputs resolve as the worker saw them (not the raw job args).
+          Axn::Executor.new(instance).prepare_inbound_for_facets!
+          {
+            tags: Core::Tagging.resolve(action_class._tags, action: instance, from: :inputs),
+            dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance, from: :inputs),
+          }
+        rescue StandardError => e
+          Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
+          { tags: {}, dimensions: {} }
+        end
+
+        # True iff any declared tag/dimension resolves in the input phase — the only phase this path
+        # can resolve (there's no settled result). Facet is a Data with a `from` reader.
+        def _has_input_phase_facets?(action_class)
+          (action_class._tags.values + action_class._dimensions.values).any? { |facet| facet.from == :inputs }
+        end
+
+        # Restore the job args to the same live form the worker's `.call` would see, so a facet that
+        # reads a GlobalID/model input (or a generated `<field>_id` reader) resolves the real record
+        # rather than the serialized `_aj_globalid`/`_as_global_id` wrapper. The Sidekiq death handler
+        # hands us the raw serialized payload (only symbolize_keys'd); we re-stringify keys because
+        # the fallback GlobalID decoder matches on the `_as_global_id` string suffix. On the ActiveJob
+        # path the discard args are already ActiveJob-deserialized (live objects) and re-running the
+        # decoder raises ("can only deserialize primitive arguments") — so fall back to the args as-is.
+        def _deserialize_job_args(job_args)
+          Axn::Internal::AsyncSerialization.deserialize(job_args.transform_keys(&:to_s))
+        rescue StandardError
+          job_args
         end
       end
 

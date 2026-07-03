@@ -76,6 +76,27 @@ RSpec.describe Axn::Internal::ExceptionContext do
                            })
     end
 
+    it "carries tags/dimensions alongside async retry context" do
+      action_class = build_axn do
+        expects :name, type: String
+        def call; end
+      end
+      stub_const("TestAction", action_class)
+      instance = TestAction.send(:new, name: "Alice")
+      retry_context = double("RetryContext", to_h: { attempt: 2, max_attempts: 5 })
+
+      result = described_class.build(
+        action: instance,
+        retry_context:,
+        tags: { company_id: 42 },
+        dimensions: { plan_tier: "pro" },
+      )
+
+      expect(result[:async]).to eq(attempt: 2, max_attempts: 5)
+      expect(result[:tags]).to eq(company_id: 42)
+      expect(result[:dimensions]).to eq(plan_tier: "pro")
+    end
+
     context "with unpersisted ActiveRecord-like objects" do
       let(:unpersisted_class) do
         Class.new do
@@ -156,6 +177,53 @@ RSpec.describe Axn::Internal::ExceptionContext do
 
         expect(result[:inputs][:record]).to eq("gid://app/FakeRecord/42")
       end
+    end
+
+    it "attaches non-empty tags and dimensions under namespaced keys" do
+      action_class = build_axn do
+        expects :name, type: String
+        def call; end
+      end
+      stub_const("TestAction", action_class)
+      instance = TestAction.send(:new, name: "Alice")
+
+      result = described_class.build(
+        action: instance,
+        tags: { company_id: 42 },
+        dimensions: { plan_tier: "pro" },
+      )
+
+      expect(result[:tags]).to eq(company_id: 42)
+      expect(result[:dimensions]).to eq(plan_tier: "pro")
+    end
+
+    it "omits the facet keys entirely when the maps are empty" do
+      action_class = build_axn do
+        expects :name, type: String
+        def call; end
+      end
+      stub_const("TestAction", action_class)
+      instance = TestAction.send(:new, name: "Alice")
+
+      result = described_class.build(action: instance)
+
+      expect(result).not_to have_key(:tags)
+      expect(result).not_to have_key(:dimensions)
+    end
+
+    it "attaches facet values verbatim without re-formatting them" do
+      # A resolved Integer stays an Integer (not GID-stringified like inputs/outputs) —
+      # facets are already coerced at resolve time; build must not touch them again.
+      action_class = build_axn do
+        expects :name, type: String
+        def call; end
+      end
+      stub_const("TestAction", action_class)
+      instance = TestAction.send(:new, name: "Alice")
+
+      result = described_class.build(action: instance, tags: { company_id: 7 })
+
+      expect(result[:tags][:company_id]).to be(7)
     end
   end
 end
