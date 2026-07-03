@@ -362,9 +362,28 @@ module Axn
         return true if key == :absence                              # nil is always "absent"
         # acceptance is allow_nil by default; only nil-rejecting when explicitly `allow_nil: false`
         return true if key == :acceptance && !(opt.is_a?(Hash) && opt[:allow_nil] == false)
+        # exclusion accepts nil when nil is NOT in the excluded set; inclusion accepts nil only
+        # when nil IS an explicit member of the included set. A dynamic set (Proc) is uninspectable
+        # here, so membership returns nil and the field stays conservatively required.
+        return true if key == :exclusion && set_includes_nil?(opt) == false
+        return true if key == :inclusion && set_includes_nil?(opt) == true
 
         false
       end
+
+      # nil = can't tell (no concrete collection); true/false = nil's membership in the in:/within: set.
+      # rubocop:disable Style/ReturnNilInPredicateMethodDefinition (tri-state: nil is a meaningful "unknown", not "false")
+      def set_includes_nil?(opt)
+        return nil unless opt.is_a?(Hash)
+
+        collection = opt[:in] || opt[:within]
+        return nil unless collection.respond_to?(:include?)
+
+        collection.include?(nil)
+      rescue StandardError
+        nil
+      end
+      # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
 
       # A field is optional in the schema (client may omit it) iff it has a default, or no validation
       # rejects a nil/omitted value. A typed field with neither (e.g. type: :boolean) is required —

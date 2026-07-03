@@ -1108,4 +1108,56 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("archived_at")
     end
   end
+
+  describe "nil-tolerant inclusion/exclusion validators (Codex review)" do
+    it "does not require a field whose exclusion set does not contain nil (nil is not excluded, so it passes)" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, exclusion: { in: %w[admin] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("role")
+    end
+
+    it "still requires a field whose inclusion set does not explicitly contain nil (nil is rejected)" do
+      klass = Class.new do
+        include Axn
+        expects :role, inclusion: { in: %w[a b] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("role")
+    end
+
+    it "does not require a field whose inclusion set explicitly contains nil as a member" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, inclusion: { in: [nil, "a"] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("role")
+    end
+
+    it "still requires a field with a dynamic (Proc) exclusion set, since nil-membership can't be determined (stays conservative)" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, exclusion: { in: -> { %w[admin] } }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("role")
+    end
+
+    it "still requires a field when a bare non-nil-tolerant validator is active alongside a nil-tolerant exclusion (all validators must tolerate nil)" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, exclusion: { in: %w[admin] }, numericality: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("role")
+    end
+  end
 end
