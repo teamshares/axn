@@ -767,6 +767,90 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a parent's default must actually SATISFY a required child, not merely supply its key (Codex review)" do
+    it "still requires the parent when the default's key is present but the value is nil (default applied, then " \
+       "validate_subfields_contract! rejects the nil, so calling with {} fails at runtime)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: nil }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the default's value is present but the wrong type for the required child" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: 123 }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the default omits the required child's key entirely" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the default's value is blank and the child has an explicit presence: true" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "" }
+        expects :name, on: :payload, type: String, presence: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the default's value is blank and the child has Axn's implicit default " \
+       "presence (a bare type: String subfield gets presence: true unless allow_nil/allow_blank/optional is set)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "" }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the required child has a non-type validator (inclusion), even though the " \
+       "default's value would actually satisfy it at runtime — conservative by design, since verifying an " \
+       "arbitrary validator here is unsafe (documented over-strictness: this parent could technically be omitted)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "a" }
+        expects :name, on: :payload, type: String, inclusion: { in: %w[a b] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "does not require the parent when the default's value would actually satisfy the required child (regression " \
+       "guard for the #55 default-coverage case above: a non-blank, type-correct value still covers)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "system" }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+  end
+
   describe "a single validator's allow_nil: does not make the whole field nullable/optional (Bug T)" do
     it "does not treat a field as nullable/optional when only one of several validators allows nil" do
       klass = Class.new do

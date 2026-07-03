@@ -101,11 +101,12 @@ module Axn
         # a top-level default on the root, or a truthy default on any descendant subfield.
         parent_materialized = default?(config) || all_nested.any? { |sc| !!sc.default }
         # A required child is fine to omit-with-the-root only if the root's own literal Hash default
-        # supplies that child's key. Coverage is checked against SHALLOW required keys only; a deep
-        # required child (dotted path/nested subfield) can't be verified that way, so it keeps the root
-        # required.
+        # would actually SATISFY that child at runtime (Axn applies the default, then validates) —
+        # not merely supply its key (see default_covers_required? for why). Coverage is checked
+        # against SHALLOW required children only; a deep required child (dotted path/nested subfield)
+        # can't be verified that way, so it keeps the root required.
         covered = !parent_has_required_child ||
-                  (!deep_has_required_child && default_covers_required?(config.default, prop[:required]))
+                  (!deep_has_required_child && default_covers_required?(config.default, shallow_nested))
         !(parent_materialized && covered)
       end
 
@@ -391,15 +392,59 @@ module Axn
         config.respond_to?(:default) && !config.default.nil?
       end
 
-      # True when the parent's own literal Hash default already provides every required child key
-      # (so omitting the parent still satisfies subfield validation at runtime). A Proc default (or
-      # any non-Hash default) can't be inspected here, so it never counts as covering — the parent
-      # stays required in that case.
-      def default_covers_required?(default_value, required_child_keys)
+      # A parent's own literal Hash default "covers" its required children only when, for EVERY required
+      # shallow child, the defaulted value would actually satisfy that child at runtime (Axn applies the
+      # default, THEN validates). A present-but-nil / wrong-type / blank-under-presence value does NOT
+      # count — the parent stays required. We only vouch for children whose constraints are cheaply and
+      # fully checkable here (a scalar `type:` plus presence); a child with ANY other validator
+      # (inclusion/exclusion/format/numericality/length/model/of/shape/custom) could still reject a
+      # type-correct value, so we stay conservative and treat it as NOT covered (parent required) —
+      # accepting that this may over-require a parent whose valid default would actually pass (the safe
+      # direction: the client sends a field it could technically omit, rather than being told it's optional
+      # when the action rejects omission). A Proc default (or any non-Hash default) can't be inspected
+      # here, so it never counts as covering either.
+      def default_covers_required?(default_value, shallow_nested)
         return false unless default_value.is_a?(Hash)
 
-        keys = default_value.keys.map(&:to_s)
-        Array(required_child_keys).all? { |k| keys.include?(k.to_s) }
+        indiff = default_value.transform_keys(&:to_s)
+        required_children = Array(shallow_nested).reject { |c| optional_for_schema?(c, subfield: true) }
+        required_children.all? { |child| default_satisfies_child?(indiff, child) }
+      end
+
+      def default_satisfies_child?(indiff_default, child)
+        return false if child.validations[:model] # model subfield uses <field>_id semantics — don't vouch
+
+        key = child.field.to_s
+        return false unless indiff_default.key?(key)
+
+        value = indiff_default[key]
+        return false if value.nil?
+
+        # Only vouch when the child's constraints are limited to type: (+ presence).
+        return false unless (child.validations.keys - %i[type presence]).empty?
+        # Presence (explicit true, or Axn's implicit default) rejects a blank value.
+        return false if child.validations[:presence] && _blank_for_presence?(value)
+
+        type_opt = child.validations[:type]
+        return true unless type_opt # presence-only child already satisfied by the non-blank value above
+
+        klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
+        Array(klass).any? { |k| _value_matches_type?(value, k) }
+      end
+
+      def _blank_for_presence?(value)
+        return true if value == false
+
+        value.respond_to?(:empty?) && value.empty?
+      end
+
+      def _value_matches_type?(value, klass)
+        case klass
+        when :boolean then [true, false].include?(value)
+        when :uuid then value.is_a?(String)
+        when :params then value.is_a?(Hash) || (defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters))
+        else klass.is_a?(Class) && value.is_a?(klass)
+        end
       end
 
       # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
