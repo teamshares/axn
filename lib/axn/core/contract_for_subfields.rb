@@ -33,7 +33,7 @@ module Axn
       end
 
       module ClassMethods
-        def _expects_subfields( # rubocop:disable Metrics/ParameterLists
+        def _expects_subfields( # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           *fields,
           on:,
           readers: true,
@@ -80,6 +80,20 @@ module Axn
             raise ArgumentError,
                   "a dotted `on:` path rooted at :ambient_context (got #{on.inspect}) is not supported — " \
                   "declare a single-level `on: :ambient_context` subfield (deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
+          end
+
+          # A dotted subfield NAME on an ambient parent (`expects "request.ip", on: :ambient_context`)
+          # denotes deep extraction (FieldResolvers::Extract reads ambient_context[:request][:ip]), but
+          # `_filter_to_declared` only preserves the exact declared key, so the nested source is stripped
+          # and the subfield always reads nil. Deep ambient nesting is deferred (PRO-2844/PRO-2845), so
+          # reject at declaration rather than fail silently. (Dotted names on a NON-ambient parent are a
+          # supported runtime extraction path and are left alone here.)
+          if root == Axn::Core::AmbientContext::PARENT && fields.any? { |f| f.to_s.include?(".") }
+            dotted = fields.select { |f| f.to_s.include?(".") }
+            raise ArgumentError,
+                  "a dotted subfield name (got #{dotted.map(&:to_s).inspect}) on an `on: :ambient_context` subfield " \
+                  "denotes deep ambient nesting, which is not supported — declare a single-level ambient subfield " \
+                  "(deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
           end
 
           # An `on: :ambient_context` subfield's value comes from the ambient provider / CurrentAttributes

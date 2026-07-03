@@ -161,6 +161,31 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     end
     expect(klass).to be_a(Class)
   end
+
+  it "rejects a dotted subfield NAME on an ambient_context parent (deep ambient nesting is deferred)" do
+    expect do
+      Class.new do
+        include Axn
+        expects "request.ip", on: :ambient_context, type: String
+      end
+    end.to raise_error(ArgumentError, /dotted subfield name.*ambient_context|ambient_context.*dotted subfield name/)
+  end
+
+  it "still allows a dotted subfield name on a NON-ambient parent, and resolves it via deep extraction" do
+    klass = Class.new do
+      include Axn
+      expects :foo, type: Hash
+      expects "bar.baz", on: :foo, type: String
+    end
+
+    # If resolution were broken (always nil, as it would be for the ambient case), this would fail
+    # type validation -- so a successful call here proves the nested value was actually read.
+    ok = klass.call(foo: { bar: { baz: "v" } })
+    expect(ok).to be_ok
+
+    bad = klass.call(foo: { bar: { baz: 5 } })
+    expect(bad).not_to be_ok
+  end
 end
 
 RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
