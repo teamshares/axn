@@ -663,6 +663,40 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:required]).to include("payload")
     end
+
+    it "does not require a parent whose literal Hash default already supplies the required subfield's key (Codex review)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "system" }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "still requires the parent when a Proc default can't be inspected for coverage, even if it would supply the key at runtime" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: -> { { name: "x" } }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when a defaulted parent with multiple required subfields only covers some of the keys" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "system" }
+        expects :name, on: :payload, type: String
+        expects :role, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
   end
 
   describe "a single validator's allow_nil: does not make the whole field nullable/optional (Bug T)" do

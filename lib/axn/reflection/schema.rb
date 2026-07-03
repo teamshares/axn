@@ -59,7 +59,11 @@ module Axn
               # Omitting the parent is safe only if something materializes it before subfield validation:
               # a top-level default on the parent, or a truthy default on a subfield (apply_defaults_for_subfields!).
               parent_materialized = default?(config) || nested.any? { |sc| !!sc.default }
-              required << config.field.to_s unless parent_materialized && !parent_has_required_child
+              # A required child is fine to omit-with-the-parent if the parent's own literal Hash
+              # default already supplies that child's key (runtime applies the default before
+              # subfield validation, so the key is present even though the caller never set it).
+              covered = !parent_has_required_child || default_covers_required?(config.default, prop[:required])
+              required << config.field.to_s unless parent_materialized && covered
             else
               required << config.field.to_s unless optional_for_schema?(config)
             end
@@ -321,6 +325,17 @@ module Axn
       # `allow_blank:`. Output (`exposes`) requiredness is unaffected: see build_output.
       def default?(config)
         config.respond_to?(:default) && !config.default.nil?
+      end
+
+      # True when the parent's own literal Hash default already provides every required child key
+      # (so omitting the parent still satisfies subfield validation at runtime). A Proc default (or
+      # any non-Hash default) can't be inspected here, so it never counts as covering — the parent
+      # stays required in that case.
+      def default_covers_required?(default_value, required_child_keys)
+        return false unless default_value.is_a?(Hash)
+
+        keys = default_value.keys.map(&:to_s)
+        Array(required_child_keys).all? { |k| keys.include?(k.to_s) }
       end
 
       # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
