@@ -31,14 +31,21 @@ module Axn
 
       # KNOWN LIMITATION: only single-level subfields are nested — those whose `on:` names a
       # top-level field's reader (`on: :address`, incl. an `as:`/`prefix:` alias). Deeper nesting
-      # is intentionally NOT represented in the schema: a dotted parent (`on: "address.billing"`)
-      # or a subfield-of-a-subfield (`on: :some_subfield`) validates and reads fine at runtime but
-      # is omitted here. Deferred until an adapter (axn-mcp PRO-2844 / axn-ruby_llm PRO-2845)
+      # is intentionally NOT represented in the schema: a dotted parent (`on: "address.billing"`),
+      # a subfield-of-a-subfield (`on: :some_subfield`), or a dotted subfield NAME
+      # (`expects "bar.baz", on: :foo`) validates and reads fine at runtime but is omitted here.
+      # Deferred until an adapter (axn-mcp PRO-2844 / axn-ruby_llm PRO-2845)
       # actually needs deep tool-input schemas — at which point the nesting can be built as a full
       # `on:`-path walk informed by the real consumer. See those tickets.
       def build_input(field_configs, subfield_configs = [])
         properties = {}
         required = []
+
+        # A dotted subfield NAME (`expects "bar.baz", on: :foo`) denotes a DEEP extraction path
+        # (runtime reads foo[:bar][:baz]); single-level nesting can't represent it, so it's dropped
+        # from the schema — same treatment as the dotted-parent / subfield-of-subfield cases noted in
+        # the KNOWN LIMITATION above (deferred to PRO-2844/PRO-2845). The runtime contract is unaffected.
+        subfield_configs = subfield_configs.reject { |c| c.field.to_s.include?(".") }
 
         subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
 

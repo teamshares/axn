@@ -803,6 +803,51 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a dotted subfield NAME denotes a deep extraction path and is omitted from the schema (Codex review)" do
+    it "omits a dotted-name subfield's flat property from the parent (deep extraction, not single-level nesting)" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects "bar.baz", on: :foo
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      foo = schema[:properties][:foo]
+      # The only subfield on :foo is the dotted-name one, so once it's filtered out there are no
+      # nested subfields left at all — apply_nested_subfields! never materializes :properties/:required.
+      expect(foo[:properties] || {}).not_to have_key("bar.baz")
+      expect(foo[:properties] || {}).not_to have_key(:"bar.baz")
+      expect(Array(foo[:required])).not_to include("bar.baz")
+    end
+
+    it "still nests a normal single-level subfield under its parent (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects :bar, on: :foo, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      foo = schema[:properties][:foo]
+      expect(foo[:properties][:bar]).to include(type: "string")
+    end
+
+    it "keeps a normal sibling subfield while omitting a dotted-name subfield on the same parent" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects :bar, on: :foo, type: String
+        expects "deep.path", on: :foo
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      foo = schema[:properties][:foo]
+      expect(foo[:properties].keys).to eq([:bar])
+      expect(foo[:properties]).not_to have_key("deep.path")
+      expect(foo[:properties]).not_to have_key(:"deep.path")
+    end
+  end
+
   describe "a bare/active validator rejects nil even alongside a disabled presence (Bug KK)" do
     it "still requires amount and does not null its type: a bare numericality validator rejects nil regardless of presence: false" do
       klass = Class.new do
