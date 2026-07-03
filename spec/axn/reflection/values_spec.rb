@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "bigdecimal"
 
 RSpec.describe Axn::Reflection::Values do
   describe ".serialize_value" do
@@ -9,6 +10,19 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value("x")).to eq("x")
       expect(described_class.serialize_value(true)).to eq(true)
       expect(described_class.serialize_value(nil)).to be_nil
+    end
+
+    it "keeps Integer/Float passing through unchanged (not floatified by the Numeric case)" do
+      expect(described_class.serialize_value(3)).to be_a(Integer).and eq(3)
+      expect(described_class.serialize_value(3.14)).to be_a(Float).and eq(3.14)
+    end
+
+    it "serializes other Numeric subclasses (BigDecimal, Rational) as JSON numbers (Float), matching the schema's number type" do
+      # Regression: BigDecimal/Rational aren't Integer/Float, so without an explicit Numeric case
+      # they fall through to as_json/to_s, producing STRINGS ("0.314e1", "1/3") that violate an
+      # output_schema declaring `type: Numeric` => "number" (Axn::Reflection::Schema::TYPE_MAP).
+      expect(described_class.serialize_value(BigDecimal("3.14"))).to be_a(Float).and eq(3.14)
+      expect(described_class.serialize_value(Rational(1, 3))).to be_a(Float).and eq(1.0 / 3)
     end
 
     it "stringifies hash keys recursively" do

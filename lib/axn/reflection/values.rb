@@ -24,6 +24,16 @@ module Axn
         case value
         when nil, String, Integer, Float, TrueClass, FalseClass
           value
+        when Numeric
+          # BigDecimal / Rational etc. — emit a JSON number so output matches the schema's "number" type.
+          # JSON has no decimal type (any JSON number is a double), so a Float representation is the correct
+          # wire form; a caller needing exact decimals should expose type: String. Integer/Float are already
+          # handled above. A non-real Numeric (Complex) can't become a Float — fall back to its string form.
+          begin
+            Float(value)
+          rescue ArgumentError, TypeError, RangeError
+            value.to_s
+          end
         when Hash
           value.transform_keys(&:to_s).transform_values { |v| serialize_value(v) }
         when Array
