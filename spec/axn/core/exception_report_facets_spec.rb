@@ -119,6 +119,29 @@ RSpec.describe "Exception-report facets (on_exception context)" do
     ActiveSupport::Notifications.unsubscribe(sub)
   end
 
+  it "reports the pre-body input snapshot, not a value the body mutated before raising" do
+    payload_tags = nil
+    sub = ActiveSupport::Notifications.subscribe("axn.call") { |*args| payload_tags = args.last[:tags] }
+    report_tags = nil
+    Axn.config.instance_variable_set(:@on_exception, proc { |context:| report_tags = context[:tags] })
+
+    Class.new do
+      include Axn
+      expects :data
+      tag(:snapshot) { data[:v] } # input-phase (default): snapshotted before the body runs
+      def call
+        data[:v] = "mutated"
+        raise "boom"
+      end
+    end.call(data: { v: "original" })
+
+    # The report must match the span/payload snapshot (captured pre-body), not the mutated value.
+    expect(report_tags[:snapshot]).to eq("original")
+    expect(payload_tags[:snapshot]).to eq("original")
+  ensure
+    ActiveSupport::Notifications.unsubscribe(sub)
+  end
+
   it "lets the framework facet win over a user-supplied set_execution_context key" do
     ctx = capture_context do
       tag(:company_id) { 7 }

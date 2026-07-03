@@ -144,12 +144,11 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(received[:tags]).to eq(region: "us5", name: "BOB")
       end
 
-      it "skips an output-derived facet best-effort (no run happened) yet still reports" do
+      it "omits result-phase facets (the reconstructed instance's result would fabricate values)" do
         action_class = build_axn do
           expects :company_id, type: Integer
-          exposes :saved_id
-          tag :company_id, -> { company_id }
-          tag(:saved_id, from: :result) { result.saved_id } # output — unresolvable on the discard path
+          tag :company_id, -> { company_id }                     # input-phase → resolves
+          dimension(:outcome, from: :result) { result.outcome }  # result-phase → would read "success"
         end
         received = nil
         allow(Axn.config).to receive(:on_exception) { |_e, context:, **| received = context }
@@ -159,6 +158,8 @@ RSpec.describe Axn::Async::ExceptionReporting do
         )
 
         expect(received[:tags]).to eq(company_id: 7)
+        # the never-run result defaults to outcome "success"; that must NOT be fabricated into the report
+        expect(received).not_to have_key(:dimensions)
       end
 
       it "deserializes job_args before rebuilding the instance (so GlobalID/model inputs restore)" do
