@@ -27,10 +27,6 @@ module Axn
 
       EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
 
-      # ActiveModel validators that accept a nil/blank value by nature, so their presence does not make
-      # a field required: `absence` requires the value be blank; `acceptance` is allow_nil by default.
-      NIL_TOLERANT_VALIDATORS = %i[absence acceptance].freeze
-
       module_function
 
       # KNOWN LIMITATION: only single-level subfields are nested — those whose `on:` names a
@@ -298,8 +294,6 @@ module Axn
           return { type: "number" }
         end
 
-        return { type: "string" } if validations[:length]
-
         {}
       end
 
@@ -326,12 +320,13 @@ module Axn
       # requirement, and every validator that would run allows nil/blank. A single validator's
       # allow_nil does NOT make the field nullable if another (presence, type, …) still rejects nil.
       #
-      # An entry is nil-tolerant if it's a disabled validator (`opt == false`), a nil-tolerant-by-nature
-      # validator (`absence`/`acceptance` — see NIL_TOLERANT_VALIDATORS), or a Hash that allows
-      # nil/blank. Any other active validator — including a BARE `true` (e.g. `numericality: true`) —
-      # rejects nil: a bare ActiveModel validator does not tolerate nil just because it isn't a Hash of
-      # options, so `presence: false` alongside a bare active validator must not wrongly relax the
-      # field (Bug KK).
+      # An entry is nil-tolerant if it's a disabled validator (`opt == false`), `absence` (nil is
+      # always "absent", regardless of options), `acceptance` unless explicitly opted out via
+      # `allow_nil: false` (ActiveModel's acceptance validator is allow_nil by default), or a Hash
+      # that allows nil/blank. Any other active validator — including a BARE `true` (e.g.
+      # `numericality: true`) — rejects nil: a bare ActiveModel validator does not tolerate nil just
+      # because it isn't a Hash of options, so `presence: false` alongside a bare active validator
+      # must not wrongly relax the field (Bug KK).
       def nil_accepted?(config)
         v = config.validations
         return true if v.empty?
@@ -340,9 +335,11 @@ module Axn
       end
 
       def nil_tolerant_validation?(key, opt)
-        return true if opt == false # disabled validator (e.g. presence: false)
-        return true if NIL_TOLERANT_VALIDATORS.include?(key) # absence/acceptance accept nil
+        return true if opt == false                                 # disabled validator (e.g. presence: false)
         return true if opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])
+        return true if key == :absence                              # nil is always "absent"
+        # acceptance is allow_nil by default; only nil-rejecting when explicitly `allow_nil: false`
+        return true if key == :acceptance && !(opt.is_a?(Hash) && opt[:allow_nil] == false)
 
         false
       end

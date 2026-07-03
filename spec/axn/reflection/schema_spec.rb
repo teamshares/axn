@@ -970,14 +970,56 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:name]).to include(type: "string")
     end
 
-    it "still infers type: string for a length:-only field (unchanged)" do
+    it "leaves a length:-only field untyped, since length applies to arrays too, not just strings (Bug NN)" do
       klass = Class.new do
         include Axn
-        expects :code, length: { minimum: 2 }
+        expects :items, length: { minimum: 1 }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:code]).to include(type: "string")
+      expect(schema[:properties][:items]).not_to have_key(:type)
+    end
+
+    it "still infers type: string for an explicitly typed String field with a length: validation (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, length: { minimum: 2 }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:name]).to include(type: "string")
+    end
+  end
+
+  describe "acceptance: allow_nil: false rejects nil, unlike default acceptance (Bug OO)" do
+    it "requires a field validated with acceptance: { allow_nil: false } alongside presence: false" do
+      klass = Class.new do
+        include Axn
+        expects :flag, presence: false, acceptance: { allow_nil: false }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("flag")
+    end
+
+    it "does not require a field validated with acceptance: true alongside presence: false (default acceptance allows nil)" do
+      klass = Class.new do
+        include Axn
+        expects :flag2, presence: false, acceptance: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("flag2")
+    end
+
+    it "does not require a field validated with absence: true alongside presence: false (unchanged)" do
+      klass = Class.new do
+        include Axn
+        expects :archived_at, presence: false, absence: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("archived_at")
     end
   end
 end
