@@ -38,7 +38,8 @@ module RuboCop
           (send {(const nil? :Current) (const (cbase) :Current)} $_)
         PATTERN
 
-        def_node_search :includes_axn?, <<~PATTERN
+        # Exact (non-recursive) match for an `include Axn` statement.
+        def_node_matcher :axn_include?, <<~PATTERN
           (send nil? :include (const nil? :Axn))
         PATTERN
 
@@ -55,7 +56,7 @@ module RuboCop
 
         private
 
-        # Walks `node`'s ancestors looking for an enclosing class/module whose body includes
+        # Walks `node`'s ancestors looking for an enclosing class/module whose OWN body includes
         # `include Axn`. Wrapped in a rescue like unchecked_result.rb so malformed AST can't
         # crash the cop.
         def within_axn_class?(node)
@@ -64,11 +65,22 @@ module RuboCop
             current_node = current_node.parent
             next unless %i[class module].include?(current_node.type)
 
-            return true if includes_axn?(current_node)
+            return true if body_includes_axn?(current_node)
           end
           false
         rescue StandardError => _e
           false
+        end
+
+        # True only if the class/module's OWN body has a direct `include Axn` — a nested
+        # class/module's include does not count (its `include` lives inside the nested node,
+        # not a direct body statement of `class_or_module_node`).
+        def body_includes_axn?(class_or_module_node)
+          body = class_or_module_node.body
+          return false unless body
+
+          statements = body.begin_type? ? body.children : [body]
+          statements.any? { |stmt| axn_include?(stmt) }
         end
       end
     end

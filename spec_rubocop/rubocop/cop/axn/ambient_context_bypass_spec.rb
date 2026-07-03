@@ -121,4 +121,33 @@ RSpec.describe RuboCop::Cop::Axn::AmbientContextBypass do
       end
     RUBY
   end
+
+  it "does not flag a Current read in a non-Axn outer class that merely contains a nested Axn class" do
+    expect_no_offenses(<<~RUBY)
+      class UsersController
+        def show
+          Current.user
+        end
+
+        class QuickAction
+          include Axn
+          def call; end
+        end
+      end
+    RUBY
+  end
+
+  it "still flags a Current read inside a nested Axn class, even though the outer class does not include Axn" do
+    expect_offense(<<~RUBY)
+      class Outer
+        class QuickAction
+          include Axn
+          def call
+            Current.company
+            ^^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :company, on: :ambient_context` instead of `Current` directly.
+          end
+        end
+      end
+    RUBY
+  end
 end
