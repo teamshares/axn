@@ -321,12 +321,17 @@ module Axn
       # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
       # requirement, and every validator that would run allows nil/blank. A single validator's
       # allow_nil does NOT make the field nullable if another (presence, type, …) still rejects nil.
+      #
+      # An entry is nil-tolerant only if it's a disabled validator (`opt == false`) or a Hash that
+      # allows nil/blank. Any other active validator — including a BARE `true` (e.g.
+      # `numericality: true`) — rejects nil: a bare ActiveModel validator does not tolerate nil just
+      # because it isn't a Hash of options, so `presence: false` alongside a bare active validator
+      # must not wrongly relax the field (Bug KK).
       def nil_accepted?(config)
         v = config.validations
         return true if v.empty?
-        return false if v[:presence] == true
 
-        v.values.all? { |opt| !opt.is_a?(Hash) || opt[:allow_nil] || opt[:allow_blank] }
+        v.values.all? { |opt| opt == false || (opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])) }
       end
 
       # A field is optional in the schema (client may omit it) iff it has a default, or no validation

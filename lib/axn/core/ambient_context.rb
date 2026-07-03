@@ -25,16 +25,22 @@ module Axn
       end
 
       # Instance reader used by ContractForSubfields.resolve_parent (public_send(:ambient_context)).
+      #
+      # A failing provider is memoized as an ERROR (not `{}`) and re-raised on every subsequent read.
+      # This matters because automatic BEFORE-logging can be the FIRST read (a dynamic `sensitive:`
+      # predicate reading an ambient subfield is evaluated while building the log filter) — and
+      # `CallLogger` SWALLOWS logging errors. Memoizing `{}` there would hide the real failure from
+      # inbound validation (which reads ambient_context next) and report a bogus "can't be blank"
+      # instead of the provider's actual exception. Memoizing the error instead means the provider
+      # still runs at most once, but the real error surfaces at the first NON-swallowed read.
       def ambient_context
+        raise @__ambient_context_error if defined?(@__ambient_context_error)
         return @__ambient_context if defined?(@__ambient_context)
 
         begin
           @__ambient_context = _resolve_ambient_context
-        rescue StandardError
-          # Memoize empty so later reads (logging sensitive-predicate evaluation, exception-context
-          # building) never re-run the provider — but still surface the failure on this first resolution
-          # (it becomes the action's exception during validation).
-          @__ambient_context = {}
+        rescue StandardError => e
+          @__ambient_context_error = e
           raise
         end
       end

@@ -310,9 +310,59 @@ RSpec.describe "Axn ambient_context provider memoization (Bug EE)" do
     instance = klass.send(:new)
     instance._run
     3.times { instance.execution_context }
-    instance.send(:ambient_context)
+
+    # A direct (unguarded) read re-raises the memoized error rather than re-running the provider
+    # (Bug JJ: memoizing {} would mask the real failure from validation/reporting, so the error
+    # itself is memoized and re-raised on every subsequent read instead).
+    expect { instance.send(:ambient_context) }.to raise_error(RuntimeError, "provider boom")
 
     expect(call_count).to eq(1)
+  end
+end
+
+RSpec.describe "Axn ambient_context provider failure surfaces the real error, not a masked {} (Bug JJ)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  # Auto-logging is on by default (Axn.config.log_level), so `with_logging`'s before-hook runs
+  # BEFORE `with_contract`'s inbound validation. Building that before-log's filter resolves the
+  # dynamic `sensitive:` predicate below, which reads `secret_id` — the FIRST read of
+  # ambient_context — inside `CallLogger`, which swallows logging errors. Prior to the fix, that
+  # swallowed failure memoized `{}`, so inbound validation (the next read) saw an empty ambient
+  # context and raised a bogus "can't be blank" InboundValidationError instead of the provider's
+  # real error.
+  let(:klass) do
+    Class.new do
+      include Axn
+      expects :company_id, on: :ambient_context, type: Integer
+      expects :secret_id, on: :ambient_context, type: Integer, allow_nil: true,
+                          sensitive: -> { respond_to?(:secret_id) && !secret_id.nil? }
+      def call = nil
+    end
+  end
+
+  it "surfaces the provider's real exception, not a masked missing-subfield validation error" do
+    Axn.config.ambient_context_provider = -> { raise "provider boom" }
+
+    result = klass.call
+
+    expect(result).not_to be_ok
+    expect(result.exception).to be_a(RuntimeError)
+    expect(result.exception.message).to match(/provider boom/)
+    expect(result.exception).not_to be_a(Axn::InboundValidationError)
+  end
+
+  it "does not raise while building execution_context, degrading inputs/ambient to {}" do
+    Axn.config.ambient_context_provider = -> { raise "provider boom" }
+
+    result = klass.call
+    expect(result).not_to be_ok
+
+    instance = result.__action__
+    ctx = nil
+    expect { ctx = instance.execution_context }.not_to raise_error
+    expect(ctx).to be_a(Hash)
+    expect(ctx[:inputs]).to eq({})
+    expect(ctx).not_to have_key(:ambient_context)
   end
 end
 

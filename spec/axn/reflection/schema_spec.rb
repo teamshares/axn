@@ -668,6 +668,80 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  describe "a bare/active validator rejects nil even alongside a disabled presence (Bug KK)" do
+    it "still requires amount and does not null its type: a bare numericality validator rejects nil regardless of presence: false" do
+      klass = Class.new do
+        include Axn
+        expects :amount, numericality: true, presence: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("amount")
+      expect(schema[:properties][:amount][:type]).to eq("number") # inferred from numericality, not nulled
+    end
+
+    it "does not require x when presence: false is disabled and nothing else rejects nil" do
+      klass = Class.new do
+        include Axn
+        expects :x, presence: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("x")
+    end
+
+    it "still requires name (untyped presence baseline, regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("name")
+    end
+
+    it "still requires a typed-but-no-presence boolean field (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("flag")
+    end
+
+    it "does not mark an allow_nil: true typed field as required, and still nulls its type (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :age, type: Integer, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("age")
+      expect(schema[:properties][:age][:type]).to eq(%w[integer null])
+    end
+
+    it "does not mark an optional: true field with no other validator as required (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :coupon, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("coupon")
+    end
+
+    it "still requires age when numericality has allow_nil: true but presence is added by default (regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :age, type: Integer, numericality: { greater_than: 0, allow_nil: true }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("age")
+    end
+  end
+
   describe "a parent with a required subfield must itself be required (Bug V)" do
     it "marks a defaulted/optional-looking parent as required when it has a required subfield" do
       klass = Class.new do

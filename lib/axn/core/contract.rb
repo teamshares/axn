@@ -629,25 +629,36 @@ module Axn
           hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
-          ctx = { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
+          ctx = {
+            inputs: _safe_execution_context_slice { inputs_for_logging },
+            outputs: _safe_execution_context_slice { outputs_for_logging },
+            **extra_context,
+          }
 
           # Resolving/filtering ambient context can raise (e.g. a failing ambient_context_provider
-          # that already caused the action's real exception, but whose failure wasn't memoized — see
+          # whose error is now memoized and re-raised on every read — see
           # Axn::Core::AmbientContext#ambient_context). Building exception-report context must never
           # itself raise, or the real exception never reaches Axn.config.on_exception, so omit
           # ambient_context here rather than propagate.
-          ambient =
-            begin
-              ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
-              ambient_filter.filter(ambient_context)
-            rescue StandardError
-              {}
-            end
+          ambient = _safe_execution_context_slice do
+            ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
+            ambient_filter.filter(ambient_context)
+          end
           ctx[:ambient_context] = ambient if ambient.present?
           ctx
         end
 
         private
+
+        # Exception-report context must never itself raise (a failing ambient provider can propagate
+        # through sensitive-predicate evaluation while building any of these slices, since resolving
+        # inputs_for_logging/outputs_for_logging may evaluate a dynamic `sensitive:` predicate that
+        # reads ambient_context). Degrade to {} rather than let it escape.
+        def _safe_execution_context_slice
+          yield
+        rescue StandardError
+          {}
+        end
 
         # Forward the intersection of a nested result's declared exposures and this action's own
         # declared exposures. Reads declared fields (static contract) so it is safe on a failed
