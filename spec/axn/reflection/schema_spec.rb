@@ -143,6 +143,59 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
+    # Finding #73: a usable-but-INVALID default must NOT fall back to nil-tolerance. Executor applies
+    # the default before validation on BOTH the absent and the nil path, so once a usable default
+    # exists requiredness hinges solely on whether that default satisfies the contract — an allow_nil
+    # field with a type-mismatched default is still required (runtime fails the omitted call).
+    it "requires a String allow_nil field whose default is type-mismatched (123) despite nil-tolerance " \
+       "(runtime: call({}) fails \"Name is not a String\" — the default is applied before validation, so allow_nil can't save it)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, allow_nil: true, default: 123
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("name")
+    end
+
+    it "does NOT require a String allow_nil field whose default \"x\" satisfies the contract (runtime: call({}) ok)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, allow_nil: true, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("name")
+    end
+
+    it "does NOT require a String allow_nil field with NO default (no usable default → nil-tolerance applies; runtime: call({}) ok)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, allow_nil: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("name")
+    end
+
+    it "does NOT require a Hash allow_nil field whose blank {} default satisfies its contract (runtime: call({}) ok — " \
+       "allow_nil suppresses the auto-presence, so {} passes; requiredness hinges on the default, not nil-tolerance)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true, default: {}
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "requires a boolean allow_nil field with a Proc default (uninspectable → unprovable → conservative), even " \
+       "though runtime here ACCEPTS the omitted call (`-> { false }` yields a valid boolean) — only knowable by " \
+       "evaluating the Proc, which reflection must not do" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean, allow_nil: true, default: -> { false }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("flag")
+    end
+
     # OUTPUT-side regression: this change is INPUT-only. `exposes` requiredness deliberately ignores
     # defaults (build_output passes for_output: true, which short-circuits the satisfies-check), so a
     # blank/invalid-looking default must NOT flip an exposed field to optional — outbound defaults are
@@ -1892,6 +1945,43 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(status: "")).not_to be_ok
       expect(schema[:properties][:status][:enum]).to match_array([1, 2, nil])
       expect(Array(schema[:properties][:status][:type])).not_to include("string")
+    end
+  end
+
+  # Finding #74: on OUTPUT, enum_for_inclusion adds "" for a blank-tolerant inclusion field (not gated
+  # on for_output), so the advertised type must be widened to permit "" for output too — else a
+  # consumer validating output type before enum would reject the valid blank. The SAME validators run
+  # outbound, so an `exposes` blank-tolerant inclusion accepts "" outbound (verified below), making the
+  # enum-and-type consistency the correct behavior in both directions.
+  describe "an output blank-tolerant inclusion field keeps its enum and type CONSISTENT (both permit the blank) (Finding #74)" do
+    it "runtime: outbound validation accepts \"\" and nil for a numeric allow_blank inclusion exposure, rejects a non-member number" do
+      build = lambda do |val|
+        Class.new do
+          include Axn
+          exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
+          define_method(:call) { expose(status: val) }
+        end
+      end
+
+      expect(build.call("").call).to be_ok
+      expect(build.call(nil).call).to be_ok
+      expect(build.call(1).call).to be_ok
+      expect(build.call(3).call).not_to be_ok
+    end
+
+    it "widens the output type to permit \"\" (consistent with the enum), matching outbound runtime that accepts \"\"" do
+      klass = Class.new do
+        include Axn
+        exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
+        def call = expose!(status: 1)
+      end
+      schema = described_class.build_output(klass.external_field_configs)
+      prop = schema[:properties][:status]
+
+      # enum lists the blank (and nil, since allow_blank ⇒ nil-tolerant) alongside the numeric members...
+      expect(prop[:enum]).to match_array([1, 2, "", nil])
+      # ...and the type must include "string" so the enum's "" isn't rejected by a type-then-enum consumer.
+      expect(Array(prop[:type])).to include("integer", "string", "null")
     end
   end
 end

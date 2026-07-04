@@ -321,7 +321,11 @@ module Axn
         # type (see enum_for_inclusion), so the advertised `type` must permit a string — else a
         # consumer validating `type` before `enum` would reject the valid blank. Only widens a
         # non-string scalar type (e.g. integer); a string/anyOf/mixed enum already permits "".
-        blank_tolerant = !for_output && blank_tolerant_inclusion?(config)
+        # NOT gated on for_output: the same validators run OUTBOUND, so an `exposes` blank-tolerant
+        # inclusion also accepts `""` (verified: `exposes :status, inclusion: { in: [1, 2] },
+        # allow_blank: true` with `status == ""` passes outbound validation). enum_for_inclusion adds
+        # `""` for output too, so the type must stay consistent with it in both directions.
+        blank_tolerant = blank_tolerant_inclusion?(config)
         if type_info[:anyOf]
           prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
         elsif type_info[:type]
@@ -561,9 +565,16 @@ module Axn
       end
       # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
 
-      # A field is optional in the schema (client may omit it) iff it has a default, or no validation
-      # rejects a nil/omitted value. A typed field with neither (e.g. type: :boolean) is required —
-      # TypeValidator rejects nil. (This subsumes the earlier default?-based check.)
+      # A field is optional in the schema (client may omit it) iff a usable default satisfies its own
+      # contract, or — with NO usable default — no validation rejects a nil/omitted value. A typed
+      # field with neither (e.g. type: :boolean) is required (TypeValidator rejects nil).
+      #
+      # A usable default PREEMPTS both the absent and the nil paths: `Executor#apply_defaults!` applies
+      # the default before validation even when the incoming value is nil, so nil-tolerance is moot once
+      # a usable default exists — the field is omittable iff the default VALUE itself satisfies the
+      # contract, otherwise required (a usable-but-INVALID default, e.g. `type: String, allow_nil: true,
+      # default: 123`, must NOT fall back to nil-tolerance: runtime applies the 123 and then fails the
+      # omitted call). Only with no usable default does nil-tolerance decide optionality.
       #
       # `subfield:` narrows what counts as a "usable" default: `Executor#apply_defaults_for_subfields!`
       # only applies a subfield's default when it's truthy (`next unless config.default`), so a falsey
@@ -571,7 +582,7 @@ module Axn
       # here. Top-level defaults are applied by key-presence, so `default?` (non-nil) is correct there.
       def optional_for_schema?(config, for_output: false, subfield: false)
         has_usable_default = subfield ? !!config.default : default?(config)
-        return true if !for_output && has_usable_default && default_value_satisfies_own_contract?(config)
+        return default_value_satisfies_own_contract?(config) if !for_output && has_usable_default
 
         nil_accepted?(config)
       end
