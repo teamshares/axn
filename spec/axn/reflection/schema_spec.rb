@@ -55,6 +55,109 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required] || []).not_to include("limit")
   end
 
+  # A TOP-LEVEL default only relaxes input requiredness when the default VALUE itself satisfies the
+  # field's OWN contract — runtime applies the default and THEN validates, so a blank/type-mismatched
+  # default still fails the omitted call and must keep the field required. Each case's requiredness is
+  # asserted against verified runtime behavior of `klass.call({})` (recorded in comments below), decided
+  # by the SAME real validator (Axn::Validation::Subfields.collect_errors) the subfield path already uses.
+  describe "a top-level default only relaxes input requiredness when it satisfies the field's own contract (Codex review)" do
+    it "requires a Hash field whose default is a blank {} (runtime: call({}) fails \"Payload can't be blank\")" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "requires a String field whose default is a blank \"\" (runtime: call({}) fails \"Name can't be blank\")" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: ""
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("name")
+    end
+
+    it "does NOT require an Integer field whose default is 0 (runtime: call({}) ok — 0 is not blank)" do
+      klass = Class.new do
+        include Axn
+        expects :count, type: Integer, default: 0
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("count")
+    end
+
+    it "does NOT require a Hash field whose blank {} default is paired with allow_blank: true (runtime: call({}) ok)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: {}, allow_blank: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "does NOT require a String field whose non-blank default \"x\" satisfies the contract (runtime: call({}) ok)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("name")
+    end
+
+    it "requires a String field whose default is type-mismatched (123) (runtime: call({}) fails \"Name is not a String\")" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: 123
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("name")
+    end
+
+    it "requires a :uuid field whose default is not a valid uuid (runtime: call({}) fails \"Id is not a uuid\")" do
+      klass = Class.new do
+        include Axn
+        expects :id, type: :uuid, default: "not-a-uuid"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("id")
+    end
+
+    it "does NOT require a :uuid field whose default IS a valid uuid (runtime: call({}) ok)" do
+      klass = Class.new do
+        include Axn
+        expects :id, type: :uuid, default: "550e8400-e29b-41d4-a716-446655440000"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("id")
+    end
+
+    it "requires a Hash field with a Proc default (uninspectable — must not call it — so unprovable → conservative), " \
+       "matching runtime here where call({}) fails \"Payload can't be blank\" for `-> { {} }`" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: -> { {} }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("payload")
+    end
+
+    # OUTPUT-side regression: this change is INPUT-only. `exposes` requiredness deliberately ignores
+    # defaults (build_output passes for_output: true, which short-circuits the satisfies-check), so a
+    # blank/invalid-looking default must NOT flip an exposed field to optional — outbound defaults are
+    # always applied before serialization, so a defaulted exposure stays required regardless.
+    it "keeps a defaulted exposure required even when its default would NOT satisfy an input contract (output unaffected)" do
+      klass = Class.new do
+        include Axn
+        exposes :payload, type: Hash, default: {}
+        def call = nil
+      end
+      schema = described_class.build_output(klass.external_field_configs)
+      expect(schema[:required]).to include("payload")
+    end
+  end
+
   it "excludes the ambient_context parent from the input schema" do
     # ambient_context becomes a valid `on:` parent in Phase F; here assert the exclusion constant.
     expect(described_class::EXCLUDED_FROM_INPUT_SCHEMA).to include(:ambient_context)
@@ -141,10 +244,23 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required] || []).not_to include("flag")
   end
 
-  it "does not mark a defaulted boolean field as required" do
+  it "marks a Proc-defaulted boolean field as required (the Proc is uninspectable in reflection — we must " \
+     "not call it — so its value can't be proven to satisfy the contract; conservative/safe direction, matching " \
+     "the file's subfield-parent Proc handling. NB runtime would actually ACCEPT the omitted call here since " \
+     "`-> { false }` yields a valid boolean, but that's only knowable by evaluating the Proc)" do
     klass = Class.new do
       include Axn
       expects :flag, type: :boolean, default: -> { false }
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:required]).to include("flag")
+  end
+
+  it "does not mark a LITERAL-false-defaulted boolean field as required (a literal default IS inspectable: " \
+     "`false` is a valid boolean and non-blank, so it satisfies the contract; runtime accepts calling with {})" do
+    klass = Class.new do
+      include Axn
+      expects :flag, type: :boolean, default: false
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
     expect(schema[:required] || []).not_to include("flag")

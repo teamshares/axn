@@ -571,9 +571,31 @@ module Axn
       # here. Top-level defaults are applied by key-presence, so `default?` (non-nil) is correct there.
       def optional_for_schema?(config, for_output: false, subfield: false)
         has_usable_default = subfield ? !!config.default : default?(config)
-        return true if !for_output && has_usable_default
+        return true if !for_output && has_usable_default && default_value_satisfies_own_contract?(config)
 
         nil_accepted?(config)
+      end
+
+      # A default only makes the field client-omittable when the default VALUE actually satisfies the
+      # field's OWN contract — runtime applies the default and THEN validates, so a blank default under
+      # auto-presence (`type: Hash, default: {}` / `type: String, default: ""`) or a type-mismatched one
+      # (`type: String, default: 123`; `type: :uuid, default: "nope"`) still fails the omitted call and
+      # must keep the field required. Checked with the SAME real validator the subfield path uses
+      # (satisfies_contract? → Axn::Validation::Subfields.collect_errors) so requiredness can't drift from
+      # runtime. A `model:` default skips the DB-touching validation (satisfies_contract? returns false),
+      # and an action-dependent/uninspectable validation is rescued → both treated as NOT satisfied →
+      # the field falls through to nil_accepted? (required unless nil is independently accepted). A Proc
+      # default is action-dependent and must not be evaluated in reflection, so it's likewise treated as
+      # not-satisfied → conservative (matches how a Proc parent default is handled for subfields). This is
+      # INPUT-only: `for_output` short-circuits before this in optional_for_schema? (outbound defaults are
+      # always applied before serialization, so a defaulted exposure stays required — see build_output).
+      def default_value_satisfies_own_contract?(config)
+        return false unless config.respond_to?(:default)
+
+        default = config.default
+        return false if default.is_a?(Proc)
+
+        satisfies_contract?(config.field, config.validations, { config.field => default })
       end
 
       # Whether a field's validations, taken together, permit nil/blank. Used both to decide
