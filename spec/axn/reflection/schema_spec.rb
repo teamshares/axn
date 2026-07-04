@@ -849,6 +849,61 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:required] || []).not_to include("payload")
     end
+
+    # #69: coverage is checked with the SAME matcher runtime uses (TypeValidator.value_matches?),
+    # so a :uuid child is only "covered" by a default that is a real uuid — not just any String.
+    it "still requires the parent when the required :uuid child's default value is a String that is NOT a valid " \
+       "uuid (runtime applies the default, then TypeValidator's uuid regex rejects it, so calling with {} fails)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { token: "not-a-uuid" }
+        expects :token, on: :payload, type: :uuid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "does not require the parent when the required :uuid child's default value IS a valid uuid (the default " \
+       "actually satisfies the uuid type at runtime, so the parent may be omitted)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { token: "550e8400-e29b-41d4-a716-446655440000" }
+        expects :token, on: :payload, type: :uuid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    # #70: blank is checked with blank? (matching ActiveModel presence), not empty? — so a
+    # whitespace-only String, which is blank? but not empty?, is correctly rejected as not covering.
+    it "still requires the parent when the required String child's default value is whitespace-only (blank? under " \
+       "ActiveModel presence, though not empty? — runtime's presence validator rejects it, so calling with {} fails)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "   " }
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    # A bare type: :boolean subfield does NOT get Axn's implicit presence (unlike String/Integer/uuid),
+    # so `false` is a VALID value at runtime and the parent may be omitted. Matches runtime exactly:
+    # the blank? check is gated on the child actually having a presence validator.
+    it "does not require the parent when the required :boolean child's default value is false (a boolean subfield " \
+       "has no implicit presence, so false is valid at runtime and the parent may be omitted)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { flag: false }
+        expects :flag, on: :payload, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
   end
 
   describe "a single validator's allow_nil: does not make the whole field nullable/optional (Bug T)" do

@@ -453,33 +453,28 @@ module Axn
         return false unless indiff_default.key?(key)
 
         value = indiff_default[key]
-        return false if value.nil?
 
-        # Only vouch when the child's constraints are limited to type: (+ presence).
+        # Only vouch when the child's constraints are limited to a scalar type: (+ the implicit/explicit
+        # presence handled below). Any OTHER validator (inclusion/exclusion/format/numericality/length/
+        # of/shape/custom) could still reject a type-correct value, so stay conservative → not covered →
+        # parent stays required.
         return false unless (child.validations.keys - %i[type presence]).empty?
-        # Presence (explicit true, or Axn's implicit default) rejects a blank value.
-        return false if child.validations[:presence] && _blank_for_presence?(value)
+
+        # Presence (explicit `presence: true`, or Axn's implicit default) rejects ANY blank value
+        # (nil, "", "  ", false, [], {}) at runtime. Use blank?, matching ActiveModel presence exactly
+        # (not empty?, which would wrongly pass a whitespace-only String). The check is GATED on the
+        # child actually carrying a presence validator: Axn does NOT auto-add presence for a bare
+        # `type: :boolean` (so `false` is a valid, non-required-defeating value there) — gating keeps
+        # this in lockstep with runtime rather than over-rejecting a legitimately-blank boolean.
+        return false if child.validations[:presence] && value.blank?
 
         type_opt = child.validations[:type]
-        return true unless type_opt # presence-only child already satisfied by the non-blank value above
+        return true unless type_opt # presence-only child: the non-blank value already satisfies it
 
         klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-        Array(klass).any? { |k| _value_matches_type?(value, k) }
-      end
-
-      def _blank_for_presence?(value)
-        return true if value == false
-
-        value.respond_to?(:empty?) && value.empty?
-      end
-
-      def _value_matches_type?(value, klass)
-        case klass
-        when :boolean then [true, false].include?(value)
-        when :uuid then value.is_a?(String)
-        when :params then value.is_a?(Hash) || (defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters))
-        else klass.is_a?(Class) && value.is_a?(klass)
-        end
+        # Delegate to the SAME matcher runtime uses (handles :uuid regex, :boolean, :params, class
+        # instances, and unions) — no hand-rolled approximation that can drift from runtime.
+        Array(klass).any? { |k| Axn::Validators::TypeValidator.value_matches?(value, klass: k) }
       end
 
       # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
