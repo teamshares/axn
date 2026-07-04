@@ -1946,6 +1946,79 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:status][:enum]).to match_array([1, 2, nil])
       expect(Array(schema[:properties][:status][:type])).not_to include("string")
     end
+
+    it "appends \"\" to a STRING-typed allow_blank enum (the empty string satisfies the String type, so runtime accepts it)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: String, inclusion: { in: %w[a b] }, allow_blank: true
+        def call; end
+      end
+      # runtime: "" passes (String type accepts "", inclusion is skipped for the blank value)
+      expect(klass.call(status: "")).to be_ok
+
+      schema = klass.input_schema
+      prop = schema[:properties][:status]
+      expect(prop[:enum]).to include("")
+      # already a string type — permits "" without any widening
+      expect(Array(prop[:type])).to include("string")
+    end
+  end
+
+  # Finding #75: allow_blank on the inclusion validator makes ActiveModel SKIP the inclusion check for a
+  # blank value, but a CO-DECLARED non-string type: validator still rejects "" (TypeValidator only skips
+  # nil for allow_blank, not other blank values). So "" must be added to the enum / the type widened ONLY
+  # when the empty string ACTUALLY satisfies the field's full contract — checked via the real validators,
+  # not inferred from allow_blank alone. Requiredness/type asserted against verified runtime below.
+  describe "a blank-tolerant inclusion field with a co-declared non-string type: does NOT reflect \"\" (Finding #75)" do
+    it "runtime: Integer type + inclusion + allow_blank REJECTS \"\" (TypeValidator: \"\" is not an Integer)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
+        def call; end
+      end
+
+      expect(klass.call(status: "")).not_to be_ok
+      expect(klass.call(status: 1)).to be_ok
+      expect(klass.call(status: nil)).to be_ok # allow_blank tolerates nil
+    end
+
+    it "does NOT append \"\" to the enum and does NOT widen the type to include \"string\" (matches runtime rejection)" do
+      klass = Class.new do
+        include Axn
+        expects :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
+      end
+      schema = klass.input_schema
+      prop = schema[:properties][:status]
+
+      expect(prop[:enum]).not_to include("")
+      expect(Array(prop[:type])).not_to include("string")
+      # the declared integer members remain (nil tolerated via allow_blank ⇒ nullable)
+      expect(prop[:enum]).to match_array([1, 2, nil])
+    end
+
+    it "does NOT append \"\" / widen the type on OUTPUT either (the same validators reject \"\" outbound)" do
+      build = lambda do |val|
+        Class.new do
+          include Axn
+          exposes :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
+          define_method(:call) { expose(status: val) }
+        end
+      end
+      # runtime: outbound rejects "" (not an Integer), accepts a member and nil
+      expect(build.call("").call).not_to be_ok
+      expect(build.call(1).call).to be_ok
+
+      klass = Class.new do
+        include Axn
+        exposes :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
+        def call = expose!(status: 1)
+      end
+      schema = described_class.build_output(klass.external_field_configs)
+      prop = schema[:properties][:status]
+
+      expect(prop[:enum]).not_to include("")
+      expect(Array(prop[:type])).not_to include("string")
+    end
   end
 
   # Finding #74: on OUTPUT, enum_for_inclusion adds "" for a blank-tolerant inclusion field (not gated

@@ -286,14 +286,15 @@ module Axn
       # if the declared set happens to list it (Axn's auto presence validator still fires without
       # `presence: false`/`allow_nil`) — so a literal `nil` member must be dropped from the enum to
       # match. When true, add `nil` only if it isn't already a member, to avoid a duplicate.
-      # `blank_tolerant` mirrors `allow_blank: true` specifically on the inclusion validator —
-      # ActiveModel skips the inclusion check entirely for a blank value, so e.g. `status: ""` is
-      # accepted at runtime even when "" isn't literally in the declared set. Represent that by also
-      # permitting the empty string, REGARDLESS of the declared members' type: runtime accepts `""`
-      # for a numeric/symbol/boolean enum too (`inclusion: { in: [1, 2] }, allow_blank: true` accepts
-      # `status: ""`), so the reflected schema must not reject it. `build_property` correspondingly
-      # widens the advertised `type` to include "string" so a type-then-enum validator won't reject
-      # the "". Added only when not already a member.
+      # `blank_tolerant` is the REAL answer to "does `""` satisfy this field's full contract?"
+      # (blank_string_accepted?) — NOT merely "is allow_blank set?". allow_blank makes ActiveModel skip
+      # the inclusion check for a blank value, so e.g. `inclusion: { in: [1, 2] }, allow_blank: true`
+      # accepts `status: ""` even though "" isn't a declared member — represent that by permitting the
+      # empty string regardless of the members' type. But a co-declared non-string `type:` (e.g.
+      # `type: Integer`) still REJECTS "" at runtime (TypeValidator only skips nil for allow_blank), so
+      # in that case blank_string_accepted? is false and "" is NOT added. `build_property`
+      # correspondingly widens the advertised `type` to include "string" on the same condition, keeping
+      # enum and type consistent. Added only when not already a member.
       def enum_for_inclusion(enum_values, nullable:, blank_tolerant:)
         members = normalize_schema_literal(enum_values)
         members = members.compact unless nullable
@@ -302,13 +303,16 @@ module Axn
         members
       end
 
-      # Whether `allow_blank: true` is set specifically on this field's inclusion validator — a
-      # narrower check than nil_allowed?/nullable (which reflects nil-tolerance across ALL of the
-      # field's validators combined). Only the inclusion validator's own allow_blank determines
-      # whether "" should join its declared enum (see enum_for_inclusion).
-      def blank_tolerant_inclusion?(config)
-        inclusion = config.validations[:inclusion]
-        inclusion.is_a?(Hash) && inclusion[:allow_blank] == true
+      # Whether the empty string actually satisfies this field's full contract (via the real validators).
+      # allow_blank on an inclusion validator makes ActiveModel SKIP the inclusion check for a blank value,
+      # but a co-declared non-string type: validator still rejects "" (TypeValidator only skips nil for
+      # allow_blank), so we must not infer "" is accepted from allow_blank alone — we check it. This is the
+      # same real validator used everywhere else here (satisfies_contract? → Subfields.collect_errors), so
+      # it stays consistent with runtime and is inherently direction-agnostic (the same validators run
+      # outbound). satisfies_contract?'s conservative guards apply: a model:/action-dependent validator is
+      # treated as not-satisfied (rescued → false), so "" is NOT added — safe.
+      def blank_string_accepted?(config)
+        satisfies_contract?(config.field, config.validations, { config.field => "" })
       end
 
       def build_property(config, for_output: false, subfield: false)
@@ -317,15 +321,16 @@ module Axn
 
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
-        # A blank-tolerant inclusion field accepts `""` at runtime regardless of its declared members'
-        # type (see enum_for_inclusion), so the advertised `type` must permit a string — else a
-        # consumer validating `type` before `enum` would reject the valid blank. Only widens a
-        # non-string scalar type (e.g. integer); a string/anyOf/mixed enum already permits "".
-        # NOT gated on for_output: the same validators run OUTBOUND, so an `exposes` blank-tolerant
-        # inclusion also accepts `""` (verified: `exposes :status, inclusion: { in: [1, 2] },
-        # allow_blank: true` with `status == ""` passes outbound validation). enum_for_inclusion adds
-        # `""` for output too, so the type must stay consistent with it in both directions.
-        blank_tolerant = blank_tolerant_inclusion?(config)
+        # A blank-tolerant inclusion field accepts `""` at runtime (allow_blank skips the inclusion check
+        # for a blank value) regardless of its declared members' type (see enum_for_inclusion), so the
+        # advertised `type` must then permit a string — else a consumer validating `type` before `enum`
+        # would reject the valid blank. We decide "does `""` pass?" with the REAL validators
+        # (blank_string_accepted?) rather than inferring from allow_blank alone: a co-declared non-string
+        # `type:` (e.g. `type: Integer`) still rejects `""` (TypeValidator only skips nil for allow_blank),
+        # so we must NOT widen/add there. Only widens a non-string scalar type (e.g. integer); a
+        # string/anyOf/mixed enum already permits "". NOT gated on for_output: the same validators run
+        # OUTBOUND, so the check is inherently consistent with enum_for_inclusion in both directions.
+        blank_tolerant = blank_string_accepted?(config)
         if type_info[:anyOf]
           prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
         elsif type_info[:type]
@@ -359,7 +364,7 @@ module Axn
           # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and any
           # mutable/non-JSON-native elements within it, e.g. String members or a Symbol member) must
           # be deep-copied and normalized rather than shared with the returned schema.
-          prop[:enum] = enum_for_inclusion(enum_values, nullable:, blank_tolerant: blank_tolerant_inclusion?(config)) if enum_values.is_a?(Array)
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:, blank_tolerant:) if enum_values.is_a?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)
