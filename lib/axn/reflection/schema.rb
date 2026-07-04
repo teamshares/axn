@@ -2,6 +2,7 @@
 
 require "date"
 require "time"
+require "active_support/core_ext/hash/indifferent_access"
 
 module Axn
   module Reflection
@@ -76,7 +77,7 @@ module Axn
             properties[config.field] = prop.compact
 
             if all_nested.present?
-              required << config.field.to_s if subfield_root_required?(config, all_nested, shallow_nested, prop)
+              required << config.field.to_s if subfield_root_required?(config, all_nested, shallow_nested)
             else
               required << config.field.to_s unless optional_for_schema?(config)
             end
@@ -88,27 +89,102 @@ module Axn
         schema
       end
 
+      # Sentinel: the root has no statically-inspectable default (none declared, or a Proc default we
+      # can't evaluate without an action instance). Distinct from a literal `nil`/`{}` default.
+      NO_DEFAULT = Object.new.freeze
+      private_constant :NO_DEFAULT
+
       # Whether a top-level root that has nested subfields must be listed in the input schema's
-      # `required`. prop[:required] holds only the SHALLOW required children (apply_nested_subfields!
-      # built it from shallow_nested). A deep descendant (dotted `on:` path, nested subfield, or dotted
-      # field name) is omitted from the schema SHAPE but still validated at runtime, so it's counted
-      # here too — else a root with only deep (or only optional) descendants would be wrongly relaxed.
-      def subfield_root_required?(config, all_nested, shallow_nested, prop)
-        deep_nested = all_nested - (shallow_nested || [])
-        shallow_has_required_child = prop[:required].is_a?(Array) && prop[:required].any?
+      # `required`. Decided by running Axn's REAL field validators against the value runtime would
+      # synthesize for the root when the client omits it — no hand-rolled type/blank/inclusion logic
+      # to drift from runtime. A deep descendant (dotted `on:` path, nested subfield, or dotted field
+      # name) is omitted from the schema SHAPE but still validated at runtime, so a required one keeps
+      # the root required (its shape isn't available to satisfy-check against the shallow value).
+      def subfield_root_required?(config, all_nested, shallow_nested)
+        deep_nested = all_nested - Array(shallow_nested)
         deep_has_required_child = deep_nested.any? { |c| !optional_for_schema?(c, subfield: true) }
-        parent_has_required_child = shallow_has_required_child || deep_has_required_child
-        # Omitting the root is safe only if something materializes it before subfield validation:
-        # a top-level default on the root, or a truthy default on any descendant subfield.
-        parent_materialized = default?(config) || all_nested.any? { |sc| !!sc.default }
-        # A required child is fine to omit-with-the-root only if the root's own literal Hash default
-        # would actually SATISFY that child at runtime (Axn applies the default, then validates) —
-        # not merely supply its key (see default_covers_required? for why). Coverage is checked
-        # against SHALLOW required children only; a deep required child (dotted path/nested subfield)
-        # can't be verified that way, so it keeps the root required.
-        covered = !parent_has_required_child ||
-                  (!deep_has_required_child && default_covers_required?(config.default, shallow_nested))
-        !(parent_materialized && covered)
+
+        # Omitting the root is safe only if runtime synthesizes a value for it (the root's own literal
+        # default, or a Hash of truthy shallow-subfield defaults — mirroring
+        # Executor#apply_defaults_for_subfields!) that SATISFIES the root's OWN contract. Running the
+        # real validator here means a blank `{}` default that trips the root's auto-presence, or a
+        # synthesized Hash that fails a non-Hash root `type:` (e.g. a Data.define parent), correctly
+        # keeps the root required — matching runtime, which would raise on the omitted call.
+        synthesized = synthesized_parent_value(config, shallow_nested)
+        return true unless synthesized_satisfies_parent?(config, synthesized)
+
+        # A required DEEP descendant can't be satisfy-checked against the shallow synthesized value, so
+        # stay conservative and keep the root required (preserves the dotted-path/nested-on: behavior).
+        return true if deep_has_required_child
+
+        # Finally every REQUIRED shallow child must be satisfied by the synthesized value (runtime
+        # applies the defaults, THEN validates every subfield) — else the omitted call fails and the
+        # root must stay required. A `model:` or action-dependent child validator can't be checked
+        # statically → satisfies_contract? treats it as unsatisfied → conservative (root required).
+        child_source = synthesized.with_indifferent_access
+        required_shallow = Array(shallow_nested).reject { |c| optional_for_schema?(c, subfield: true) }
+        return true unless required_shallow.all? { |c| satisfies_contract?(c.field, c.validations, child_source) }
+
+        false
+      end
+
+      # The value runtime synthesizes for the root when the client omits it. Own literal default takes
+      # precedence (Executor applies top-level defaults first); truthy shallow-subfield defaults are
+      # then merged in only for keys the own default doesn't already supply (and only when the own
+      # default is a Hash, matching Executor#apply_defaults_for_subfields!'s parent handling). Returns
+      # NO_DEFAULT when nothing materializes the root (no own default and no truthy shallow default),
+      # or when the only default is a Proc we can't evaluate here.
+      def synthesized_parent_value(config, shallow_nested)
+        own = literal_default(config)
+        child_hash = shallow_default_hash(shallow_nested)
+
+        if !own.equal?(NO_DEFAULT)
+          own.is_a?(Hash) ? child_hash.merge(own) : own
+        elsif child_hash.any?
+          child_hash
+        else
+          NO_DEFAULT
+        end
+      end
+
+      # The root's own literal default, or NO_DEFAULT when there's none / it's a Proc (action-dependent,
+      # so uninspectable here — conservative).
+      def literal_default(config)
+        return NO_DEFAULT unless config.respond_to?(:default)
+
+        value = config.default
+        return NO_DEFAULT if value.nil? || value.is_a?(Proc)
+
+        value
+      end
+
+      # {child.field => child.default} for shallow children with a truthy, non-Proc default — mirroring
+      # Executor#apply_defaults_for_subfields! (`next unless config.default`; a Proc is instance_exec'd
+      # at runtime, so we can't reproduce it statically → omit it → conservative).
+      def shallow_default_hash(shallow_nested)
+        Array(shallow_nested).each_with_object({}) do |child, hash|
+          hash[child.field] = child.default if child.default && !child.default.is_a?(Proc)
+        end
+      end
+
+      def synthesized_satisfies_parent?(config, synthesized)
+        return false if synthesized.equal?(NO_DEFAULT)
+
+        satisfies_contract?(config.field, config.validations, { config.field => synthesized })
+      end
+
+      # Reuse Axn's REAL subfield validator (no hand-rolled type/blank/inclusion approximation) to answer
+      # "does the value extracted for `field` from `source` satisfy `validations`?". A `model:` validator
+      # would trigger a DB lookup, so skip it → treated as not-satisfiable-from-a-default (conservative).
+      # An action-dependent validator (symbol-based inclusion, custom `validate:`) needs an action
+      # instance we don't have in reflection and raises → rescued → treated as unsatisfied (conservative).
+      # Keeps reflection static and side-effect-free.
+      def satisfies_contract?(field, validations, source)
+        return false if validations[:model]
+
+        Axn::Validation::Subfields.collect_errors(field:, validations:, source:).empty?
+      rescue StandardError
+        false
       end
 
       # The top-level field reader a subfield's on:-path ultimately roots at. `on:` may be a dotted path
@@ -212,14 +288,17 @@ module Axn
       # match. When true, add `nil` only if it isn't already a member, to avoid a duplicate.
       # `blank_tolerant` mirrors `allow_blank: true` specifically on the inclusion validator —
       # ActiveModel skips the inclusion check entirely for a blank value, so e.g. `status: ""` is
-      # accepted at runtime even though "" isn't literally in the declared set. Represent that by also
-      # permitting the empty string, but only for a string-valued enum (a blank numeric/symbol input
-      # isn't "") and only when it isn't already a member.
+      # accepted at runtime even when "" isn't literally in the declared set. Represent that by also
+      # permitting the empty string, REGARDLESS of the declared members' type: runtime accepts `""`
+      # for a numeric/symbol/boolean enum too (`inclusion: { in: [1, 2] }, allow_blank: true` accepts
+      # `status: ""`), so the reflected schema must not reject it. `build_property` correspondingly
+      # widens the advertised `type` to include "string" so a type-then-enum validator won't reject
+      # the "". Added only when not already a member.
       def enum_for_inclusion(enum_values, nullable:, blank_tolerant:)
         members = normalize_schema_literal(enum_values)
         members = members.compact unless nullable
         members += [nil] if nullable && !members.include?(nil)
-        members += [""] if blank_tolerant && members.any? { |m| m.is_a?(String) } && !members.include?("")
+        members += [""] if blank_tolerant && !members.include?("")
         members
       end
 
@@ -238,10 +317,18 @@ module Axn
 
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
+        # A blank-tolerant inclusion field accepts `""` at runtime regardless of its declared members'
+        # type (see enum_for_inclusion), so the advertised `type` must permit a string — else a
+        # consumer validating `type` before `enum` would reject the valid blank. Only widens a
+        # non-string scalar type (e.g. integer); a string/anyOf/mixed enum already permits "".
+        blank_tolerant = !for_output && blank_tolerant_inclusion?(config)
         if type_info[:anyOf]
           prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
         elsif type_info[:type]
-          prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
+          types = [type_info[:type]]
+          types << "string" if blank_tolerant && !types.include?("string")
+          types << "null" if nullable
+          prop[:type] = types.size == 1 ? types.first : types
           prop[:format] = type_info[:format] if type_info[:format]
         end
 
@@ -425,56 +512,6 @@ module Axn
       # `allow_blank:`. Output (`exposes`) requiredness is unaffected: see build_output.
       def default?(config)
         config.respond_to?(:default) && !config.default.nil?
-      end
-
-      # A parent's own literal Hash default "covers" its required children only when, for EVERY required
-      # shallow child, the defaulted value would actually satisfy that child at runtime (Axn applies the
-      # default, THEN validates). A present-but-nil / wrong-type / blank-under-presence value does NOT
-      # count — the parent stays required. We only vouch for children whose constraints are cheaply and
-      # fully checkable here (a scalar `type:` plus presence); a child with ANY other validator
-      # (inclusion/exclusion/format/numericality/length/model/of/shape/custom) could still reject a
-      # type-correct value, so we stay conservative and treat it as NOT covered (parent required) —
-      # accepting that this may over-require a parent whose valid default would actually pass (the safe
-      # direction: the client sends a field it could technically omit, rather than being told it's optional
-      # when the action rejects omission). A Proc default (or any non-Hash default) can't be inspected
-      # here, so it never counts as covering either.
-      def default_covers_required?(default_value, shallow_nested)
-        return false unless default_value.is_a?(Hash)
-
-        indiff = default_value.transform_keys(&:to_s)
-        required_children = Array(shallow_nested).reject { |c| optional_for_schema?(c, subfield: true) }
-        required_children.all? { |child| default_satisfies_child?(indiff, child) }
-      end
-
-      def default_satisfies_child?(indiff_default, child)
-        return false if child.validations[:model] # model subfield uses <field>_id semantics — don't vouch
-
-        key = child.field.to_s
-        return false unless indiff_default.key?(key)
-
-        value = indiff_default[key]
-
-        # Only vouch when the child's constraints are limited to a scalar type: (+ the implicit/explicit
-        # presence handled below). Any OTHER validator (inclusion/exclusion/format/numericality/length/
-        # of/shape/custom) could still reject a type-correct value, so stay conservative → not covered →
-        # parent stays required.
-        return false unless (child.validations.keys - %i[type presence]).empty?
-
-        # Presence (explicit `presence: true`, or Axn's implicit default) rejects ANY blank value
-        # (nil, "", "  ", false, [], {}) at runtime. Use blank?, matching ActiveModel presence exactly
-        # (not empty?, which would wrongly pass a whitespace-only String). The check is GATED on the
-        # child actually carrying a presence validator: Axn does NOT auto-add presence for a bare
-        # `type: :boolean` (so `false` is a valid, non-required-defeating value there) — gating keeps
-        # this in lockstep with runtime rather than over-rejecting a legitimately-blank boolean.
-        return false if child.validations[:presence] && value.blank?
-
-        type_opt = child.validations[:type]
-        return true unless type_opt # presence-only child: the non-blank value already satisfies it
-
-        klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-        # Delegate to the SAME matcher runtime uses (handles :uuid regex, :boolean, :params, class
-        # instances, and unions) — no hand-rolled approximation that can drift from runtime.
-        Array(klass).any? { |k| Axn::Validators::TypeValidator.value_matches?(value, klass: k) }
       end
 
       # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence

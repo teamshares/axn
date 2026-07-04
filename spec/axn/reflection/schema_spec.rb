@@ -699,10 +699,23 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "does not require a defaulted parent whose subfields are all optional (the default materializes it before subfield validation)" do
+    it "still requires a parent whose only literal default is a blank {} — runtime rejects it via the " \
+       "parent's own auto-presence (calling with {} raises \"Payload can't be blank\"), so the schema " \
+       "must not advertise it as optional (requiredness now decided by Axn's real validators)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: {}
+        expects :nick, on: :payload, optional: true, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "does not require a parent whose non-blank default satisfies its own contract and all children are optional" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { seeded: true }
         expects :nick, on: :payload, optional: true, type: String
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -825,13 +838,37 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "still requires the parent when the required child has a non-type validator (inclusion), even though the " \
-       "default's value would actually satisfy it at runtime — conservative by design, since verifying an " \
-       "arbitrary validator here is unsafe (documented over-strictness: this parent could technically be omitted)" do
+    it "does not require the parent when the required child's non-type validator (a LITERAL inclusion set) is " \
+       "actually satisfied by the default — the real validator (collect_errors) evaluates the inclusion, so the " \
+       "prior hand-rolled over-strictness is gone; runtime accepts calling with {} (child \"a\" is in the set)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "a" }
         expects :name, on: :payload, type: String, inclusion: { in: %w[a b] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "still requires the parent when the required child's LITERAL inclusion set does NOT contain the default value" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "z" }
+        expects :name, on: :payload, type: String, inclusion: { in: %w[a b] }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "still requires the parent when the required child's inclusion set is ACTION-DEPENDENT (a symbol method), " \
+       "since collect_errors needs an action instance we don't have in reflection → conservative (rescued)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, default: { name: "a" }
+        expects :name, on: :payload, type: String, inclusion: { in: :allowed_names }
+        def allowed_names = %w[a b]
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -899,6 +936,37 @@ RSpec.describe Axn::Reflection::Schema do
         include Axn
         expects :payload, type: Hash, default: { flag: false }
         expects :flag, on: :payload, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+    end
+  end
+
+  # Finding #71: a truthy subfield default makes runtime synthesize `provided_data[parent] = { child => default }`
+  # (a HASH). If the parent is typed NON-Hash, that synthesized Hash fails the parent's OWN type validator, so
+  # omitting the parent still raises at runtime — the schema must keep the parent required. Requiredness is now
+  # decided by running the parent's real validators against the synthesized value.
+  describe "a subfield default only relaxes a parent whose synthesized value satisfies the parent's OWN type (Finding #71)" do
+    some_data = Data.define(:name)
+
+    it "requires a NON-Hash-typed parent even when a subfield default would supply a value (the synthesized Hash " \
+       "fails the parent's own type validator at runtime: \"Payload is not a SomeData\")" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: some_data
+        expects :name, on: :payload, type: String, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "does NOT require the Hash-typed analog (the synthesized Hash satisfies a Hash parent, so it may be omitted)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :name, on: :payload, type: String, default: "x"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1030,10 +1098,22 @@ RSpec.describe Axn::Reflection::Schema do
       expect(dotted_schema[:properties][:foo][:properties] || {}).not_to have_key("bar.baz")
     end
 
-    it "does not require a defaulted parent with only an optional dotted child (default materializes it)" do
+    it "still requires a parent with only an optional dotted child when its literal default is a blank {} " \
+       "(runtime rejects the omitted call via the parent's auto-presence: \"Foo can't be blank\")" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash, default: {}
+        expects "bar.baz", on: :foo, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("foo")
+    end
+
+    it "does not require a parent with only an optional dotted child when its non-blank default satisfies its own contract" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash, default: { seeded: true }
         expects "bar.baz", on: :foo, type: String, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1098,11 +1178,23 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:foo][:properties]).not_to have_key(:leaf)
     end
 
-    it "does not require a defaulted top-level root whose only descendant is an optional dotted-parent " \
-       "subfield (default materializes the root)" do
+    it "still requires a defaulted top-level root whose only descendant is an optional dotted-parent subfield " \
+       "when its default is a blank {} (runtime rejects the omitted call: \"Address can't be blank\")" do
       klass = Class.new do
         include Axn
         expects :address, type: Hash, default: {}
+        expects :zip, on: "address.billing", optional: true, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("address")
+    end
+
+    it "does not require a defaulted top-level root whose only descendant is an optional dotted-parent " \
+       "subfield when its non-blank default satisfies its own contract" do
+      klass = Class.new do
+        include Axn
+        expects :address, type: Hash, default: { seeded: true }
         expects :zip, on: "address.billing", optional: true, type: String
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1275,10 +1367,11 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:payload][:required]).to include("name")
     end
 
-    it "does not mark a defaulted parent as required when its only subfield is optional" do
+    it "does not mark a defaulted parent as required when its only subfield is optional AND its default satisfies " \
+       "its own contract (a blank {} default would still be rejected by the parent's auto-presence at runtime)" do
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, default: {}
+        expects :payload, type: Hash, default: { seeded: true }
         expects :nick, on: :payload, type: String, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1628,6 +1721,61 @@ RSpec.describe Axn::Reflection::Schema do
       schema = klass.input_schema
 
       expect(schema[:properties][:status][:enum]).to eq(["open"])
+    end
+  end
+
+  # Finding #72: a blank-tolerant (allow_blank) inclusion field accepts "" at runtime even when its declared
+  # members are NON-string (numeric/symbol/boolean) — ActiveModel skips inclusion for a blank value. The old
+  # code only appended "" when the enum already had a String member, so a numeric enum wrongly rejected "".
+  describe "a blank-tolerant inclusion field with NON-string members reflects \"\" in its enum and a type that permits it (Finding #72)" do
+    it "runtime: a numeric allow_blank inclusion accepts \"\" and nil, rejects a non-member number" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [1, 2] }, allow_blank: true
+        def call; end
+      end
+
+      expect(klass.call(status: "")).to be_ok
+      expect(klass.call(status: nil)).to be_ok
+      expect(klass.call(status: 1)).to be_ok
+      expect(klass.call(status: 3)).not_to be_ok
+    end
+
+    it "appends \"\" (and nil) to a numeric enum, and widens the advertised type to permit the blank string" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [1, 2] }, allow_blank: true
+      end
+      schema = klass.input_schema
+      prop = schema[:properties][:status]
+
+      expect(prop[:enum]).to match_array([1, 2, "", nil])
+      # type must accommodate the integer members, the blank "", and nil (allow_blank ⇒ nullable).
+      expect(Array(prop[:type])).to include("integer", "string", "null")
+    end
+
+    it "still appends \"\" to a numeric allow_blank enum even without an explicit type: (type inferred from members)" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [10, 20] }, allow_blank: true
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:status][:enum]).to include("")
+      expect(Array(schema[:properties][:status][:type])).to include("integer", "string")
+    end
+
+    it "does not widen the type or append \"\" for a numeric allow_NIL (not allow_blank) inclusion (runtime rejects \"\")" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [1, 2] }, allow_nil: true
+        def call; end
+      end
+      schema = klass.input_schema
+
+      expect(klass.call(status: "")).not_to be_ok
+      expect(schema[:properties][:status][:enum]).to match_array([1, 2, nil])
+      expect(Array(schema[:properties][:status][:type])).not_to include("string")
     end
   end
 end
