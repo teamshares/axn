@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "date"
+require "time"
 
 module Axn
   module Reflection
@@ -176,14 +177,30 @@ module Axn
         schema
       end
 
-      # Recursively copy a reflected JSON-ish value so a consumer can't mutate the stored contract
-      # through the returned schema. Dups Hash/Array structure and mutable String leaves; shares
-      # immutable leaves (Integer/Float/Symbol/true/false/nil).
-      def deep_copy_value(value)
+      # Deep-copy a reflected literal (a default: value or an inclusion enum member) AND normalize any
+      # leaf whose JSON wire form differs from its Ruby form — Time/DateTime/Date → iso8601 String,
+      # Symbol → String, non-Integer/Float Numeric (BigDecimal/Rational) → Float — so the emitted
+      # `default`/`enum` matches the property's advertised JSON type (mirrors Values.serialize_value).
+      # Mutable String leaves are duped so a consumer mutating the returned schema can't reach the
+      # stored contract; immutable scalars are shared.
+      def normalize_schema_literal(value)
         case value
-        when Hash then value.transform_values { |v| deep_copy_value(v) }
-        when Array then value.map { |v| deep_copy_value(v) }
+        when Hash then value.transform_values { |v| normalize_schema_literal(v) }
+        when Array then value.map { |v| normalize_schema_literal(v) }
         when String then value.dup
+        when Symbol then value.to_s
+        when Time, DateTime, Date then value.iso8601
+        when Numeric
+          # Integer/Float are already JSON-native — leave them as-is. Any other Numeric
+          # (BigDecimal, Rational, …) has no JSON representation, so render it as a JSON number
+          # (Float); a non-real Numeric (Complex) can't become one, so fall back to its String form.
+          return value if value.is_a?(Integer) || value.is_a?(Float)
+
+          begin
+            Float(value)
+          rescue ArgumentError, TypeError, RangeError
+            value.to_s
+          end
         else value
         end
       end
@@ -193,11 +210,26 @@ module Axn
       # if the declared set happens to list it (Axn's auto presence validator still fires without
       # `presence: false`/`allow_nil`) — so a literal `nil` member must be dropped from the enum to
       # match. When true, add `nil` only if it isn't already a member, to avoid a duplicate.
-      def enum_for_inclusion(enum_values, nullable:)
-        members = deep_copy_value(enum_values)
-        return members.compact unless nullable
+      # `blank_tolerant` mirrors `allow_blank: true` specifically on the inclusion validator —
+      # ActiveModel skips the inclusion check entirely for a blank value, so e.g. `status: ""` is
+      # accepted at runtime even though "" isn't literally in the declared set. Represent that by also
+      # permitting the empty string, but only for a string-valued enum (a blank numeric/symbol input
+      # isn't "") and only when it isn't already a member.
+      def enum_for_inclusion(enum_values, nullable:, blank_tolerant:)
+        members = normalize_schema_literal(enum_values)
+        members = members.compact unless nullable
+        members += [nil] if nullable && !members.include?(nil)
+        members += [""] if blank_tolerant && members.any? { |m| m.is_a?(String) } && !members.include?("")
+        members
+      end
 
-        members.include?(nil) ? members : members + [nil]
+      # Whether `allow_blank: true` is set specifically on this field's inclusion validator — a
+      # narrower check than nil_allowed?/nullable (which reflects nil-tolerance across ALL of the
+      # field's validators combined). Only the inclusion validator's own allow_blank determines
+      # whether "" should join its declared enum (see enum_for_inclusion).
+      def blank_tolerant_inclusion?(config)
+        inclusion = config.validations[:inclusion]
+        inclusion.is_a?(Hash) && inclusion[:allow_blank] == true
       end
 
       def build_property(config, for_output: false, subfield: false)
@@ -214,26 +246,29 @@ module Axn
         end
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
-          # The default is a value stored directly on the contract's FieldConfig — deep-copy it so
-          # a caller mutating the returned schema (e.g. `schema[:properties][:opts][:default][:b] = 2`,
-          # or mutating a String default in place via `upcase!`) can't reach back into the runtime
-          # contract. Immutable leaves (Integer/Float/Symbol/true/false/nil) are shared, not copied.
+          # The default is a value stored directly on the contract's FieldConfig — normalize AND
+          # deep-copy it via normalize_schema_literal so (a) a caller mutating the returned schema
+          # (e.g. `schema[:properties][:opts][:default][:b] = 2`, or mutating a String default in
+          # place via `upcase!`) can't reach back into the runtime contract, and (b) a leaf whose JSON
+          # wire form differs from its Ruby form (Time/DateTime/Date, Symbol, BigDecimal/Rational) is
+          # rendered in that wire form, matching the property's advertised `type`/`format`. Immutable
+          # scalar leaves (Integer/Float/true/false/nil) are shared, not copied.
           #
           # For a SUBFIELD, only a truthy default is ever applied at runtime
           # (`Executor#apply_defaults_for_subfields!` does `next unless config.default`), so a
           # falsey `default: false` subfield must not advertise a `default:` the runtime never
           # applies. Top-level fields are unaffected — their defaults are applied by key-presence.
           emit_default = subfield ? !!config.default : true
-          prop[:default] = deep_copy_value(config.default) if emit_default
+          prop[:default] = normalize_schema_literal(config.default) if emit_default
         end
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
           # Same reasoning as default: above — `enum_values` here is the actual array stored in
-          # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and
-          # any mutable elements within it, e.g. String members) must be deep-copied rather than
-          # shared with the returned schema.
-          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.is_a?(Array)
+          # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and any
+          # mutable/non-JSON-native elements within it, e.g. String members or a Symbol member) must
+          # be deep-copied and normalized rather than shared with the returned schema.
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:, blank_tolerant: blank_tolerant_inclusion?(config)) if enum_values.is_a?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)

@@ -1462,4 +1462,117 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("role")
     end
   end
+
+  describe "normalizing default:/enum literals to their JSON wire form (Codex review)" do
+    it "normalizes a Symbol default to its String form, matching the String type" do
+      klass = Class.new do
+        include Axn
+        expects :x, type: Symbol, default: :draft
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:x]).to include(type: "string", default: "draft")
+    end
+
+    it "normalizes Symbol inclusion enum members to Strings, not raw symbols" do
+      klass = Class.new do
+        include Axn
+        expects :x, inclusion: { in: %i[draft open] }
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:x][:enum]).to eq(%w[draft open])
+    end
+
+    it "normalizes a Time default to its iso8601 String form, matching format: date-time" do
+      klass = Class.new do
+        include Axn
+        expects :x, type: Time, default: Time.utc(2026, 1, 2, 3, 4, 5)
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:x]).to include(format: "date-time")
+      expect(schema[:properties][:x][:default]).to eq(Time.utc(2026, 1, 2, 3, 4, 5).iso8601)
+    end
+
+    it "normalizes a non-Integer/Float Numeric (BigDecimal) default to a JSON number (Float)" do
+      require "bigdecimal"
+      klass = Class.new do
+        include Axn
+        expects :x, type: Numeric, default: BigDecimal("3.14")
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:x][:default]).to be_a(Float).and eq(3.14)
+    end
+
+    it "still deep-copies a String/Hash/Array default (mutation-safety regression guard)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: "abc"
+        expects :opts, type: Hash, default: { a: 1 }
+      end
+      schema = klass.input_schema
+      schema[:properties][:name][:default].upcase!
+      schema[:properties][:opts][:default][:b] = 2
+
+      fresh_schema = klass.input_schema
+      expect(fresh_schema[:properties][:name][:default]).to eq("abc")
+      expect(fresh_schema[:properties][:opts][:default]).to eq(a: 1)
+    end
+  end
+
+  describe "allow_blank inclusion fields reflect the empty string in their enum (Codex review)" do
+    it "runtime: allow_blank accepts blank AND nil, rejects a non-member string" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: ["open"] }, allow_blank: true
+      end
+
+      expect(klass.call(status: "")).to be_ok
+      expect(klass.call(status: nil)).to be_ok
+      expect(klass.call(status: "x")).not_to be_ok
+    end
+
+    it "includes both \"\" and nil (and the declared member) in the enum for an allow_blank inclusion field" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: ["open"] }, allow_blank: true
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:status][:enum]).to match_array(["open", "", nil])
+    end
+
+    it "runtime: allow_nil (not allow_blank) rejects blank but accepts nil" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: ["open"] }, allow_nil: true
+      end
+
+      expect(klass.call(status: "")).not_to be_ok
+      expect(klass.call(status: nil)).to be_ok
+      expect(klass.call(status: "x")).not_to be_ok
+    end
+
+    it "does not add \"\" to the enum for an allow_nil (not allow_blank) inclusion field, mirroring runtime" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: ["open"] }, allow_nil: true
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:status][:enum]).to eq(["open", nil])
+    end
+
+    it "does not add \"\" to the enum when neither allow_blank nor allow_nil is set (Bug #59, unchanged)" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: ["open"] }
+      end
+      schema = klass.input_schema
+
+      expect(schema[:properties][:status][:enum]).to eq(["open"])
+    end
+  end
 end
