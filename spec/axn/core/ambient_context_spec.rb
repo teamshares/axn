@@ -171,6 +171,42 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     end.to raise_error(ArgumentError, /dotted subfield name.*ambient_context|ambient_context.*dotted subfield name/)
   end
 
+  it "rejects a subfield nested UNDER an ambient_context subfield (deep ambient nesting is deferred)" do
+    expect do
+      Class.new do
+        include Axn
+        expects :request, on: :ambient_context
+        expects :ip, on: :request
+      end
+    end.to raise_error(ArgumentError, /nested under :ambient_context|deep ambient nesting/)
+  end
+
+  it "rejects a subfield nested two levels under an ambient_context subfield" do
+    expect do
+      Class.new do
+        include Axn
+        expects :request, on: :ambient_context
+        expects :headers, on: :request
+        expects :auth, on: :headers
+      end
+    end.to raise_error(ArgumentError, /nested under :ambient_context|deep ambient nesting/)
+  end
+
+  it "does NOT reject a non-ambient nested subfield chain, and resolves it at runtime" do
+    klass = Class.new do
+      include Axn
+      expects :addr, type: Hash
+      expects :zip, on: :addr, type: String
+      def call = nil
+    end
+
+    ok = klass.call(addr: { zip: "12345" })
+    expect(ok).to be_ok
+
+    bad = klass.call(addr: { zip: 5 })
+    expect(bad).not_to be_ok
+  end
+
   it "still allows a dotted subfield name on a NON-ambient parent, and resolves it via deep extraction" do
     klass = Class.new do
       include Axn
