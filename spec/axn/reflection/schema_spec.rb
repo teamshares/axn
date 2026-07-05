@@ -46,6 +46,47 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required]).to include("status")
   end
 
+  # Finding #77: EVERY exposed field is always serialized — Values.serialize_exposed iterates every
+  # outbound config and unconditionally emits its property key (value nil if unset). JSON Schema
+  # `required` means property PRESENCE, not non-nullness, so every serialized key must be listed in
+  # output_schema[:required]; nullability is expressed by the property type (which includes "null").
+  describe "all exposed fields are required in output_schema (serialize_exposed always emits every key) (Finding #77)" do
+    it "marks a nullable (allow_nil) exposure as required, with its type carrying \"null\"" do
+      klass = Class.new do
+        include Axn
+        exposes :a, type: String
+        exposes :b, type: String, allow_nil: true
+        def call = expose!(a: "hi")
+      end
+      schema = described_class.build_output(klass.external_field_configs)
+
+      expect(schema[:required]).to include("a", "b")
+      expect(Array(schema[:properties][:b][:type])).to include("string", "null")
+    end
+
+    it "marks an optional: true exposure as required (serialize_exposed still emits the key)" do
+      klass = Class.new do
+        include Axn
+        exposes :c, type: String, optional: true
+        def call = nil
+      end
+      schema = described_class.build_output(klass.external_field_configs)
+      expect(schema[:required]).to include("c")
+    end
+
+    it "runtime: serialize_exposed emits every exposed key, including an unset nullable one (nil)" do
+      klass = Class.new do
+        include Axn
+        exposes :a, type: String
+        exposes :b, type: String, allow_nil: true
+        def call = expose!(a: "hi")
+      end
+      serialized = Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)
+      expect(serialized.keys).to contain_exactly("a", "b")
+      expect(serialized["b"]).to be_nil
+    end
+  end
+
   it "still keeps a defaulted expectation OUT of input_schema[:required] (input defaults make the field client-omittable)" do
     klass = Class.new do
       include Axn
@@ -238,6 +279,94 @@ RSpec.describe Axn::Reflection::Schema do
 
     expect(schema[:properties][:channel]).to include(type: "string")
     expect(schema[:properties][:channel]).not_to have_key(:enum)
+  end
+
+  # Finding #76: schema reflection must NEVER execute user code, hit external services, or depend on an
+  # action instance. Requiredness/blank-enum decisions run Axn's REAL validators — but only for a
+  # provably side-effect-free allowlist of pure built-in validators. A custom `validate:` proc, a
+  # `model:` DB lookup, or a dynamic (Symbol/Proc) inclusion set is NOT executed; those fall back to
+  # conservative handling (field stays required / no blank member added) without running anything.
+  describe "reflection is side-effect-free: only pure built-in validators are actually evaluated (Finding #76)" do
+    it "does NOT execute a custom validate: proc while building input_schema (even with a valid default)" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        expects :x, validate: ->(_v) { ran = true }, default: "hi"
+      end
+
+      schema = nil
+      expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      expect(ran).to be(false)
+      # Conservative: an uninspectable custom validator keeps the field required despite the default.
+      expect(schema[:required]).to include("x")
+    end
+
+    it "does NOT execute a custom validate: proc while building output_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        exposes :x, validate: ->(_v) { ran = true }
+        def call = expose!(x: "hi")
+      end
+
+      expect { described_class.build_output(klass.external_field_configs) }.not_to raise_error
+      expect(ran).to be(false)
+    end
+
+    it "does NOT execute a Proc inclusion set while building input_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        set_proc = lambda do |_r|
+          ran = true
+          %w[a b]
+        end
+        expects :y, inclusion: { in: set_proc }, default: "a"
+      end
+
+      schema = nil
+      expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      expect(ran).to be(false)
+      # No enum is emitted for a dynamic (Proc) set, and the field stays conservatively required.
+      expect(schema[:properties][:y]).not_to have_key(:enum)
+      expect(schema[:required]).to include("y")
+    end
+
+    it "does NOT invoke a dynamic (Symbol) inclusion method while building input_schema" do
+      klass = Class.new do
+        include Axn
+        expects :z, inclusion: { in: :allowed }, default: "a"
+        def allowed = raise("dynamic inclusion method must not run during reflection")
+      end
+
+      expect { described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+    end
+
+    it "does NOT evaluate a Proc numericality bound while building input_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        bound_proc = lambda do |_r|
+          ran = true
+          0
+        end
+        expects :n, numericality: { greater_than: bound_proc }, default: 5
+      end
+
+      expect { described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      expect(ran).to be(false)
+    end
+
+    it "STILL runs the real validators for a field with only pure validators (prior behavior preserved)" do
+      # A literal-inclusion field whose default is a valid member is client-omittable (default satisfies
+      # the contract) — this real-validation treatment must be preserved for the pure allowlist.
+      klass = Class.new do
+        include Axn
+        expects :s, type: String, inclusion: { in: %w[open closed] }, default: "open"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("s")
+    end
   end
 
   it "does not leak a Proc default into the schema" do

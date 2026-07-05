@@ -173,14 +173,58 @@ module Axn
         satisfies_contract?(config.field, config.validations, { config.field => synthesized })
       end
 
+      # Validator keys whose evaluation is pure (no user code, no action instance, no I/O), so they're
+      # safe to actually run during schema reflection. Anything else — a custom `validate:`, a `model:`
+      # lookup, `acceptance`/`confirmation`, a `uniqueness` DB check, an `if:`/`unless:`/`message:` proc,
+      # or `of:`/`shape:` nested contracts (which may themselves wrap user validators) — must NOT be
+      # executed while merely reflecting a schema; those fall back to conservative handling. Confirmed
+      # against KNOWN_VALIDATION_KEYS in Axn::Core::Contract and the validators under
+      # lib/axn/core/validation/validators/ (`type` is Axn's own pure type check; presence/absence/
+      # inclusion/exclusion/length/numericality/format/comparison are ActiveModel built-ins).
+      REFLECTION_SAFE_VALIDATION_KEYS = %i[type presence absence inclusion exclusion length numericality format comparison].freeze
+
+      # Even an allowlisted built-in runs USER CODE when one of its options is a dynamic (Symbol/Proc)
+      # value that ActiveModel resolves against the record: an inclusion/exclusion set (`in:`/`within:`),
+      # or a numericality/comparison bound / format pattern (`greater_than:`, `with:`, …). A Proc option
+      # is actually CALLED (side effect!); a Symbol option is a method the validator would `send` — so a
+      # field using any of these dynamically must fall back to conservative handling, never real
+      # validation. (`type`'s `{ klass: :boolean }` Symbol is a static type token, not a dynamic option —
+      # so type is not scanned.)
+      DYNAMIC_OPTION_VALIDATION_KEYS = %i[inclusion exclusion numericality format comparison].freeze
+
+      # True iff every validation on the field is provably side-effect-free — an allowlisted pure
+      # built-in with no dynamic (Symbol/Proc) parts — so it's safe to actually evaluate during
+      # reflection. Any other validator (or a dynamic option within an allowlisted one) returns false so
+      # the caller stays conservative WITHOUT executing anything.
+      def reflection_safe_validations?(validations)
+        return false unless (validations.keys - REFLECTION_SAFE_VALIDATION_KEYS).empty?
+
+        DYNAMIC_OPTION_VALIDATION_KEYS.none? { |key| dynamic_validation_option?(key, validations[key]) }
+      end
+
+      # Whether an allowlisted validator's options carry a dynamic (Symbol/Proc) part that ActiveModel
+      # resolves against the record at validation time (running user code / hitting the action instance).
+      def dynamic_validation_option?(key, opt)
+        return false unless opt
+
+        if %i[inclusion exclusion].include?(key)
+          set = opt.is_a?(Hash) ? (opt[:in] || opt[:within]) : opt
+          set.is_a?(Symbol) || set.is_a?(Proc)
+        else
+          # numericality / comparison / format: a Symbol/Proc bound (greater_than:, with:, …) is dynamic.
+          opt.is_a?(Hash) && opt.values.any? { |v| v.is_a?(Symbol) || v.is_a?(Proc) }
+        end
+      end
+
       # Reuse Axn's REAL subfield validator (no hand-rolled type/blank/inclusion approximation) to answer
-      # "does the value extracted for `field` from `source` satisfy `validations`?". A `model:` validator
-      # would trigger a DB lookup, so skip it → treated as not-satisfiable-from-a-default (conservative).
-      # An action-dependent validator (symbol-based inclusion, custom `validate:`) needs an action
-      # instance we don't have in reflection and raises → rescued → treated as unsatisfied (conservative).
-      # Keeps reflection static and side-effect-free.
+      # "does the value extracted for `field` from `source` satisfy `validations`?". Only run it when the
+      # field's validations are provably side-effect-free (reflection_safe_validations?) — otherwise a
+      # custom `validate:`/dynamic inclusion Proc would EXECUTE, a `model:` validator would hit the DB,
+      # etc. Anything not on the pure allowlist is treated as NOT satisfiable (conservative), so the
+      # field/behavior stays safe (required / no blank enum member) WITHOUT executing user code, touching
+      # external services, or depending on an action instance. The rescue is a backstop only.
       def satisfies_contract?(field, validations, source)
-        return false if validations[:model]
+        return false unless reflection_safe_validations?(validations)
 
         Axn::Validation::Subfields.collect_errors(field:, validations:, source:).empty?
       rescue StandardError
@@ -238,6 +282,11 @@ module Axn
         prop[:required] = nil if prop[:required].empty?
       end
 
+      # Every exposed field is ALWAYS present in the serialized output: Values.serialize_exposed iterates
+      # every outbound config and unconditionally emits its property key (value nil when unset). JSON
+      # Schema `required` means property PRESENCE, not non-nullness — so every exposed field must be
+      # listed in `required`, even a nullable/optional one. Nullability is already carried by the
+      # property `type` (nil_allowed? → "null"), so nothing is lost by requiring the key.
       def build_output(field_configs)
         properties = {}
         required = []
@@ -245,7 +294,7 @@ module Axn
         field_configs.each do |config|
           prop = build_property(config, for_output: true)
           properties[config.field] = prop.compact
-          required << config.field.to_s unless optional_for_schema?(config, for_output: true)
+          required << config.field.to_s
         end
 
         schema = { type: "object", properties: }
