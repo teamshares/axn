@@ -121,7 +121,11 @@ module Axn
         # applies the defaults, THEN validates every subfield) — else the omitted call fails and the
         # root must stay required. A `model:` or action-dependent child validator can't be checked
         # statically → satisfies_contract? treats it as unsatisfied → conservative (root required).
-        child_source = synthesized.with_indifferent_access
+        # A Hash synthesized value is coerced for indifferent (string/symbol) key access; a non-Hash
+        # synthesized value (e.g. a Data.define/object parent default whose subfields are read via object
+        # readers) is passed straight through — FieldResolvers::Extract reads its attributes via public
+        # readers, and with_indifferent_access would raise NoMethodError on it.
+        child_source = synthesized.is_a?(Hash) ? synthesized.with_indifferent_access : synthesized
         required_shallow = Array(shallow_nested).reject { |c| optional_for_schema?(c, subfield: true) }
         return true unless required_shallow.all? { |c| satisfies_contract?(c.field, c.validations, child_source) }
 
@@ -183,15 +187,6 @@ module Axn
       # inclusion/exclusion/length/numericality/format/comparison are ActiveModel built-ins).
       REFLECTION_SAFE_VALIDATION_KEYS = %i[type presence absence inclusion exclusion length numericality format comparison].freeze
 
-      # Even an allowlisted built-in runs USER CODE when one of its options is a dynamic (Symbol/Proc)
-      # value that ActiveModel resolves against the record: an inclusion/exclusion set (`in:`/`within:`),
-      # or a numericality/comparison bound / format pattern (`greater_than:`, `with:`, …). A Proc option
-      # is actually CALLED (side effect!); a Symbol option is a method the validator would `send` — so a
-      # field using any of these dynamically must fall back to conservative handling, never real
-      # validation. (`type`'s `{ klass: :boolean }` Symbol is a static type token, not a dynamic option —
-      # so type is not scanned.)
-      DYNAMIC_OPTION_VALIDATION_KEYS = %i[inclusion exclusion numericality format comparison].freeze
-
       # True iff every validation on the field is provably side-effect-free — an allowlisted pure
       # built-in with no dynamic (Symbol/Proc) parts — so it's safe to actually evaluate during
       # reflection. Any other validator (or a dynamic option within an allowlisted one) returns false so
@@ -199,21 +194,40 @@ module Axn
       def reflection_safe_validations?(validations)
         return false unless (validations.keys - REFLECTION_SAFE_VALIDATION_KEYS).empty?
 
-        DYNAMIC_OPTION_VALIDATION_KEYS.none? { |key| dynamic_validation_option?(key, validations[key]) }
+        validations.none? { |key, opt| validator_has_dynamic_option?(key, opt) }
       end
 
-      # Whether an allowlisted validator's options carry a dynamic (Symbol/Proc) part that ActiveModel
-      # resolves against the record at validation time (running user code / hitting the action instance).
-      def dynamic_validation_option?(key, opt)
-        return false unless opt
+      # An allowlisted built-in still runs USER CODE when any of its options resolves against the record —
+      # a Proc option is CALLED (side effect!), a Symbol option is a method the validator would `send`. So
+      # scan EVERY validator's option hash for a Proc/Symbol value, with two static exemptions:
+      #   * a `type:` validator's type TOKEN — its `:klass` (String/:boolean/:uuid/[String, Integer]), or a
+      #     bare `type: :boolean`/`type: String` — is a static type descriptor, never executed; and
+      #   * an inclusion/exclusion enum COLLECTION — `in: [:a, :b]` is a static member list (an enum of
+      #     Symbols), NOT a dynamic set; only `in:`/`within:` being ITSELF a Symbol/Proc is dynamic.
+      # This catches numericality/comparison bounds (`greater_than: :min`), format `with:`, a dynamic
+      # inclusion set (`in: :method`), and `if:`/`unless:` (incl. an Array of condition Symbols/Procs) on
+      # ANY validator — including `type:`'s own `if:`/`unless:` — so no conditional/user validator ever
+      # runs while merely reflecting a schema.
+      def validator_has_dynamic_option?(key, opt)
+        return false if key == :type && !opt.is_a?(Hash) # bare static type token (:boolean/:uuid/Class)
+        return opt.is_a?(Symbol) || opt.is_a?(Proc) unless opt.is_a?(Hash) # bare dynamic set (e.g. inclusion: :m)
 
-        if %i[inclusion exclusion].include?(key)
-          set = opt.is_a?(Hash) ? (opt[:in] || opt[:within]) : opt
-          set.is_a?(Symbol) || set.is_a?(Proc)
-        else
-          # numericality / comparison / format: a Symbol/Proc bound (greater_than:, with:, …) is dynamic.
-          opt.is_a?(Hash) && opt.values.any? { |v| v.is_a?(Symbol) || v.is_a?(Proc) }
+        opt.any? do |opt_key, opt_val|
+          next false if key == :type && opt_key == :klass # static type token, not executed
+          # inclusion/exclusion enum set: an Array of members ([:a, :b]) is static; only the set ITSELF
+          # being a Symbol/Proc is dynamic — do NOT recurse into the member array.
+          next opt_val.is_a?(Symbol) || opt_val.is_a?(Proc) if %i[in within].include?(opt_key)
+
+          dynamic_option_value?(opt_val)
         end
+      end
+
+      # A validator option value runs user code if it's a Proc (called) or Symbol (a method the validator
+      # `send`s), or an Array containing one — e.g. `if: [:cond_a, :cond_b]`. (NOT used for inclusion/
+      # exclusion `in:`/`within:` sets, whose Array members are static enum values — see caller.)
+      def dynamic_option_value?(value)
+        value.is_a?(Proc) || value.is_a?(Symbol) ||
+          (value.is_a?(Array) && value.any? { |v| dynamic_option_value?(v) })
       end
 
       # Reuse Axn's REAL subfield validator (no hand-rolled type/blank/inclusion approximation) to answer

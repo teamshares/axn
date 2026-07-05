@@ -367,6 +367,84 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
       expect(schema[:required] || []).not_to include("s")
     end
+
+    # Finding #79: a conditional `type:` validator carries an `if:`/`unless:` Proc/Symbol that
+    # ActiveModel resolves against the record. Only `type:`'s static `:klass` token is exempt from the
+    # dynamic-option scan — an `if:`/`unless:` (or any dynamic option) on ANY validator, including
+    # `type:`, must fall back to conservative handling so the user code never runs during reflection.
+    it "does NOT execute a type: validator's if: Proc while building input_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        expects :token, type: { klass: String, if: ->(_r) { ran = true } }, default: "hi"
+      end
+
+      schema = nil
+      expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      expect(ran).to be(false)
+      # Conservative: an if:-gated (uninspectable) validator keeps the field required despite the default.
+      expect(schema[:required]).to include("token")
+    end
+
+    it "does NOT execute a type: validator's if: Proc while building output_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        exposes :token, type: { klass: String, if: ->(_r) { ran = true } }
+        def call = expose!(token: "hi")
+      end
+
+      expect { described_class.build_output(klass.external_field_configs) }.not_to raise_error
+      expect(ran).to be(false)
+    end
+
+    it "does NOT execute an if: Proc on an otherwise-pure inclusion validator while building input_schema" do
+      ran = false
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: %w[open closed], if: ->(_r) { ran = true } }, default: "open"
+      end
+
+      schema = nil
+      expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      expect(ran).to be(false)
+      # Conservative: the if:-gated inclusion is not evaluated, so the field stays required.
+      expect(schema[:required]).to include("status")
+    end
+
+    it "does NOT evaluate a Symbol numericality bound while building input_schema" do
+      klass = Class.new do
+        include Axn
+        expects :n, numericality: { greater_than: :min }, default: 5
+        def min = raise("dynamic numericality bound must not run during reflection")
+      end
+
+      expect { described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+    end
+
+    it "keeps a static type: token (type: :boolean) reflection-safe (prior behavior preserved)" do
+      # A bare Symbol type token is a static descriptor, NOT a dynamic option — so the real validators
+      # still run and a boolean field with no default/presence stays required (TypeValidator rejects nil).
+      klass = Class.new do
+        include Axn
+        expects :enabled, type: :boolean
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("enabled")
+      expect(schema[:properties][:enabled][:type]).to eq("boolean")
+    end
+
+    it "keeps a static Symbol-array inclusion (in: [:a, :b]) reflection-safe with an emitted enum" do
+      # A static enum of Symbols is NOT a dynamic set — the real validators run, the enum is emitted, and
+      # a default that's a valid member makes the field client-omittable (prior behavior preserved).
+      klass = Class.new do
+        include Axn
+        expects :mode, inclusion: { in: %i[a b] }, default: :a
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:mode][:enum]).to eq(%w[a b])
+      expect(schema[:required] || []).not_to include("mode")
+    end
   end
 
   it "does not leak a Proc default into the schema" do
@@ -1269,6 +1347,46 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:required] || []).not_to include("payload")
+    end
+  end
+
+  # Finding #80: a parent can carry a NON-Hash default that satisfies its own contract while its
+  # subfields are read via object readers (e.g. `type: SomeData, default: SomeData.new(...)` +
+  # `on: :payload`). Runtime validates the omitted parent by reading `payload.name` off the object, so
+  # the synthesized value passed to the shallow-child satisfy-check must NOT be coerced with
+  # with_indifferent_access (which raises NoMethodError on a Data/object). Schema generation must not
+  # crash, and requiredness must match runtime (payload omittable — its default supplies name).
+  describe "an object-backed (non-Hash) subfield parent default does not crash schema generation (Finding #80)" do
+    payload_data = Data.define(:name)
+
+    it "builds input_schema without raising and leaves the object-defaulted parent omittable" do
+      default_payload = payload_data.new(name: "x")
+      klass = Class.new do
+        include Axn
+        expects :payload, type: payload_data, default: default_payload
+        expects :name, on: :payload, type: String
+      end
+
+      schema = nil
+      expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
+      # Runtime `call({})` succeeds (default object supplies payload; name extracted via reader), so the
+      # parent must NOT be required — matching the Hash-parent analog.
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "matches runtime: omitting the object-defaulted parent validates and extracts the subfield" do
+      default_payload = payload_data.new(name: "x")
+      klass = Class.new do
+        include Axn
+        expects :payload, type: payload_data, default: default_payload
+        expects :name, on: :payload, type: String
+        exposes :extracted_name
+        def call = expose(:extracted_name, name)
+      end
+
+      result = klass.call
+      expect(result).to be_ok
+      expect(result.extracted_name).to eq("x")
     end
   end
 
