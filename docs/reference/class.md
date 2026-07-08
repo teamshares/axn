@@ -626,3 +626,35 @@ end
 
 Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 
+## Contract reflection (`.input_schema` / `.output_schema`)
+
+`.input_schema` and `.output_schema` return [JSON Schema](https://json-schema.org/) Hashes derived from your `expects`/`exposes` declarations — the lingua franca that OpenAPI, MCP `inputSchema`, and LLM function-calling `parameters` all speak. Paired with `Axn::Reflection::Values.serialize_exposed(result, configs)` (which renders a result to a JSON-safe Hash), this is the groundwork for exposing any Axn as a callable tool. Both methods are read-only and **off the execution path** — reflecting an Axn never instantiates it, runs its validators, or triggers any side effect.
+
+```ruby
+class FindWidget
+  include Axn
+  expects :id, type: :uuid
+  expects :verbose, type: :boolean, default: false
+  exposes :widget, type: Hash
+end
+
+FindWidget.input_schema
+#=> { type: "object",
+#     properties: { id: { type: "string", format: "uuid" },
+#                   verbose: { type: "boolean", default: false } },
+#     required: ["id"] }   # `verbose` is optional — it has a default
+```
+
+A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present, and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:` / `presence: false`). Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
+
+::: warning Requiredness is advisory, not a runtime guarantee
+To keep reflection cheap and side-effect-free, the schema is built from your **declarations**, not by test-running your validators against each default. In two narrow cases the reflected `required` can therefore disagree with what `Axn.call` actually accepts — always because the contract itself is self-contradictory:
+
+- a **non-blank but invalid default** (e.g. `expects :name, type: String, default: 123`) is reflected as optional, but omitting it still fails validation at runtime;
+- a **required nested subfield under an optional parent** (e.g. an `allow_nil:` parent) doesn't force the parent required, so the parent may reflect as optional though a real call needs it.
+
+These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Fix the contract — give the default a valid value, or drop the parent's `allow_nil:` — and the schema and runtime agree.
+:::
+
+Only single-level subfields are represented; deeper nesting (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validates at runtime but is omitted from the schema for now.
+
