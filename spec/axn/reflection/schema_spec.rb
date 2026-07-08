@@ -635,6 +635,22 @@ RSpec.describe Axn::Reflection::Schema do
     expect(described_class.build_input(strict.internal_field_configs)[:properties][:id]).to include(format: "uuid")
   end
 
+  it "drops format: uuid from a blank-tolerant uuid member inside an anyOf union, but keeps it when strict" do
+    blank_ok = Class.new do
+      include Axn
+      expects :id, type: [:uuid, Integer], allow_blank: true
+    end
+    strict = Class.new do
+      include Axn
+      expects :id, type: [:uuid, Integer]
+    end
+    blank_members = described_class.build_input(blank_ok.internal_field_configs)[:properties][:id][:anyOf]
+    strict_members = described_class.build_input(strict.internal_field_configs)[:properties][:id][:anyOf]
+    expect(blank_members).to include({ type: "string" })
+    expect(blank_members).not_to include(hash_including(format: "uuid"))
+    expect(strict_members).to include({ type: "string", format: "uuid" })
+  end
+
   it "nests subfields under a string on: parent" do
     klass = Class.new do
       include Axn

@@ -227,7 +227,9 @@ module Axn
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
         if type_info[:anyOf]
-          prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
+          members = type_info[:anyOf]
+          members = drop_uuid_format(members) if type_allows_blank?(config)
+          prop[:anyOf] = nullable ? members + [{ type: "null" }] : members
         elsif type_info[:type]
           prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
           # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
@@ -441,6 +443,12 @@ module Axn
       def type_allows_blank?(config)
         type = config.validations[:type]
         type.is_a?(Hash) && type[:allow_blank] == true
+      end
+
+      # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a
+      # strict `format: uuid` validator would reject (mirrors the scalar-type relaxation above).
+      def drop_uuid_format(members)
+        members.map { |m| m[:format] == "uuid" ? m.except(:format) : m }
       end
     end
   end
