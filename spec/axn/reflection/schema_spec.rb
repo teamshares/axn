@@ -651,6 +651,21 @@ RSpec.describe Axn::Reflection::Schema do
     expect(strict_members).to include({ type: "string", format: "uuid" })
   end
 
+  it "leaves an unknown exposed class untyped in output_schema (its serialized shape isn't statically knowable)" do
+    blob = Class.new do
+      def self.name = "Blob"
+      def to_s = "blob"
+    end
+    stub_const("Blob", blob)
+    klass = Class.new do
+      include Axn
+      exposes :thing, type: Blob
+      def call = expose(thing: Blob.new)
+    end
+    prop = described_class.build_output(klass.external_field_configs)[:properties][:thing]
+    expect(prop).not_to have_key(:type)
+  end
+
   it "nests subfields under a string on: parent" do
     klass = Class.new do
       include Axn

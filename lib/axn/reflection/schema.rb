@@ -346,7 +346,12 @@ module Axn
         # object/string fallback.
         return { type: "number" } if klass.is_a?(Class) && klass < Numeric
 
-        return { type: "object" } if for_output
+        # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
+        # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
+        # UNTYPED rather than assert `object` the serialized value might contradict. On input, keep a
+        # permissive `string` hint (a JSON client can't send a Ruby object anyway — see the reflection
+        # docs on coercing Ruby-object input types).
+        return {} if for_output
 
         { type: "string" }
       end
