@@ -95,13 +95,17 @@ module Axn
         Array(klass).any? { |k| [Hash, :params].include?(k) }
       end
 
-      # A field is absent from `required` when a declared signal makes it omittable. For a parent with
-      # subfields, a truthy shallow-subfield default also materializes it (runtime synthesizes the parent
-      # from applied subfield defaults).
+      # A field is absent from `required` when a declared signal makes it omittable. A parent with no
+      # usable default of its own is still omittable if runtime can synthesize a COMPLETE parent from its
+      # subfield defaults: at least one shallow subfield supplies a value (so the synthesized parent isn't
+      # blank) AND every shallow subfield is itself optional or defaulted — otherwise omitting the parent
+      # leaves a required sibling unsatisfied and the call fails.
       def field_optional?(config, shallow_subfields)
         return true if optional_for_schema?(config)
 
-        Array(shallow_subfields).any? { |c| c.default && !c.default.is_a?(Proc) }
+        shallow = Array(shallow_subfields)
+        shallow.any? { |c| usable_default?(c, subfield: true) } &&
+          shallow.all? { |c| optional_for_schema?(c, subfield: true) }
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
