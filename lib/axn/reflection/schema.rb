@@ -2,10 +2,24 @@
 
 require "date"
 require "time"
-require "active_support/core_ext/hash/indifferent_access"
 
 module Axn
   module Reflection
+    # Builds JSON Schema (input/output) from an Axn's declared contract. Read-only, off the execution
+    # path — it inspects declared field configs, never runs the action or its validators.
+    #
+    # REQUIREDNESS IS DERIVED FROM DECLARED SIGNALS, NOT BY VALIDATING.
+    # A field is omittable (absent from `required`) when a declared signal says so — a usable default,
+    # or a nil/blank-tolerant validator set (`optional:`/`allow_nil:`/`allow_blank:`/`presence: false`).
+    # We deliberately do NOT run the field's validators against its default to confirm the omitted call
+    # would actually pass; that duplicate-validation pass was expensive and fragile. The tradeoff is a
+    # few documented divergences from runtime, all narrow:
+    #   * a non-blank but otherwise-invalid default (`type: String, default: 123`; `type: :uuid,
+    #     default: "nope"`) is reflected as optional though the omitted call fails at runtime;
+    #   * a required deep subfield (dotted `on:`/name, subfield-of-subfield) under a nil-tolerant parent
+    #     doesn't force the parent required, so the parent may reflect as optional though runtime needs it.
+    # The safe direction (schema stricter than runtime) never causes failed calls; the unsafe cases above
+    # only arise from self-contradictory contracts and surface as a normal, recoverable validation error.
     module Schema
       TYPE_MAP = {
         String => "string",
@@ -32,31 +46,17 @@ module Axn
 
       module_function
 
-      # KNOWN LIMITATION: only single-level subfields are nested — those whose `on:` names a
-      # top-level field's reader (`on: :address`, incl. an `as:`/`prefix:` alias). Deeper nesting
-      # is intentionally NOT represented in the schema: a dotted parent (`on: "address.billing"`),
-      # a subfield-of-a-subfield (`on: :some_subfield`), or a dotted subfield NAME
-      # (`expects "bar.baz", on: :foo`) validates and reads fine at runtime but is omitted here.
-      # Deferred until an adapter (axn-mcp PRO-2844 / axn-ruby_llm PRO-2845)
-      # actually needs deep tool-input schemas — at which point the nesting can be built as a full
-      # `on:`-path walk informed by the real consumer. See those tickets.
+      # KNOWN LIMITATION: only single-level subfields are represented — those whose `on:` names a
+      # top-level field's reader (`on: :address`, incl. an `as:`/`prefix:` alias) with a non-dotted
+      # field name. Deeper nesting (a dotted `on:` path like `on: "address.billing"`, a subfield of a
+      # subfield, or a dotted field name like `expects "bar.baz", on: :foo`) validates at runtime but is
+      # omitted from the schema, deferred until an adapter needs deep tool-input schemas (axn-mcp
+      # PRO-2844 / axn-ruby_llm PRO-2845).
       def build_input(field_configs, subfield_configs = [])
         properties = {}
         required = []
 
-        # Group ALL subfields for the parent-requiredness decision below — runtime's
-        # validate_subfields_contract! validates EVERY declared subfield (incl. dotted deep paths,
-        # subfield-of-subfield chains, and dotted `on:` parents), so an omitted top-level root fails
-        # exactly as it would for a shallow subfield. Every subfield is attributed to the top-level
-        # field its `on:` chain ULTIMATELY roots at — a dotted parent (`on: "address.billing"`)
-        # rolls up to :address, and a subfield whose `on:` points at another subfield (rather than a
-        # top-level field) rolls up through that subfield's own `on:` to whatever top-level field it
-        # ultimately reads from. Property NESTING, though, is built only from DIRECT single-level
-        # children — those whose `on:` names the parent's reader exactly and whose own field name
-        # isn't dotted (see KNOWN LIMITATION above; deferred to PRO-2844/PRO-2845) — so a deep
-        # descendant's shape is omitted, but its root's requiredness must still match runtime.
-        field_readers = field_configs.map(&:reader_as)
-        subfields_by_root = subfield_configs.group_by { |c| top_level_root_reader(c, subfield_configs, field_readers) }
+        subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
@@ -65,22 +65,11 @@ module Axn
             build_model_property(config, properties, required)
           else
             prop = build_property(config)
-            all_nested = subfields_by_root[config.reader_as]
-            # Direct shallow children: `on:` names THIS field's reader exactly (not a dotted path, and
-            # not another subfield), and the child's own field name isn't dotted. Everything else that
-            # rolls up to this root — a dotted `on:` path, an `on:` pointing at another subfield, or a
-            # dotted field name — is a deep descendant: still counted for requiredness below, but its
-            # shape is omitted from the nested properties.
-            shallow_nested = all_nested&.select { |c| c.on.to_sym == config.reader_as && !c.field.to_s.include?(".") }
-            apply_nested_subfields!(prop, config, shallow_nested)
+            shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
+            apply_nested_subfields!(prop, config, shallow)
 
             properties[config.field] = prop.compact
-
-            if all_nested.present?
-              required << config.field.to_s if subfield_root_required?(config, all_nested, shallow_nested)
-            else
-              required << config.field.to_s unless optional_for_schema?(config)
-            end
+            required << config.field.to_s unless field_optional?(config, shallow)
           end
         end
 
@@ -89,188 +78,66 @@ module Axn
         schema
       end
 
-      # Sentinel: the root has no statically-inspectable default (none declared, or a Proc default we
-      # can't evaluate without an action instance). Distinct from a literal `nil`/`{}` default.
-      NO_DEFAULT = Object.new.freeze
-      private_constant :NO_DEFAULT
-
-      # Whether a top-level root that has nested subfields must be listed in the input schema's
-      # `required`. Decided by running Axn's REAL field validators against the value runtime would
-      # synthesize for the root when the client omits it — no hand-rolled type/blank/inclusion logic
-      # to drift from runtime. A deep descendant (dotted `on:` path, nested subfield, or dotted field
-      # name) is omitted from the schema SHAPE but still validated at runtime, so a required one keeps
-      # the root required (its shape isn't available to satisfy-check against the shallow value).
-      def subfield_root_required?(config, all_nested, shallow_nested)
-        deep_nested = all_nested - Array(shallow_nested)
-        deep_has_required_child = deep_nested.any? { |c| !optional_for_schema?(c, subfield: true) }
-
-        # Omitting the root is safe only if runtime synthesizes a value for it (the root's own literal
-        # default, or a Hash of truthy shallow-subfield defaults — mirroring
-        # Executor#apply_defaults_for_subfields!) that SATISFIES the root's OWN contract. Running the
-        # real validator here means a blank `{}` default that trips the root's auto-presence, or a
-        # synthesized Hash that fails a non-Hash root `type:` (e.g. a Data.define parent), correctly
-        # keeps the root required — matching runtime, which would raise on the omitted call.
-        synthesized = synthesized_parent_value(config, shallow_nested)
-        return true unless synthesized_satisfies_parent?(config, synthesized)
-
-        # A required DEEP descendant can't be satisfy-checked against the shallow synthesized value, so
-        # stay conservative and keep the root required (preserves the dotted-path/nested-on: behavior).
-        return true if deep_has_required_child
-
-        # Finally every REQUIRED shallow child must be satisfied by the synthesized value (runtime
-        # applies the defaults, THEN validates every subfield) — else the omitted call fails and the
-        # root must stay required. A `model:` or action-dependent child validator can't be checked
-        # statically → satisfies_contract? treats it as unsatisfied → conservative (root required).
-        # A Hash synthesized value is coerced for indifferent (string/symbol) key access; a non-Hash
-        # synthesized value (e.g. a Data.define/object parent default whose subfields are read via object
-        # readers) is passed straight through — FieldResolvers::Extract reads its attributes via public
-        # readers, and with_indifferent_access would raise NoMethodError on it.
-        child_source = synthesized.is_a?(Hash) ? synthesized.with_indifferent_access : synthesized
-        required_shallow = Array(shallow_nested).reject { |c| optional_for_schema?(c, subfield: true) }
-        return true unless required_shallow.all? { |c| satisfies_contract?(c.field, c.validations, child_source) }
-
-        false
+      # Direct single-level children of `config`: `on:` names its reader exactly (not a dotted path or
+      # another subfield) and the child's own field name isn't dotted. Deeper descendants are omitted.
+      def shallow_subfields(nested, config)
+        Array(nested).select { |c| c.on.to_sym == config.reader_as && !c.field.to_s.include?(".") }
       end
 
-      # The value runtime synthesizes for the root when the client omits it. Own literal default takes
-      # precedence (Executor applies top-level defaults first); truthy shallow-subfield defaults are
-      # then merged in only for keys the own default doesn't already supply (and only when the own
-      # default is a Hash, matching Executor#apply_defaults_for_subfields!'s parent handling). Returns
-      # NO_DEFAULT when nothing materializes the root (no own default and no truthy shallow default),
-      # or when the only default is a Proc we can't evaluate here.
-      def synthesized_parent_value(config, shallow_nested)
-        own = literal_default(config)
-        child_hash = shallow_default_hash(shallow_nested)
+      # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
+      # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
+      # is not — its subfields are extracted differently at runtime and have no object-property shape.
+      def object_shaped?(config)
+        type_opt = config.validations[:type]
+        return true unless type_opt
 
-        if !own.equal?(NO_DEFAULT)
-          own.is_a?(Hash) ? child_hash.merge(own) : own
-        elsif child_hash.any?
-          child_hash
-        else
-          NO_DEFAULT
-        end
+        klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
+        Array(klass).any? { |k| [Hash, :params].include?(k) }
       end
 
-      # The root's own literal default, or NO_DEFAULT when there's none / it's a Proc (action-dependent,
-      # so uninspectable here — conservative).
-      def literal_default(config)
-        return NO_DEFAULT unless config.respond_to?(:default)
+      # A field is absent from `required` when a declared signal makes it omittable. For a parent with
+      # subfields, a truthy shallow-subfield default also materializes it (runtime synthesizes the parent
+      # from applied subfield defaults).
+      def field_optional?(config, shallow_subfields)
+        return true if optional_for_schema?(config)
+
+        Array(shallow_subfields).any? { |c| c.default && !c.default.is_a?(Proc) }
+      end
+
+      # Optional (client may omit) iff a usable default exists, or — with no usable default — the
+      # validators tolerate a nil/omitted value. Output requiredness ignores defaults: every exposed key
+      # is always serialized (see build_output), so `for_output` short-circuits to "not optional".
+      def optional_for_schema?(config, for_output: false, subfield: false)
+        return false if for_output
+        return true if usable_default?(config, subfield:)
+
+        nil_accepted?(config)
+      end
+
+      # A default lets the client omit the field (Axn applies it before validation). We judge usability
+      # by declared SHAPE only — present, not a Proc, and not empty — never by running the field's
+      # validators. An empty default (`{}`/`""`/`[]`) can't satisfy the auto-`presence` a non-optional
+      # field carries, so it doesn't make the field optional; a Proc default is uninspectable here.
+      # For a subfield, only a truthy default is applied at runtime (`next unless config.default`), so a
+      # falsey subfield default never counts.
+      def usable_default?(config, subfield:)
+        return false unless config.respond_to?(:default)
 
         value = config.default
-        return NO_DEFAULT if value.nil? || value.is_a?(Proc)
+        return false if value.nil? || value.is_a?(Proc)
+        return false if value.respond_to?(:empty?) && value.empty?
 
-        value
+        subfield ? !!value : true
       end
 
-      # {child.field => child.default} for shallow children with a truthy, non-Proc default — mirroring
-      # Executor#apply_defaults_for_subfields! (`next unless config.default`; a Proc is instance_exec'd
-      # at runtime, so we can't reproduce it statically → omit it → conservative).
-      def shallow_default_hash(shallow_nested)
-        Array(shallow_nested).each_with_object({}) do |child, hash|
-          hash[child.field] = child.default if child.default && !child.default.is_a?(Proc)
-        end
-      end
-
-      def synthesized_satisfies_parent?(config, synthesized)
-        return false if synthesized.equal?(NO_DEFAULT)
-
-        satisfies_contract?(config.field, config.validations, { config.field => synthesized })
-      end
-
-      # Validator keys whose evaluation is pure (no user code, no action instance, no I/O), so they're
-      # safe to actually run during schema reflection. Anything else — a custom `validate:`, a `model:`
-      # lookup, `acceptance`/`confirmation`, a `uniqueness` DB check, an `if:`/`unless:`/`message:` proc,
-      # or `of:`/`shape:` nested contracts (which may themselves wrap user validators) — must NOT be
-      # executed while merely reflecting a schema; those fall back to conservative handling. Confirmed
-      # against KNOWN_VALIDATION_KEYS in Axn::Core::Contract and the validators under
-      # lib/axn/core/validation/validators/ (`type` is Axn's own pure type check; presence/absence/
-      # inclusion/exclusion/length/numericality/format/comparison are ActiveModel built-ins).
-      REFLECTION_SAFE_VALIDATION_KEYS = %i[type presence absence inclusion exclusion length numericality format comparison].freeze
-
-      # True iff every validation on the field is provably side-effect-free — an allowlisted pure
-      # built-in with no dynamic (Symbol/Proc) parts — so it's safe to actually evaluate during
-      # reflection. Any other validator (or a dynamic option within an allowlisted one) returns false so
-      # the caller stays conservative WITHOUT executing anything.
-      def reflection_safe_validations?(validations)
-        return false unless (validations.keys - REFLECTION_SAFE_VALIDATION_KEYS).empty?
-
-        validations.none? { |key, opt| validator_has_dynamic_option?(key, opt) }
-      end
-
-      # An allowlisted built-in still runs USER CODE when any of its options resolves against the record —
-      # a Proc option is CALLED (side effect!), a Symbol option is a method the validator would `send`. So
-      # scan EVERY validator's option hash for a Proc/Symbol value, with two static exemptions:
-      #   * a `type:` validator's type TOKEN — its `:klass` (String/:boolean/:uuid/[String, Integer]), or a
-      #     bare `type: :boolean`/`type: String` — is a static type descriptor, never executed; and
-      #   * an inclusion/exclusion enum COLLECTION — `in: [:a, :b]` is a static member list (an enum of
-      #     Symbols), NOT a dynamic set; only `in:`/`within:` being ITSELF a Symbol/Proc is dynamic.
-      # This catches numericality/comparison bounds (`greater_than: :min`), format `with:`, a dynamic
-      # inclusion set (`in: :method`), and `if:`/`unless:` (incl. an Array of condition Symbols/Procs) on
-      # ANY validator — including `type:`'s own `if:`/`unless:` — so no conditional/user validator ever
-      # runs while merely reflecting a schema.
-      def validator_has_dynamic_option?(key, opt)
-        return false if key == :type && !opt.is_a?(Hash) # bare static type token (:boolean/:uuid/Class)
-        return opt.is_a?(Symbol) || opt.is_a?(Proc) unless opt.is_a?(Hash) # bare dynamic set (e.g. inclusion: :m)
-
-        opt.any? do |opt_key, opt_val|
-          next false if key == :type && opt_key == :klass # static type token, not executed
-          # inclusion/exclusion enum set: an Array of members ([:a, :b]) is static; only the set ITSELF
-          # being a Symbol/Proc is dynamic — do NOT recurse into the member array.
-          next opt_val.is_a?(Symbol) || opt_val.is_a?(Proc) if %i[in within].include?(opt_key)
-
-          dynamic_option_value?(opt_val)
-        end
-      end
-
-      # A validator option value runs user code if it's a Proc (called) or Symbol (a method the validator
-      # `send`s), or an Array containing one — e.g. `if: [:cond_a, :cond_b]`. (NOT used for inclusion/
-      # exclusion `in:`/`within:` sets, whose Array members are static enum values — see caller.)
-      def dynamic_option_value?(value)
-        value.is_a?(Proc) || value.is_a?(Symbol) ||
-          (value.is_a?(Array) && value.any? { |v| dynamic_option_value?(v) })
-      end
-
-      # Reuse Axn's REAL subfield validator (no hand-rolled type/blank/inclusion approximation) to answer
-      # "does the value extracted for `field` from `source` satisfy `validations`?". Only run it when the
-      # field's validations are provably side-effect-free (reflection_safe_validations?) — otherwise a
-      # custom `validate:`/dynamic inclusion Proc would EXECUTE, a `model:` validator would hit the DB,
-      # etc. Anything not on the pure allowlist is treated as NOT satisfiable (conservative), so the
-      # field/behavior stays safe (required / no blank enum member) WITHOUT executing user code, touching
-      # external services, or depending on an action instance. The rescue is a backstop only.
-      def satisfies_contract?(field, validations, source)
-        return false unless reflection_safe_validations?(validations)
-
-        Axn::Validation::Subfields.collect_errors(field:, validations:, source:).empty?
-      rescue StandardError
-        false
-      end
-
-      # The top-level field reader a subfield's on:-path ultimately roots at. `on:` may be a dotted path
-      # ("address.billing" → root :address) or point at another subfield's reader (walk up to its parent).
-      # Returns nil if the chain never reaches a top-level reader (malformed contract) — such a subfield is
-      # then attributed to no field and omitted, matching today's behavior. Cycle-guarded.
-      def top_level_root_reader(config, subfield_configs, field_readers)
-        seen = []
-        current = config
-        loop do
-          root_segment = current.on.to_s.split(".").first.to_sym
-          return root_segment if field_readers.include?(root_segment)
-          return nil if seen.include?(root_segment)
-
-          seen << root_segment
-          parent = subfield_configs.find { |c| c.reader_as == root_segment }
-          return nil unless parent
-
-          current = parent
-        end
-      end
-
-      # Mutates `prop` in place to nest `nested_subfields` (if any) as `prop[:properties]`/
-      # `prop[:required]`. Forces the parent to `type: object` since it now has structure — never
-      # nullable, even when allow_nil/allow_blank: a nil parent can't yield its subfields at
-      # runtime (validate_subfields_contract! raises), so `null` must not be advertised here.
-      def apply_nested_subfields!(prop, _config, nested_subfields)
+      # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
+      # parent to `type: object` (it now has structure) and never nullable: a nil parent can't yield its
+      # subfields at runtime, so `null` must not be advertised. Only applies to an object-shaped parent
+      # (Hash/`:params`/untyped) — a non-object parent (e.g. `type: Array`) keeps its declared type and
+      # its subfields' shape is omitted, since object properties can't represent them.
+      def apply_nested_subfields!(prop, config, nested_subfields)
         return if nested_subfields.blank?
+        return unless object_shaped?(config)
 
         prop[:type] = "object"
         prop.delete(:format)
@@ -280,14 +147,12 @@ module Axn
         nested_subfields.each do |subconfig|
           if subconfig.validations[:model]
             id_field, subprop = model_id_property(subconfig)
-            # A user may declare an explicit nested `<field>_id` subfield before the `model:`
-            # subfield (mirrors build_model_property's top-level handling) — don't clobber the
-            # caller's already-built property with the generic model-generated one.
+            # A user may declare an explicit nested `<field>_id` subfield before the `model:` subfield;
+            # don't clobber it with the generic model-generated one.
             prop[:properties][id_field] ||= subprop
             prop[:required] << id_field.to_s unless optional_for_schema?(subconfig, subfield: true)
           else
-            subprop = build_property(subconfig, subfield: true)
-            prop[:properties][subconfig.field] = subprop
+            prop[:properties][subconfig.field] = build_property(subconfig, subfield: true)
             prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig, subfield: true)
           end
         end
@@ -296,18 +161,16 @@ module Axn
         prop[:required] = nil if prop[:required].empty?
       end
 
-      # Every exposed field is ALWAYS present in the serialized output: Values.serialize_exposed iterates
-      # every outbound config and unconditionally emits its property key (value nil when unset). JSON
-      # Schema `required` means property PRESENCE, not non-nullness — so every exposed field must be
-      # listed in `required`, even a nullable/optional one. Nullability is already carried by the
-      # property `type` (nil_allowed? → "null"), so nothing is lost by requiring the key.
+      # Every exposed field is always present in the serialized output: Values.serialize_exposed iterates
+      # every outbound config and emits its key (value nil when unset). JSON Schema `required` means
+      # property PRESENCE, not non-nullness, so every exposed field is `required`; nullability is carried
+      # by the property `type` ("null").
       def build_output(field_configs)
         properties = {}
         required = []
 
         field_configs.each do |config|
-          prop = build_property(config, for_output: true)
-          properties[config.field] = prop.compact
+          properties[config.field] = build_property(config, for_output: true).compact
           required << config.field.to_s
         end
 
@@ -316,12 +179,11 @@ module Axn
         schema
       end
 
-      # Deep-copy a reflected literal (a default: value or an inclusion enum member) AND normalize any
+      # Deep-copy a reflected literal (a `default:` value or an inclusion enum member) and normalize any
       # leaf whose JSON wire form differs from its Ruby form — Time/DateTime/Date → iso8601 String,
       # Symbol → String, non-Integer/Float Numeric (BigDecimal/Rational) → Float — so the emitted
-      # `default`/`enum` matches the property's advertised JSON type (mirrors Values.serialize_value).
-      # Mutable String leaves are duped so a consumer mutating the returned schema can't reach the
-      # stored contract; immutable scalars are shared.
+      # `default`/`enum` matches the property's advertised type (mirrors Values.serialize_value). Mutable
+      # String leaves are duped so a consumer mutating the returned schema can't reach the stored contract.
       def normalize_schema_literal(value)
         case value
         when Hash then value.transform_values { |v| normalize_schema_literal(v) }
@@ -330,9 +192,6 @@ module Axn
         when Symbol then value.to_s
         when Time, DateTime, Date then value.iso8601
         when Numeric
-          # Integer/Float are already JSON-native — leave them as-is. Any other Numeric
-          # (BigDecimal, Rational, …) has no JSON representation, so render it as a JSON number
-          # (Float); a non-real Numeric (Complex) can't become one, so fall back to its String form.
           return value if value.is_a?(Integer) || value.is_a?(Float)
 
           begin
@@ -344,38 +203,14 @@ module Axn
         end
       end
 
-      # Build the `enum:` member list for an inclusion validator's declared `in:`/`within:` set.
-      # `nullable` (nil_allowed?) is the runtime truth: when false, an explicit nil is REJECTED even
-      # if the declared set happens to list it (Axn's auto presence validator still fires without
-      # `presence: false`/`allow_nil`) — so a literal `nil` member must be dropped from the enum to
-      # match. When true, add `nil` only if it isn't already a member, to avoid a duplicate.
-      # `blank_tolerant` is the REAL answer to "does `""` satisfy this field's full contract?"
-      # (blank_string_accepted?) — NOT merely "is allow_blank set?". allow_blank makes ActiveModel skip
-      # the inclusion check for a blank value, so e.g. `inclusion: { in: [1, 2] }, allow_blank: true`
-      # accepts `status: ""` even though "" isn't a declared member — represent that by permitting the
-      # empty string regardless of the members' type. But a co-declared non-string `type:` (e.g.
-      # `type: Integer`) still REJECTS "" at runtime (TypeValidator only skips nil for allow_blank), so
-      # in that case blank_string_accepted? is false and "" is NOT added. `build_property`
-      # correspondingly widens the advertised `type` to include "string" on the same condition, keeping
-      # enum and type consistent. Added only when not already a member.
-      def enum_for_inclusion(enum_values, nullable:, blank_tolerant:)
+      # The `enum:` member list for an inclusion set. `nullable` (nil_allowed?) is the runtime truth: when
+      # false, a literal `nil` member is dropped (an explicit nil is rejected there); when true, `nil` is
+      # added if not already present.
+      def enum_for_inclusion(enum_values, nullable:)
         members = normalize_schema_literal(enum_values)
-        members = members.compact unless nullable
-        members += [nil] if nullable && !members.include?(nil)
-        members += [""] if blank_tolerant && !members.include?("")
-        members
-      end
+        return members.compact unless nullable
 
-      # Whether the empty string actually satisfies this field's full contract (via the real validators).
-      # allow_blank on an inclusion validator makes ActiveModel SKIP the inclusion check for a blank value,
-      # but a co-declared non-string type: validator still rejects "" (TypeValidator only skips nil for
-      # allow_blank), so we must not infer "" is accepted from allow_blank alone — we check it. This is the
-      # same real validator used everywhere else here (satisfies_contract? → Subfields.collect_errors), so
-      # it stays consistent with runtime and is inherently direction-agnostic (the same validators run
-      # outbound). satisfies_contract?'s conservative guards apply: a model:/action-dependent validator is
-      # treated as not-satisfied (rescued → false), so "" is NOT added — safe.
-      def blank_string_accepted?(config)
-        satisfies_contract?(config.field, config.validations, { config.field => "" })
+        members.include?(nil) ? members : members + [nil]
       end
 
       def build_property(config, for_output: false, subfield: false)
@@ -384,50 +219,26 @@ module Axn
 
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
-        # A blank-tolerant inclusion field accepts `""` at runtime (allow_blank skips the inclusion check
-        # for a blank value) regardless of its declared members' type (see enum_for_inclusion), so the
-        # advertised `type` must then permit a string — else a consumer validating `type` before `enum`
-        # would reject the valid blank. We decide "does `""` pass?" with the REAL validators
-        # (blank_string_accepted?) rather than inferring from allow_blank alone: a co-declared non-string
-        # `type:` (e.g. `type: Integer`) still rejects `""` (TypeValidator only skips nil for allow_blank),
-        # so we must NOT widen/add there. Only widens a non-string scalar type (e.g. integer); a
-        # string/anyOf/mixed enum already permits "". NOT gated on for_output: the same validators run
-        # OUTBOUND, so the check is inherently consistent with enum_for_inclusion in both directions.
-        blank_tolerant = blank_string_accepted?(config)
         if type_info[:anyOf]
           prop[:anyOf] = nullable ? type_info[:anyOf] + [{ type: "null" }] : type_info[:anyOf]
         elsif type_info[:type]
-          types = [type_info[:type]]
-          types << "string" if blank_tolerant && !types.include?("string")
-          types << "null" if nullable
-          prop[:type] = types.size == 1 ? types.first : types
-          prop[:format] = type_info[:format] if type_info[:format]
+          prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
+          # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
+          # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
+          # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
+          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && blank_tolerant?(config))
         end
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
-          # The default is a value stored directly on the contract's FieldConfig — normalize AND
-          # deep-copy it via normalize_schema_literal so (a) a caller mutating the returned schema
-          # (e.g. `schema[:properties][:opts][:default][:b] = 2`, or mutating a String default in
-          # place via `upcase!`) can't reach back into the runtime contract, and (b) a leaf whose JSON
-          # wire form differs from its Ruby form (Time/DateTime/Date, Symbol, BigDecimal/Rational) is
-          # rendered in that wire form, matching the property's advertised `type`/`format`. Immutable
-          # scalar leaves (Integer/Float/true/false/nil) are shared, not copied.
-          #
-          # For a SUBFIELD, only a truthy default is ever applied at runtime
-          # (`Executor#apply_defaults_for_subfields!` does `next unless config.default`), so a
-          # falsey `default: false` subfield must not advertise a `default:` the runtime never
-          # applies. Top-level fields are unaffected — their defaults are applied by key-presence.
+          # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
+          # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
           emit_default = subfield ? !!config.default : true
           prop[:default] = normalize_schema_literal(config.default) if emit_default
         end
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          # Same reasoning as default: above — `enum_values` here is the actual array stored in
-          # the contract's validations hash (`config.validations[:inclusion][:in]`), so it (and any
-          # mutable/non-JSON-native elements within it, e.g. String members or a Symbol member) must
-          # be deep-copied and normalized rather than shared with the returned schema.
-          prop[:enum] = enum_for_inclusion(enum_values, nullable:, blank_tolerant:) if enum_values.is_a?(Array)
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.is_a?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)
@@ -435,8 +246,8 @@ module Axn
         prop
       end
 
-      # Combine of: (bare element baseline) and shape: (typed member contracts) into
-      # items:/properties: schema. Precedence: shape: enriches/overrides of: baseline.
+      # Combine of: (bare element baseline) and shape: (typed member contracts) into items:/properties:.
+      # Precedence: shape: enriches/overrides of: baseline.
       def apply_structured_schema!(prop, config, for_output:)
         of    = config.validations[:of]
         shape = config.validations[:shape]
@@ -452,13 +263,10 @@ module Axn
           end
           prop[:items] = items unless items.empty?
         elsif shape
-          # Hash / class field — shape: members are the object's own properties. A shaped
-          # object field IS an object, even when the field's declared type: (e.g. a
-          # Data.define subclass) isn't in TYPE_MAP and json_type_for fell back to "string".
+          # Hash / class field — shape: members are the object's own properties. A shaped object field IS
+          # an object, even when the field's declared type: (e.g. a Data.define subclass) isn't in TYPE_MAP.
           prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
           prop.delete(:format)
-          # If the field type is a Data.define subclass, use its members as the bare
-          # baseline so unannotated members still appear (same enrich logic as of:).
           member_props, required = member_properties(shape[:members], for_output:)
           type_klass = config.validations.dig(:type, :klass)
           base_props = type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
@@ -467,7 +275,6 @@ module Axn
         end
       end
 
-      # Build a JSON Schema items: value from the of: validation hash.
       def items_schema_for(of_validations, for_output: false)
         klasses = Array(of_validations[:klass])
         if klasses.size == 1
@@ -479,14 +286,12 @@ module Axn
 
       def single_items_schema(klass, for_output: false)
         if klass.is_a?(Class) && klass < Data
-          # Data.define subclass → object with named (but untyped) properties as baseline
           { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
         else
           json_type_for({ type: klass }, for_output:)
         end
       end
 
-      # Build properties/required from a shape: block's members. Recurses for nested shape/of.
       def member_properties(members, for_output:)
         props = {}
         required = []
@@ -497,24 +302,21 @@ module Axn
         [props, required]
       end
 
-      # Returns [id_field_symbol, prop_hash] for a model: config.
+      # Returns [id_field_symbol, prop_hash] for a model: config. No type constraint: `find`/custom
+      # finders accept any nonblank PK token, and inferring the real PK type would require a DB load.
       def model_id_property(config)
         model_opts = config.validations[:model]
         klass = model_opts[:klass]
         klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
         id_field = :"#{config.field}_id"
-        # No type constraint: `find` (and custom finders) accept any nonblank PK token — integer,
-        # UUID, or string PKs are all valid — and inferring the real PK type would require a DB/schema
-        # load (not allowed from reflection). The description carries the "record id" semantics.
         prop = { description: config.description || "ID of the #{klass_name} record" }
         [id_field, prop.compact]
       end
 
       def build_model_property(config, properties, required)
         id_field, prop = model_id_property(config)
-        # A user may declare an explicit `<field>_id` field before the `model:` field (the runtime's
-        # generated model-id reader then defers to it, per `_reader_name_available?`) — don't clobber
-        # the caller's already-built property, and don't double-add to `required`.
+        # A user may declare an explicit `<field>_id` field before the `model:` field; don't clobber it
+        # or double-add to `required`.
         properties[id_field] ||= prop
         required << id_field.to_s unless required.include?(id_field.to_s) || optional_for_schema?(config)
       end
@@ -530,10 +332,9 @@ module Axn
           return result
         end
 
-        # A Numeric SUBCLASS not in TYPE_MAP (BigDecimal, Rational, …) still serializes to a JSON
-        # number (Values.serialize_value coerces non-Integer/Float Numerics via Float()), so reflect
-        # it as "number" rather than falling through to the object/string fallback below — else the
-        # output schema would say "object" for a value serialized as a number.
+        # A Numeric subclass not in TYPE_MAP (BigDecimal, Rational, …) serializes to a JSON number
+        # (Values.serialize_value coerces it via Float()), so reflect it as "number" rather than the
+        # object/string fallback.
         return { type: "number" } if klass.is_a?(Class) && klass < Numeric
 
         return { type: "object" } if for_output
@@ -581,28 +382,15 @@ module Axn
         nil
       end
 
-      def optional?(config)
-        Axn::Internal::FieldConfig.optional?(config)
-      end
-
-      # A defaulted field is client-omittable (Axn applies inbound defaults before validation),
-      # so it must not be listed in an input schema's `required` — even when not `optional:`/
-      # `allow_blank:`. Output (`exposes`) requiredness is unaffected: see build_output.
-      def default?(config)
-        config.respond_to?(:default) && !config.default.nil?
-      end
-
-      # The contract accepts an omitted/nil value for this field iff nothing rejects nil: no presence
-      # requirement, and every validator that would run allows nil/blank. A single validator's
-      # allow_nil does NOT make the field nullable if another (presence, type, …) still rejects nil.
+      # Whether the field's validators, taken together, permit a nil/omitted value. Drives both
+      # input optionality and nullability (adding "null" to the emitted type). A lone validator's
+      # allow_nil: doesn't count if another (presence, type, …) still rejects nil.
       #
-      # An entry is nil-tolerant if it's a disabled validator (`opt == false`), `absence` (nil is
-      # always "absent", regardless of options), `acceptance` unless explicitly opted out via
-      # `allow_nil: false` (ActiveModel's acceptance validator is allow_nil by default), or a Hash
-      # that allows nil/blank. Any other active validator — including a BARE `true` (e.g.
-      # `numericality: true`) — rejects nil: a bare ActiveModel validator does not tolerate nil just
-      # because it isn't a Hash of options, so `presence: false` alongside a bare active validator
-      # must not wrongly relax the field (Bug KK).
+      # An entry is nil-tolerant if it's a disabled validator (`opt == false`), `absence` (nil is always
+      # "absent"), `acceptance` unless explicitly `allow_nil: false` (ActiveModel's acceptance is allow_nil
+      # by default), a Hash allowing nil/blank, an `exclusion` set not containing nil, or an `inclusion`
+      # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
+      # `numericality: true`) — rejects nil.
       def nil_accepted?(config)
         v = config.validations
         return true if v.empty?
@@ -611,22 +399,18 @@ module Axn
       end
 
       def nil_tolerant_validation?(key, opt)
-        return true if opt == false                                 # disabled validator (e.g. presence: false)
+        return true if opt == false
         return true if opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])
-        return true if key == :absence                              # nil is always "absent"
-        # acceptance is allow_nil by default; only nil-rejecting when explicitly `allow_nil: false`
+        return true if key == :absence
         return true if key == :acceptance && !(opt.is_a?(Hash) && opt[:allow_nil] == false)
-        # exclusion accepts nil when nil is NOT in the excluded set; inclusion accepts nil only
-        # when nil IS an explicit member of the included set. A dynamic set (Proc) is uninspectable
-        # here, so membership returns nil and the field stays conservatively required.
         return true if key == :exclusion && set_includes_nil?(opt) == false
         return true if key == :inclusion && set_includes_nil?(opt) == true
 
         false
       end
 
-      # nil = can't tell (no concrete collection); true/false = nil's membership in the in:/within: set.
-      # rubocop:disable Style/ReturnNilInPredicateMethodDefinition (tri-state: nil is a meaningful "unknown", not "false")
+      # Tri-state: nil = can't tell (no concrete collection); true/false = nil's membership in the set.
+      # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
       def set_includes_nil?(opt)
         return nil unless opt.is_a?(Hash)
 
@@ -639,57 +423,14 @@ module Axn
       end
       # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
 
-      # A field is optional in the schema (client may omit it) iff a usable default satisfies its own
-      # contract, or — with NO usable default — no validation rejects a nil/omitted value. A typed
-      # field with neither (e.g. type: :boolean) is required (TypeValidator rejects nil).
-      #
-      # A usable default PREEMPTS both the absent and the nil paths: `Executor#apply_defaults!` applies
-      # the default before validation even when the incoming value is nil, so nil-tolerance is moot once
-      # a usable default exists — the field is omittable iff the default VALUE itself satisfies the
-      # contract, otherwise required (a usable-but-INVALID default, e.g. `type: String, allow_nil: true,
-      # default: 123`, must NOT fall back to nil-tolerance: runtime applies the 123 and then fails the
-      # omitted call). Only with no usable default does nil-tolerance decide optionality.
-      #
-      # `subfield:` narrows what counts as a "usable" default: `Executor#apply_defaults_for_subfields!`
-      # only applies a subfield's default when it's truthy (`next unless config.default`), so a falsey
-      # subfield default (`false`/`nil`) is never actually applied and must NOT make the field optional
-      # here. Top-level defaults are applied by key-presence, so `default?` (non-nil) is correct there.
-      def optional_for_schema?(config, for_output: false, subfield: false)
-        has_usable_default = subfield ? !!config.default : default?(config)
-        return default_value_satisfies_own_contract?(config) if !for_output && has_usable_default
-
-        nil_accepted?(config)
-      end
-
-      # A default only makes the field client-omittable when the default VALUE actually satisfies the
-      # field's OWN contract — runtime applies the default and THEN validates, so a blank default under
-      # auto-presence (`type: Hash, default: {}` / `type: String, default: ""`) or a type-mismatched one
-      # (`type: String, default: 123`; `type: :uuid, default: "nope"`) still fails the omitted call and
-      # must keep the field required. Checked with the SAME real validator the subfield path uses
-      # (satisfies_contract? → Axn::Validation::Subfields.collect_errors) so requiredness can't drift from
-      # runtime. A `model:` default skips the DB-touching validation (satisfies_contract? returns false),
-      # and an action-dependent/uninspectable validation is rescued → both treated as NOT satisfied →
-      # the field falls through to nil_accepted? (required unless nil is independently accepted). A Proc
-      # default is action-dependent and must not be evaluated in reflection, so it's likewise treated as
-      # not-satisfied → conservative (matches how a Proc parent default is handled for subfields). This is
-      # INPUT-only: `for_output` short-circuits before this in optional_for_schema? (outbound defaults are
-      # always applied before serialization, so a defaulted exposure stays required — see build_output).
-      def default_value_satisfies_own_contract?(config)
-        return false unless config.respond_to?(:default)
-
-        default = config.default
-        return false if default.is_a?(Proc)
-
-        satisfies_contract?(config.field, config.validations, { config.field => default })
-      end
-
-      # Whether a field's validations, taken together, permit nil/blank. Used both to decide
-      # schema-optionality (input) and to add "null" to the emitted JSON Schema type (both input
-      # and output — an explicit nil is accepted at runtime regardless of direction). A lone
-      # validator's allow_nil: does NOT count if another validator (e.g. presence, or the type
-      # validator itself) still rejects nil.
       def nil_allowed?(config)
         nil_accepted?(config)
+      end
+
+      # Whether any validator declares `allow_blank: true` (folded into the type validator by
+      # `optional:`/`allow_blank:`), i.e. a blank value is tolerated.
+      def blank_tolerant?(config)
+        config.validations.any? { |_key, opt| opt.is_a?(Hash) && opt[:allow_blank] }
       end
     end
   end

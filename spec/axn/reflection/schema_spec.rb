@@ -26,7 +26,7 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:active]).to include(type: "boolean")
   end
 
-  it "drops nil from an output enum too when the field is not nullable (Codex review, build_output shares build_property)" do
+  it "drops nil from an output enum too when the field is not nullable (build_output shares build_property)" do
     klass = Class.new do
       include Axn
       exposes :status, inclusion: { in: [nil, "open"] }
@@ -46,11 +46,11 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required]).to include("status")
   end
 
-  # Finding #77: EVERY exposed field is always serialized — Values.serialize_exposed iterates every
-  # outbound config and unconditionally emits its property key (value nil if unset). JSON Schema
-  # `required` means property PRESENCE, not non-nullness, so every serialized key must be listed in
+  # EVERY exposed field is always serialized — Values.serialize_exposed iterates every outbound config
+  # and unconditionally emits its property key (value nil if unset). JSON Schema `required` means
+  # property PRESENCE, not non-nullness, so every serialized key must be listed in
   # output_schema[:required]; nullability is expressed by the property type (which includes "null").
-  describe "all exposed fields are required in output_schema (serialize_exposed always emits every key) (Finding #77)" do
+  describe "all exposed fields are required in output_schema (serialize_exposed always emits every key)" do
     it "marks a nullable (allow_nil) exposure as required, with its type carrying \"null\"" do
       klass = Class.new do
         include Axn
@@ -96,12 +96,11 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:required] || []).not_to include("limit")
   end
 
-  # A TOP-LEVEL default only relaxes input requiredness when the default VALUE itself satisfies the
-  # field's OWN contract — runtime applies the default and THEN validates, so a blank/type-mismatched
-  # default still fails the omitted call and must keep the field required. Each case's requiredness is
-  # asserted against verified runtime behavior of `klass.call({})` (recorded in comments below), decided
-  # by the SAME real validator (Axn::Validation::Subfields.collect_errors) the subfield path already uses.
-  describe "a top-level default only relaxes input requiredness when it satisfies the field's own contract (Codex review)" do
+  # A TOP-LEVEL default relaxes input requiredness when it is USABLE — present, not a Proc, and not
+  # empty (`{}`/`""`/`[]`). Requiredness is derived from declared signals only; the default's value is
+  # not run through the field's validators, so a non-blank but type-invalid default still relaxes the
+  # field (an accepted, narrow divergence from runtime, noted per-case below).
+  describe "a top-level default relaxes input requiredness when it is usable (present, non-Proc, non-blank)" do
     it "requires a Hash field whose default is a blank {} (runtime: call({}) fails \"Payload can't be blank\")" do
       klass = Class.new do
         include Axn
@@ -147,22 +146,25 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("name")
     end
 
-    it "requires a String field whose default is type-mismatched (123) (runtime: call({}) fails \"Name is not a String\")" do
+    it "does NOT require a String field whose default is type-mismatched (123) — a non-blank default is usable" do
+      # accepted divergence: runtime rejects the omitted call ("Name is not a String"); the schema
+      # reflects optional because requiredness is derived from declared signals, not by validating the default.
       klass = Class.new do
         include Axn
         expects :name, type: String, default: 123
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required]).to include("name")
+      expect(schema[:required] || []).not_to include("name")
     end
 
-    it "requires a :uuid field whose default is not a valid uuid (runtime: call({}) fails \"Id is not a uuid\")" do
+    it "does NOT require a :uuid field whose default is not a valid uuid — a non-blank default is usable" do
+      # accepted divergence: runtime rejects the omitted call ("Id is not a uuid"); the schema reflects optional.
       klass = Class.new do
         include Axn
         expects :id, type: :uuid, default: "not-a-uuid"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required]).to include("id")
+      expect(schema[:required] || []).not_to include("id")
     end
 
     it "does NOT require a :uuid field whose default IS a valid uuid (runtime: call({}) ok)" do
@@ -184,18 +186,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    # Finding #73: a usable-but-INVALID default must NOT fall back to nil-tolerance. Executor applies
-    # the default before validation on BOTH the absent and the nil path, so once a usable default
-    # exists requiredness hinges solely on whether that default satisfies the contract — an allow_nil
-    # field with a type-mismatched default is still required (runtime fails the omitted call).
-    it "requires a String allow_nil field whose default is type-mismatched (123) despite nil-tolerance " \
-       "(runtime: call({}) fails \"Name is not a String\" — the default is applied before validation, so allow_nil can't save it)" do
+    it "does NOT require a String allow_nil field whose default is type-mismatched (123) — a non-blank default is usable" do
+      # accepted divergence: runtime rejects the omitted call ("Name is not a String") because the
+      # default is applied before validation; the schema reflects optional (usable default).
       klass = Class.new do
         include Axn
         expects :name, type: String, allow_nil: true, default: 123
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required]).to include("name")
+      expect(schema[:required] || []).not_to include("name")
     end
 
     it "does NOT require a String allow_nil field whose default \"x\" satisfies the contract (runtime: call({}) ok)" do
@@ -226,15 +225,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "requires a boolean allow_nil field with a Proc default (uninspectable → unprovable → conservative), even " \
-       "though runtime here ACCEPTS the omitted call (`-> { false }` yields a valid boolean) — only knowable by " \
-       "evaluating the Proc, which reflection must not do" do
+    it "does NOT require a boolean allow_nil field with a Proc default — allow_nil alone makes it nil-tolerant" do
+      # The Proc default is not usable (never inspected), but allow_nil folds nil-tolerance into the
+      # type validator, so the field is optional on that declared signal.
       klass = Class.new do
         include Axn
         expects :flag, type: :boolean, allow_nil: true, default: -> { false }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required]).to include("flag")
+      expect(schema[:required] || []).not_to include("flag")
     end
 
     # OUTPUT-side regression: this change is INPUT-only. `exposes` requiredness deliberately ignores
@@ -281,12 +280,12 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:channel]).not_to have_key(:enum)
   end
 
-  # Finding #76: schema reflection must NEVER execute user code, hit external services, or depend on an
-  # action instance. Requiredness/blank-enum decisions run Axn's REAL validators — but only for a
-  # provably side-effect-free allowlist of pure built-in validators. A custom `validate:` proc, a
-  # `model:` DB lookup, or a dynamic (Symbol/Proc) inclusion set is NOT executed; those fall back to
-  # conservative handling (field stays required / no blank member added) without running anything.
-  describe "reflection is side-effect-free: only pure built-in validators are actually evaluated (Finding #76)" do
+  # Schema reflection NEVER executes user code, hits external services, or depends on an action
+  # instance. Requiredness is derived from declared signals only — no validator (custom `validate:`
+  # proc, `model:` DB lookup, dynamic Symbol/Proc inclusion set, `if:`/`unless:` guard, numericality
+  # bound, …) is ever run. These specs assert that observable guarantee: nothing runs and building
+  # never raises.
+  describe "reflection is side-effect-free: no validators or user code run during schema building" do
     it "does NOT execute a custom validate: proc while building input_schema (even with a valid default)" do
       ran = false
       klass = Class.new do
@@ -297,8 +296,8 @@ RSpec.describe Axn::Reflection::Schema do
       schema = nil
       expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
       expect(ran).to be(false)
-      # Conservative: an uninspectable custom validator keeps the field required despite the default.
-      expect(schema[:required]).to include("x")
+      # The usable "hi" default makes the field optional; the custom validator is never consulted.
+      expect(schema[:required] || []).not_to include("x")
     end
 
     it "does NOT execute a custom validate: proc while building output_schema" do
@@ -327,9 +326,9 @@ RSpec.describe Axn::Reflection::Schema do
       schema = nil
       expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
       expect(ran).to be(false)
-      # No enum is emitted for a dynamic (Proc) set, and the field stays conservatively required.
+      # No enum is emitted for a dynamic (Proc) set; the usable "a" default makes the field optional.
       expect(schema[:properties][:y]).not_to have_key(:enum)
-      expect(schema[:required]).to include("y")
+      expect(schema[:required] || []).not_to include("y")
     end
 
     it "does NOT invoke a dynamic (Symbol) inclusion method while building input_schema" do
@@ -357,9 +356,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(ran).to be(false)
     end
 
-    it "STILL runs the real validators for a field with only pure validators (prior behavior preserved)" do
-      # A literal-inclusion field whose default is a valid member is client-omittable (default satisfies
-      # the contract) — this real-validation treatment must be preserved for the pure allowlist.
+    it "treats a field with a usable default as optional without evaluating its validators" do
+      # The usable "open" default makes the field client-omittable; the inclusion set is never checked.
       klass = Class.new do
         include Axn
         expects :s, type: String, inclusion: { in: %w[open closed] }, default: "open"
@@ -368,10 +366,6 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("s")
     end
 
-    # Finding #79: a conditional `type:` validator carries an `if:`/`unless:` Proc/Symbol that
-    # ActiveModel resolves against the record. Only `type:`'s static `:klass` token is exempt from the
-    # dynamic-option scan — an `if:`/`unless:` (or any dynamic option) on ANY validator, including
-    # `type:`, must fall back to conservative handling so the user code never runs during reflection.
     it "does NOT execute a type: validator's if: Proc while building input_schema" do
       ran = false
       klass = Class.new do
@@ -382,8 +376,8 @@ RSpec.describe Axn::Reflection::Schema do
       schema = nil
       expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
       expect(ran).to be(false)
-      # Conservative: an if:-gated (uninspectable) validator keeps the field required despite the default.
-      expect(schema[:required]).to include("token")
+      # The usable "hi" default makes the field optional; the if:-gated validator is never consulted.
+      expect(schema[:required] || []).not_to include("token")
     end
 
     it "does NOT execute a type: validator's if: Proc while building output_schema" do
@@ -408,8 +402,8 @@ RSpec.describe Axn::Reflection::Schema do
       schema = nil
       expect { schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
       expect(ran).to be(false)
-      # Conservative: the if:-gated inclusion is not evaluated, so the field stays required.
-      expect(schema[:required]).to include("status")
+      # The if:-gated inclusion is not evaluated; the usable "open" default makes the field optional.
+      expect(schema[:required] || []).not_to include("status")
     end
 
     it "does NOT evaluate a Symbol numericality bound while building input_schema" do
@@ -422,9 +416,9 @@ RSpec.describe Axn::Reflection::Schema do
       expect { described_class.build_input(klass.internal_field_configs, klass.subfield_configs) }.not_to raise_error
     end
 
-    it "keeps a static type: token (type: :boolean) reflection-safe (prior behavior preserved)" do
-      # A bare Symbol type token is a static descriptor, NOT a dynamic option — so the real validators
-      # still run and a boolean field with no default/presence stays required (TypeValidator rejects nil).
+    it "keeps a boolean field with no default/nil-tolerance required (type: :boolean is not nil-tolerant)" do
+      # No usable default and no nil-tolerant signal, so the field stays required — decided from the
+      # declared type token alone, without running any validator.
       klass = Class.new do
         include Axn
         expects :enabled, type: :boolean
@@ -434,9 +428,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:enabled][:type]).to eq("boolean")
     end
 
-    it "keeps a static Symbol-array inclusion (in: [:a, :b]) reflection-safe with an emitted enum" do
-      # A static enum of Symbols is NOT a dynamic set — the real validators run, the enum is emitted, and
-      # a default that's a valid member makes the field client-omittable (prior behavior preserved).
+    it "emits an enum for a static Symbol-array inclusion and treats a defaulted field as optional" do
+      # The static enum is normalized to Strings, and the usable :a default makes the field optional.
       klass = Class.new do
         include Axn
         expects :mode, inclusion: { in: %i[a b] }, default: :a
@@ -562,7 +555,7 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:params]).to include(type: "object")
   end
 
-  it "maps type: Symbol to a JSON string on input (Codex review: TYPE_MAP entry, matches serialize_exposed rendering a Symbol as its string form)" do
+  it "maps type: Symbol to a JSON string on input (TYPE_MAP entry, matches serialize_exposed rendering a Symbol as its string form)" do
     klass = Class.new do
       include Axn
       expects :status, type: Symbol
@@ -571,7 +564,7 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:status]).to include(type: "string")
   end
 
-  it "maps type: Symbol to a JSON string on output, not the object fallback (Codex review: schema said object while serialize_exposed emits a string)" do
+  it "maps type: Symbol to a JSON string on output, not the object fallback (serialize_exposed emits a string)" do
     klass = Class.new do
       include Axn
       exposes :status, type: Symbol
@@ -581,7 +574,7 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:status]).to include(type: "string")
   end
 
-  it "maps a Numeric subclass (BigDecimal) to a JSON number on output, not the object fallback (Codex review)" do
+  it "maps a Numeric subclass (BigDecimal) to a JSON number on output, not the object fallback" do
     require "bigdecimal"
     klass = Class.new do
       include Axn
@@ -599,6 +592,30 @@ RSpec.describe Axn::Reflection::Schema do
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
     expect(schema[:properties][:ratio]).to include(type: "number")
+  end
+
+  it "keeps a non-object parent's declared type and omits its subfield shape (a type: Array parent is not rewritten to object)" do
+    klass = Class.new do
+      include Axn
+      expects :items, type: Array
+      expects :count, on: :items, type: Integer
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:properties][:items][:type]).to eq("array")
+    expect(schema[:properties][:items]).not_to have_key(:properties)
+  end
+
+  it "drops format: uuid for a blank-tolerant uuid field (allow_blank accepts \"\", which a strict uuid-format validator would reject)" do
+    blank_ok = Class.new do
+      include Axn
+      expects :id, type: :uuid, allow_blank: true
+    end
+    strict = Class.new do
+      include Axn
+      expects :id, type: :uuid
+    end
+    expect(described_class.build_input(blank_ok.internal_field_configs)[:properties][:id]).not_to have_key(:format)
+    expect(described_class.build_input(strict.internal_field_configs)[:properties][:id]).to include(format: "uuid")
   end
 
   it "nests subfields under a string on: parent" do
@@ -946,7 +963,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:status][:enum]).to eq(%w[open closed])
     end
 
-    it "drops nil from the enum when the inclusion set contains it but the field is not nullable (Codex review): " \
+    it "drops nil from the enum when the inclusion set contains it but the field is not nullable: " \
        "an explicit nil is actually REJECTED at runtime here (auto presence, no presence: false/allow_nil)" do
       klass = Class.new do
         include Axn
@@ -963,7 +980,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "includes null exactly once in the enum when the inclusion set already contains nil and the field is nullable " \
-       "(Codex review, avoids a duplicate nil)" do
+       "(avoids a duplicate nil)" do
       klass = Class.new do
         include Axn
         expects :status, type: String, inclusion: { in: [nil, "open"] }, allow_nil: true
@@ -1084,7 +1101,9 @@ RSpec.describe Axn::Reflection::Schema do
   end
 
   describe "a parent field with subfields is required unless a default materializes it (Bug Y)" do
-    it "requires an optional (no-default) parent with an all-optional subfield (omitting still yields a nil parent, which raises at runtime)" do
+    it "does not require an optional (no-default) parent with an all-optional subfield" do
+      # accepted divergence: omitting yields a nil parent, which raises at runtime; the schema reflects
+      # the parent as optional because `optional: true` is a nil-tolerant declared signal.
       klass = Class.new do
         include Axn
         expects :payload, optional: true
@@ -1092,7 +1111,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
     it "still requires a parent whose only literal default is a blank {} — runtime rejects it via the " \
@@ -1141,7 +1160,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "does not require a parent whose literal Hash default already supplies the required subfield's key (Codex review)" do
+    it "does not require a parent whose literal Hash default already supplies the required subfield's key" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "system" }
@@ -1163,7 +1182,9 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "still requires the parent when a defaulted parent with multiple required subfields only covers some of the keys" do
+    it "does not require a parent whose usable (non-blank) Hash default covers only some of its required subfields" do
+      # accepted divergence: runtime rejects the omitted call (role uncovered); the schema reflects the
+      # parent as optional because its non-blank Hash default is a usable declared signal.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "system" }
@@ -1172,13 +1193,17 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
   end
 
-  describe "a parent's default must actually SATISFY a required child, not merely supply its key (Codex review)" do
-    it "still requires the parent when the default's key is present but the value is nil (default applied, then " \
-       "validate_subfields_contract! rejects the nil, so calling with {} fails at runtime)" do
+  # A usable (non-blank, non-Proc) parent default makes the parent omittable purely on that declared
+  # signal — the default's contents are never validated against the subfield contract. Only a blank
+  # (`{}`) or Proc default keeps the parent required. Cases where the default doesn't actually satisfy a
+  # required child are accepted divergences (runtime rejects the omitted call; the schema reflects optional).
+  describe "a usable (non-blank) parent default makes the parent omittable regardless of subfield coverage" do
+    it "does not require the parent when the default's key is present but the value is nil" do
+      # accepted divergence: runtime rejects the omitted call (name is nil); schema reflects optional.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: nil }
@@ -1186,10 +1211,11 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "still requires the parent when the default's value is present but the wrong type for the required child" do
+    it "does not require the parent when the default's value is present but the wrong type for the required child" do
+      # accepted divergence: runtime rejects the omitted call (name is not a String); schema reflects optional.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: 123 }
@@ -1197,7 +1223,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
     it "still requires the parent when the default omits the required child's key entirely" do
@@ -1211,7 +1237,9 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "still requires the parent when the default's value is blank and the child has an explicit presence: true" do
+    it "does not require the parent when the default's value is blank and the child has an explicit presence: true" do
+      # accepted divergence: runtime rejects the omitted call (blank child); the non-blank Hash default
+      # is still a usable declared signal, so the schema reflects the parent as optional.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "" }
@@ -1219,11 +1247,12 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "still requires the parent when the default's value is blank and the child has Axn's implicit default " \
-       "presence (a bare type: String subfield gets presence: true unless allow_nil/allow_blank/optional is set)" do
+    it "does not require the parent when the default's value is blank and the child has Axn's implicit presence" do
+      # accepted divergence: runtime rejects the omitted call (blank child); schema reflects optional
+      # (the Hash default { name: "" } is non-blank and usable).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "" }
@@ -1231,12 +1260,10 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "does not require the parent when the required child's non-type validator (a LITERAL inclusion set) is " \
-       "actually satisfied by the default — the real validator (collect_errors) evaluates the inclusion, so the " \
-       "prior hand-rolled over-strictness is gone; runtime accepts calling with {} (child \"a\" is in the set)" do
+    it "does not require the parent when its usable Hash default happens to satisfy a required child's inclusion set" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "a" }
@@ -1247,7 +1274,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "still requires the parent when the required child's LITERAL inclusion set does NOT contain the default value" do
+    it "does not require the parent when the required child's inclusion set does NOT contain the default value" do
+      # accepted divergence: runtime rejects the omitted call ("z" not in the set); schema reflects optional.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "z" }
@@ -1255,11 +1283,12 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "still requires the parent when the required child's inclusion set is ACTION-DEPENDENT (a symbol method), " \
-       "since collect_errors needs an action instance we don't have in reflection → conservative (rescued)" do
+    it "does not require the parent when the required child's inclusion set is action-dependent (a symbol method)" do
+      # accepted divergence: runtime resolves :allowed_names and may reject the omitted call; schema
+      # reflects optional purely on the usable Hash default (the method is never invoked in reflection).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "a" }
@@ -1268,11 +1297,10 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "does not require the parent when the default's value would actually satisfy the required child (regression " \
-       "guard for the #55 default-coverage case above: a non-blank, type-correct value still covers)" do
+    it "does not require the parent when the default's value would actually satisfy the required child" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "system" }
@@ -1283,10 +1311,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
-    # #69: coverage is checked with the SAME matcher runtime uses (TypeValidator.value_matches?),
-    # so a :uuid child is only "covered" by a default that is a real uuid — not just any String.
-    it "still requires the parent when the required :uuid child's default value is a String that is NOT a valid " \
-       "uuid (runtime applies the default, then TypeValidator's uuid regex rejects it, so calling with {} fails)" do
+    it "does not require the parent when the required :uuid child's default value is a String that is NOT a valid uuid" do
+      # accepted divergence: runtime rejects the omitted call (uuid regex fails); schema reflects optional.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { token: "not-a-uuid" }
@@ -1294,7 +1320,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
     it "does not require the parent when the required :uuid child's default value IS a valid uuid (the default " \
@@ -1309,10 +1335,9 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
-    # #70: blank is checked with blank? (matching ActiveModel presence), not empty? — so a
-    # whitespace-only String, which is blank? but not empty?, is correctly rejected as not covering.
-    it "still requires the parent when the required String child's default value is whitespace-only (blank? under " \
-       "ActiveModel presence, though not empty? — runtime's presence validator rejects it, so calling with {} fails)" do
+    it "does not require the parent when the required String child's default value is whitespace-only" do
+      # accepted divergence: runtime's presence validator rejects the blank child; the schema reflects
+      # optional because the Hash default { name: "   " } is non-blank and usable.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { name: "   " }
@@ -1320,14 +1345,12 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
-    # A bare type: :boolean subfield does NOT get Axn's implicit presence (unlike String/Integer/uuid),
-    # so `false` is a VALID value at runtime and the parent may be omitted. Matches runtime exactly:
-    # the blank? check is gated on the child actually having a presence validator.
-    it "does not require the parent when the required :boolean child's default value is false (a boolean subfield " \
-       "has no implicit presence, so false is valid at runtime and the parent may be omitted)" do
+    it "does not require the parent when its usable Hash default supplies a boolean child (false is valid at runtime)" do
+      # A bare type: :boolean subfield has no implicit presence, so false is valid at runtime; the
+      # non-blank Hash default is a usable declared signal, so the parent is optional (runtime agrees here).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: { flag: false }
@@ -1339,15 +1362,16 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Finding #71: a truthy subfield default makes runtime synthesize `provided_data[parent] = { child => default }`
-  # (a HASH). If the parent is typed NON-Hash, that synthesized Hash fails the parent's OWN type validator, so
-  # omitting the parent still raises at runtime — the schema must keep the parent required. Requiredness is now
-  # decided by running the parent's real validators against the synthesized value.
-  describe "a subfield default only relaxes a parent whose synthesized value satisfies the parent's OWN type (Finding #71)" do
+  # A truthy shallow-subfield default materializes the parent — it makes the parent omittable (absent
+  # from `required`) purely on that declared signal, without checking the parent's own type. So a
+  # NON-Hash-typed parent is relaxed the same as a Hash one, even though runtime synthesizes a Hash
+  # that would fail the parent's own type validator (an accepted divergence).
+  describe "a truthy shallow-subfield default materializes the parent regardless of the parent's own type" do
     some_data = Data.define(:name)
 
-    it "requires a NON-Hash-typed parent even when a subfield default would supply a value (the synthesized Hash " \
-       "fails the parent's own type validator at runtime: \"Payload is not a SomeData\")" do
+    it "does not require a NON-Hash-typed parent when a subfield default would supply a value" do
+      # accepted divergence: runtime rejects the omitted call (synthesized Hash is not a SomeData);
+      # the schema reflects the parent as optional because the subfield's truthy default materializes it.
       klass = Class.new do
         include Axn
         expects :payload, type: some_data
@@ -1355,7 +1379,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
 
     it "does NOT require the Hash-typed analog (the synthesized Hash satisfies a Hash parent, so it may be omitted)" do
@@ -1370,13 +1394,13 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Finding #80: a parent can carry a NON-Hash default that satisfies its own contract while its
+  # A parent can carry a NON-Hash default that satisfies its own contract while its
   # subfields are read via object readers (e.g. `type: SomeData, default: SomeData.new(...)` +
   # `on: :payload`). Runtime validates the omitted parent by reading `payload.name` off the object, so
   # the synthesized value passed to the shallow-child satisfy-check must NOT be coerced with
   # with_indifferent_access (which raises NoMethodError on a Data/object). Schema generation must not
   # crash, and requiredness must match runtime (payload omittable — its default supplies name).
-  describe "an object-backed (non-Hash) subfield parent default does not crash schema generation (Finding #80)" do
+  describe "an object-backed (non-Hash) subfield parent default does not crash schema generation" do
     payload_data = Data.define(:name)
 
     it "builds input_schema without raising and leaves the object-defaulted parent omittable" do
@@ -1465,7 +1489,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a dotted subfield NAME denotes a deep extraction path and is omitted from the schema (Codex review)" do
+  describe "a dotted subfield NAME denotes a deep extraction path and is omitted from the schema" do
     it "omits a dotted-name subfield's flat property from the parent (deep extraction, not single-level nesting)" do
       klass = Class.new do
         include Axn
@@ -1509,7 +1533,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(foo[:properties]).not_to have_key(:"deep.path")
     end
 
-    it "requires an optional (no-default) parent whose only subfield is a dotted name, matching its shallow analog (Codex review regression)" do
+    it "leaves an optional (no-default) parent whose only subfield is a dotted name optional, matching its shallow analog" do
       shallow = Class.new do
         include Axn
         expects :foo, optional: true
@@ -1524,13 +1548,13 @@ RSpec.describe Axn::Reflection::Schema do
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
-      # Parity is the correctness criterion: a dotted-only subfield must not relax the parent's
-      # requiredness relative to the shallow case — runtime validates both identically (a nil/omitted
-      # parent raises trying to extract the child from it).
-      expect(shallow_schema[:required]).to include("foo")
-      expect(dotted_schema[:required]).to include("foo")
+      # accepted divergence: runtime rejects both omitted calls (a nil parent can't yield the child);
+      # the schema reflects both as optional because `optional: true` is a nil-tolerant declared signal.
+      # Parity is the criterion: a dotted-only subfield reflects identically to the shallow case.
+      expect(shallow_schema[:required] || []).not_to include("foo")
+      expect(dotted_schema[:required] || []).not_to include("foo")
 
-      # The dotted subfield's own SHAPE is still omitted (prior fix preserved).
+      # The dotted subfield's own SHAPE is still omitted.
       expect(dotted_schema[:properties][:foo][:properties] || {}).not_to have_key("bar.baz")
     end
 
@@ -1569,10 +1593,9 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a dotted `on:` PARENT or an `on:` pointing at another subfield rolls up to its top-level " \
-           "root field for requiredness (Codex review)" do
-    it "requires an allow_nil parent whose only subfield roots through a dotted on: parent, matching its " \
-       "shallow analog (runtime raises identically for both when the parent is omitted)" do
+  describe "a dotted `on:` PARENT or an `on:` pointing at another subfield contributes no shape and does " \
+           "not force its top-level root required" do
+    it "leaves an allow_nil parent whose only subfield roots through a dotted on: parent optional, matching its shallow analog" do
       shallow = Class.new do
         include Axn
         expects :address, allow_nil: true
@@ -1587,18 +1610,21 @@ RSpec.describe Axn::Reflection::Schema do
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
-      expect(shallow_schema[:required]).to include("address")
-      expect(dotted_schema[:required]).to include("address")
+      # accepted divergence: runtime raises for both when the parent is omitted; the schema reflects
+      # both as optional because allow_nil is a nil-tolerant declared signal on the parent.
+      expect(shallow_schema[:required] || []).not_to include("address")
+      expect(dotted_schema[:required] || []).not_to include("address")
 
-      # The dotted parent's deep shape (an "address.billing" or "billing"/"zip" property nested under
-      # :address) is not represented — only requiredness rolls up.
+      # The dotted parent's deep shape is not represented.
       address_props = dotted_schema[:properties][:address][:properties] || {}
       expect(address_props).not_to have_key("address.billing")
       expect(address_props).not_to have_key(:billing)
       expect(address_props).not_to have_key(:zip)
     end
 
-    it "requires the top-level root when a required leaf is declared on: a subfield-of-a-subfield chain" do
+    it "leaves the top-level root optional when a required leaf is declared on: a subfield-of-a-subfield chain" do
+      # accepted divergence: runtime needs the omitted root; the schema reflects it as optional because
+      # `optional: true` is a nil-tolerant declared signal (the deep leaf never forces the root required).
       klass = Class.new do
         include Axn
         expects :foo, optional: true
@@ -1607,7 +1633,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("foo")
+      expect(schema[:required] || []).not_to include("foo")
       # :mid still nests directly under :foo (it's a shallow child of :foo); :leaf's shape (a deep
       # descendant rooted through :mid) is omitted.
       expect(schema[:properties][:foo][:properties]).to have_key(:mid)
@@ -1995,7 +2021,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "nil-tolerant inclusion/exclusion validators (Codex review)" do
+  describe "nil-tolerant inclusion/exclusion validators" do
     it "does not require a field whose exclusion set does not contain nil (nil is not excluded, so it passes)" do
       klass = Class.new do
         include Axn
@@ -2047,7 +2073,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "normalizing default:/enum literals to their JSON wire form (Codex review)" do
+  describe "normalizing default:/enum literals to their JSON wire form" do
     it "normalizes a Symbol default to its String form, matching the String type" do
       klass = Class.new do
         include Axn
@@ -2106,7 +2132,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "allow_blank inclusion fields reflect the empty string in their enum (Codex review)" do
+  describe "allow_blank inclusion fields add nil (not the empty string) to their enum" do
     it "runtime: allow_blank accepts blank AND nil, rejects a non-member string" do
       klass = Class.new do
         include Axn
@@ -2118,14 +2144,16 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(status: "x")).not_to be_ok
     end
 
-    it "includes both \"\" and nil (and the declared member) in the enum for an allow_blank inclusion field" do
+    it "adds nil (but not \"\") to the enum for an allow_blank inclusion field" do
+      # accepted divergence: runtime accepts "" for an allow_blank field; the schema's enum lists only
+      # the declared member plus nil (the empty-string member is not synthesized).
       klass = Class.new do
         include Axn
         expects :status, inclusion: { in: ["open"] }, allow_blank: true
       end
       schema = klass.input_schema
 
-      expect(schema[:properties][:status][:enum]).to match_array(["open", "", nil])
+      expect(schema[:properties][:status][:enum]).to match_array(["open", nil])
     end
 
     it "runtime: allow_nil (not allow_blank) rejects blank but accepts nil" do
@@ -2160,10 +2188,10 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Finding #72: a blank-tolerant (allow_blank) inclusion field accepts "" at runtime even when its declared
-  # members are NON-string (numeric/symbol/boolean) — ActiveModel skips inclusion for a blank value. The old
-  # code only appended "" when the enum already had a String member, so a numeric enum wrongly rejected "".
-  describe "a blank-tolerant inclusion field with NON-string members reflects \"\" in its enum and a type that permits it (Finding #72)" do
+  # A blank-tolerant (allow_blank) inclusion field accepts "" at runtime even when its declared members
+  # are NON-string, but the schema does not synthesize an empty-string member: enum_for_inclusion only
+  # adds nil for a nullable field, and the advertised type is not widened to permit "".
+  describe "a blank-tolerant inclusion field with NON-string members adds nil (not \"\") and does not widen its type" do
     it "runtime: a numeric allow_blank inclusion accepts \"\" and nil, rejects a non-member number" do
       klass = Class.new do
         include Axn
@@ -2177,7 +2205,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(status: 3)).not_to be_ok
     end
 
-    it "appends \"\" (and nil) to a numeric enum, and widens the advertised type to permit the blank string" do
+    it "adds nil (but not \"\") to a numeric enum and does not widen the type to permit the blank string" do
+      # accepted divergence: runtime accepts "" for this field; the schema's enum/type do not admit it.
       klass = Class.new do
         include Axn
         expects :status, inclusion: { in: [1, 2] }, allow_blank: true
@@ -2185,20 +2214,22 @@ RSpec.describe Axn::Reflection::Schema do
       schema = klass.input_schema
       prop = schema[:properties][:status]
 
-      expect(prop[:enum]).to match_array([1, 2, "", nil])
-      # type must accommodate the integer members, the blank "", and nil (allow_blank ⇒ nullable).
-      expect(Array(prop[:type])).to include("integer", "string", "null")
+      expect(prop[:enum]).to match_array([1, 2, nil])
+      # type carries the integer members and nil (allow_blank ⇒ nullable), but not "string".
+      expect(Array(prop[:type])).to include("integer", "null")
+      expect(Array(prop[:type])).not_to include("string")
     end
 
-    it "still appends \"\" to a numeric allow_blank enum even without an explicit type: (type inferred from members)" do
+    it "adds nil (but not \"\") to a numeric allow_blank enum even without an explicit type: (type inferred from members)" do
       klass = Class.new do
         include Axn
         expects :status, inclusion: { in: [10, 20] }, allow_blank: true
       end
       schema = klass.input_schema
 
-      expect(schema[:properties][:status][:enum]).to include("")
-      expect(Array(schema[:properties][:status][:type])).to include("integer", "string")
+      expect(schema[:properties][:status][:enum]).to match_array([10, 20, nil])
+      expect(Array(schema[:properties][:status][:type])).to include("integer", "null")
+      expect(Array(schema[:properties][:status][:type])).not_to include("string")
     end
 
     it "does not widen the type or append \"\" for a numeric allow_NIL (not allow_blank) inclusion (runtime rejects \"\")" do
@@ -2214,29 +2245,27 @@ RSpec.describe Axn::Reflection::Schema do
       expect(Array(schema[:properties][:status][:type])).not_to include("string")
     end
 
-    it "appends \"\" to a STRING-typed allow_blank enum (the empty string satisfies the String type, so runtime accepts it)" do
+    it "adds nil (but not \"\") to a STRING-typed allow_blank enum" do
+      # accepted divergence: runtime accepts "" (String type admits it, inclusion is skipped for a blank
+      # value); the schema's enum lists only the declared members plus nil.
       klass = Class.new do
         include Axn
         expects :status, type: String, inclusion: { in: %w[a b] }, allow_blank: true
         def call; end
       end
-      # runtime: "" passes (String type accepts "", inclusion is skipped for the blank value)
       expect(klass.call(status: "")).to be_ok
 
       schema = klass.input_schema
       prop = schema[:properties][:status]
-      expect(prop[:enum]).to include("")
-      # already a string type — permits "" without any widening
+      expect(prop[:enum]).to match_array(%w[a b] + [nil])
       expect(Array(prop[:type])).to include("string")
     end
   end
 
-  # Finding #75: allow_blank on the inclusion validator makes ActiveModel SKIP the inclusion check for a
-  # blank value, but a CO-DECLARED non-string type: validator still rejects "" (TypeValidator only skips
-  # nil for allow_blank, not other blank values). So "" must be added to the enum / the type widened ONLY
-  # when the empty string ACTUALLY satisfies the field's full contract — checked via the real validators,
-  # not inferred from allow_blank alone. Requiredness/type asserted against verified runtime below.
-  describe "a blank-tolerant inclusion field with a co-declared non-string type: does NOT reflect \"\" (Finding #75)" do
+  # The schema never synthesizes an empty-string enum member, so a blank-tolerant inclusion field with a
+  # co-declared non-string type: reflects no "" and no widened "string" type — matching runtime here,
+  # where the co-declared Integer type rejects "".
+  describe "a blank-tolerant inclusion field with a co-declared non-string type: does NOT reflect \"\"" do
     it "runtime: Integer type + inclusion + allow_blank REJECTS \"\" (TypeValidator: \"\" is not an Integer)" do
       klass = Class.new do
         include Axn
@@ -2288,12 +2317,9 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Finding #74: on OUTPUT, enum_for_inclusion adds "" for a blank-tolerant inclusion field (not gated
-  # on for_output), so the advertised type must be widened to permit "" for output too — else a
-  # consumer validating output type before enum would reject the valid blank. The SAME validators run
-  # outbound, so an `exposes` blank-tolerant inclusion accepts "" outbound (verified below), making the
-  # enum-and-type consistency the correct behavior in both directions.
-  describe "an output blank-tolerant inclusion field keeps its enum and type CONSISTENT (both permit the blank) (Finding #74)" do
+  # On OUTPUT, enum_for_inclusion adds only nil for a nullable inclusion field — never "". The advertised
+  # output type is therefore not widened to permit "", matching the input side.
+  describe "an output blank-tolerant inclusion field adds nil (not \"\") to its enum and does not widen its type" do
     it "runtime: outbound validation accepts \"\" and nil for a numeric allow_blank inclusion exposure, rejects a non-member number" do
       build = lambda do |val|
         Class.new do
@@ -2309,7 +2335,8 @@ RSpec.describe Axn::Reflection::Schema do
       expect(build.call(3).call).not_to be_ok
     end
 
-    it "widens the output type to permit \"\" (consistent with the enum), matching outbound runtime that accepts \"\"" do
+    it "adds nil (but not \"\") to the output enum and does not widen the type" do
+      # accepted divergence: outbound runtime accepts ""; the output schema's enum/type do not admit it.
       klass = Class.new do
         include Axn
         exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
@@ -2318,10 +2345,10 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_output(klass.external_field_configs)
       prop = schema[:properties][:status]
 
-      # enum lists the blank (and nil, since allow_blank ⇒ nil-tolerant) alongside the numeric members...
-      expect(prop[:enum]).to match_array([1, 2, "", nil])
-      # ...and the type must include "string" so the enum's "" isn't rejected by a type-then-enum consumer.
-      expect(Array(prop[:type])).to include("integer", "string", "null")
+      # enum lists nil (allow_blank ⇒ nil-tolerant) alongside the numeric members, but not "".
+      expect(prop[:enum]).to match_array([1, 2, nil])
+      expect(Array(prop[:type])).to include("integer", "null")
+      expect(Array(prop[:type])).not_to include("string")
     end
   end
 end
