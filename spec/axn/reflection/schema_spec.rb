@@ -30,7 +30,7 @@ RSpec.describe Axn::Reflection::Schema do
     klass = Class.new do
       include Axn
       exposes :status, inclusion: { in: [nil, "open"] }
-      def call = expose!(status: "open")
+      def call = expose(status: "open")
     end
     schema = described_class.build_output(klass.external_field_configs)
     expect(schema[:properties][:status][:enum]).to eq(["open"])
@@ -56,7 +56,7 @@ RSpec.describe Axn::Reflection::Schema do
         include Axn
         exposes :a, type: String
         exposes :b, type: String, allow_nil: true
-        def call = expose!(a: "hi")
+        def call = expose(a: "hi")
       end
       schema = described_class.build_output(klass.external_field_configs)
 
@@ -79,7 +79,7 @@ RSpec.describe Axn::Reflection::Schema do
         include Axn
         exposes :a, type: String
         exposes :b, type: String, allow_nil: true
-        def call = expose!(a: "hi")
+        def call = expose(a: "hi")
       end
       serialized = Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)
       expect(serialized.keys).to contain_exactly("a", "b")
@@ -305,7 +305,7 @@ RSpec.describe Axn::Reflection::Schema do
       klass = Class.new do
         include Axn
         exposes :x, validate: ->(_v) { ran = true }
-        def call = expose!(x: "hi")
+        def call = expose(x: "hi")
       end
 
       expect { described_class.build_output(klass.external_field_configs) }.not_to raise_error
@@ -385,7 +385,7 @@ RSpec.describe Axn::Reflection::Schema do
       klass = Class.new do
         include Axn
         exposes :token, type: { klass: String, if: ->(_r) { ran = true } }
-        def call = expose!(token: "hi")
+        def call = expose(token: "hi")
       end
 
       expect { described_class.build_output(klass.external_field_configs) }.not_to raise_error
@@ -568,7 +568,7 @@ RSpec.describe Axn::Reflection::Schema do
     klass = Class.new do
       include Axn
       exposes :status, type: Symbol
-      def call = expose!(status: :ok)
+      def call = expose(status: :ok)
     end
     schema = described_class.build_output(klass.external_field_configs)
     expect(schema[:properties][:status]).to include(type: "string")
@@ -579,7 +579,7 @@ RSpec.describe Axn::Reflection::Schema do
     klass = Class.new do
       include Axn
       exposes :amount, type: BigDecimal
-      def call = expose!(amount: BigDecimal("3.14"))
+      def call = expose(amount: BigDecimal("3.14"))
     end
     schema = described_class.build_output(klass.external_field_configs)
     expect(schema[:properties][:amount]).to include(type: "number")
@@ -2324,7 +2324,7 @@ RSpec.describe Axn::Reflection::Schema do
       klass = Class.new do
         include Axn
         exposes :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
-        def call = expose!(status: 1)
+        def call = expose(status: 1)
       end
       schema = described_class.build_output(klass.external_field_configs)
       prop = schema[:properties][:status]
@@ -2357,7 +2357,7 @@ RSpec.describe Axn::Reflection::Schema do
       klass = Class.new do
         include Axn
         exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
-        def call = expose!(status: 1)
+        def call = expose(status: 1)
       end
       schema = described_class.build_output(klass.external_field_configs)
       prop = schema[:properties][:status]

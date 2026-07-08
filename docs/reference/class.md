@@ -658,3 +658,7 @@ These surface as ordinary, recoverable validation errors (a tool client simply g
 
 Only single-level subfields are represented; deeper nesting (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validates at runtime but is omitted from the schema for now.
 
+::: warning Ruby-object input types need coercion
+The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. But core does **not** coerce inbound values: validation wants an actual `Date`/`Symbol`/`Time` object, so a JSON client sending the string `"2026-07-08"` or `"active"` is rejected. This round-trips cleanly on the **output** side (a `Date` result serializes to that string), but for **inputs** it's the consuming adapter's job to coerce the JSON scalar into the Ruby type (or declare the input as `type: String` and parse it in your action). Prefer JSON-native input types (`String`, `Integer`, `:boolean`, …) for fields a tool client will populate directly.
+:::
+
