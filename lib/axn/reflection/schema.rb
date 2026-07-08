@@ -109,10 +109,11 @@ module Axn
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
-      # validators tolerate a nil/omitted value. Output requiredness ignores defaults: every exposed key
-      # is always serialized (see build_output), so `for_output` short-circuits to "not optional".
-      def optional_for_schema?(config, for_output: false, subfield: false)
-        return false if for_output
+      # validators tolerate a nil/omitted value. Top-level `exposes` requiredness is NOT decided here:
+      # `build_output` marks every top-level exposed key required directly (the serializer always emits
+      # them). This method reaches a `for_output` config only for a nested shape member, which is
+      # serialized from the actual value and so honors its own `optional:`/`allow_nil:`/`default:`.
+      def optional_for_schema?(config, subfield: false)
         return true if usable_default?(config, subfield:)
 
         nil_accepted?(config)
@@ -301,7 +302,7 @@ module Axn
         required = []
         members.each do |m|
           props[m.field] = build_property(m, for_output:).compact
-          required << m.field.to_s unless optional_for_schema?(m, for_output:)
+          required << m.field.to_s unless optional_for_schema?(m)
         end
         [props, required]
       end
