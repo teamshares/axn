@@ -581,6 +581,26 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:status]).to include(type: "string")
   end
 
+  it "maps a Numeric subclass (BigDecimal) to a JSON number on output, not the object fallback (Codex review)" do
+    require "bigdecimal"
+    klass = Class.new do
+      include Axn
+      exposes :amount, type: BigDecimal
+      def call = expose!(amount: BigDecimal("3.14"))
+    end
+    schema = described_class.build_output(klass.external_field_configs)
+    expect(schema[:properties][:amount]).to include(type: "number")
+  end
+
+  it "maps a Numeric subclass (Rational) to a JSON number on input" do
+    klass = Class.new do
+      include Axn
+      expects :ratio, type: Rational
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(schema[:properties][:ratio]).to include(type: "number")
+  end
+
   it "nests subfields under a string on: parent" do
     klass = Class.new do
       include Axn

@@ -530,6 +530,12 @@ module Axn
           return result
         end
 
+        # A Numeric SUBCLASS not in TYPE_MAP (BigDecimal, Rational, …) still serializes to a JSON
+        # number (Values.serialize_value coerces non-Integer/Float Numerics via Float()), so reflect
+        # it as "number" rather than falling through to the object/string fallback below — else the
+        # output schema would say "object" for a value serialized as a number.
+        return { type: "number" } if klass.is_a?(Class) && klass < Numeric
+
         return { type: "object" } if for_output
 
         { type: "string" }
