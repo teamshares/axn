@@ -3,10 +3,11 @@
 require "date"
 require "time"
 
-# NOTE: do NOT require "active_support/core_ext/object/json" here. Doing so makes EVERY object
-# respond_to?(:as_json), which would short-circuit the to_h/to_s fallbacks below and change
-# serialization behavior versus the axn-mcp original. Rely on objects that define as_json themselves
-# (ActiveRecord models, etc.), exactly as the original did.
+# NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
+# — which adds a generic Object#as_json (an instance-variable dump). To avoid that bypassing a value
+# object's declared `to_h` shape, `serialize_value` only follows `as_json` when the object defines its
+# OWN (see custom_as_json?); a plain object with a meaningful `to_h` serializes via `to_h` in Rails and
+# non-Rails alike.
 
 module Axn
   module Reflection
@@ -49,7 +50,7 @@ module Axn
           # outside Rails, so `serialize_exposed` output validates against the reflected schema.
           value.iso8601
         else
-          if value.respond_to?(:as_json)
+          if follow_as_json?(value)
             serialize_value(value.as_json)
           elsif value.respond_to?(:to_h)
             serialize_value(value.to_h)
@@ -57,6 +58,16 @@ module Axn
             value.to_s
           end
         end
+      end
+
+      # Whether to serialize via `as_json` rather than `to_h`. Follow `as_json` when the object defines
+      # its OWN — on its class or an included module (e.g. an ActiveRecord model) — or when there's no
+      # `to_h` to prefer. ActiveSupport's generic Object#as_json (added on Object in a Rails app) just
+      # dumps instance_values, so a value object with a meaningful `to_h` should use that instead.
+      def follow_as_json?(value)
+        return false unless value.respond_to?(:as_json)
+
+        value.method(:as_json).owner != Object || !value.respond_to?(:to_h)
       end
     end
   end
