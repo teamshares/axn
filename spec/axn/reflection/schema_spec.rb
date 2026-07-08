@@ -608,7 +608,7 @@ RSpec.describe Axn::Reflection::Schema do
       expects :b, on: :payload, type: Integer, default: 1
     end
     expect(described_class.build_input(partial.internal_field_configs, partial.subfield_configs)[:required]).to include("payload")
-    expect(described_class.build_input(covered.internal_field_configs, covered.subfield_configs)[:required]).not_to include("payload")
+    expect(Array(described_class.build_input(covered.internal_field_configs, covered.subfield_configs)[:required])).not_to include("payload")
   end
 
   it "keeps a non-object parent's declared type and omits its subfield shape (a type: Array parent is not rewritten to object)" do
