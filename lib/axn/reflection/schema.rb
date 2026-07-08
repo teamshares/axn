@@ -191,7 +191,9 @@ module Axn
       # String leaves are duped so a consumer mutating the returned schema can't reach the stored contract.
       def normalize_schema_literal(value)
         case value
-        when Hash then value.transform_values { |v| normalize_schema_literal(v) }
+        # Dup mutable String keys too (transform_values alone would share them with the stored
+        # contract, so a consumer mutating a returned key in place could corrupt FieldConfig#default).
+        when Hash then value.each_with_object({}) { |(k, v), h| h[k.is_a?(String) ? k.dup : k] = normalize_schema_literal(v) }
         when Array then value.map { |v| normalize_schema_literal(v) }
         when String then value.dup
         when Symbol then value.to_s
@@ -231,7 +233,7 @@ module Axn
           # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
           # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
           # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
-          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && blank_tolerant?(config))
+          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
         end
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
@@ -432,10 +434,13 @@ module Axn
         nil_accepted?(config)
       end
 
-      # Whether any validator declares `allow_blank: true` (folded into the type validator by
-      # `optional:`/`allow_blank:`), i.e. a blank value is tolerated.
-      def blank_tolerant?(config)
-        config.validations.any? { |_key, opt| opt.is_a?(Hash) && opt[:allow_blank] }
+      # Whether the TYPE validator itself tolerates a blank value (`type: :uuid, allow_blank: true`
+      # folds `allow_blank` into the type validator's options). Only the type validator's own option
+      # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
+      # `TypeValidator` accept `""`, so the format must stay.
+      def type_allows_blank?(config)
+        type = config.validations[:type]
+        type.is_a?(Hash) && type[:allow_blank] == true
       end
     end
   end
