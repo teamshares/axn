@@ -62,19 +62,14 @@ Metrics/ClassLength:
 Metrics/MethodLength:
   Max: 70
 
-# Axn::Reflection::Schema.json_type_for has complex type inference logic by design
 Metrics/PerceivedComplexity:
   Max: 20
-  Exclude:
-    - 'lib/axn/reflection/schema.rb'
 
 Metrics/AbcSize:
   Max: 60
 
 Metrics/CyclomaticComplexity:
   Max: 20
-  Exclude:
-    - 'lib/axn/reflection/schema.rb'
 
 Lint/EmptyBlock:
   Enabled: false
