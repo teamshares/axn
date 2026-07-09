@@ -31,6 +31,18 @@ RSpec.describe RuboCop::Cop::Axn::AmbientContextBypass do
     RUBY
   end
 
+  it "flags a Current read inside a class that includes the fully-qualified ::Axn" do
+    expect_offense(<<~RUBY)
+      class Foo
+        include ::Axn
+        def call
+          do_thing(Current.company)
+                   ^^^^^^^^^^^^^^^ Axn/AmbientContextBypass: Read ambient state via `expects :company, on: :ambient_context` instead of `Current` directly.
+        end
+      end
+    RUBY
+  end
+
   it "does not flag a Current read in a plain class that does not include Axn (false-positive guard)" do
     expect_no_offenses(<<~RUBY)
       class UsersController

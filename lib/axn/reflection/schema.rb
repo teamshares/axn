@@ -187,8 +187,11 @@ module Axn
       # Deep-copy a reflected literal (a `default:` value or an inclusion enum member) and normalize any
       # leaf whose JSON wire form differs from its Ruby form — Time/DateTime/Date → iso8601 String,
       # Symbol → String, non-Integer/Float Numeric (BigDecimal/Rational) → Float — so the emitted
-      # `default`/`enum` matches the property's advertised type (mirrors Values.serialize_value). Mutable
-      # String leaves are duped so a consumer mutating the returned schema can't reach the stored contract.
+      # `default`/`enum` matches the property's advertised type. Scalar wire coercion is delegated to
+      # Values.serialize_value (the single source of truth for it), so the two never drift. Mutable
+      # String leaves are duped so a consumer mutating the returned schema can't reach the stored
+      # contract; an unrecognized object is left as-is (schema literals are already simple values,
+      # so this deliberately does NOT follow Values.serialize_value's as_json/to_h coercion).
       def normalize_schema_literal(value)
         case value
         # Dup mutable String keys too (transform_values alone would share them with the stored
@@ -196,16 +199,7 @@ module Axn
         when Hash then value.each_with_object({}) { |(k, v), h| h[k.is_a?(String) ? k.dup : k] = normalize_schema_literal(v) }
         when Array then value.map { |v| normalize_schema_literal(v) }
         when String then value.dup
-        when Symbol then value.to_s
-        when Time, DateTime, Date then value.iso8601
-        when Numeric
-          return value if value.is_a?(Integer) || value.is_a?(Float)
-
-          begin
-            Float(value)
-          rescue ArgumentError, TypeError, RangeError
-            value.to_s
-          end
+        when Symbol, Time, DateTime, Date, Numeric then Values.serialize_value(value)
         else value
         end
       end

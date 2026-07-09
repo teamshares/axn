@@ -38,9 +38,9 @@ module RuboCop
           (send {(const nil? :Current) (const (cbase) :Current)} $_)
         PATTERN
 
-        # Exact (non-recursive) match for an `include Axn` statement.
+        # Exact (non-recursive) match for an `include Axn` / `include ::Axn` statement.
         def_node_matcher :axn_include?, <<~PATTERN
-          (send nil? :include (const nil? :Axn))
+          (send nil? :include (const {nil? (cbase)} :Axn))
         PATTERN
 
         def on_send(node)

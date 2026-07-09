@@ -5,7 +5,7 @@ module Axn
     # `ambient_context` is a reserved, always-present parent on every Axn. Its reader returns a Hash
     # ({} by default) that subfields extract from via `expects :x, on: :ambient_context`. Reads are
     # declaration-gated (a reader exists only for declared subfields), and the hash is filtered to the
-    # declared ambient keys (Task 9) so it never carries a merged dump of process-wide Current state.
+    # declared ambient keys so it never carries a merged dump of process-wide Current state.
     module AmbientContext
       PARENT = :ambient_context
 
