@@ -397,10 +397,12 @@ module Axn
         return if required.include?(id_field.to_s)
 
         # The generated id is omittable when the model field itself is, OR when an explicitly-declared
-        # `<field>_id` field is optional (e.g. carries a default) — inbound defaults run before the model
-        # lookup, so that default supplies the id and the omitted call succeeds.
+        # `<field>_id` field carries a usable DEFAULT — inbound defaults run before the model lookup, so
+        # that default supplies the id and the omitted call succeeds. A merely nullable/optional explicit
+        # id (no default) does NOT help: omitting both leaves the lookup token nil and the model
+        # validation fails, so the id stays required.
         explicit_id = field_configs.find { |c| c.field == id_field }
-        return if optional_for_schema?(config) || (explicit_id && field_optional?(explicit_id, []))
+        return if optional_for_schema?(config) || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         required << id_field.to_s
       end

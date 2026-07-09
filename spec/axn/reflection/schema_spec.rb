@@ -928,6 +928,19 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("company_id")
     end
 
+    it "DOES require the model <field>_id when an explicit <field>_id is only nullable (no default supplies the token)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, optional: true
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      # optional-without-default doesn't supply the lookup token: omitting both leaves the model reader
+      # nil and validation fails at runtime, so the id must stay required.
+      expect(schema[:required]).to include("company_id")
+    end
+
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
       klass = Class.new do
         include Axn
