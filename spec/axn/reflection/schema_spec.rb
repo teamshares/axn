@@ -959,6 +959,30 @@ RSpec.describe Axn::Reflection::Schema do
       expect(Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)["cfg"]).to eq({ "name" => "x" })
     end
 
+    it "does not advertise object OUTPUT for a shaped class with a custom to_h/as_json (statically unknowable)" do
+      # Values.serialize_value follows a custom as_json before to_h, and either can emit a scalar/array or
+      # a differently-keyed hash — so a custom value class isn't provably a member-keyed object. Only
+      # Hash/:params/Data/Struct (language-guaranteed member-keyed) get an object OUTPUT schema.
+      custom = Class.new do
+        def initialize(name) = (@name = name)
+
+        attr_reader :name
+
+        def to_h = { name: @name }
+        # own as_json wins over to_h in serialize_value
+        def as_json(*) = "scalar-#{@name}"
+      end
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: custom) { field :name, type: String }
+        def call = nil
+      end
+
+      out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+      expect(out).not_to have_key(:type)
+      expect(out).not_to have_key(:properties)
+    end
+
     it "allows null alongside object for a nil-allowed class-shaped field" do
       cfg_klass = Data.define(:name)
       klass = Class.new do

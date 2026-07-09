@@ -96,16 +96,19 @@ module Axn
       end
 
       # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
-      # the shape's properties on OUTPUT matches serialize_exposed). True only when the declared type
-      # converts to a Hash: `:params`, an untyped shape (caller supplies a Hash), or a class defining
-      # `to_h` (Hash/Data/Struct/…). A reader-only object with no `to_h` serializes to a String (to_s)
-      # outside Rails — and to an instance-variable dump (not the shape's reader names) via Object#as_json
-      # inside Rails — so its output isn't a member-keyed object either way.
+      # the shape's properties on OUTPUT matches serialize_exposed). Only asserted for types with a
+      # language-guaranteed member-keyed serialization: `:params`, an untyped shape (caller supplies a
+      # Hash), Hash, Data, or Struct. Any other class is statically unknowable — its own `to_h`/`as_json`
+      # (which Values.serialize_value follows, as_json first) may emit a scalar/array/differently-keyed
+      # hash, and a reader-only class with neither serializes to a String (to_s) / instance-variable dump
+      # (Object#as_json) — so those stay untyped on output rather than promise an object.
       def shape_serializes_to_object?(config)
         type_klass = config.validations.dig(:type, :klass)
         return true if type_klass.nil?
 
-        Array(type_klass).all? { |k| k == :params || (k.is_a?(Class) && k.method_defined?(:to_h)) }
+        Array(type_klass).all? do |k|
+          k == :params || (k.is_a?(Class) && (k <= Hash || k <= Data || k <= Struct))
+        end
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
