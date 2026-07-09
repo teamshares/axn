@@ -648,12 +648,12 @@ FindWidget.input_schema
 A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present, and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:` / `presence: false`). Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
 
 ::: warning Requiredness is advisory, not a runtime guarantee
-To keep reflection cheap and side-effect-free, the schema is built from your **declarations**, not by test-running your validators against each default. In two narrow cases the reflected `required` can therefore disagree with what `Axn.call` actually accepts — always because the contract itself is self-contradictory:
+To keep reflection cheap and side-effect-free, the schema is built from your **declarations**, not by test-running your validators against each default. In two narrow cases the reflected `required` can therefore disagree with what `Axn.call` actually accepts:
 
-- a **non-blank but invalid default** (e.g. `expects :name, type: String, default: 123`) is reflected as optional, but omitting it still fails validation at runtime;
-- a **required nested subfield under an optional parent** (e.g. an `allow_nil:` parent) doesn't force the parent required, so the parent may reflect as optional though a real call needs it.
+- a **non-blank but invalid default** (e.g. `expects :name, type: String, default: 123`) is reflected as optional, but omitting it still fails validation at runtime — a self-contradictory contract;
+- a **required _deep_ subfield** — reached through a dotted `on:` path or a subfield-of-a-subfield chain — under an optional (`allow_nil:`/`optional:`) parent. Only single-level subfields are represented (see below), so a deep required descendant can't force its top-level parent into `required`, and the parent may reflect as optional though a real call needs it. (A required **shallow** subfield *does* force its parent required.)
 
-These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Fix the contract — give the default a valid value, or drop the parent's `allow_nil:` — and the schema and runtime agree.
+These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Give the default a valid value, drop the parent's `allow_nil:`, or send the parent explicitly, and the schema and runtime agree.
 :::
 
 Only single-level subfields are represented; deeper nesting (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validates at runtime but is omitted from the schema for now.

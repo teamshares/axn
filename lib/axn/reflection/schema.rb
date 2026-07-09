@@ -351,8 +351,10 @@ module Axn
 
         # A Numeric subclass not in TYPE_MAP (BigDecimal, Rational, …) serializes to a JSON number
         # (Values.serialize_value coerces it via Float()), so reflect it as "number" rather than the
-        # object/string fallback.
-        return { type: "number" } if klass.is_a?(Class) && klass < Numeric
+        # object/string fallback. Complex is the exception: Float() rejects it, so serialize_value
+        # falls back to its String form — reflecting "number" would contradict serialize_exposed, so
+        # let it drop to the unknown-class handling below (untyped on output, permissive string input).
+        return { type: "number" } if klass.is_a?(Class) && klass < Numeric && !(klass <= Complex)
 
         # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
         # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it

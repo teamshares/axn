@@ -594,6 +594,22 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:ratio]).to include(type: "number")
   end
 
+  it "does NOT map Complex (a non-Float-coercible Numeric) to a number on output — it serializes to a String" do
+    # Values.serialize_value emits Complex#to_s (Float(Complex) raises), so a "number" type would
+    # contradict serialize_exposed; leave it untyped on output and permissive-string on input.
+    klass = Class.new do
+      include Axn
+      exposes :z, type: Complex
+      expects :w, type: Complex
+      def call = expose(z: Complex(1, 2))
+    end
+    out = described_class.build_output(klass.external_field_configs)
+    inp = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+    expect(out[:properties][:z]).not_to have_key(:type)
+    expect(inp[:properties][:w]).to include(type: "string")
+    expect(Axn::Reflection::Values.serialize_value(Complex(1, 2))).to be_a(String)
+  end
+
   it "requires a parent when a shallow subfield has a default but a sibling shallow subfield is required (the synthesized parent misses the sibling)" do
     partial = Class.new do
       include Axn
