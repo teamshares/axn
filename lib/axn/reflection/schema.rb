@@ -150,22 +150,26 @@ module Axn
       end
 
       # A default lets the client omit the field (Axn applies it before validation). We judge usability
-      # by declared SHAPE only — present, not a Proc, and not empty — never by running the field's
-      # validators. An empty default (`{}`/`""`/`[]`) can't satisfy the auto-`presence` a non-optional
-      # field carries, so it doesn't make the field optional; a Proc default is uninspectable here.
-      # For a subfield, only a truthy default is applied at runtime (`next unless config.default`), so a
-      # falsey subfield default never counts.
+      # by declared SHAPE only — present, not a Proc — never by running the field's validators. A Proc
+      # default is uninspectable here. For a subfield, only a truthy default is applied at runtime
+      # (`next unless config.default`), so a falsey subfield default never counts.
+      #
+      # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when no active presence
+      # validator would reject the synthesized blank: a non-optional field carries `presence: true` and so
+      # stays required, but a `presence: false` field (or a type like `:params` that carries no presence)
+      # accepts the blank and is optional. (A blank rejected by some OTHER validator — e.g. length — is a
+      # self-contradictory contract: the same accepted divergence as a non-blank invalid default, where
+      # the schema reflects optional though the omitted call fails at runtime.)
       #
       # The emptiness check is limited to literal containers (Hash/Array/String): reflection must stay
       # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
-      # other lazy collection) could issue a query or run user code. A non-literal default is treated as
-      # present (usable).
+      # other lazy collection) could issue a query or run user code. A non-literal default is present.
       def usable_default?(config, subfield:)
         return false unless config.respond_to?(:default)
 
         value = config.default
         return false if value.nil? || value.is_a?(Proc)
-        return false if literal_container?(value) && value.empty?
+        return false if literal_container?(value) && value.empty? && config.validations[:presence]
 
         subfield ? !!value : true
       end

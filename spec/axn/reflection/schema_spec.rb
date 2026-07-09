@@ -137,6 +137,24 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
+    it "does NOT require a params field whose blank {} default has no presence to reject it (runtime: call ok)" do
+      klass = Class.new do
+        include Axn
+        expects :p, type: :params, default: {}
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("p")
+    end
+
+    it "does NOT require a presence: false field whose blank {} default is accepted at runtime" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, presence: false, default: {}
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
     it "does NOT require a String field whose non-blank default \"x\" satisfies the contract (runtime: call({}) ok)" do
       klass = Class.new do
         include Axn
