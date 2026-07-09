@@ -343,6 +343,14 @@ module Axn
         return { type: "string", format: "uuid" } if klass == :uuid
         return { type: "object" } if klass == :params
 
+        # A declared type that ADMITS a Complex value (`type: Numeric` or `type: Complex`, i.e. Complex is
+        # the class or one of its ancestors) can serialize to a JSON number (real Numerics) OR a String
+        # (Complex — Float() rejects it, so Values.serialize_value falls back to to_s). Its output wire
+        # form isn't knowable from the declaration, so leave it UNTYPED on output rather than assert
+        # "number" the serialized value could contradict. Input still resolves below: `Numeric` maps to
+        # "number" (a JSON number is a real Numeric and validates), `Complex` to the permissive "string".
+        return {} if for_output && klass.is_a?(Class) && klass >= Complex
+
         if TYPE_MAP.key?(klass)
           result = { type: TYPE_MAP[klass] }
           result[:format] = FORMAT_MAP[klass] if FORMAT_MAP.key?(klass)
@@ -351,9 +359,9 @@ module Axn
 
         # A Numeric subclass not in TYPE_MAP (BigDecimal, Rational, …) serializes to a JSON number
         # (Values.serialize_value coerces it via Float()), so reflect it as "number" rather than the
-        # object/string fallback. Complex is the exception: Float() rejects it, so serialize_value
-        # falls back to its String form — reflecting "number" would contradict serialize_exposed, so
-        # let it drop to the unknown-class handling below (untyped on output, permissive string input).
+        # object/string fallback. Complex is the exception: Float() rejects it, so on input it drops to
+        # the permissive "string" below (a JSON client can't send a Complex anyway; output is handled
+        # above).
         return { type: "number" } if klass.is_a?(Class) && klass < Numeric && !(klass <= Complex)
 
         # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
