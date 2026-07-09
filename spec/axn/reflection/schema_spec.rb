@@ -2597,5 +2597,34 @@ RSpec.describe Axn::Reflection::Schema do
       # the element with a custom == is not nil, and nil isn't in the set ⇒ not nullable
       expect(Array(klass.input_schema[:properties][:b][:type])).not_to include("null")
     end
+
+    it "does not traverse an Array/Hash SUBCLASS default when normalizing the schema literal" do
+      evil_container = Class.new(Array) do
+        def map(*) = raise("side effect: subclass map invoked during reflection")
+        def each_with_object(*) = raise("side effect: subclass each_with_object invoked during reflection")
+      end
+      seeded = evil_container.new([1, 2])
+      klass = Class.new do
+        include Axn
+        expects :a, default: seeded
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "detects nil in a NULLABLE enum by identity, without dispatching == on members" do
+      evil_elem = Class.new do
+        def ==(_other) = raise("side effect: member == invoked during reflection")
+      end
+      element = evil_elem.new
+      klass = Class.new do
+        include Axn
+        expects :b, inclusion: { in: [element, "x"] }, allow_nil: true
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
   end
 end

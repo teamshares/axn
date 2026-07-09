@@ -234,14 +234,21 @@ module Axn
       # contract; an unrecognized object is left as-is (schema literals are already simple values,
       # so this deliberately does NOT follow Values.serialize_value's as_json/to_h coercion).
       def normalize_schema_literal(value)
-        case value
-        # Dup mutable String keys too (transform_values alone would share them with the stored
-        # contract, so a consumer mutating a returned key in place could corrupt FieldConfig#default).
-        when Hash then value.each_with_object({}) { |(k, v), h| h[k.is_a?(String) ? k.dup : k] = normalize_schema_literal(v) }
-        when Array then value.map { |v| normalize_schema_literal(v) }
-        when String then value.dup
-        when Symbol, Time, DateTime, Date, Numeric then Values.serialize_value(value)
-        else value
+        # Only EXACT built-in containers are traversed/duped (instance_of?, not is_a?): an Array/Hash/
+        # String SUBCLASS could override map/each_with_object/dup with user code, and reflection must stay
+        # side-effect-free — so a subclass (like any other unrecognized object) is left opaque.
+        if value.instance_of?(Hash)
+          # Dup mutable String keys too (leaving them shared would let a consumer mutating a returned key
+          # in place corrupt FieldConfig#default).
+          value.each_with_object({}) { |(k, v), h| h[k.instance_of?(String) ? k.dup : k] = normalize_schema_literal(v) }
+        elsif value.instance_of?(Array)
+          value.map { |v| normalize_schema_literal(v) }
+        elsif value.instance_of?(String)
+          value.dup
+        elsif value.is_a?(Symbol) || value.is_a?(Time) || value.is_a?(Date) || value.is_a?(Numeric)
+          Values.serialize_value(value)
+        else
+          value
         end
       end
 
@@ -252,7 +259,8 @@ module Axn
         members = normalize_schema_literal(enum_values)
         return members.compact unless nullable
 
-        members.include?(nil) ? members : members + [nil]
+        # Identity check, not include?/==: an enum member with a custom `==` must not run during reflection.
+        members.any? { |m| m.equal?(nil) } ? members : members + [nil]
       end
 
       def build_property(config, for_output: false, subfield: false)
