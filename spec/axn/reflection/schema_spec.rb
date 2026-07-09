@@ -955,6 +955,19 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:company_id][:type]).to eq("string")
     end
 
+    it "strips the null branch from a required NESTED model id whose explicit subfield is typed-nullable" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :company_id, on: :payload, type: String, allow_nil: true
+        expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :find }
+      end
+      payload = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+      expect(payload[:required]).to include("company_id")
+      expect(payload[:properties][:company_id][:type]).to eq("string") # no "null"
+    end
+
     it "over-requires the parent of a nested model: subfield with a sibling defaulted id (accepted divergence)" do
       # Runtime synthesizes `payload` and the sibling id default supplies the token, so omitting `payload`
       # succeeds — but reconciling a nested self-referential id/model contract isn't attempted; the parent
