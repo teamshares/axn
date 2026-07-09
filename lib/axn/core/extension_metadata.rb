@@ -25,11 +25,12 @@ module Axn
           self._axn_extension_metadata = _axn_extension_metadata.merge(adapter => merged)
         end
 
-        # Deep-copies Hash/Array container structure, plus mutable String leaves, so a caller
-        # mutating the returned metadata (or a nested Hash/Array/String within it) can't leak into
-        # the stored copy or into subclasses. Deliberately NOT Marshal/ActiveSupport#deep_dup:
-        # metadata values can be Class references or Procs, which must stay shared by identity,
-        # not be cloned.
+        # Deep-copies Hash/Array container structure, plus mutable String leaf VALUES, so a caller
+        # mutating the returned metadata (or a nested Hash/Array/String value within it) can't leak into
+        # the stored copy or into subclasses. Hash KEYS need no copying: Ruby dups-and-freezes a String
+        # key on insertion, so the shared key can't be mutated in place (and re-inserting a dup would just
+        # freeze it again). Deliberately NOT Marshal/ActiveSupport#deep_dup: metadata values can be Class
+        # references or Procs, which must stay shared by identity, not be cloned.
         def _deep_dup_containers(obj)
           case obj
           when Hash then obj.transform_values { |v| _deep_dup_containers(v) }

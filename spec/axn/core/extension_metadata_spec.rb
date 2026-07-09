@@ -64,6 +64,18 @@ RSpec.describe "Axn extension_metadata" do
     expect(klass.extension_metadata(:mcp)[:title]).to eq("T")
   end
 
+  it "cannot corrupt a stored nested-Hash String key via the returned copy (Ruby freezes Hash string keys)" do
+    klass = Class.new { include Axn }
+    klass.set_extension_metadata(:mcp, schema: { "id" => 1 })
+
+    returned_key = klass.extension_metadata(:mcp)[:schema].keys.first
+    # Ruby dups-and-freezes String keys on insertion, so in-place mutation is impossible — the getter
+    # doesn't need to copy keys (a re-inserted dup would just be frozen again).
+    expect(returned_key).to be_frozen
+    expect { returned_key << "_hack" }.to raise_error(FrozenError)
+    expect(klass.extension_metadata(:mcp)[:schema].keys.first).to eq("id")
+  end
+
   it "preserves a Class-ref metadata value by identity (Bug BB — no Marshal/deep_dup)" do
     some_class = Struct.new(:foo)
     klass = Class.new { include Axn }
