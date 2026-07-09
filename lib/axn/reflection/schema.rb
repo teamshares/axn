@@ -100,8 +100,14 @@ module Axn
       # subfield defaults: at least one shallow subfield supplies a value (so the synthesized parent isn't
       # blank) AND every shallow subfield is itself optional or defaulted — otherwise omitting the parent
       # leaves a required sibling unsatisfied and the call fails.
+      #
+      # This synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` materializes a
+      # missing parent as `{}` before validation, which satisfies a Hash/`:params`/untyped parent's own
+      # type but not a non-object one (`type: Array`, a typed object class) — that parent's top-level type
+      # validator rejects the `{}`, so omitting it still fails at runtime and it must stay required.
       def field_optional?(config, shallow_subfields)
         return true if optional_for_schema?(config)
+        return false unless object_shaped?(config)
 
         shallow = Array(shallow_subfields)
         shallow.any? { |c| usable_default?(c, subfield: true) } &&

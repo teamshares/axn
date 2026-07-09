@@ -1410,16 +1410,16 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # A truthy shallow-subfield default materializes the parent — it makes the parent omittable (absent
-  # from `required`) purely on that declared signal, without checking the parent's own type. So a
-  # NON-Hash-typed parent is relaxed the same as a Hash one, even though runtime synthesizes a Hash
-  # that would fail the parent's own type validator (an accepted divergence).
-  describe "a truthy shallow-subfield default materializes the parent regardless of the parent's own type" do
+  # A truthy shallow-subfield default only materializes an OBJECT-shaped parent: runtime synthesizes a
+  # missing parent as `{}` (apply_defaults_for_subfields!), which satisfies a Hash/`:params`/untyped
+  # parent's own type but not a non-object one. A NON-Hash-typed parent's top-level type validator
+  # rejects the synthesized `{}`, so omitting it still fails at runtime and it stays required.
+  describe "a truthy shallow-subfield default materializes only an object-shaped parent" do
     some_data = Data.define(:name)
 
-    it "does not require a NON-Hash-typed parent when a subfield default would supply a value" do
-      # accepted divergence: runtime rejects the omitted call (synthesized Hash is not a SomeData);
-      # the schema reflects the parent as optional because the subfield's truthy default materializes it.
+    it "keeps a NON-Hash-typed parent required even when a subfield default would supply a value" do
+      # runtime rejects the omitted call (the synthesized `{}` is not a SomeData), so the schema must
+      # match by keeping the parent required rather than advertising it as omittable.
       klass = Class.new do
         include Axn
         expects :payload, type: some_data
@@ -1427,7 +1427,18 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:required] || []).to include("payload")
+    end
+
+    it "keeps a type: Array parent required even when every shallow subfield has a default" do
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array
+        expects :count, on: :items, type: Integer, default: 5
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).to include("items")
     end
 
     it "does NOT require the Hash-typed analog (the synthesized Hash satisfies a Hash parent, so it may be omitted)" do
