@@ -290,7 +290,9 @@ module Axn
 
         if (inclusion = config.validations[:inclusion])
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.is_a?(Array)
+          # Exact Array only: an Array subclass could override the traversal used to build the enum, and
+          # reflection must not run user code. A subclass set simply reflects no enum.
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.instance_of?(Array)
         end
 
         apply_structured_schema!(prop, config, for_output:)
@@ -429,7 +431,8 @@ module Axn
         if validations[:inclusion]
           inclusion = validations[:inclusion]
           enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          if enum_values.is_a?(Array) && enum_values.any?
+          # Exact Array only (see build_property): don't traverse an Array subclass to infer the type.
+          if enum_values.instance_of?(Array) && enum_values.any?
             types = enum_values.map { |v| enum_scalar_type(v) }.uniq
             return { type: types.first } if types.size == 1 && types.first
 
@@ -494,7 +497,7 @@ module Axn
 
         collection = opt[:in] || opt[:within]
         return false if collection.is_a?(Range)
-        return nil unless collection.is_a?(Array) || (defined?(Set) && collection.is_a?(Set))
+        return nil unless collection.instance_of?(Array) || (defined?(Set) && collection.instance_of?(Set))
 
         collection.any? { |element| element.equal?(nil) }
       rescue StandardError
