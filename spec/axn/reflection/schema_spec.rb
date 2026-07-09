@@ -2568,5 +2568,34 @@ RSpec.describe Axn::Reflection::Schema do
       end
       expect(klass.input_schema[:properties][:c][:enum]).to include(nil)
     end
+
+    it "does not call empty? on an Array/Hash/String SUBCLASS default (subclass may override empty?)" do
+      evil_array = Class.new(Array) do
+        def empty? = raise("side effect: subclass empty? invoked during reflection")
+      end
+      klass = Class.new do
+        include Axn
+        expects :a, default: evil_array.new
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "detects nil membership by identity, without dispatching == on inclusion-set elements" do
+      evil_elem = Class.new do
+        def ==(_other) = raise("side effect: element == invoked during reflection")
+      end
+      element = evil_elem.new
+      klass = Class.new do
+        include Axn
+        expects :b, inclusion: { in: [element, "x"] }, presence: false
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      # the element with a custom == is not nil, and nil isn't in the set ⇒ not nullable
+      expect(Array(klass.input_schema[:properties][:b][:type])).not_to include("null")
+    end
   end
 end

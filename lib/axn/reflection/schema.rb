@@ -170,9 +170,10 @@ module Axn
         subfield ? !!value : true
       end
 
-      # A built-in literal container whose `empty?` is a pure in-memory check (no I/O, no user code).
+      # A built-in literal container whose `empty?` is a pure in-memory check. Uses instance_of? (exact
+      # class), not is_a?: an Array/Hash/String SUBCLASS could override `empty?` with user code.
       def literal_container?(value)
-        value.is_a?(Hash) || value.is_a?(Array) || value.is_a?(String)
+        value.instance_of?(Hash) || value.instance_of?(Array) || value.instance_of?(String)
       end
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
@@ -475,17 +476,19 @@ module Axn
       end
 
       # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
-      # literal collections (Array/Set/Range): reflection must stay side-effect-free, so a dynamic
-      # collection (e.g. an ActiveRecord::Relation, whose `include?` would query the database) is treated
-      # as unknown (nil) rather than executed.
+      # literal collections: reflection must stay side-effect-free, so a dynamic collection (e.g. an
+      # ActiveRecord::Relation, whose `include?` would query the database) is treated as unknown (nil).
+      # Detection is identity-based (`equal?(nil)`), never `include?`/`==`: an element with a custom `==`
+      # could itself run user code. A Range's bounds are Comparable, so nil is never a member.
       # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
       def set_includes_nil?(opt)
         return nil unless opt.is_a?(Hash)
 
         collection = opt[:in] || opt[:within]
-        return nil unless collection.is_a?(Array) || collection.is_a?(Range) || (defined?(Set) && collection.is_a?(Set))
+        return false if collection.is_a?(Range)
+        return nil unless collection.is_a?(Array) || (defined?(Set) && collection.is_a?(Set))
 
-        collection.include?(nil)
+        collection.any? { |element| element.equal?(nil) }
       rescue StandardError
         nil
       end
