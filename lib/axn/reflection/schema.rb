@@ -95,6 +95,19 @@ module Axn
         Array(klass).any? { |k| [Hash, :params].include?(k) }
       end
 
+      # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
+      # the shape's properties on OUTPUT matches serialize_exposed). True only when the declared type
+      # converts to a Hash: `:params`, an untyped shape (caller supplies a Hash), or a class defining
+      # `to_h` (Hash/Data/Struct/…). A reader-only object with no `to_h` serializes to a String (to_s)
+      # outside Rails — and to an instance-variable dump (not the shape's reader names) via Object#as_json
+      # inside Rails — so its output isn't a member-keyed object either way.
+      def shape_serializes_to_object?(config)
+        type_klass = config.validations.dig(:type, :klass)
+        return true if type_klass.nil?
+
+        Array(type_klass).all? { |k| k == :params || (k.is_a?(Class) && k.method_defined?(:to_h)) }
+      end
+
       # A field is absent from `required` when a declared signal makes it omittable.
       def field_optional?(config, shallow_subfields)
         shallow = Array(shallow_subfields)
@@ -282,6 +295,13 @@ module Axn
         elsif shape
           # Hash / class field — shape: members are the object's own properties. A shaped object field IS
           # an object, even when the field's declared type: (e.g. a Data.define subclass) isn't in TYPE_MAP.
+          #
+          # On OUTPUT this holds only when the value serializes to a member-keyed object (its type defines
+          # `to_h`). A reader-only object with no `to_h` serializes to a String (to_s) — so leave that
+          # output field untyped rather than promise an `object` serialize_exposed won't produce. Input is
+          # unaffected: the shape describes the JSON object a client is expected to send.
+          return if for_output && !shape_serializes_to_object?(config)
+
           prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
           prop.delete(:format)
           member_props, required = member_properties(shape[:members], for_output:)

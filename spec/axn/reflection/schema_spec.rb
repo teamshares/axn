@@ -921,6 +921,44 @@ RSpec.describe Axn::Reflection::Schema do
       expect(prop[:properties]).to have_key(:name)
     end
 
+    it "does not advertise object OUTPUT for a shaped reader-only class (no to_h)" do
+      # A reader-only object (ShapeValidator accepts it via respond_to?) has no to_h, so its serialized
+      # wire form is unknowable from the declaration — a String (to_s) outside Rails, or an
+      # instance-variable dump via Object#as_json inside Rails, neither reliably matching the shape's
+      # reader-named members. Leave the OUTPUT untyped rather than promise an object serialize_exposed
+      # may contradict; the INPUT schema still describes the object a client should send.
+      reader_only = Class.new do
+        def initialize(name) = (@name = name)
+        attr_reader :name # reader only — no to_h
+      end
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: reader_only) { field :name, type: String }
+        expects(:inp, type: reader_only) { field :name, type: String }
+        def call = nil
+      end
+
+      out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+      inp = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:inp]
+      expect(out).not_to have_key(:type)
+      expect(out).not_to have_key(:properties)
+      expect(inp[:type]).to eq("object") # input still describes the object a client should send
+    end
+
+    it "still advertises object OUTPUT for a shaped Data field (Data defines to_h → member-keyed object)" do
+      cfg_klass = Data.define(:name)
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: cfg_klass) { field :name, type: String }
+        define_method(:call) { expose(:cfg, cfg_klass.new(name: "x")) }
+      end
+
+      out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+      expect(out[:type]).to eq("object")
+      expect(out[:properties]).to have_key(:name)
+      expect(Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)["cfg"]).to eq({ "name" => "x" })
+    end
+
     it "allows null alongside object for a nil-allowed class-shaped field" do
       cfg_klass = Data.define(:name)
       klass = Class.new do
