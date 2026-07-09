@@ -62,7 +62,11 @@ module Axn
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
           if config.validations[:model]
-            build_model_property(config, properties, required, field_configs)
+            # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
+            # Its requiredness/nullability is decided in the post-pass below so it can account for an
+            # explicit `<field>_id` sibling regardless of declaration order.
+            id_field, id_prop = model_id_property(config)
+            properties[id_field] ||= id_prop
           else
             prop = build_property(config)
             shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
@@ -72,6 +76,11 @@ module Axn
             required << config.field.to_s unless field_optional?(config, shallow)
           end
         end
+
+        # Second pass (after all properties exist, so it's independent of declaration order): decide each
+        # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
+        field_configs.select { |config| config.validations[:model] }
+                     .each { |config| apply_model_id_requiredness!(config, field_configs, properties, required) }
 
         schema = { type: "object", properties: }
         schema[:required] = required.uniq unless required.empty?
@@ -389,22 +398,38 @@ module Axn
         [id_field, prop.compact]
       end
 
-      def build_model_property(config, properties, required, field_configs)
-        id_field, prop = model_id_property(config)
-        # A user may declare an explicit `<field>_id` field before the `model:` field; don't clobber it
-        # or double-add to `required`.
-        properties[id_field] ||= prop
-        return if required.include?(id_field.to_s)
-
-        # The generated id is omittable when the model field itself is, OR when an explicitly-declared
-        # `<field>_id` field carries a usable DEFAULT — inbound defaults run before the model lookup, so
-        # that default supplies the id and the omitted call succeeds. A merely nullable/optional explicit
-        # id (no default) does NOT help: omitting both leaves the lookup token nil and the model
-        # validation fails, so the id stays required.
+      # A model lookup needs a non-nil token. Single source of truth for the generated `<field>_id`'s
+      # requiredness AND nullability, considering the model field plus any explicit `<field>_id` sibling
+      # (order-independent — runs after all properties are built).
+      #
+      # The id is OMITTABLE only when the model field itself is optional (a nil model is accepted), OR an
+      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
+      # the lookup). A merely nullable/optional explicit id with no default doesn't help — omitting both
+      # leaves the token nil and the model validation fails. When the id IS required it also can't be
+      # null, so any explicit `null` branch is stripped.
+      #
+      # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
+      # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
+      # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
+      # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
+      def apply_model_id_requiredness!(config, field_configs, properties, required)
+        id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
         return if optional_for_schema?(config) || (explicit_id && usable_default?(explicit_id, subfield: false))
 
-        required << id_field.to_s
+        key = id_field.to_s
+        required << key unless required.include?(key)
+        reject_null!(properties[id_field]) if properties[id_field]
+      end
+
+      # Drop an advertised `null` branch from a property (a required model-id token can't be null).
+      def reject_null!(prop)
+        if prop[:type].is_a?(Array)
+          non_null = prop[:type] - ["null"]
+          prop[:type] = non_null.size == 1 ? non_null.first : non_null
+        elsif prop[:anyOf].is_a?(Array)
+          prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
+        end
       end
 
       def single_type_for(klass, for_output:)

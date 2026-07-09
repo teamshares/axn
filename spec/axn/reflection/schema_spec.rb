@@ -941,6 +941,35 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
+    it "strips the null branch from a required model id whose explicit field is typed-nullable (null is not a valid token)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: String, allow_nil: true
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      # required (no default supplies the token) AND non-null: `{company_id: null}` resolves the model to
+      # nil and fails at runtime, so the schema must not advertise null.
+      expect(schema[:required]).to include("company_id")
+      expect(schema[:properties][:company_id][:type]).to eq("string")
+    end
+
+    it "over-requires the parent of a nested model: subfield with a sibling defaulted id (accepted divergence)" do
+      # Runtime synthesizes `payload` and the sibling id default supplies the token, so omitting `payload`
+      # succeeds — but reconciling a nested self-referential id/model contract isn't attempted; the parent
+      # reflects as required (the safe, stricter-than-runtime direction). Documented in docs/reference/class.md.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :company_id, on: :payload, default: 1
+        expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
       klass = Class.new do
         include Axn
