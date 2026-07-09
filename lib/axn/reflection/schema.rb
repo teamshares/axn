@@ -62,7 +62,7 @@ module Axn
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
           if config.validations[:model]
-            build_model_property(config, properties, required)
+            build_model_property(config, properties, required, field_configs)
           else
             prop = build_property(config)
             shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
@@ -169,9 +169,20 @@ module Axn
 
         value = config.default
         return false if value.nil? || value.is_a?(Proc)
-        return false if literal_container?(value) && value.empty? && config.validations[:presence]
+        return false if literal_container?(value) && value.empty? && presence_rejects_blank?(config)
 
         subfield ? !!value : true
+      end
+
+      # Whether an active presence validator would reject a blank value, so a blank default can't relax
+      # the field. `presence: true` rejects blank; absent/`presence: false` doesn't; and
+      # `presence: { allow_blank: true }` skips (accepts) blank. (`allow_nil` alone doesn't help a
+      # non-nil blank like ""/{}/[].)
+      def presence_rejects_blank?(config)
+        presence = config.validations[:presence]
+        return false unless presence
+
+        !(presence.is_a?(Hash) && presence[:allow_blank])
       end
 
       # A built-in literal container whose `empty?` is a pure in-memory check. Uses instance_of? (exact
@@ -378,12 +389,20 @@ module Axn
         [id_field, prop.compact]
       end
 
-      def build_model_property(config, properties, required)
+      def build_model_property(config, properties, required, field_configs)
         id_field, prop = model_id_property(config)
         # A user may declare an explicit `<field>_id` field before the `model:` field; don't clobber it
         # or double-add to `required`.
         properties[id_field] ||= prop
-        required << id_field.to_s unless required.include?(id_field.to_s) || optional_for_schema?(config)
+        return if required.include?(id_field.to_s)
+
+        # The generated id is omittable when the model field itself is, OR when an explicitly-declared
+        # `<field>_id` field is optional (e.g. carries a default) — inbound defaults run before the model
+        # lookup, so that default supplies the id and the omitted call succeeds.
+        explicit_id = field_configs.find { |c| c.field == id_field }
+        return if optional_for_schema?(config) || (explicit_id && field_optional?(explicit_id, []))
+
+        required << id_field.to_s
       end
 
       def single_type_for(klass, for_output:)

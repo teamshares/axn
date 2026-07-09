@@ -155,6 +155,24 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
+    it "does NOT require a presence: { allow_blank: true } field whose blank \"\" default it skips (runtime: call ok)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, presence: { allow_blank: true }, default: ""
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("name")
+    end
+
+    it "DOES require a presence: { allow_nil: true } field with a blank \"\" default (allow_nil does not skip a non-nil blank)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, presence: { allow_nil: true }, default: ""
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("name")
+    end
+
     it "does NOT require a String field whose non-blank default \"x\" satisfies the contract (runtime: call({}) ok)" do
       klass = Class.new do
         include Axn
@@ -895,6 +913,19 @@ RSpec.describe Axn::Reflection::Schema do
       # `required` lists company_id exactly once, even though both the explicit field and the
       # model: field each independently contribute a required "company_id" entry.
       expect(schema[:required].count("company_id")).to eq(1)
+    end
+
+    it "does NOT require the model <field>_id when an explicit <field>_id field carries a default (runtime: omitting both is ok)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, default: 1
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      # inbound defaults run before the model lookup, so the default supplies company_id and the omitted
+      # call succeeds — the schema must not over-require it.
+      expect(schema[:required] || []).not_to include("company_id")
     end
 
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
