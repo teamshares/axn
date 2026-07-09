@@ -95,23 +95,31 @@ module Axn
         Array(klass).any? { |k| [Hash, :params].include?(k) }
       end
 
-      # A field is absent from `required` when a declared signal makes it omittable. A parent with no
-      # usable default of its own is still omittable if runtime can synthesize a COMPLETE parent from its
-      # subfield defaults: at least one shallow subfield supplies a value (so the synthesized parent isn't
-      # blank) AND every shallow subfield is itself optional or defaulted — otherwise omitting the parent
-      # leaves a required sibling unsatisfied and the call fails.
-      #
-      # This synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` materializes a
-      # missing parent as `{}` before validation, which satisfies a Hash/`:params`/untyped parent's own
-      # type but not a non-object one (`type: Array`, a typed object class) — that parent's top-level type
-      # validator rejects the `{}`, so omitting it still fails at runtime and it must stay required.
+      # A field is absent from `required` when a declared signal makes it omittable.
       def field_optional?(config, shallow_subfields)
-        return true if optional_for_schema?(config)
+        shallow = Array(shallow_subfields)
+        # A required shallow subfield can never be satisfied by an omitted parent: runtime runs subfield
+        # validation after top-level, so a nil/absent parent strands the child and the call fails.
+        has_required_child = shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
+
+        # A usable default on the PARENT materializes it (with its declared contents) before validation,
+        # so it may always be omitted — its own default, not its subfields, decides. (A default whose
+        # contents fail a child's validators is a separate, narrow divergence handled by usable_default?.)
+        return true if usable_default?(config, subfield: false)
+
+        # The parent's own nil-tolerance (optional:/allow_nil:) only makes it omittable when no required
+        # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
+        return true if nil_accepted?(config) && !has_required_child
+
+        # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
+        # COMPLETE parent from subfield defaults — at least one shallow subfield supplies a value and none
+        # is required (a required child has no default and can't be synthesized). This synthesis only
+        # rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`, which satisfies a
+        # Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed class) whose
+        # top-level type validator rejects the `{}`.
         return false unless object_shaped?(config)
 
-        shallow = Array(shallow_subfields)
-        shallow.any? { |c| usable_default?(c, subfield: true) } &&
-          shallow.all? { |c| optional_for_schema?(c, subfield: true) }
+        shallow.any? { |c| usable_default?(c, subfield: true) } && !has_required_child
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the

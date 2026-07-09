@@ -1654,7 +1654,7 @@ RSpec.describe Axn::Reflection::Schema do
 
   describe "a dotted `on:` PARENT or an `on:` pointing at another subfield contributes no shape and does " \
            "not force its top-level root required" do
-    it "leaves an allow_nil parent whose only subfield roots through a dotted on: parent optional, matching its shallow analog" do
+    it "requires an allow_nil parent with a required SHALLOW child but not the dotted-deep analog it can't prove" do
       shallow = Class.new do
         include Axn
         expects :address, allow_nil: true
@@ -1669,9 +1669,11 @@ RSpec.describe Axn::Reflection::Schema do
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
-      # accepted divergence: runtime raises for both when the parent is omitted; the schema reflects
-      # both as optional because allow_nil is a nil-tolerant declared signal on the parent.
-      expect(shallow_schema[:required] || []).not_to include("address")
+      # A required SHALLOW child strands an omitted parent at runtime, so the nil-tolerant parent stays
+      # required despite allow_nil. The dotted-deep child is not a shallow subfield of :address, so the
+      # schema can't prove requiredness through it and keeps the parent optional (documented limitation:
+      # deep required leaves don't force the root required).
+      expect(shallow_schema[:required] || []).to include("address")
       expect(dotted_schema[:required] || []).not_to include("address")
 
       # The dotted parent's deep shape is not represented.
@@ -1681,13 +1683,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(address_props).not_to have_key(:zip)
     end
 
-    it "leaves the top-level root optional when a required leaf is declared on: a subfield-of-a-subfield chain" do
-      # accepted divergence: runtime needs the omitted root; the schema reflects it as optional because
-      # `optional: true` is a nil-tolerant declared signal (the deep leaf never forces the root required).
+    it "leaves the top-level root optional when only a DEEP leaf (subfield-of-a-subfield) is required" do
+      # accepted divergence: runtime needs the omitted root, but the schema reflects it as optional
+      # because `optional: true` is a nil-tolerant signal and the only required key (:leaf) is a deep
+      # descendant the schema can't prove — the shallow child :mid is itself optional, so it doesn't
+      # force the root required.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
-        expects :mid, on: :foo
+        expects :mid, on: :foo, optional: true
         expects :leaf, on: :mid
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1697,6 +1701,20 @@ RSpec.describe Axn::Reflection::Schema do
       # descendant rooted through :mid) is omitted.
       expect(schema[:properties][:foo][:properties]).to have_key(:mid)
       expect(schema[:properties][:foo][:properties]).not_to have_key(:leaf)
+    end
+
+    it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
+      # The shallow child :mid is required, so an omitted :foo strands it at runtime — the parent is
+      # required regardless of the deeper :leaf the schema can't represent.
+      klass = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects :mid, on: :foo
+        expects :leaf, on: :mid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).to include("foo")
     end
 
     it "still requires a defaulted top-level root whose only descendant is an optional dotted-parent subfield " \
