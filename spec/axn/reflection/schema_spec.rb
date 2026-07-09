@@ -2525,4 +2525,48 @@ RSpec.describe Axn::Reflection::Schema do
       expect(Array(prop[:type])).not_to include("string")
     end
   end
+
+  describe "reflection is side-effect-free (never runs user code on defaults/collections)" do
+    # A default or inclusion collection that is a lazy/dynamic object (e.g. an ActiveRecord::Relation)
+    # must not have empty?/include? invoked during schema generation — that could issue a query.
+    lazy_class = Class.new do
+      def empty? = raise("side effect: empty? invoked during reflection")
+      def include?(_) = raise("side effect: include? invoked during reflection")
+    end
+
+    it "does not call empty? on a non-literal default while deciding requiredness" do
+      lazy = lazy_class
+      klass = Class.new do
+        include Axn
+        expects :a, default: lazy.new
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      # a non-literal (non-empty-inspectable) default counts as present ⇒ the field is omittable
+      expect(klass.input_schema[:required] || []).not_to include("a")
+    end
+
+    it "does not call include? on a non-literal inclusion collection while deciding nullability" do
+      lazy = lazy_class
+      klass = Class.new do
+        include Axn
+        expects :b, inclusion: { in: lazy.new }, presence: false
+        def call = nil
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      # unknown nil-membership ⇒ treated as nil-rejecting (stricter, safe direction) ⇒ not nullable
+      expect(Array(klass.input_schema[:properties][:b][:type])).not_to include("null")
+    end
+
+    it "still inspects nil membership for a literal Array inclusion set" do
+      klass = Class.new do
+        include Axn
+        expects :c, inclusion: { in: ["x", nil] }, presence: false
+        def call = nil
+      end
+      expect(klass.input_schema[:properties][:c][:enum]).to include(nil)
+    end
+  end
 end

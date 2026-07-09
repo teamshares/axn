@@ -155,14 +155,24 @@ module Axn
       # field carries, so it doesn't make the field optional; a Proc default is uninspectable here.
       # For a subfield, only a truthy default is applied at runtime (`next unless config.default`), so a
       # falsey subfield default never counts.
+      #
+      # The emptiness check is limited to literal containers (Hash/Array/String): reflection must stay
+      # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
+      # other lazy collection) could issue a query or run user code. A non-literal default is treated as
+      # present (usable).
       def usable_default?(config, subfield:)
         return false unless config.respond_to?(:default)
 
         value = config.default
         return false if value.nil? || value.is_a?(Proc)
-        return false if value.respond_to?(:empty?) && value.empty?
+        return false if literal_container?(value) && value.empty?
 
         subfield ? !!value : true
+      end
+
+      # A built-in literal container whose `empty?` is a pure in-memory check (no I/O, no user code).
+      def literal_container?(value)
+        value.is_a?(Hash) || value.is_a?(Array) || value.is_a?(String)
       end
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
@@ -464,13 +474,16 @@ module Axn
         false
       end
 
-      # Tri-state: nil = can't tell (no concrete collection); true/false = nil's membership in the set.
+      # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
+      # literal collections (Array/Set/Range): reflection must stay side-effect-free, so a dynamic
+      # collection (e.g. an ActiveRecord::Relation, whose `include?` would query the database) is treated
+      # as unknown (nil) rather than executed.
       # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
       def set_includes_nil?(opt)
         return nil unless opt.is_a?(Hash)
 
         collection = opt[:in] || opt[:within]
-        return nil unless collection.respond_to?(:include?)
+        return nil unless collection.is_a?(Array) || collection.is_a?(Range) || (defined?(Set) && collection.is_a?(Set))
 
         collection.include?(nil)
       rescue StandardError
