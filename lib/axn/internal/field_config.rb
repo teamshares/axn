@@ -28,6 +28,16 @@ module Axn
       def boolean?(config)
         Array(config.validations.dig(:type, :klass)) == [:boolean]
       end
+
+      # The generated `<field>_id` key for a `model:` field — the lookup-token reader Axn derives from
+      # the model field's name. Single source of the `_id` suffix convention (the model resolver, the
+      # `<field>_id` reader, sensitive-key/ambient filtering, and schema reflection all key off it).
+      #
+      # @param field [Symbol, String] the model field's name (or its `as:` reader)
+      # @return [Symbol] the `<field>_id` key
+      def model_id_key(field)
+        :"#{field}_id"
+      end
     end
   end
 end

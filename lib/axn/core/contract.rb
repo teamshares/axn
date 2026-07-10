@@ -182,7 +182,7 @@ module Axn
         # sensitive as the record). Non-model fields contribute only their own key.
         def _sensitive_field_keys(config)
           keys = [config.field]
-          keys << :"#{config.field}_id" if config.validations[:model]
+          keys << Internal::FieldConfig.model_id_key(config.field) if config.validations[:model]
           keys
         end
 
@@ -493,10 +493,10 @@ module Axn
         # which for a custom finder is a lookup token, not a primary key. `raw_reader` yields the raw
         # `<field>_id` value for the caller's context (top-level provided_data vs. the `on:` parent).
         def _define_model_id_reader_from(reader:, source_field:, by_primary_key:, &raw_reader)
-          id_reader = :"#{reader}_id"
+          id_reader = Internal::FieldConfig.model_id_key(reader)
           return unless _reader_name_available?(id_reader, kind: "model id")
 
-          id_key = :"#{source_field}_id"
+          id_key = Internal::FieldConfig.model_id_key(source_field)
           define_method(id_reader) do
             raw = instance_exec(id_key, &raw_reader)
             next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?

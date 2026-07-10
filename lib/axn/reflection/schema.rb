@@ -478,7 +478,7 @@ module Axn
         model_opts = config.validations[:model]
         klass = model_opts[:klass]
         klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
-        id_field = :"#{config.field}_id"
+        id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
         prop = { description: config.description || "ID of the #{klass_name} record" }
         [id_field, prop.compact]
       end

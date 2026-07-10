@@ -138,7 +138,7 @@ module Axn
             return false unless field
 
             provided = @__context.provided_data
-            provided[field].present? || provided[:"#{field}_id"].present?
+            provided[field].present? || provided[Axn::Internal::FieldConfig.model_id_key(field)].present?
           end
           private :__axn_field_supplied?
 

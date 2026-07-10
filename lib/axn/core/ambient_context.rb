@@ -76,7 +76,7 @@ module Axn
             .select { |c| c.on.to_sym == PARENT }
             .each_with_object({}) do |c, acc|
               keys = [c.field]
-              keys << :"#{c.field}_id" if c.validations[:model]
+              keys << Internal::FieldConfig.model_id_key(c.field) if c.validations[:model]
               keys.each { |k| acc[k] = indifferent[k] if indifferent.key?(k) }
             end
       end
