@@ -227,6 +227,27 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a defaulted parent and a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, default: { name: "Ada", role: "eng" }
+            expects :name, on: :payload, type: String, preprocess: ->(v) { v.to_s.upcase }
+            exposes :payload_val, allow_nil: true
+            def call = expose(payload_val: payload)
+          end
+        end
+
+        it "applies the parent's default when omitted (preprocessing must not preempt it)" do
+          # Preprocessing runs before defaults; materializing a synthetic {} here would make apply_defaults!
+          # skip the now-non-nil key and drop the declared default. The default must still win.
+          expect(action.call.payload_val).to eq({ name: "Ada", role: "eng" })
+        end
+
+        it "applies the parent's default when the parent is explicitly nil" do
+          expect(action.call(payload: nil).payload_val).to eq({ name: "Ada", role: "eng" })
+        end
+      end
+
       context "with a nil-tolerant parent carrying both a shape block and an optional on: subfield" do
         let(:action) do
           build_axn do

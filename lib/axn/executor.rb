@@ -448,7 +448,10 @@ module Axn
         # Materialize a nil parent so the preprocess result has somewhere to land — otherwise
         # update_subfield_value silently drops it, diverging from a `{}` parent (which stores it) and from
         # the top-level preprocess contract (which always writes back). Mirrors apply_defaults_for_subfields!.
-        @context.provided_data[parent_field] = {} if parent_value.nil?
+        # NOT when the parent has its own default: apply_defaults! runs right after preprocessing and skips
+        # any non-nil key, so a synthetic `{}` here would suppress the declared default — leave it nil and
+        # let the default materialize the parent (with its declared contents) as usual.
+        @context.provided_data[parent_field] = {} if parent_value.nil? && !_parent_has_default?(parent_field)
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -754,6 +757,15 @@ module Axn
     # Contract::ClassMethods#_wire_parent_key) so the default/preprocess mutation paths land on the
     # caller-supplied provided_data key.
     def _wire_parent_key(on) = @action_class._wire_parent_key(on)
+
+    # Whether the (top-level) parent field carries a default that apply_defaults! will materialize. A
+    # subfield's preprocess-able parent is always a top-level field (nested/dotted/ambient parents reject
+    # preprocess:), so it's found by wire key among internal_field_configs. `.compact`-equivalent: a nil
+    # default is "no default" (matches apply_defaults! building `{field => default}.compact`).
+    def _parent_has_default?(parent_field)
+      config = @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+      config && !config.default.nil?
+    end
 
     def update_subfield_value(parent_field, subfield, new_value)
       parent_value = @context.provided_data[parent_field]
