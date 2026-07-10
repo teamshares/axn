@@ -98,12 +98,25 @@ module Axn
       # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
       # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
       # is not — its subfields are extracted differently at runtime and have no object-property shape.
+      # ANY admissible branch is object-shaped (Hash/`:params`/untyped) — so runtime's `{}` synthesis from
+      # subfield defaults can satisfy the parent type (`{}` is a Hash, matching an object branch).
       def object_shaped?(config)
-        type_opt = config.validations[:type]
-        return true unless type_opt
+        object_type_branches(config).any? { |k| [Hash, :params].include?(k) }
+      end
 
-        klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-        Array(klass).any? { |k| [Hash, :params].include?(k) }
+      # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
+      # rejecting a valid non-object branch. A mixed union (`type: [Hash, Array]`) is NOT nestable: at
+      # runtime the subfield can be read from the Array branch too (e.g. `Array#length`), so forcing
+      # `type: object` would disallow a valid array input.
+      def nestable_as_object?(config)
+        object_type_branches(config).all? { |k| [Hash, :params].include?(k) }
+      end
+
+      def object_type_branches(config)
+        type_opt = config.validations[:type]
+        return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
+
+        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
       end
 
       # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
@@ -223,12 +236,13 @@ module Axn
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
       # parent to `type: object` (it now has structure) and never nullable: a nil parent can't yield its
-      # subfields at runtime, so `null` must not be advertised. Only applies to an object-shaped parent
-      # (Hash/`:params`/untyped) — a non-object parent (e.g. `type: Array`) keeps its declared type and
-      # its subfields' shape is omitted, since object properties can't represent them.
+      # subfields at runtime, so `null` must not be advertised. Only applies when EVERY admissible parent
+      # type is object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed
+      # union (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted,
+      # since object properties can't represent a non-object branch.
       def apply_nested_subfields!(prop, config, nested_subfields)
         return if nested_subfields.blank?
-        return unless object_shaped?(config)
+        return unless nestable_as_object?(config)
 
         prop[:type] = "object"
         prop.delete(:format)

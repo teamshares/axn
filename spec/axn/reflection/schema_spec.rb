@@ -1439,6 +1439,21 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:properties][:payload][:type]).to eq("object")
     end
+
+    it "does NOT force object on a MIXED-union parent (type: [Hash, Array]) with a subfield — preserves the array branch" do
+      # Runtime reads the subfield from either branch (e.g. Array#length), so `payload: [1,2]` is valid;
+      # forcing type: object would reject it. Keep the anyOf and omit the (unrepresentable) subfield shape.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: [Hash, Array]
+        expects :length, on: :payload, type: Integer
+      end
+      prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+      expect(prop[:anyOf]).to match_array([{ type: "object" }, { type: "array" }])
+      expect(prop).not_to have_key(:type)       # not overwritten to "object"
+      expect(prop).not_to have_key(:properties) # subfield shape omitted (can't apply to the array branch)
+    end
   end
 
   describe "a parent field with subfields is required unless a default materializes it (Bug Y)" do
