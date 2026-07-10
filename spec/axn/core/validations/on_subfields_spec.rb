@@ -216,6 +216,26 @@ RSpec.describe Axn do
           expect(action.call(payload: nil)).to be_ok
         end
       end
+
+      context "with a nil-tolerant parent carrying both a shape block and an optional on: subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true do
+              field :status, type: String
+            end
+            expects :note, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "accepts a nil parent (shape validation is skipped, the optional subfield is absent)" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+
+        it "still enforces the required shape member when a non-nil parent is provided" do
+          expect(action.call(payload: { note: "hi" })).not_to be_ok
+        end
+      end
     end
 
     context "readers" do

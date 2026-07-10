@@ -1579,6 +1579,26 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:payload][:type]).to eq("object")
     end
 
+    it "stays nullable when a required shape (do…end) member coexists with only optional on: subfields" do
+      # ShapeValidator skips a nil parent (allow_nil), so its required member does NOT strand nil — only a
+      # required `on:` subfield does. Nullability must be decided from the on: subfields, not the merged
+      # `required` (which also carries the shape member). The member stays in the nested `required`: it's
+      # required IF a non-null object is sent.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      prop = schema[:properties][:payload]
+
+      expect(prop[:type]).to eq(%w[object null])
+      expect(prop[:required]).to eq(["status"])
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
     it "does NOT force object on a MIXED-union parent (type: [Hash, Array]) with a subfield — preserves the array branch" do
       # Runtime reads the subfield from either branch (e.g. Array#length), so `payload: [1,2]` is valid;
       # forcing type: object would reject it. Keep the anyOf and omit the (unrepresentable) subfield shape.

@@ -154,12 +154,19 @@ module Axn
         klass.method_defined?(method) && !FRAMEWORK_SERIALIZATION_OWNERS.include?(klass.instance_method(method).owner)
       end
 
+      # A required shallow `on:` subfield can never be satisfied by a nil/absent parent: runtime runs
+      # subfield validation against the (nil) parent, so a required child fails. Shape `do…end` members
+      # do NOT count — ShapeValidator short-circuits on a nil value before member checks — so this looks
+      # only at `on:` subfields. Single source of truth for both the parent's requiredness (field_optional?)
+      # and its nullability (apply_nested_subfields!), so the two never disagree.
+      def required_child?(shallow)
+        Array(shallow).any? { |c| !optional_for_schema?(c, subfield: true) }
+      end
+
       # A field is absent from `required` when a declared signal makes it omittable.
       def field_optional?(config, shallow_subfields)
         shallow = Array(shallow_subfields)
-        # A required shallow subfield can never be satisfied by an omitted parent: runtime runs subfield
-        # validation after top-level, so a nil/absent parent strands the child and the call fails.
-        has_required_child = shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
+        has_required_child = required_child?(shallow)
 
         # A usable default on the PARENT materializes it (with its declared contents) before validation,
         # so it may always be omitted — its own default, not its subfields, decides. (A default whose
@@ -276,9 +283,10 @@ module Axn
 
         prop[:required] = prop[:required].uniq
         # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
-        # accepts nil and no required child would be stranded (`prop[:required]` still holds the required
-        # children here, before the empty→nil cleanup below).
-        prop[:type] = nil_allowed?(config) && prop[:required].empty? ? %w[object null] : "object"
+        # accepts nil and no required `on:` child would be stranded. Decided from `nested_subfields`, NOT
+        # `prop[:required]`: the latter also carries any required shape (`do…end`) member, which does not
+        # strand a nil parent (ShapeValidator skips a nil value) — so it must not suppress nullability.
+        prop[:type] = nil_allowed?(config) && !required_child?(nested_subfields) ? %w[object null] : "object"
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
         required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
