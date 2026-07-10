@@ -1122,6 +1122,34 @@ RSpec.describe Axn::Reflection::Schema do
       expect(described_class.build_output(plain.external_field_configs)[:properties][:cfg][:type]).to eq("object")
     end
 
+    it "detects a custom as_json provided by an INCLUDED MODULE (not just directly defined)" do
+      json_mod = Module.new { def as_json(*) = "scalar" }
+      mod_data = Data.define(:name) { include json_mod }
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: mod_data) { field :name, type: String }
+        def call = nil
+      end
+
+      # serialize_value follows the module's as_json (owner != Object), so it isn't provably member-keyed.
+      expect(described_class.build_output(klass.external_field_configs)[:properties][:cfg]).not_to have_key(:type)
+    end
+
+    it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
+      of_data = Data.define(:name) { def as_json(*) = "scalar" }
+      klass = Class.new do
+        include Axn
+        exposes(:items, type: Array, of: of_data)
+        expects(:in_items, type: Array, of: of_data)
+        def call = nil
+      end
+
+      out = described_class.build_output(klass.external_field_configs)[:properties][:items]
+      inp = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:in_items]
+      expect(out).not_to have_key(:items) # untyped elements — serialize follows the custom as_json
+      expect(inp[:items][:type]).to eq("object") # input describes the object a client sends
+    end
+
     it "allows null alongside object for a nil-allowed class-shaped field" do
       cfg_klass = Data.define(:name)
       klass = Class.new do

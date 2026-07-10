@@ -126,10 +126,17 @@ module Axn
         return true if klass == Hash
         return false unless klass < Data || klass < Struct
 
-        # A Data/Struct serializes member-keyed via to_h — unless it defines its OWN as_json (checked on
-        # the class itself, so the inherited active_support Data/Struct as_json, which IS member-keyed,
-        # doesn't count), which serialize_value would follow instead.
-        !klass.instance_methods(false).include?(:as_json)
+        # A Data/Struct serializes member-keyed via to_h — unless it carries a CUSTOM as_json, which
+        # serialize_value would follow instead (and which may emit a scalar/array/other shape).
+        !custom_as_json?(klass)
+      end
+
+      # active_support reopens Data/Struct (and Hash/Object) with member-keyed `as_json` implementations;
+      # those owners are safe. Any other owner means the value class (or an included module) defines its
+      # OWN `as_json`, which serialize_value follows before `to_h` — so the serialized shape is unknowable.
+      FRAMEWORK_AS_JSON_OWNERS = [Data, Struct, Hash, Object].freeze
+      def custom_as_json?(klass)
+        klass.method_defined?(:as_json) && !FRAMEWORK_AS_JSON_OWNERS.include?(klass.instance_method(:as_json).owner)
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
@@ -389,7 +396,10 @@ module Axn
       end
 
       def single_items_schema(klass, for_output: false)
-        if klass.is_a?(Class) && klass < Data
+        # A Data element serializes member-keyed via to_h, so its array items reflect as objects — except
+        # on OUTPUT for a Data with a custom as_json, which serialize_value follows and may emit a
+        # scalar/array/other shape; leave those items untyped rather than promise an object.
+        if klass.is_a?(Class) && klass < Data && !(for_output && custom_as_json?(klass))
           { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
         else
           json_type_for({ type: klass }, for_output:)
