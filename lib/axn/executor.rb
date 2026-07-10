@@ -447,11 +447,15 @@ module Axn
         end
         # Materialize a nil parent so the preprocess result has somewhere to land — otherwise
         # update_subfield_value silently drops it, diverging from a `{}` parent (which stores it) and from
-        # the top-level preprocess contract (which always writes back). Mirrors apply_defaults_for_subfields!.
-        # NOT when the parent has its own default: apply_defaults! runs right after preprocessing and skips
-        # any non-nil key, so a synthetic `{}` here would suppress the declared default — leave it nil and
-        # let the default materialize the parent (with its declared contents) as usual.
-        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field)
+        # the top-level preprocess contract (which always writes back). Mirrors apply_defaults_for_subfields!,
+        # but only for a nil-TOLERANT parent with no default of its own:
+        #   * a parent with a default is filled by apply_defaults! (which runs right after and skips non-nil
+        #     keys), so a synthetic `{}` here would suppress the declared default;
+        #   * a parent that requires presence must fail when omitted — writing `{subfield => …}` would make
+        #     the now-non-empty hash satisfy presence and let a required parent through on no input. (Unlike
+        #     a subfield *default*, a preprocess must not synthesize an absent parent — see the schema, which
+        #     treats only defaults as parent-synthesizing.)
+        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field) && !_parent_requires_presence?(parent_field)
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -769,6 +773,16 @@ module Axn
     def _parent_has_default?(parent_field)
       config = _parent_config(parent_field)
       config && !config.default.nil?
+    end
+
+    # Whether the parent has an active presence validator that a blank/absent value would violate — i.e.
+    # a nil parent is invalid and must fail, so a subfield preprocess must not materialize (and thereby
+    # satisfy) it. `presence: { allow_blank: true }` accepts blank and so doesn't count.
+    def _parent_requires_presence?(parent_field)
+      presence = _parent_config(parent_field)&.validations&.dig(:presence)
+      return false unless presence
+
+      !(presence.is_a?(Hash) && presence[:allow_blank])
     end
 
     # Materialize a nil parent as `{}` so a subfield write (default or preprocess result) has somewhere to

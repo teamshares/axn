@@ -227,6 +227,30 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a REQUIRED parent and a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+        end
+
+        it "still fails parent presence when omitted (preprocess must not synthesize a required parent)" do
+          # The preprocess returns "" (non-nil) for an absent subfield; materializing `{name: ""}` would
+          # make the non-empty hash satisfy the parent's presence and let a required parent through on no
+          # input. It must not — unlike a subfield default, a preprocess doesn't synthesize the parent.
+          result = action.call
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("can't be blank")
+        end
+
+        it "runs the subfield preprocess normally when the required parent IS provided" do
+          expect(action.call(payload: {})).to be_ok
+        end
+      end
+
       context "with a non-object (type: Array) parent — must not be materialized into a Hash" do
         it "treats a nil Array parent as absent for a preprocessed subfield (no spurious type error)" do
           action = build_axn do
