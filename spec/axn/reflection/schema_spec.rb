@@ -3047,4 +3047,54 @@ RSpec.describe Axn::Reflection::Schema do
       expect { klass.input_schema }.not_to raise_error
     end
   end
+
+  # Deep subfields (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validate at
+  # runtime but are omitted from the input schema (the single-level limitation, PRO-2872). This query
+  # names exactly those omitted configs so the caller can warn — it must NOT flag a represented shallow
+  # subfield, nor a subfield under the deliberately-excluded ambient_context parent.
+  describe ".dropped_deep_subfields" do
+    it "flags the three deep cases and leaves shallow subfields alone" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash          # shallow — represented
+        expects :id, on: :meta, type: Integer            # deep: subfield-of-subfield
+        expects :deep, on: "payload.meta", type: String  # deep: dotted on:
+        expects "bar.baz", on: :payload                  # deep: dotted field name
+      end
+
+      dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+      expect(dropped.map(&:field)).to contain_exactly(:id, :deep, :"bar.baz")
+    end
+
+    it "returns [] when every subfield is a shallow child of a top-level field" do
+      klass = Class.new do
+        include Axn
+        expects :address, type: Hash
+        expects :city, on: :address, type: String
+        expects :zip, on: :address, type: String
+      end
+
+      expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+    end
+
+    it "returns [] when there are no subfields at all" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String
+      end
+
+      expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+    end
+
+    it "does not flag a shallow ambient_context subfield (its parent is intentionally excluded)" do
+      klass = Class.new do
+        include Axn
+        expects :company, on: :ambient_context, type: Integer
+        expects :limit, type: Integer, default: 20
+      end
+
+      expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+    end
+  end
 end

@@ -95,6 +95,26 @@ module Axn
         Array(nested).select { |c| c.on.to_sym == config.reader_as && !c.field.to_s.include?(".") }
       end
 
+      # The subfield configs build_input omits from the input schema because they aren't single-level: a
+      # dotted `on:` path, a subfield of a subfield, or a dotted field name (the KNOWN LIMITATION above;
+      # PRO-2872). They validate at runtime but have no schema representation, so a caller can surface
+      # this otherwise-silent gap. Skips subfields rooted at a deliberately-excluded parent
+      # (EXCLUDED_FROM_INPUT_SCHEMA, e.g. ambient_context), whose absence is intentional rather than a
+      # nesting-depth gap. Side-effect-free: membership is tested by object identity, never `==`, so a
+      # subfield's value never runs user code here.
+      def dropped_deep_subfields(field_configs, subfield_configs)
+        subfield_configs = Array(subfield_configs)
+        return [] if subfield_configs.empty?
+
+        by_parent = subfield_configs.group_by { |c| c.on.to_sym }
+        represented = field_configs.flat_map { |cfg| shallow_subfields(by_parent[cfg.reader_as], cfg) }.map(&:object_id)
+
+        subfield_configs.reject do |config|
+          represented.include?(config.object_id) ||
+            EXCLUDED_FROM_INPUT_SCHEMA.include?(config.on.to_s.split(".").first.to_sym)
+        end
+      end
+
       # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
       # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
       # is not — its subfields are extracted differently at runtime and have no object-property shape.
