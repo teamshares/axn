@@ -17,6 +17,12 @@ module Axn
         resolver_class = RESOLVERS[type]
         raise ArgumentError, "Unknown field resolver type: #{type}" unless resolver_class
 
+        # A nil source means "absent": there's nothing to extract or look up, so every resolver yields
+        # nil rather than reaching into it. This is what lets a subfield hang off a nil/omitted parent —
+        # its own optional/required rules then apply against nil (optional passes, required fails with a
+        # clean validation error) instead of the resolver blowing up mid-resolution (PRO-2857).
+        return nil if provided_data.nil?
+
         resolver_class.new(field:, options:, provided_data:).call
       end
     end

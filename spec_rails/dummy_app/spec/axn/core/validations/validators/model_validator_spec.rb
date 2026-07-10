@@ -389,6 +389,33 @@ RSpec.describe Axn::Validators::ModelValidator do
       expect(result.user_name).to be_nil
     end
 
+    it "resolves an optional nested model to nil when the parent is nil (no blow-up on a nil parent)" do
+      # A `model:` subfield hanging off a nil/absent parent is treated as absent (PRO-2857): the model
+      # resolves to nil rather than reaching into nil for the record/id.
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, model: { klass: User }, on: :data, optional: true
+        exposes :user_name, allow_nil: true
+
+        def call = expose(:user_name, user&.name)
+      end
+
+      result = action.call(data: nil)
+      expect(result).to be_ok
+      expect(result.user_name).to be_nil
+    end
+
+    it "fails cleanly when a required nested model's parent is nil" do
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, model: { klass: User }, on: :data
+      end
+
+      result = action.call(data: nil)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+
     it "handles model: true syntax for nested fields" do
       action = build_axn do
         expects :data

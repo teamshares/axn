@@ -242,16 +242,17 @@ module Axn
       end
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
-      # parent to `type: object` (it now has structure) and never nullable: a nil parent can't yield its
-      # subfields at runtime, so `null` must not be advertised. Only applies when EVERY admissible parent
-      # type is object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed
-      # union (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted,
-      # since object properties can't represent a non-object branch.
+      # parent to `type: object` (it now has structure). The parent is nullable only when it tolerates nil
+      # AND strands no required child: runtime now treats a nil parent as "subfields absent" (PRO-2857), so
+      # a nil-accepting parent with all-optional children accepts `null`, while a required child (which a
+      # nil parent can't yield) keeps it object-only. Only applies when EVERY admissible parent type is
+      # object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed union
+      # (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted, since
+      # object properties can't represent a non-object branch.
       def apply_nested_subfields!(prop, config, nested_subfields)
         return if nested_subfields.blank?
         return unless nestable_as_object?(config)
 
-        prop[:type] = "object"
         prop.delete(:format)
         prop[:properties] ||= {}
         prop[:required] ||= []
@@ -274,6 +275,10 @@ module Axn
         end
 
         prop[:required] = prop[:required].uniq
+        # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
+        # accepts nil and no required child would be stranded (`prop[:required]` still holds the required
+        # children here, before the empty→nil cleanup below).
+        prop[:type] = nil_allowed?(config) && prop[:required].empty? ? %w[object null] : "object"
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
         required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }

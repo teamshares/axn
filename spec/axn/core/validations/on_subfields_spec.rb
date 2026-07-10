@@ -150,6 +150,74 @@ RSpec.describe Axn do
       end
     end
 
+    # A nil/absent parent must be treated as "subfields absent" — each subfield's own optional/required
+    # rules apply — rather than blowing up when the resolver tries to extract from nil (PRO-2857).
+    context "when the parent is nil or absent" do
+      context "with all-optional subfields" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "passes when the parent is omitted" do
+          expect(action.call).to be_ok
+        end
+
+        it "passes when the parent is explicitly nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+      end
+
+      context "with a nil-tolerant typed parent (type: Hash, allow_nil: true)" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :name, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "passes when the parent is explicitly nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+      end
+
+      context "with a required subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, type: String
+            def call = nil
+          end
+        end
+
+        it "surfaces a clean InboundValidationError (not a bare RuntimeError)" do
+          result = action.call(payload: nil)
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("can't be blank")
+          expect(result.exception.message).not_to match(/Unclear how to extract/)
+        end
+      end
+
+      context "with a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v&.upcase }
+            def call = nil
+          end
+        end
+
+        it "does not raise when the parent is nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+      end
+    end
+
     context "readers" do
       subject(:result) { action.call(foo: { bar: { qux: 3 }, baz: 2 }) }
 

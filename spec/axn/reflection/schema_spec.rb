@@ -1530,7 +1530,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
     end
 
-    it "types a parent with subfields as plain object even when allow_nil: true (Bug X: a nil parent can't yield its subfields at runtime)" do
+    it "types an allow_nil parent as plain object when it has a REQUIRED subfield (a nil parent can't yield it)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
@@ -1543,11 +1543,35 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a parent field with subfields is never nullable, even when allow_nil/allow_blank (Bug X)" do
-    it "types the parent as plain object (not [object, null]) when its only subfield is optional" do
+  # A nil parent is now valid at runtime (subfields treated as absent) when the parent tolerates nil and
+  # no required child is stranded — so the schema advertises `null` in exactly that case (PRO-2857).
+  describe "a parent field with subfields is nullable iff it accepts nil and strands no required child" do
+    it "types a nil-tolerant parent with an all-optional subfield as [object, null]" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
+        expects :nick, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+    end
+
+    it "keeps a nil-tolerant parent object-only when a required subfield can't be yielded by nil" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :nick, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+    end
+
+    it "keeps a non-nil-tolerant parent (type: Hash) object-only even with an all-optional subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
         expects :nick, on: :payload, type: String, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1573,8 +1597,8 @@ RSpec.describe Axn::Reflection::Schema do
 
   describe "a parent field with subfields is required unless a default materializes it (Bug Y)" do
     it "does not require an optional (no-default) parent with an all-optional subfield" do
-      # accepted divergence: omitting yields a nil parent, which raises at runtime; the schema reflects
-      # the parent as optional because `optional: true` is a nil-tolerant declared signal.
+      # Omitting yields a nil parent, which runtime now treats as "subfields absent" (PRO-2857) — the
+      # all-optional children then pass, so reflecting the parent as optional matches runtime exactly.
       klass = Class.new do
         include Axn
         expects :payload, optional: true

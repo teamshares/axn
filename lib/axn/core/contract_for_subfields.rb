@@ -110,8 +110,8 @@ module Axn
           # An `on: :ambient_context` subfield's value comes from the ambient provider / CurrentAttributes
           # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
           # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /
-          # #apply_inbound_preprocessing_for_subfields!), so `default:` would corrupt resolution and
-          # `preprocess:` would raise (extracting from a nil parent). `sensitive:` is filter-only and
+          # #apply_inbound_preprocessing_for_subfields!), which the per-invocation resolution never reads,
+          # so both would silently fail to affect the resolved value. `sensitive:` is filter-only and
           # unaffected — it's relied on for ambient_context observability, so it must stay allowed.
           if root == Axn::Core::AmbientContext::PARENT && (!default.nil? || !preprocess.nil?)
             raise ArgumentError,
