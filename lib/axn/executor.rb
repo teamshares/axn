@@ -451,11 +451,11 @@ module Axn
         # but only for a nil-TOLERANT parent with no default of its own:
         #   * a parent with a default is filled by apply_defaults! (which runs right after and skips non-nil
         #     keys), so a synthetic `{}` here would suppress the declared default;
-        #   * a parent that requires presence must fail when omitted — writing `{subfield => …}` would make
-        #     the now-non-empty hash satisfy presence and let a required parent through on no input. (Unlike
-        #     a subfield *default*, a preprocess must not synthesize an absent parent — see the schema, which
-        #     treats only defaults as parent-synthesizing.)
-        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field) && !_parent_requires_presence?(parent_field)
+        #   * a parent that rejects nil — via presence OR its type (`type: :params`, `type: Hash`, …) — must
+        #     fail when omitted; writing `{subfield => …}` would satisfy that validator and let a required
+        #     parent through on no input. Unlike a subfield *default*, a preprocess must not synthesize an
+        #     absent parent — the schema treats only defaults as parent-synthesizing.
+        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field) && _parent_nil_accepted?(parent_field)
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -775,14 +775,14 @@ module Axn
       config && !config.default.nil?
     end
 
-    # Whether the parent has an active presence validator that a blank/absent value would violate — i.e.
-    # a nil parent is invalid and must fail, so a subfield preprocess must not materialize (and thereby
-    # satisfy) it. `presence: { allow_blank: true }` accepts blank and so doesn't count.
-    def _parent_requires_presence?(parent_field)
-      presence = _parent_config(parent_field)&.validations&.dig(:presence)
-      return false unless presence
-
-      !(presence.is_a?(Hash) && presence[:allow_blank])
+    # Whether a nil is a VALID value for the parent (every declared validator tolerates nil) — so leaving
+    # it nil, or materializing an object to hold a preprocess result, doesn't cover up an input the parent
+    # would otherwise reject. Reuses the reflection predicate as the single source of truth for nil
+    # tolerance (a pure, side-effect-free read of the validations), covering nil-rejection via presence,
+    # type (`type: Hash`/`:params` without allow_nil), inclusion/exclusion, etc. — not just presence.
+    def _parent_nil_accepted?(parent_field)
+      config = _parent_config(parent_field)
+      config && Axn::Reflection::Schema.nil_accepted?(config)
     end
 
     # Materialize a nil parent as `{}` so a subfield write (default or preprocess result) has somewhere to

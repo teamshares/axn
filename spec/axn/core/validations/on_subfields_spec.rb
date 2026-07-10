@@ -251,6 +251,29 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a type-required parent whose nil-rejection is NOT from presence" do
+        # `type: :params` (and `type: Hash, presence: false`) reject nil via the TYPE validator, with no
+        # `presence` key — so materializing `{name: …}` would satisfy the type and let an unsupplied
+        # required parent through. Nil-tolerance must be judged from the full validator set, not presence.
+        it "fails a required type: :params parent when omitted (not synthesized by a preprocessed subfield)" do
+          action = build_axn do
+            expects :payload, type: :params
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+          expect(action.call).not_to be_ok
+        end
+
+        it "fails a required type: Hash, presence: false parent when omitted" do
+          action = build_axn do
+            expects :payload, type: Hash, presence: false
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+          expect(action.call).not_to be_ok
+        end
+      end
+
       context "with a non-object (type: Array) parent — must not be materialized into a Hash" do
         it "treats a nil Array parent as absent for a preprocessed subfield (no spurious type error)" do
           action = build_axn do
