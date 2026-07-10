@@ -28,4 +28,35 @@ RSpec.describe "Axn class-level schema reflection" do
     end
     expect(klass.input_schema).to eq(plain.input_schema)
   end
+
+  describe "deep-subfield omission warning (PRO-2872 is silent otherwise)" do
+    let(:deep_klass) do
+      Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash
+        expects :id, on: :meta, type: Integer # deep — omitted from the schema
+      end
+    end
+
+    it "warns, naming the omitted field and pointing at the follow-up" do
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield.*\bid\b.*PRO-2872/m)
+      deep_klass.input_schema
+    end
+
+    it "warns at most once per class across repeated input_schema calls" do
+      expect(Axn.config.logger).to receive(:warn).once
+      3.times { deep_klass.input_schema }
+    end
+
+    it "does not warn when every subfield is shallow" do
+      shallow_klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: String
+      end
+      expect(Axn.config.logger).not_to receive(:warn)
+      shallow_klass.input_schema
+    end
+  end
 end
