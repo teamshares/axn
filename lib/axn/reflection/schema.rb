@@ -126,17 +126,19 @@ module Axn
         return true if klass == Hash
         return false unless klass < Data || klass < Struct
 
-        # A Data/Struct serializes member-keyed via to_h — unless it carries a CUSTOM as_json, which
-        # serialize_value would follow instead (and which may emit a scalar/array/other shape).
-        !custom_as_json?(klass)
+        # A Data/Struct serializes member-keyed via its built-in to_h — unless it carries a CUSTOM as_json
+        # OR a custom to_h, either of which serialize_value would follow instead (as_json first) and which
+        # may emit a scalar/array/differently-keyed hash.
+        !custom_serialization?(klass, :as_json) && !custom_serialization?(klass, :to_h)
       end
 
-      # active_support reopens Data/Struct (and Hash/Object) with member-keyed `as_json` implementations;
-      # those owners are safe. Any other owner means the value class (or an included module) defines its
-      # OWN `as_json`, which serialize_value follows before `to_h` — so the serialized shape is unknowable.
-      FRAMEWORK_AS_JSON_OWNERS = [Data, Struct, Hash, Object].freeze
-      def custom_as_json?(klass)
-        klass.method_defined?(:as_json) && !FRAMEWORK_AS_JSON_OWNERS.include?(klass.instance_method(:as_json).owner)
+      # active_support reopens Data/Struct/Hash (and Object) with member-keyed `as_json`/`to_h`; those
+      # owners are safe. Any other owner means the value class (or an included module) overrides the
+      # method, which serialize_value would follow — so the serialized shape is no longer provably an
+      # object keyed by the declared members.
+      FRAMEWORK_SERIALIZATION_OWNERS = [Data, Struct, Hash, Object].freeze
+      def custom_serialization?(klass, method)
+        klass.method_defined?(method) && !FRAMEWORK_SERIALIZATION_OWNERS.include?(klass.instance_method(method).owner)
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
@@ -359,7 +361,11 @@ module Axn
 
         if Array(prop[:type]).include?("array")
           items = of ? items_schema_for(of, for_output:) : {}
-          if shape
+          # Force object items from the shape only when each element provably serializes to a member-keyed
+          # object. On OUTPUT that needs an `of:` whose element type is member-keyed (a plain Data/Struct/
+          # Hash) — a custom-serialization `of:`, or no `of:` at all, leaves the element shape unknowable,
+          # so don't overwrite `items` with `type: object`. Input always describes the object a client sends.
+          if shape && (!for_output || shaped_items_serialize_to_object?(of))
             member_props, required = member_properties(shape[:members], for_output:)
             base_props = items[:properties] || {}
             items = items.merge(type: "object", properties: base_props.merge(member_props))
@@ -386,6 +392,15 @@ module Axn
         end
       end
 
+      # Whether an array's `of:` element type provably serializes to a member-keyed object (so a shape
+      # block may reflect object array items on output). Unknown without `of:`.
+      def shaped_items_serialize_to_object?(of_validations)
+        return false unless of_validations
+
+        klasses = Array(of_validations[:klass])
+        klasses.any? && klasses.all? { |k| member_keyed_object_type?(k) }
+      end
+
       def items_schema_for(of_validations, for_output: false)
         klasses = Array(of_validations[:klass])
         if klasses.size == 1
@@ -397,9 +412,9 @@ module Axn
 
       def single_items_schema(klass, for_output: false)
         # A Data element serializes member-keyed via to_h, so its array items reflect as objects — except
-        # on OUTPUT for a Data with a custom as_json, which serialize_value follows and may emit a
-        # scalar/array/other shape; leave those items untyped rather than promise an object.
-        if klass.is_a?(Class) && klass < Data && !(for_output && custom_as_json?(klass))
+        # on OUTPUT when the element isn't provably member-keyed (a custom as_json/to_h serialize_value
+        # would follow); leave those items untyped rather than promise an object.
+        if klass.is_a?(Class) && klass < Data && (!for_output || member_keyed_object_type?(klass))
           { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
         else
           json_type_for({ type: klass }, for_output:)

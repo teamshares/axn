@@ -1135,6 +1135,35 @@ RSpec.describe Axn::Reflection::Schema do
       expect(described_class.build_output(klass.external_field_configs)[:properties][:cfg]).not_to have_key(:type)
     end
 
+    it "does not advertise object OUTPUT for a shaped Data with a custom to_h (serialize follows to_h outside Rails)" do
+      # Outside Rails (no as_json), serialize_value follows a custom to_h, which may return a non-object.
+      custom_toh = Data.define(:name) { def to_h = "scalar" }
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: custom_toh) { field :name, type: String }
+        def call = nil
+      end
+      expect(described_class.build_output(klass.external_field_configs)[:properties][:cfg]).not_to have_key(:type)
+    end
+
+    it "does not force object array items on OUTPUT for a shaped array whose element type isn't provably an object" do
+      # of: a custom-as_json Data (serialize follows as_json), and the no-`of:` case (element type unknown).
+      of_custom = Data.define(:name) { def as_json(*) = "scalar" }
+      with_of = Class.new do
+        include Axn
+        exposes(:items, type: Array, of: of_custom) { field :name, type: String }
+        def call = nil
+      end
+      no_of = Class.new do
+        include Axn
+        exposes(:items, type: Array) { field :name, type: String }
+        def call = nil
+      end
+
+      expect(described_class.build_output(with_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
+      expect(described_class.build_output(no_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
+    end
+
     it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
       of_data = Data.define(:name) { def as_json(*) = "scalar" }
       klass = Class.new do
