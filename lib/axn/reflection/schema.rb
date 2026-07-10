@@ -487,12 +487,13 @@ module Axn
       # requiredness AND nullability, considering the model field plus any explicit `<field>_id` sibling
       # (order-independent — runs after all properties are built).
       #
-      # The id is OMITTABLE only when the model field can itself be omitted at runtime (`field_optional?`
-      # — accounts for a nil-tolerant model AND any required shallow subfield that would still need the
-      # resolved record), OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults
-      # supply the token before the lookup). A merely nullable/optional explicit id with no default
-      # doesn't help — omitting both leaves the token nil and the model validation fails. When the id IS
-      # required it also can't be null, so any explicit `null` branch is stripped.
+      # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
+      # with its own usable default) AND it has NO shallow subfields, OR an explicit `<field>_id` sibling
+      # carries a usable DEFAULT (inbound defaults supply the token before the lookup). Subfield-default
+      # synthesis does NOT make a model field omittable: it injects a Hash under the field, but the model
+      # resolver returns that Hash and ModelValidator rejects it (not a model instance) — and a required
+      # subfield likewise strands an omitted record. A merely nullable/optional explicit id with no default
+      # doesn't help either. When the id IS required it also can't be null, so any `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
@@ -501,7 +502,8 @@ module Axn
       def apply_model_id_requiredness!(config, shallow_subfields, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        return if field_optional?(config, shallow_subfields) || (explicit_id && usable_default?(explicit_id, subfield: false))
+        model_omittable = Array(shallow_subfields).empty? && optional_for_schema?(config)
+        return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
         required << key unless required.include?(key)

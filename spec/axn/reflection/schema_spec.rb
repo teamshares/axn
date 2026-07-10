@@ -1045,6 +1045,19 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
+    it "requires the model <field>_id when a model field has a DEFAULTED shallow subfield (synthesized Hash isn't the model)" do
+      # A subfield default synthesizes a Hash under `company`; the model resolver returns that Hash and
+      # ModelValidator rejects it (not a model instance), so omitting the id fails — even with allow_nil.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
+    end
+
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
       klass = Class.new do
         include Axn
