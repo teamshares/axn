@@ -673,7 +673,11 @@ module Axn
 
         next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
 
-        _materialize_object_parent!(parent_field) if parent_value.nil?
+        # A nil non-object parent can't hold a named subfield — materialization refuses to inject `{}` (it
+        # would fail the parent's type), so the subfield is absent. Skip evaluating/writing its default: a
+        # Proc default would run its side effects for nothing, and a dotted default would write into nil and
+        # raise. (A present parent isn't re-materialized — the `&&` short-circuits before the call.)
+        next if parent_value.nil? && !_materialize_object_parent!(parent_field)
 
         default_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::DefaultAssignmentError,
@@ -766,12 +770,20 @@ module Axn
     # satisfies the parent's declared type. An untyped parent qualifies; a type that admits a Hash
     # (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g. `type: Array`) does NOT —
     # injecting `{}` there would fail the parent's own type validator and turn an optional-absent parent
-    # into a validation error.
+    # into a validation error. Returns whether the parent was materialized (false = left nil, non-object).
     def _materialize_object_parent!(parent_field)
+      return false unless _parent_object_shaped?(parent_field)
+
+      @context.provided_data[parent_field] = {}
+      true
+    end
+
+    # Whether the parent's declared type admits a Hash (so `{}` is a valid value to synthesize into). An
+    # untyped parent qualifies; Hash/`:params` (or a union including one) qualifies; anything else does not.
+    def _parent_object_shaped?(parent_field)
       type_opt = _parent_config(parent_field)&.validations&.dig(:type)
-      object_shaped = type_opt.nil? ||
-                      Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
-      @context.provided_data[parent_field] = {} if object_shaped
+      type_opt.nil? ||
+        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
     end
 
     def update_subfield_value(parent_field, subfield, new_value)

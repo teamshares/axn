@@ -167,7 +167,10 @@ module Axn
         shallow = Array(shallow)
         return true if shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
 
-        synthesizer = shallow.any? { |c| usable_default?(c, subfield: true) }
+        # A subfield default synthesizes the parent only when the parent is object-shaped — runtime injects
+        # `{}` for Hash/`:params`/untyped parents but refuses for a non-object type (`type: Array`), which
+        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!).
+        synthesizer = object_shaped?(config) && shallow.any? { |c| usable_default?(c, subfield: true) }
         synthesizer && required_shape_member?(config)
       end
 

@@ -292,6 +292,28 @@ RSpec.describe Axn do
           end
           expect(action.call(items: nil)).to be_ok
         end
+
+        it "does not evaluate a Proc default when the nil parent isn't materialized (no side effects)" do
+          ran = []
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, default: -> { ran.push(5).last }
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+          expect(ran).to be_empty
+        end
+
+        it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects "a.b", on: :items, optional: true, type: String, default: "x"
+            def call = nil
+          end
+          result = action.call(items: nil)
+          expect(result).to be_ok
+          expect(result.exception).to be_nil
+        end
       end
 
       context "with a defaulted parent and a preprocessed subfield" do

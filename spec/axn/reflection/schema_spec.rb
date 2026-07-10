@@ -1616,6 +1616,22 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
+    it "does NOT treat a defaulted subfield as a synthesizer for a non-object parent (stays optional)" do
+      # Runtime refuses to inject `{}` for a non-object `type: Array` parent, so a defaulted subfield can't
+      # synthesize it and ShapeValidator skips an omitted/nil parent — the parent stays omittable. The
+      # schema must agree (gating synthesis on object-shaped), not mark it required.
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :items, optional: true, type: String, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("items")
+    end
+
     it "types the parent object-only + required when a defaulted subfield synthesizes it into a required shape member" do
       # A truthy-default `on:` subfield makes apply_defaults_for_subfields! materialize the nil parent, so
       # ShapeValidator no longer skips and enforces the required `status` member — runtime rejects
