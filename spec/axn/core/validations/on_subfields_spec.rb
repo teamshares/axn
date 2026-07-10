@@ -334,6 +334,28 @@ RSpec.describe Axn do
           expect(action.call(payload: { note: "hi" })).not_to be_ok
         end
       end
+
+      context "when a defaulted on: subfield synthesizes the parent into a required shape member" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true do
+              field :status, type: String
+            end
+            expects :note, on: :payload, optional: true, type: String, default: "x"
+            def call = nil
+          end
+        end
+
+        it "rejects a nil/absent parent (the default synthesizes it, so the required member is enforced)" do
+          # Matches the schema, which reflects this parent as required + non-nullable.
+          expect(action.call(payload: nil)).not_to be_ok
+          expect(action.call).not_to be_ok
+        end
+
+        it "accepts a parent that supplies the required shape member" do
+          expect(action.call(payload: { status: "ok" })).to be_ok
+        end
+      end
     end
 
     context "readers" do
