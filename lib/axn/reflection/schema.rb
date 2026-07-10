@@ -382,11 +382,12 @@ module Axn
 
         if Array(prop[:type]).include?("array")
           items = of ? items_schema_for(of, for_output:) : {}
-          # Force object items from the shape only when each element provably serializes to a member-keyed
-          # object. On OUTPUT that needs an `of:` whose element type is member-keyed (a plain Data/Struct/
-          # Hash) — a custom-serialization `of:`, or no `of:` at all, leaves the element shape unknowable,
-          # so don't overwrite `items` with `type: object`. Input always describes the object a client sends.
-          if shape && (!for_output || shaped_items_serialize_to_object?(of))
+          # Overlay the shape's object properties onto items only when the ELEMENTS are objects. A scalar
+          # `of:` (e.g. `of: String` + `field :length`) reads members off the scalar element (String#length)
+          # — the elements stay strings, so forcing `type: object` would reject a valid string array. On
+          # OUTPUT the element must additionally serialize member-keyed (a custom-serialization or missing
+          # `of:` isn't provably an object). Input keeps object items for object-typed / untyped elements.
+          if shape && shape_overlay_applies?(of, for_output:)
             member_props, required = member_properties(shape[:members], for_output:)
             base_props = items[:properties] || {}
             items = items.merge(type: "object", properties: base_props.merge(member_props))
@@ -413,13 +414,32 @@ module Axn
         end
       end
 
-      # Whether an array's `of:` element type provably serializes to a member-keyed object (so a shape
-      # block may reflect object array items on output). Unknown without `of:`.
+      # Whether a shape block should overlay object properties onto an array's items. OUTPUT: each element
+      # must provably serialize to a member-keyed object (a plain Data/Struct/Hash `of:`). INPUT: the
+      # elements must be object-typed (Hash/`:params`/Data/Struct) or untyped (no `of:` — the client sends
+      # objects). A scalar `of:` (String/Integer/…) reads members off the scalar, so it is NOT overlaid.
+      def shape_overlay_applies?(of_validations, for_output:)
+        return shaped_items_serialize_to_object?(of_validations) if for_output
+        return true unless of_validations # untyped elements: client sends objects with the shape members
+
+        klasses = Array(of_validations[:klass])
+        klasses.any? && klasses.all? { |k| object_typed_element?(k) }
+      end
+
+      # Whether an `of:` element type provably serializes to a member-keyed object (output items). Needs `of:`.
       def shaped_items_serialize_to_object?(of_validations)
         return false unless of_validations
 
         klasses = Array(of_validations[:klass])
         klasses.any? && klasses.all? { |k| member_keyed_object_type?(k) }
+      end
+
+      # Whether an element type is an OBJECT on the wire a client sends (input): Hash/`:params`/Data/Struct.
+      def object_typed_element?(klass)
+        return true if klass == :params
+        return false unless klass.is_a?(Class)
+
+        klass <= Hash || klass < Data || klass < Struct
       end
 
       def items_schema_for(of_validations, for_output: false)
@@ -488,13 +508,17 @@ module Axn
         reject_null!(properties[id_field]) if properties[id_field]
       end
 
-      # Drop an advertised `null` branch from a property (a required model-id token can't be null).
+      # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from
+      # an explicit type/anyOf; for the generated id property (untyped — a model PK has no fixed JSON type)
+      # there's no branch to strip, so add an explicit `not: { type: "null" }` constraint.
       def reject_null!(prop)
         if prop[:type].is_a?(Array)
           non_null = prop[:type] - ["null"]
           prop[:type] = non_null.size == 1 ? non_null.first : non_null
         elsif prop[:anyOf].is_a?(Array)
           prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
+        elsif !prop.key?(:type)
+          prop[:not] = { type: "null" }
         end
       end
 

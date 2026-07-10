@@ -933,6 +933,19 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:user_id]).to include(description: a_string_matching(/ID of the/))
     end
 
+    it "forbids null on a required GENERATED (untyped) model id via not: { type: null }" do
+      # The generated id is unconstrained (a PK has no fixed JSON type), so there's no type/anyOf branch to
+      # strip — a null token resolves the model to nil and fails at runtime, so add an explicit not-null.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), finder: :find }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
+      expect(schema[:properties][:company_id][:not]).to eq(type: "null")
+    end
+
     it "preserves an explicitly-declared <field>_id property instead of clobbering it with the model-generated one, and does not duplicate required" do
       klass = Class.new do
         include Axn
@@ -1198,6 +1211,19 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(described_class.build_output(with_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
       expect(described_class.build_output(no_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
+    end
+
+    it "keeps scalar array item types when a shape reads members off the scalar element (of: String + field :length)" do
+      # Runtime accepts string elements (OfValidator checks the class; ShapeValidator reads String#length),
+      # so forcing object items would reject a valid string array. The scalar item type is preserved.
+      klass = Class.new do
+        include Axn
+        expects(:items, type: Array, of: String) { field :length, type: Integer }
+        def call = nil
+      end
+      items = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:items][:items]
+
+      expect(items).to eq(type: "string")
     end
 
     it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
