@@ -445,6 +445,11 @@ module Axn
         ) do
           @action.instance_exec(current_subfield_value, &config.preprocess)
         end
+        # A nil parent has nowhere to write the result, so update_subfield_value no-ops and the preprocess
+        # output is dropped — deliberately: a nil/absent parent means the subfield is absent (PRO-2857), and
+        # a preprocess must NOT synthesize the parent into existence (unlike a subfield `default:`, which
+        # does). Materializing here would make an absent parent present — masking a required parent, and
+        # tripping shape/type validation the schema then can't mirror.
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -668,7 +673,11 @@ module Axn
 
         next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
 
-        @context.provided_data[parent_field] = {} if parent_value.nil?
+        # A nil non-object parent can't hold a named subfield — materialization refuses to inject `{}` (it
+        # would fail the parent's type), so the subfield is absent. Skip evaluating/writing its default: a
+        # Proc default would run its side effects for nothing, and a dotted default would write into nil and
+        # raise. (A present parent isn't re-materialized — the `&&` short-circuits before the call.)
+        next if parent_value.nil? && !_materialize_object_parent!(parent_field)
 
         default_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::DefaultAssignmentError,
@@ -750,6 +759,32 @@ module Axn
     # Contract::ClassMethods#_wire_parent_key) so the default/preprocess mutation paths land on the
     # caller-supplied provided_data key.
     def _wire_parent_key(on) = @action_class._wire_parent_key(on)
+
+    # A subfield's default-able parent is always a top-level field (nested/dotted/ambient parents reject
+    # default:), so its config is found by wire key among internal_field_configs.
+    def _parent_config(parent_field)
+      @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+    end
+
+    # Materialize a nil parent as `{}` so a subfield default has somewhere to land — but only when `{}`
+    # satisfies the parent's declared type. An untyped parent qualifies; a type that admits a Hash
+    # (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g. `type: Array`) does NOT —
+    # injecting `{}` there would fail the parent's own type validator and turn an optional-absent parent
+    # into a validation error. Returns whether the parent was materialized (false = left nil, non-object).
+    def _materialize_object_parent!(parent_field)
+      return false unless _parent_object_shaped?(parent_field)
+
+      @context.provided_data[parent_field] = {}
+      true
+    end
+
+    # Whether the parent's declared type admits a Hash (so `{}` is a valid value to synthesize into). An
+    # untyped parent qualifies; Hash/`:params` (or a union including one) qualifies; anything else does not.
+    def _parent_object_shaped?(parent_field)
+      type_opt = _parent_config(parent_field)&.validations&.dig(:type)
+      type_opt.nil? ||
+        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
+    end
 
     def update_subfield_value(parent_field, subfield, new_value)
       parent_value = @context.provided_data[parent_field]

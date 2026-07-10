@@ -154,12 +154,35 @@ module Axn
         klass.method_defined?(method) && !FRAMEWORK_SERIALIZATION_OWNERS.include?(klass.instance_method(method).owner)
       end
 
+      # Whether a nil/absent parent leaves a required nested obligation unmet — so it can't validate and
+      # the parent is neither omittable nor nullable. Single source of truth for both the parent's
+      # requiredness (field_optional?) and nullability (apply_nested_subfields!), so the two never disagree.
+      # Two sources:
+      #   * a required shallow `on:` subfield — runtime validates it directly against the (nil) parent; OR
+      #   * a required shape (`do…end`) member WHEN a truthy-default `on:` subfield synthesizes the parent:
+      #     that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator no longer
+      #     short-circuits on nil and enforces the member. Without such a synthesizer the parent stays nil
+      #     and ShapeValidator skips it, so shape members alone don't strand it.
+      def required_child?(config, shallow)
+        shallow = Array(shallow)
+        return true if shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
+
+        # A subfield default synthesizes the parent only when the parent is object-shaped — runtime injects
+        # `{}` for Hash/`:params`/untyped parents but refuses for a non-object type (`type: Array`), which
+        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!).
+        synthesizer = object_shaped?(config) && shallow.any? { |c| usable_default?(c, subfield: true) }
+        synthesizer && required_shape_member?(config)
+      end
+
+      # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
+      def required_shape_member?(config)
+        Array(config.validations.dig(:shape, :members)).any? { |m| !optional_for_schema?(m) }
+      end
+
       # A field is absent from `required` when a declared signal makes it omittable.
       def field_optional?(config, shallow_subfields)
         shallow = Array(shallow_subfields)
-        # A required shallow subfield can never be satisfied by an omitted parent: runtime runs subfield
-        # validation after top-level, so a nil/absent parent strands the child and the call fails.
-        has_required_child = shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
+        has_required_child = required_child?(config, shallow)
 
         # A usable default on the PARENT materializes it (with its declared contents) before validation,
         # so it may always be omitted — its own default, not its subfields, decides. (A default whose
@@ -242,16 +265,17 @@ module Axn
       end
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
-      # parent to `type: object` (it now has structure) and never nullable: a nil parent can't yield its
-      # subfields at runtime, so `null` must not be advertised. Only applies when EVERY admissible parent
-      # type is object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed
-      # union (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted,
-      # since object properties can't represent a non-object branch.
+      # parent to `type: object` (it now has structure). The parent is nullable only when it tolerates nil
+      # AND strands no required child: runtime now treats a nil parent as "subfields absent" (PRO-2857), so
+      # a nil-accepting parent with all-optional children accepts `null`, while a required child (which a
+      # nil parent can't yield) keeps it object-only. Only applies when EVERY admissible parent type is
+      # object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed union
+      # (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted, since
+      # object properties can't represent a non-object branch.
       def apply_nested_subfields!(prop, config, nested_subfields)
         return if nested_subfields.blank?
         return unless nestable_as_object?(config)
 
-        prop[:type] = "object"
         prop.delete(:format)
         prop[:properties] ||= {}
         prop[:required] ||= []
@@ -274,6 +298,12 @@ module Axn
         end
 
         prop[:required] = prop[:required].uniq
+        # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
+        # accepts nil and no required nested obligation is stranded (required_child? — which counts a
+        # required shape member only when a defaulted subfield synthesizes the parent). Decided from
+        # `config`/`nested_subfields`, NOT `prop[:required]`, which also carries shape members that a bare
+        # nil parent never triggers.
+        prop[:type] = nil_allowed?(config) && !required_child?(config, nested_subfields) ? %w[object null] : "object"
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
         required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }

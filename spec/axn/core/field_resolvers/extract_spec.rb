@@ -37,6 +37,16 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
     end
   end
 
+  describe "nil source" do
+    # A nil source means "absent" — extracting any field yields nil rather than raising, so a
+    # subfield hanging off a nil/omitted parent validates against nil (optional passes, required
+    # fails cleanly) instead of blowing up mid-extraction (PRO-2857).
+    it "returns nil for any field" do
+      expect(extract(:anything, nil)).to be_nil
+      expect(extract("a.b", nil)).to be_nil
+    end
+  end
+
   describe "object sources (non-diggable)" do
     it "uses the reader method" do
       obj = Data.define(:zip).new(zip: "v")

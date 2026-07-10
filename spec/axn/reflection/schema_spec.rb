@@ -1530,7 +1530,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
     end
 
-    it "types a parent with subfields as plain object even when allow_nil: true (Bug X: a nil parent can't yield its subfields at runtime)" do
+    it "types an allow_nil parent as plain object when it has a REQUIRED subfield (a nil parent can't yield it)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
@@ -1543,8 +1543,10 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a parent field with subfields is never nullable, even when allow_nil/allow_blank (Bug X)" do
-    it "types the parent as plain object (not [object, null]) when its only subfield is optional" do
+  # A nil parent is now valid at runtime (subfields treated as absent) when the parent tolerates nil and
+  # no required child is stranded — so the schema advertises `null` in exactly that case (PRO-2857).
+  describe "a parent field with subfields is nullable iff it accepts nil and strands no required child" do
+    it "types a nil-tolerant parent with an all-optional subfield as [object, null]" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
@@ -1552,7 +1554,99 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+    end
+
+    it "keeps a nil-tolerant parent object-only when a required subfield can't be yielded by nil" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :nick, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
       expect(schema[:properties][:payload][:type]).to eq("object")
+    end
+
+    it "keeps a non-nil-tolerant parent (type: Hash) object-only even with an all-optional subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :nick, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+    end
+
+    it "stays nullable when a required shape (do…end) member coexists with only optional on: subfields" do
+      # ShapeValidator skips a nil parent (allow_nil), so its required member does NOT strand nil — only a
+      # required `on:` subfield does. Nullability must be decided from the on: subfields, not the merged
+      # `required` (which also carries the shape member). The member stays in the nested `required`: it's
+      # required IF a non-null object is sent.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      prop = schema[:properties][:payload]
+
+      expect(prop[:type]).to eq(%w[object null])
+      expect(prop[:required]).to eq(["status"])
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "stays nullable when a shape member coexists with a PREPROCESSED (not defaulted) subfield" do
+      # A preprocess does not synthesize an absent parent (unlike a default), so a nil parent stays nil and
+      # ShapeValidator skips its required member — `payload: null`/omitted is accepted at runtime, so the
+      # schema must keep advertising `null` (only defaults count as synthesizers).
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
+    it "does NOT treat a defaulted subfield as a synthesizer for a non-object parent (stays optional)" do
+      # Runtime refuses to inject `{}` for a non-object `type: Array` parent, so a defaulted subfield can't
+      # synthesize it and ShapeValidator skips an omitted/nil parent — the parent stays omittable. The
+      # schema must agree (gating synthesis on object-shaped), not mark it required.
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :items, optional: true, type: String, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("items")
+    end
+
+    it "types the parent object-only + required when a defaulted subfield synthesizes it into a required shape member" do
+      # A truthy-default `on:` subfield makes apply_defaults_for_subfields! materialize the nil parent, so
+      # ShapeValidator no longer skips and enforces the required `status` member — runtime rejects
+      # `payload: null`/omitted. Schema must agree: non-nullable AND required (unlike the no-default case).
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, optional: true, type: String, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:required]).to include("payload")
     end
 
     it "does NOT force object on a MIXED-union parent (type: [Hash, Array]) with a subfield — preserves the array branch" do
@@ -1573,8 +1667,8 @@ RSpec.describe Axn::Reflection::Schema do
 
   describe "a parent field with subfields is required unless a default materializes it (Bug Y)" do
     it "does not require an optional (no-default) parent with an all-optional subfield" do
-      # accepted divergence: omitting yields a nil parent, which raises at runtime; the schema reflects
-      # the parent as optional because `optional: true` is a nil-tolerant declared signal.
+      # Omitting yields a nil parent, which runtime now treats as "subfields absent" (PRO-2857) — the
+      # all-optional children then pass, so reflecting the parent as optional matches runtime exactly.
       klass = Class.new do
         include Axn
         expects :payload, optional: true

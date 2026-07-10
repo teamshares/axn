@@ -150,6 +150,236 @@ RSpec.describe Axn do
       end
     end
 
+    # A nil/absent parent must be treated as "subfields absent" — each subfield's own optional/required
+    # rules apply — rather than blowing up when the resolver tries to extract from nil (PRO-2857).
+    context "when the parent is nil or absent" do
+      context "with all-optional subfields" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "passes when the parent is omitted" do
+          expect(action.call).to be_ok
+        end
+
+        it "passes when the parent is explicitly nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+      end
+
+      context "with a nil-tolerant typed parent (type: Hash, allow_nil: true)" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :name, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "passes when the parent is explicitly nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+      end
+
+      context "with a required subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, type: String
+            def call = nil
+          end
+        end
+
+        it "surfaces a clean InboundValidationError (not a bare RuntimeError)" do
+          result = action.call(payload: nil)
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("can't be blank")
+          expect(result.exception.message).not_to match(/Unclear how to extract/)
+        end
+      end
+
+      context "with a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            exposes :name_val, allow_nil: true
+            def call = expose(name_val: name)
+          end
+        end
+
+        it "does not raise when the parent is nil" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+
+        it "leaves the subfield absent when the parent is nil (the preprocess does not synthesize a parent)" do
+          # A nil/absent parent means the subfield is absent — the preprocess result has nowhere to land and
+          # is dropped, rather than materializing the parent. (A present-but-empty `{}` parent differs: the
+          # subfield is present there, so the preprocess runs and its result — "" — is stored.)
+          expect(action.call(payload: nil).name_val).to be_nil
+          expect(action.call.name_val).to be_nil
+          expect(action.call(payload: {}).name_val).to eq("")
+        end
+      end
+
+      context "with a REQUIRED parent and a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+        end
+
+        it "still fails parent presence when omitted (preprocess must not synthesize a required parent)" do
+          # The preprocess returns "" (non-nil) for an absent subfield; materializing `{name: ""}` would
+          # make the non-empty hash satisfy the parent's presence and let a required parent through on no
+          # input. It must not — unlike a subfield default, a preprocess doesn't synthesize the parent.
+          result = action.call
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("can't be blank")
+        end
+
+        it "runs the subfield preprocess normally when the required parent IS provided" do
+          expect(action.call(payload: {})).to be_ok
+        end
+      end
+
+      context "with a type-required parent whose nil-rejection is NOT from presence" do
+        # `type: :params` (and `type: Hash, presence: false`) reject nil via the TYPE validator, with no
+        # `presence` key — so materializing `{name: …}` would satisfy the type and let an unsupplied
+        # required parent through. Nil-tolerance must be judged from the full validator set, not presence.
+        it "fails a required type: :params parent when omitted (not synthesized by a preprocessed subfield)" do
+          action = build_axn do
+            expects :payload, type: :params
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+          expect(action.call).not_to be_ok
+        end
+
+        it "fails a required type: Hash, presence: false parent when omitted" do
+          action = build_axn do
+            expects :payload, type: Hash, presence: false
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            def call = nil
+          end
+          expect(action.call).not_to be_ok
+        end
+      end
+
+      context "with a non-object (type: Array) parent — must not be materialized into a Hash" do
+        it "treats a nil Array parent as absent for a preprocessed subfield (no spurious type error)" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, preprocess: ->(v) { v }
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+        end
+
+        it "treats a nil Array parent as absent for a defaulted subfield (no spurious type error)" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, default: 5
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+        end
+
+        it "does not evaluate a Proc default when the nil parent isn't materialized (no side effects)" do
+          ran = []
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, default: -> { ran.push(5).last }
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+          expect(ran).to be_empty
+        end
+
+        it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects "a.b", on: :items, optional: true, type: String, default: "x"
+            def call = nil
+          end
+          result = action.call(items: nil)
+          expect(result).to be_ok
+          expect(result.exception).to be_nil
+        end
+      end
+
+      context "with a defaulted parent and a preprocessed subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, default: { name: "Ada", role: "eng" }
+            expects :name, on: :payload, type: String, preprocess: ->(v) { v.to_s.upcase }
+            exposes :payload_val, allow_nil: true
+            def call = expose(payload_val: payload)
+          end
+        end
+
+        it "applies the parent's default when omitted (preprocessing must not preempt it)" do
+          # Preprocessing runs before defaults; materializing a synthetic {} here would make apply_defaults!
+          # skip the now-non-nil key and drop the declared default. The default must still win.
+          expect(action.call.payload_val).to eq({ name: "Ada", role: "eng" })
+        end
+
+        it "applies the parent's default when the parent is explicitly nil" do
+          expect(action.call(payload: nil).payload_val).to eq({ name: "Ada", role: "eng" })
+        end
+      end
+
+      context "with a nil-tolerant parent carrying both a shape block and an optional on: subfield" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true do
+              field :status, type: String
+            end
+            expects :note, on: :payload, optional: true, type: String
+            def call = nil
+          end
+        end
+
+        it "accepts a nil parent (shape validation is skipped, the optional subfield is absent)" do
+          expect(action.call(payload: nil)).to be_ok
+        end
+
+        it "still enforces the required shape member when a non-nil parent is provided" do
+          expect(action.call(payload: { note: "hi" })).not_to be_ok
+        end
+      end
+
+      context "when a defaulted on: subfield synthesizes the parent into a required shape member" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true do
+              field :status, type: String
+            end
+            expects :note, on: :payload, optional: true, type: String, default: "x"
+            def call = nil
+          end
+        end
+
+        it "rejects a nil/absent parent (the default synthesizes it, so the required member is enforced)" do
+          # Matches the schema, which reflects this parent as required + non-nullable.
+          expect(action.call(payload: nil)).not_to be_ok
+          expect(action.call).not_to be_ok
+        end
+
+        it "accepts a parent that supplies the required shape member" do
+          expect(action.call(payload: { status: "ok" })).to be_ok
+        end
+      end
+    end
+
     context "readers" do
       subject(:result) { action.call(foo: { bar: { qux: 3 }, baz: 2 }) }
 
