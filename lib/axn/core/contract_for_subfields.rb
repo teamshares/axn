@@ -33,7 +33,7 @@ module Axn
       end
 
       module ClassMethods
-        def _expects_subfields( # rubocop:disable Metrics/ParameterLists
+        def _expects_subfields( # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
           *fields,
           on:,
           readers: true,
@@ -52,7 +52,7 @@ module Axn
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
-          unless (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+          unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
             raise ArgumentError,
                   "expects called with `on: #{on}`, but no such reader exists " \
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
@@ -67,6 +67,57 @@ module Axn
             raise ArgumentError,
                   "expects called with `on: #{on}`, but :#{root} (or its root) is declared `user_facing:` — " \
                   "user_facing: is for top-level fields without nested subfield expectations"
+          end
+
+          # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
+          # and `resolve_parent` can walk it at runtime, but `AmbientContext#_filter_to_declared` only
+          # keeps configs whose `on.to_sym == :ambient_context` exactly — a dotted ambient parent's
+          # data is silently stripped, so the subfield would always read from `{}`. Deep/dotted nesting
+          # is deferred project-wide (see the KNOWN LIMITATION note in reflection/schema.rb), so reject
+          # this at declaration rather than fail silently. Checked unconditionally (regardless of
+          # preprocess:/default:) since the underlying gap is in ambient resolution, not those options.
+          if root == Axn::Core::AmbientContext::PARENT && on.to_s.include?(".")
+            raise ArgumentError,
+                  "a dotted `on:` path rooted at :ambient_context (got #{on.inspect}) is not supported — " \
+                  "declare a single-level `on: :ambient_context` subfield (deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
+          end
+
+          # A dotted subfield NAME on an ambient parent (`expects "request.ip", on: :ambient_context`)
+          # denotes deep extraction (FieldResolvers::Extract reads ambient_context[:request][:ip]), but
+          # `_filter_to_declared` only preserves the exact declared key, so the nested source is stripped
+          # and the subfield always reads nil. Deep ambient nesting is deferred (PRO-2844/PRO-2845), so
+          # reject at declaration rather than fail silently. (Dotted names on a NON-ambient parent are a
+          # supported runtime extraction path and are left alone here.)
+          if root == Axn::Core::AmbientContext::PARENT && fields.any? { |f| f.to_s.include?(".") }
+            dotted = fields.select { |f| f.to_s.include?(".") }
+            raise ArgumentError,
+                  "a dotted subfield name (got #{dotted.map(&:to_s).inspect}) on an `on: :ambient_context` subfield " \
+                  "denotes deep ambient nesting, which is not supported — declare a single-level ambient subfield " \
+                  "(deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
+          end
+
+          # A subfield nested UNDER an ambient subfield (`expects :ip, on: :request` where `:request` is an
+          # `on: :ambient_context` subfield) would make _filter_to_declared copy the whole parent hash into
+          # ambient_context, leaking undeclared nested keys (e.g. request[:token]) into exception context —
+          # and the nested child can't be marked sensitive:. Deep ambient nesting is deferred (PRO-2844/2845),
+          # so reject anything that roots at :ambient_context other than a direct single-level subfield.
+          if on.to_sym != Axn::Core::AmbientContext::PARENT && _on_roots_at_ambient?(on)
+            raise ArgumentError,
+                  "a subfield nested under :ambient_context (on: #{on.inspect}) is not supported — declare a " \
+                  "single-level `on: :ambient_context` subfield (deep ambient nesting is deferred; see PRO-2844/PRO-2845)"
+          end
+
+          # An `on: :ambient_context` subfield's value comes from the ambient provider / CurrentAttributes
+          # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
+          # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /
+          # #apply_inbound_preprocessing_for_subfields!), so `default:` would corrupt resolution and
+          # `preprocess:` would raise (extracting from a nil parent). `sensitive:` is filter-only and
+          # unaffected — it's relied on for ambient_context observability, so it must stay allowed.
+          if root == Axn::Core::AmbientContext::PARENT && (!default.nil? || !preprocess.nil?)
+            raise ArgumentError,
+                  "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
+                  "(the ambient parent is resolved per-invocation, not read from provided_data) — " \
+                  "compute defaults/preprocessing in your ambient_context_provider or a before hook. `sensitive:` is supported."
           end
 
           # default:/preprocess: write into the parent, and sensitive: relies on the log filter
@@ -104,6 +155,23 @@ module Axn
 
           sub = subfield_configs.find { |c| c.reader_as.to_s == root }
           sub ? _on_roots_at_user_facing_field?(sub.on) : false
+        end
+
+        # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
+        # via a dotted path, or by pointing at another subfield that itself roots at ambient.
+        def _on_roots_at_ambient?(on)
+          seen = []
+          segment = on.to_s.split(".").first.to_sym
+          loop do
+            return true if segment == Axn::Core::AmbientContext::PARENT
+            return false if seen.include?(segment)
+
+            seen << segment
+            parent = subfield_configs.find { |c| c.reader_as == segment }
+            return false unless parent
+
+            segment = parent.on.to_s.split(".").first.to_sym
+          end
         end
 
         def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists

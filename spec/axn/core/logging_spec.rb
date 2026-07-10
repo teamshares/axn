@@ -20,7 +20,7 @@ RSpec.describe Axn do
     end
 
     it "logs" do
-      expect(logger).to receive(:info).with("[Anonymous Class] Hello, World!")
+      expect(logger).to receive(:info).with("[Anonymous Axn] Hello, World!")
       is_expected.to be_ok
     end
 
@@ -29,7 +29,7 @@ RSpec.describe Axn do
         let(:level) { level }
 
         it "delegates via #log" do
-          expect(logger).to receive(level).with("[Anonymous Class] Hello, World!")
+          expect(logger).to receive(level).with("[Anonymous Axn] Hello, World!")
           is_expected.to be_ok
         end
       end
@@ -46,7 +46,7 @@ RSpec.describe Axn do
         end
 
         it "logs at the default level" do
-          expect(logger).to receive(level).with("[Anonymous Class] Hello!")
+          expect(logger).to receive(level).with("[Anonymous Axn] Hello!")
           is_expected.to be_ok
         end
       end
@@ -67,7 +67,7 @@ RSpec.describe Axn do
         end
 
         it "uses single bracketed prefix" do
-          expect(logger).to receive(:info).with("[Anonymous Class] test message")
+          expect(logger).to receive(:info).with("[Anonymous Axn] test message")
           action.call
         end
       end
@@ -89,7 +89,7 @@ RSpec.describe Axn do
         end
 
         it "includes outer action name in prefix with chevron separator" do
-          expect(logger).to receive(:info).with(/\[Anonymous Class > Anonymous Class\] inner message/)
+          expect(logger).to receive(:info).with(/\[Anonymous Axn > Anonymous Axn\] inner message/)
           outer_action.call
         end
       end
@@ -118,7 +118,7 @@ RSpec.describe Axn do
         end
 
         it "stacks all parent action names with chevron separators" do
-          expect(logger).to receive(:info).with(/\[Anonymous Class > Anonymous Class > Anonymous Class\] deep message/)
+          expect(logger).to receive(:info).with(/\[Anonymous Axn > Anonymous Axn > Anonymous Axn\] deep message/)
           level1.call
         end
       end

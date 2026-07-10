@@ -14,6 +14,7 @@ require "axn/exceptions"
 # The core implementation
 require "axn/core"
 require "axn/executor"
+require "axn/reflection"
 
 # Internal utilities
 require "axn/internal/memoization"

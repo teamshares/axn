@@ -35,6 +35,11 @@ module Axn
 
     attr_writer :logger, :env, :on_exception, :rails
 
+    # Optional callable returning a Hash of ambient context data (e.g. from request-local state).
+    # Consulted when no explicit `ambient_context:` kwarg is passed to an Axn call. Falls back to
+    # `Axn::Core::AmbientContext.default_source` when nil.
+    attr_accessor :ambient_context_provider
+
     # Controls when on_exception is triggered in async context (Sidekiq/ActiveJob).
     # Options:
     #   :every_attempt - trigger on every retry attempt (includes retry context)

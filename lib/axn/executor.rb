@@ -84,7 +84,7 @@ module Axn
     # =========================================================================
 
     def with_tracing(&block)
-      resource = @action_class.name || "AnonymousClass"
+      resource = @action_class.resolved_axn_name
       payload = { resource:, action: @action }
 
       update_payload = proc do
@@ -601,7 +601,7 @@ module Axn
       return nil if source.nil?
 
       record = Core::FieldResolvers.resolve(type: :extract, field:, provided_data: source)
-      raw_id = Core::FieldResolvers.resolve(type: :extract, field: :"#{field}_id", provided_data: source)
+      raw_id = Core::FieldResolvers.resolve(type: :extract, field: Internal::FieldConfig.model_id_key(field), provided_data: source)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
       return nil if record.id.to_s == raw_id.to_s
@@ -660,7 +660,7 @@ module Axn
 
     def apply_defaults_for_subfields!
       @action_class.send(:subfield_configs).each do |config|
-        next unless config.default
+        next unless Internal::FieldConfig.subfield_default_applies?(config)
 
         parent_field = _wire_parent_key(config.on)
         subfield = config.field

@@ -234,6 +234,26 @@ RSpec.describe "Dynamic sensitive fields" do
 
         expect(mixed_action.sensitive_fields).to eq([:static_sensitive])
       end
+
+      it "also redacts the generated <field>_id alias for a sensitive model: field" do
+        company_klass = Struct.new(:id) do
+          def self.find(_id) = new
+        end
+
+        model_action = build_axn do
+          expects :company, model: { klass: company_klass, finder: :find }, sensitive: true
+        end
+
+        expect(model_action.sensitive_fields).to include(:company, :company_id)
+      end
+
+      it "does not add a spurious _id key for a sensitive non-model field" do
+        plain_action = build_axn do
+          expects :ssn, sensitive: true
+        end
+
+        expect(plain_action.sensitive_fields).to eq([:ssn])
+      end
     end
 
     describe "._resolve_sensitive_fields" do

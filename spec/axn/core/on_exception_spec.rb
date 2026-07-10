@@ -169,6 +169,34 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     expect(captured[:axn_stack]).to eq(%w[BreadcrumbOuter BreadcrumbInner])
   end
 
+  it "shows a custom axn_name override in the axn_stack instead of the class name" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn do
+      axn_name "custom_inner_tool"
+      def call = raise "boom"
+    end
+    stub_const("BreadcrumbNamedInner", inner)
+    outer = build_axn { def call = BreadcrumbNamedInner.call! }
+    stub_const("BreadcrumbNamedOuter", outer)
+
+    BreadcrumbNamedOuter.call
+    expect(captured[:axn_stack]).to eq(%w[BreadcrumbNamedOuter custom_inner_tool])
+  end
+
+  it "shows 'Anonymous Axn' in the axn_stack for a nested action with no class name or axn_name" do
+    captured = nil
+    allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument
+
+    inner = build_axn { def call = raise "boom" }
+    outer = build_axn { define_method(:call) { inner.call! } }
+    stub_const("BreadcrumbAnonOuter", outer)
+
+    BreadcrumbAnonOuter.call
+    expect(captured[:axn_stack]).to eq(["BreadcrumbAnonOuter", "Anonymous Axn"])
+  end
+
   it "omits axn_stack for a single (non-nested) action" do
     captured = nil
     allow(Axn.config).to receive(:on_exception) { |_e, action:, context:| captured = context } # rubocop:disable Lint/UnusedBlockArgument

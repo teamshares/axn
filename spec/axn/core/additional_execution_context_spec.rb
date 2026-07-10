@@ -111,10 +111,10 @@ RSpec.describe "Additional execution context" do
       action.call(name: "test")
     end
 
-    it "ignores framework-owned reserved keys (async, current_attributes, axn_stack) from set_execution_context" do
+    it "ignores framework-owned reserved keys (async, ambient_context, axn_stack) from set_execution_context" do
       action = build_axn do
         def call
-          set_execution_context(axn_stack: ["UserValue"], async: { user: true }, current_attributes: { u: 1 }, custom_key: "allowed")
+          set_execution_context(axn_stack: ["UserValue"], async: { user: true }, ambient_context: { u: 1 }, custom_key: "allowed")
           raise "Failed"
         end
       end
@@ -125,10 +125,11 @@ RSpec.describe "Additional execution context" do
       ) do |_exception, options|
         ctx = options[:context]
         # Single, non-nested, non-retry action: the framework sets none of these, and the user's
-        # attempts are stripped at collection — so none of the reserved keys appear.
+        # attempts are stripped at collection — so none of the reserved keys appear. (No ambient
+        # fields declared, so the framework's own ambient_context resolves empty and is omitted too.)
         expect(ctx).not_to have_key(:axn_stack)
         expect(ctx).not_to have_key(:async)
-        expect(ctx).not_to have_key(:current_attributes)
+        expect(ctx).not_to have_key(:ambient_context)
       end.and_call_original
 
       action.call

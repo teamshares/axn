@@ -97,6 +97,27 @@ RSpec.describe Axn::Internal::ExceptionContext do
       expect(result[:dimensions]).to eq(plan_tier: "pro")
     end
 
+    it "maps the axn_stack through resolved_axn_name (class name, axn_name override, or 'Anonymous Axn')" do
+      named_class = build_axn
+      stub_const("ExceptionContextNamedAction", named_class)
+
+      anon_instance = build_axn.send(:new)
+      custom_class = build_axn { axn_name "custom_display" }
+      named_instance = ExceptionContextNamedAction.send(:new)
+      custom_instance = custom_class.send(:new)
+
+      stack = Axn::Core::NestingTracking._current_axn_stack
+      stack.push(anon_instance, named_instance, custom_instance)
+
+      begin
+        result = described_class.build(action: custom_instance)
+      ensure
+        3.times { stack.pop }
+      end
+
+      expect(result[:axn_stack]).to eq(["Anonymous Axn", "ExceptionContextNamedAction", "custom_display"])
+    end
+
     context "with unpersisted ActiveRecord-like objects" do
       let(:unpersisted_class) do
         Class.new do

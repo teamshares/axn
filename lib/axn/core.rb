@@ -7,6 +7,7 @@ require "axn/context"
 require "axn/strategies"
 require "axn/extras"
 require "axn/core/hooks"
+require "axn/core/naming"
 require "axn/core/logging"
 require "axn/core/flow"
 require "axn/core/automatic_logging"
@@ -14,6 +15,9 @@ require "axn/core/tagging"
 require "axn/core/use_strategy"
 require "axn/core/nesting_tracking"
 require "axn/core/memoization"
+require "axn/core/extension_metadata"
+require "axn/core/semantic_hints"
+require "axn/core/schema_reflection"
 
 # CONSIDER: make class names match file paths?
 require "axn/core/validation/validators/model_validator"
@@ -23,6 +27,7 @@ require "axn/core/validation/validators/of_validator"
 require "axn/core/validation/validators/shape_validator"
 
 require "axn/core/field_resolvers"
+require "axn/core/ambient_context"
 require "axn/core/contract"
 require "axn/core/contract_for_subfields"
 require "axn/core/default_call"
@@ -60,15 +65,20 @@ module Axn
 
         # DSL modules that add class methods/attributes users interact with
         include Core::Hooks
+        include Core::Naming
         include Core::Logging
         include Core::AutomaticLogging
         include Core::Tagging
         include Core::Flow
+        include Core::AmbientContext
         include Core::Contract
         include Core::ContractForSubfields
         include Core::UseStrategy
         include Core::Memoization
         include Core::DefaultCall
+        include Core::ExtensionMetadata
+        include Core::SemanticHints
+        include Core::SchemaReflection
 
         # Internal: tracks nesting depth for logging and duplicate-log suppression
         include Core::NestingTracking

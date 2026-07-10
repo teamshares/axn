@@ -38,7 +38,7 @@ module Axn
 
         def _log_prefix
           names = NestingTracking._current_axn_stack.map do |axn|
-            axn.class.name.presence || "Anonymous Class"
+            axn.class.resolved_axn_name
           end
           "[#{names.join(' > ')}]"
         end

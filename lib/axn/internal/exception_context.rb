@@ -18,7 +18,7 @@ module Axn
         #     inputs: { ... },              # User's action inputs (filtered for sensitive data, always formatted)
         #     outputs: { ... },             # Action outputs (filtered for sensitive data, always formatted)
         #     ...extra_keys...,             # Additional context from set_execution_context / hook (formatted)
-        #     current_attributes: { ... },  # Optional: Current.attributes if defined and present
+        #     ambient_context: { ... },     # Optional: declared, sensitive-filtered ambient_context if present
         #     async: { ... }                # Optional: async retry context if applicable
         #   }
         def build(action:, retry_context: nil, tags: {}, dimensions: {})
@@ -42,17 +42,10 @@ module Axn
           # is still on the stack). Omitted for a single (non-nested) action. :axn_stack is a
           # RESERVED_EXECUTION_CONTEXT_KEY, so this never clobbers a user-supplied value.
           stack = Core::NestingTracking._current_axn_stack
-          context[:axn_stack] = stack.map { |a| a.class.name || "AnonymousClass" } if stack.length > 1
+          context[:axn_stack] = stack.map { |a| a.class.resolved_axn_name } if stack.length > 1
 
           # Add async information if available
           context[:async] = retry_context.to_h if retry_context
-
-          # Auto-include Current.attributes if defined, responds to attributes, and has non-nil values
-          if defined?(Current) && Current.respond_to?(:attributes)
-            current_attrs = Current.attributes
-            # Only include if the hash has any non-nil values
-            context[:current_attributes] = format_hash_values(current_attrs) if current_attrs.present? && current_attrs.any? { |_k, v| !v.nil? }
-          end
 
           # Declared observability facets (PRO-2853), attached under reserved namespaced keys so a
           # consumer's on_exception can route tag → freeform extra, dimension → indexed tags. Values

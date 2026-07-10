@@ -18,7 +18,7 @@ RSpec.describe "Axn::Internal::Tracing ActiveSupport::Notifications" do
       result = action.call
       expect(notifications.length).to eq(1)
       expect(notifications.first[:name]).to eq("axn.call")
-      expect(notifications.first[:payload][:resource]).to eq("AnonymousClass")
+      expect(notifications.first[:payload][:resource]).to eq("Anonymous Axn")
       expect(notifications.first[:payload][:outcome]).to eq(outcome)
       expect(notifications.first[:payload][:result]).to eq(result)
       expect(notifications.first[:payload][:elapsed_time]).to be_a(Float)

@@ -8,3 +8,4 @@
 #   - axn/rubocop
 
 require_relative "../rubocop/cop/axn/unchecked_result"
+require_relative "../rubocop/cop/axn/ambient_context_bypass"

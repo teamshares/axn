@@ -159,7 +159,9 @@ module Axn
         end
 
         def _static_sensitive_fields
-          (internal_field_configs + external_field_configs + subfield_configs).select { |c| c.sensitive == true }.map(&:field)
+          (internal_field_configs + external_field_configs + subfield_configs)
+            .select { |c| c.sensitive == true }
+            .flat_map { |c| _sensitive_field_keys(c) }
         end
 
         def _has_dynamic_sensitive_fields?
@@ -171,9 +173,17 @@ module Axn
         def _resolve_sensitive_fields(action_instance)
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
-          (internal_field_configs + external_field_configs + subfield_configs).select do |config|
-            _resolve_sensitive_value(config.sensitive, action_instance)
-          end.map(&:field)
+          (internal_field_configs + external_field_configs + subfield_configs)
+            .select { |config| _resolve_sensitive_value(config.sensitive, action_instance) }
+            .flat_map { |c| _sensitive_field_keys(c) }
+        end
+
+        # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as
+        # sensitive as the record). Non-model fields contribute only their own key.
+        def _sensitive_field_keys(config)
+          keys = [config.field]
+          keys << Internal::FieldConfig.model_id_key(config.field) if config.validations[:model]
+          keys
         end
 
         def _resolve_sensitive_value(sensitive, action_instance)
@@ -316,6 +326,7 @@ module Axn
           default_success
           action_name
           inputs
+          ambient_context
         ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
@@ -330,6 +341,7 @@ module Axn
           __action__
           standalone
           inputs
+          ambient_context
         ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
@@ -481,10 +493,10 @@ module Axn
         # which for a custom finder is a lookup token, not a primary key. `raw_reader` yields the raw
         # `<field>_id` value for the caller's context (top-level provided_data vs. the `on:` parent).
         def _define_model_id_reader_from(reader:, source_field:, by_primary_key:, &raw_reader)
-          id_reader = :"#{reader}_id"
+          id_reader = Internal::FieldConfig.model_id_key(reader)
           return unless _reader_name_available?(id_reader, kind: "model id")
 
-          id_key = :"#{source_field}_id"
+          id_key = Internal::FieldConfig.model_id_key(source_field)
           define_method(id_reader) do
             raw = instance_exec(id_key, &raw_reader)
             next raw if by_primary_key && !raw.nil? && !raw.to_s.strip.empty?
@@ -550,11 +562,11 @@ module Axn
 
       # Keys the framework owns in the execution/exception-report context, so they can't be set via
       # set_execution_context or the additional_execution_context hook: :inputs/:outputs are the
-      # structural pair, and :async/:current_attributes/:axn_stack/:tags/:dimensions are
-      # framework-populated in Internal::ExceptionContext.build — reserving them here prevents a user
-      # value from being silently overwritten when build assigns them after merging the user's extra
-      # keys. :tags/:dimensions carry the resolved `tag`/`dimension` facets (PRO-2853).
-      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async current_attributes axn_stack tags dimensions].freeze
+      # structural pair, and :async/:ambient_context/:axn_stack/:tags/:dimensions are
+      # framework-populated in execution_context / Internal::ExceptionContext.build — reserving them
+      # here prevents a user value from being silently overwritten when they're assigned after merging
+      # the user's extra keys. :tags/:dimensions carry the resolved `tag`/`dimension` facets (PRO-2853).
+      RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async ambient_context axn_stack tags dimensions].freeze
 
       module InstanceMethods
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
@@ -619,17 +631,44 @@ module Axn
         end
 
         # Returns a structured hash for exception reporting and handlers.
-        # Contains :inputs, :outputs, and any extra keys from set_execution_context / additional_execution_context hook.
+        # Contains :inputs, :outputs, any extra keys from set_execution_context / additional_execution_context
+        # hook, and (when present) a sensitive-filtered :ambient_context.
         # Framework-owned keys (RESERVED_EXECUTION_CONTEXT_KEYS) from extra context are stripped before merging.
         def execution_context
           explicit_context = @__additional_execution_context || {}
           hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
-          { inputs: inputs_for_logging, outputs: outputs_for_logging, **extra_context }
+          ctx = {
+            inputs: _safe_execution_context_slice { inputs_for_logging },
+            outputs: _safe_execution_context_slice { outputs_for_logging },
+            **extra_context,
+          }
+
+          # Resolving/filtering ambient context can raise (e.g. a failing ambient_context_provider
+          # whose error is now memoized and re-raised on every read — see
+          # Axn::Core::AmbientContext#ambient_context). Building exception-report context must never
+          # itself raise, or the real exception never reaches Axn.config.on_exception, so omit
+          # ambient_context here rather than propagate.
+          ambient = _safe_execution_context_slice do
+            ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
+            ambient_filter.filter(ambient_context)
+          end
+          ctx[:ambient_context] = ambient if ambient.present?
+          ctx
         end
 
         private
+
+        # Exception-report context must never itself raise (a failing ambient provider can propagate
+        # through sensitive-predicate evaluation while building any of these slices, since resolving
+        # inputs_for_logging/outputs_for_logging may evaluate a dynamic `sensitive:` predicate that
+        # reads ambient_context). Degrade to {} rather than let it escape.
+        def _safe_execution_context_slice
+          yield
+        rescue StandardError
+          {}
+        end
 
         # Forward the intersection of a nested result's declared exposures and this action's own
         # declared exposures. Reads declared fields (static contract) so it is safe on a failed

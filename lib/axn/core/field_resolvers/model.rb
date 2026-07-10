@@ -51,7 +51,7 @@ module Axn
         end
 
         def id_field
-          @id_field ||= :"#{field}_id"
+          @id_field ||= Axn::Internal::FieldConfig.model_id_key(field)
         end
 
         def id_value

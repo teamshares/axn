@@ -59,7 +59,7 @@ The `context` hash is automatically formatted and contains:
   outputs: { ... },             # Action outputs (declared exposes fields only), formatted recursively
   # ... any extra keys from set_execution_context or additional_execution_context hook
   # e.g. client_strategy__last_request: { url: ..., method: ..., status: ... }
-  current_attributes: { ... },  # Current.attributes (auto-included if defined and present)
+  ambient_context: { ... },     # Declared `ambient_context` subfields, sensitive-filtered (present when the action declares any)
   tags: { ... },                # Resolved `tag` facets (only when the action declares any)
   dimensions: { ... },          # Resolved `dimension` facets (only when the action declares any)
   async: { ... }                # Async retry info (only present in async context)
@@ -81,7 +81,7 @@ Axn.configure do |c|
     # context[:inputs] - Your action's inputs (formatted)
     # context[:outputs] - Your action's outputs (formatted)
     # context[:client_strategy__last_request] - Example extra key from :client strategy
-    # context[:current_attributes] - Rails Current.attributes (if present)
+    # context[:ambient_context] - Declared ambient_context subfields, sensitive-filtered (if any declared)
     # context[:async] - Retry info (if in async context)
     
     Honeybadger.notify(e, context: context)
@@ -461,7 +461,7 @@ Axn.configure do |c|
       )
       Honeybadger.notify(e, context: enhanced_context)
     else
-      # Foreground execution - context still includes inputs and current_attributes
+      # Foreground execution - context still includes inputs and ambient_context
       Honeybadger.notify(e, context: context)
     end
   end

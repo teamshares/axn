@@ -626,3 +626,40 @@ end
 
 Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 
+## Contract reflection (`.input_schema` / `.output_schema`)
+
+`.input_schema` and `.output_schema` return [JSON Schema](https://json-schema.org/) Hashes derived from your `expects`/`exposes` declarations — the lingua franca that OpenAPI, MCP `inputSchema`, and LLM function-calling `parameters` all speak. Paired with `Axn::Reflection::Values.serialize_exposed(result, configs)` (which renders a result to a JSON-safe Hash), this is the groundwork for exposing any Axn as a callable tool. Both methods are read-only and **off the execution path** — reflecting an Axn never instantiates it, runs its validators, or triggers any side effect.
+
+```ruby
+class FindWidget
+  include Axn
+  expects :id, type: :uuid
+  expects :verbose, type: :boolean, default: false
+  exposes :widget, type: Hash
+end
+
+FindWidget.input_schema
+#=> { type: "object",
+#     properties: { id: { type: "string", format: "uuid" },
+#                   verbose: { type: "boolean", default: false } },
+#     required: ["id"] }   # `verbose` is optional — it has a default
+```
+
+A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present, and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:` / `presence: false`). Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
+
+::: warning Requiredness is advisory, not a runtime guarantee
+To keep reflection cheap and side-effect-free, the schema is built from your **declarations**, not by test-running your validators against each default. In these narrow cases the reflected `required` can therefore disagree with what `Axn.call` actually accepts:
+
+- a **non-blank but invalid default** (e.g. `expects :name, type: String, default: 123`) is reflected as optional, but omitting it still fails validation at runtime — a self-contradictory contract;
+- a **required _deep_ subfield** — reached through a dotted `on:` path or a subfield-of-a-subfield chain — under an optional (`allow_nil:`/`optional:`) parent. Only single-level subfields are represented (see below), so a deep required descendant can't force its top-level parent into `required`, and the parent may reflect as optional though a real call needs it. (A required **shallow** subfield *does* force its parent required.)
+- a **`model:` subfield nested under a parent, paired with a sibling defaulted `<field>_id` subfield**: at runtime the parent is synthesized and the id default supplies the lookup token, so the parent is omittable — but the schema reflects it as `required` (the safe, stricter direction). Shallow `model:` fields and their explicit shallow `<field>_id` siblings *are* reconciled precisely.
+
+These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Give the default a valid value, drop the parent's `allow_nil:`, or send the parent explicitly, and the schema and runtime agree.
+:::
+
+Only single-level subfields are represented; deeper nesting (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validates at runtime but is omitted from the schema for now.
+
+::: warning Ruby-object input types need coercion
+The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. But core does **not** coerce inbound values: validation wants an actual `Date`/`Symbol`/`Time` object, so a JSON client sending the string `"2026-07-08"` or `"active"` is rejected. This round-trips cleanly on the **output** side (a `Date` result serializes to that string), but for **inputs** it's the consuming adapter's job to coerce the JSON scalar into the Ruby type (or declare the input as `type: String` and parse it in your action). Prefer JSON-native input types (`String`, `Integer`, `:boolean`, …) for fields a tool client will populate directly.
+:::
+
