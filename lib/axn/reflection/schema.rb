@@ -212,7 +212,7 @@ module Axn
 
         value = config.default
         return false if value.nil? || value.is_a?(Proc)
-        return false if literal_container?(value) && value.empty? && presence_rejects_blank?(config)
+        return false if presence_blank?(value) && presence_rejects_blank?(config)
 
         subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
       end
@@ -228,10 +228,17 @@ module Axn
         !(presence.is_a?(Hash) && presence[:allow_blank])
       end
 
-      # A built-in literal container whose `empty?` is a pure in-memory check. Uses instance_of? (exact
-      # class), not is_a?: an Array/Hash/String SUBCLASS could override `empty?` with user code.
-      def literal_container?(value)
-        value.instance_of?(Hash) || value.instance_of?(Array) || value.instance_of?(String)
+      # A default value ActiveModel's presence validator treats as blank (and so rejects): an empty or
+      # whitespace-only String, an empty Hash/Array, or `false`. Detected WITHOUT dispatching methods on
+      # an arbitrary object (reflection stays side-effect-free): identity for `false`, and exact-class
+      # (instance_of?) built-in containers/strings whose emptiness is a pure in-memory check — a subclass
+      # could override empty?/strip. (nil is handled by the caller.)
+      def presence_blank?(value)
+        return true if value.equal?(false)
+        return value.strip.empty? if value.instance_of?(String)
+        return value.empty? if value.instance_of?(Hash) || value.instance_of?(Array)
+
+        false
       end
 
       # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the

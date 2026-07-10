@@ -155,6 +155,46 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
+    it "requires a presence-validated field whose default is a WHITESPACE-only string (presence rejects blank)" do
+      klass = Class.new do
+        include Axn
+        expects :name, type: String, default: "   "
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("name") # ActiveModel presence rejects "   " (blank)
+    end
+
+    it "requires a presence-validated field whose default is false (presence rejects false)" do
+      klass = Class.new do
+        include Axn
+        expects :flag, default: false # no type ⇒ auto-presence, which rejects false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required]).to include("flag")
+    end
+
+    it "does NOT require a type: :boolean field defaulting to false (no presence validator to reject it)" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean, default: false
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:required] || []).not_to include("flag")
+    end
+
+    it "does not dispatch empty?/strip on a non-literal default while checking blankness (side-effect-free)" do
+      lazy = Class.new do
+        def empty? = raise("side effect: empty? during reflection")
+        def strip = raise("side effect: strip during reflection")
+      end
+      klass = Class.new do
+        include Axn
+        expects :x, default: lazy.new
+        def call = nil
+      end
+      expect { klass.input_schema }.not_to raise_error
+    end
+
     it "does NOT require a presence: { allow_blank: true } field whose blank \"\" default it skips (runtime: call ok)" do
       klass = Class.new do
         include Axn
