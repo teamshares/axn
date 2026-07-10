@@ -660,7 +660,7 @@ module Axn
 
     def apply_defaults_for_subfields!
       @action_class.send(:subfield_configs).each do |config|
-        next unless config.default
+        next unless Internal::FieldConfig.subfield_default_applies?(config)
 
         parent_field = _wire_parent_key(config.on)
         subfield = config.field

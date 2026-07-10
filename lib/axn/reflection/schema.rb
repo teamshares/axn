@@ -214,7 +214,7 @@ module Axn
         return false if value.nil? || value.is_a?(Proc)
         return false if literal_container?(value) && value.empty? && presence_rejects_blank?(config)
 
-        subfield ? !!value : true
+        subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
       end
 
       # Whether an active presence validator would reject a blank value, so a blank default can't relax
@@ -340,7 +340,7 @@ module Axn
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
           # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
-          emit_default = subfield ? !!config.default : true
+          emit_default = subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
           prop[:default] = normalize_schema_literal(config.default) if emit_default
         end
 

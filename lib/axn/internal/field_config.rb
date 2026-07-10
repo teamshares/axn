@@ -38,6 +38,17 @@ module Axn
       def model_id_key(field)
         :"#{field}_id"
       end
+
+      # Runtime materializes a SUBFIELD's default only when it is truthy — Executor#apply_defaults_for_
+      # subfields! does `next unless config.default`, so a falsey subfield default (`false`/`nil`) is never
+      # applied. Schema reflection keys off the same rule (a falsey subfield default neither relaxes
+      # requiredness nor is emitted). Top-level defaults apply by key-presence and are out of scope here.
+      #
+      # @param config [Object] a subfield configuration object with a `default`
+      # @return [Boolean] whether the subfield's default would be applied at runtime
+      def subfield_default_applies?(config)
+        !!config.default
+      end
     end
   end
 end
