@@ -445,6 +445,10 @@ module Axn
         ) do
           @action.instance_exec(current_subfield_value, &config.preprocess)
         end
+        # Materialize a nil parent so the preprocess result has somewhere to land — otherwise
+        # update_subfield_value silently drops it, diverging from a `{}` parent (which stores it) and from
+        # the top-level preprocess contract (which always writes back). Mirrors apply_defaults_for_subfields!.
+        @context.provided_data[parent_field] = {} if parent_value.nil?
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end

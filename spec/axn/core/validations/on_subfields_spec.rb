@@ -207,13 +207,23 @@ RSpec.describe Axn do
         let(:action) do
           build_axn do
             expects :payload, optional: true
-            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v&.upcase }
-            def call = nil
+            expects :name, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+            exposes :name_val, allow_nil: true
+            def call = expose(name_val: name)
           end
         end
 
         it "does not raise when the parent is nil" do
           expect(action.call(payload: nil)).to be_ok
+        end
+
+        it "writes the preprocess result back (materializing the nil parent) — same as an empty-hash parent" do
+          # `payload: {}` and `payload: nil`/omitted must agree: the preprocess (`nil.to_s.strip` → "")
+          # result is stored either way, rather than silently dropped when the parent is nil.
+          from_empty = action.call(payload: {}).name_val
+          expect(from_empty).to eq("")
+          expect(action.call(payload: nil).name_val).to eq(from_empty)
+          expect(action.call.name_val).to eq(from_empty)
         end
       end
 
