@@ -29,8 +29,8 @@ module Axn
         Numeric => "number",
         Hash => "object",
         Array => "array",
-        TrueClass => "boolean",
-        FalseClass => "boolean",
+        # NOTE: TrueClass/FalseClass are intentionally absent — TypeValidator accepts only the singleton
+        # value, so single_type_for reflects them as boolean + a single-member enum, not the full domain.
         Date => "string",
         DateTime => "string",
         Time => "string",
@@ -335,17 +335,7 @@ module Axn
 
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
-        if type_info[:anyOf]
-          members = type_info[:anyOf]
-          members = drop_uuid_format(members) if type_allows_blank?(config)
-          prop[:anyOf] = nullable ? members + [{ type: "null" }] : members
-        elsif type_info[:type]
-          prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
-          # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
-          # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
-          # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
-          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
-        end
+        apply_type_info!(prop, type_info, config, nullable:)
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
@@ -364,6 +354,23 @@ module Axn
         apply_structured_schema!(prop, config, for_output:)
 
         prop
+      end
+
+      # Writes the resolved JSON type (and nullability/format/singleton-enum) from json_type_for into prop.
+      def apply_type_info!(prop, type_info, config, nullable:)
+        if type_info[:anyOf]
+          members = type_info[:anyOf]
+          members = drop_uuid_format(members) if type_allows_blank?(config)
+          prop[:anyOf] = nullable ? members + [{ type: "null" }] : members
+        elsif type_info[:type]
+          prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
+          # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
+          # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
+          # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
+          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
+          # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
+          prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+        end
       end
 
       # Combine of: (bare element baseline) and shape: (typed member contracts) into items:/properties:.
@@ -493,6 +500,10 @@ module Axn
 
       def single_type_for(klass, for_output:)
         return { type: "boolean" } if klass == :boolean
+        # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
+        # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
+        return { type: "boolean", enum: [true] } if klass == TrueClass
+        return { type: "boolean", enum: [false] } if klass == FalseClass
         return { type: "string", format: "uuid" } if klass == :uuid
         return { type: "object" } if klass == :params
 

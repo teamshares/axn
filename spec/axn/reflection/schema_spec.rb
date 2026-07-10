@@ -464,6 +464,42 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:enabled][:type]).to eq("boolean")
     end
 
+    it "constrains a type: TrueClass / FalseClass singleton via enum (not the whole boolean domain)" do
+      # TypeValidator accepts only the singleton value, so a bare type: "boolean" would let a client send
+      # the other value and pass schema validation while the action rejects it.
+      t = Class.new do
+        include Axn
+        expects :flag, type: TrueClass
+      end
+      f = Class.new do
+        include Axn
+        expects :flag, type: FalseClass
+      end
+      tn = Class.new do
+        include Axn
+        expects :flag, type: TrueClass, allow_nil: true
+      end
+
+      t_prop = described_class.build_input(t.internal_field_configs, t.subfield_configs)[:properties][:flag]
+      f_prop = described_class.build_input(f.internal_field_configs, f.subfield_configs)[:properties][:flag]
+      tn_prop = described_class.build_input(tn.internal_field_configs, tn.subfield_configs)[:properties][:flag]
+
+      expect(t_prop).to eq(type: "boolean", enum: [true])
+      expect(f_prop).to eq(type: "boolean", enum: [false])
+      # nullable adds nil to both the type and the enum
+      expect(tn_prop[:type]).to eq(%w[boolean null])
+      expect(tn_prop[:enum]).to eq([true, nil])
+    end
+
+    it "leaves type: :boolean as the full boolean domain (no enum)" do
+      klass = Class.new do
+        include Axn
+        expects :flag, type: :boolean
+      end
+      prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:flag]
+      expect(prop).to eq(type: "boolean")
+    end
+
     it "emits an enum for a static Symbol-array inclusion and treats a defaulted field as optional" do
       # The static enum is normalized to Strings, and the usable :a default makes the field optional.
       klass = Class.new do
