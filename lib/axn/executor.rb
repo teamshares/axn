@@ -445,17 +445,11 @@ module Axn
         ) do
           @action.instance_exec(current_subfield_value, &config.preprocess)
         end
-        # Materialize a nil parent so the preprocess result has somewhere to land — otherwise
-        # update_subfield_value silently drops it, diverging from a `{}` parent (which stores it) and from
-        # the top-level preprocess contract (which always writes back). Mirrors apply_defaults_for_subfields!,
-        # but only for a nil-TOLERANT parent with no default of its own:
-        #   * a parent with a default is filled by apply_defaults! (which runs right after and skips non-nil
-        #     keys), so a synthetic `{}` here would suppress the declared default;
-        #   * a parent that rejects nil — via presence OR its type (`type: :params`, `type: Hash`, …) — must
-        #     fail when omitted; writing `{subfield => …}` would satisfy that validator and let a required
-        #     parent through on no input. Unlike a subfield *default*, a preprocess must not synthesize an
-        #     absent parent — the schema treats only defaults as parent-synthesizing.
-        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field) && _parent_nil_accepted?(parent_field)
+        # A nil parent has nowhere to write the result, so update_subfield_value no-ops and the preprocess
+        # output is dropped — deliberately: a nil/absent parent means the subfield is absent (PRO-2857), and
+        # a preprocess must NOT synthesize the parent into existence (unlike a subfield `default:`, which
+        # does). Materializing here would make an absent parent present — masking a required parent, and
+        # tripping shape/type validation the schema then can't mirror.
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -762,34 +756,17 @@ module Axn
     # caller-supplied provided_data key.
     def _wire_parent_key(on) = @action_class._wire_parent_key(on)
 
-    # A subfield's default-/preprocess-able parent is always a top-level field (nested/dotted/ambient
-    # parents reject default:/preprocess:), so its config is found by wire key among internal_field_configs.
+    # A subfield's default-able parent is always a top-level field (nested/dotted/ambient parents reject
+    # default:), so its config is found by wire key among internal_field_configs.
     def _parent_config(parent_field)
       @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
     end
 
-    # Whether the parent carries a default that apply_defaults! will materialize (a nil default is "no
-    # default", matching apply_defaults! building `{field => default}.compact`).
-    def _parent_has_default?(parent_field)
-      config = _parent_config(parent_field)
-      config && !config.default.nil?
-    end
-
-    # Whether a nil is a VALID value for the parent (every declared validator tolerates nil) — so leaving
-    # it nil, or materializing an object to hold a preprocess result, doesn't cover up an input the parent
-    # would otherwise reject. Reuses the reflection predicate as the single source of truth for nil
-    # tolerance (a pure, side-effect-free read of the validations), covering nil-rejection via presence,
-    # type (`type: Hash`/`:params` without allow_nil), inclusion/exclusion, etc. — not just presence.
-    def _parent_nil_accepted?(parent_field)
-      config = _parent_config(parent_field)
-      config && Axn::Reflection::Schema.nil_accepted?(config)
-    end
-
-    # Materialize a nil parent as `{}` so a subfield write (default or preprocess result) has somewhere to
-    # land — but only when `{}` satisfies the parent's declared type. An untyped parent qualifies; a type
-    # that admits a Hash (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g.
-    # `type: Array`) does NOT — injecting `{}` there would fail the parent's own type validator and turn an
-    # optional-absent parent into a validation error. Shared by the default and preprocess subfield paths.
+    # Materialize a nil parent as `{}` so a subfield default has somewhere to land — but only when `{}`
+    # satisfies the parent's declared type. An untyped parent qualifies; a type that admits a Hash
+    # (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g. `type: Array`) does NOT —
+    # injecting `{}` there would fail the parent's own type validator and turn an optional-absent parent
+    # into a validation error.
     def _materialize_object_parent!(parent_field)
       type_opt = _parent_config(parent_field)&.validations&.dig(:type)
       object_shaped = type_opt.nil? ||

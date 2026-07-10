@@ -1599,6 +1599,23 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
+    it "stays nullable when a shape member coexists with a PREPROCESSED (not defaulted) subfield" do
+      # A preprocess does not synthesize an absent parent (unlike a default), so a nil parent stays nil and
+      # ShapeValidator skips its required member — `payload: null`/omitted is accepted at runtime, so the
+      # schema must keep advertising `null` (only defaults count as synthesizers).
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, optional: true, type: String, preprocess: ->(v) { v.to_s.strip }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+      expect(schema[:required] || []).not_to include("payload")
+    end
+
     it "types the parent object-only + required when a defaulted subfield synthesizes it into a required shape member" do
       # A truthy-default `on:` subfield makes apply_defaults_for_subfields! materialize the nil parent, so
       # ShapeValidator no longer skips and enforces the required `status` member — runtime rejects

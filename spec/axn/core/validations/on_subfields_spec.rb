@@ -217,13 +217,13 @@ RSpec.describe Axn do
           expect(action.call(payload: nil)).to be_ok
         end
 
-        it "writes the preprocess result back (materializing the nil parent) — same as an empty-hash parent" do
-          # `payload: {}` and `payload: nil`/omitted must agree: the preprocess (`nil.to_s.strip` → "")
-          # result is stored either way, rather than silently dropped when the parent is nil.
-          from_empty = action.call(payload: {}).name_val
-          expect(from_empty).to eq("")
-          expect(action.call(payload: nil).name_val).to eq(from_empty)
-          expect(action.call.name_val).to eq(from_empty)
+        it "leaves the subfield absent when the parent is nil (the preprocess does not synthesize a parent)" do
+          # A nil/absent parent means the subfield is absent — the preprocess result has nowhere to land and
+          # is dropped, rather than materializing the parent. (A present-but-empty `{}` parent differs: the
+          # subfield is present there, so the preprocess runs and its result — "" — is stored.)
+          expect(action.call(payload: nil).name_val).to be_nil
+          expect(action.call.name_val).to be_nil
+          expect(action.call(payload: {}).name_val).to eq("")
         end
       end
 
