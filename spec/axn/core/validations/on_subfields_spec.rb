@@ -227,6 +227,26 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a non-object (type: Array) parent — must not be materialized into a Hash" do
+        it "treats a nil Array parent as absent for a preprocessed subfield (no spurious type error)" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, preprocess: ->(v) { v }
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+        end
+
+        it "treats a nil Array parent as absent for a defaulted subfield (no spurious type error)" do
+          action = build_axn do
+            expects :items, type: Array, optional: true
+            expects :count, on: :items, optional: true, type: Integer, default: 5
+            def call = nil
+          end
+          expect(action.call(items: nil)).to be_ok
+        end
+      end
+
       context "with a defaulted parent and a preprocessed subfield" do
         let(:action) do
           build_axn do

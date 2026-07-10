@@ -451,7 +451,7 @@ module Axn
         # NOT when the parent has its own default: apply_defaults! runs right after preprocessing and skips
         # any non-nil key, so a synthetic `{}` here would suppress the declared default — leave it nil and
         # let the default materialize the parent (with its declared contents) as usual.
-        @context.provided_data[parent_field] = {} if parent_value.nil? && !_parent_has_default?(parent_field)
+        _materialize_object_parent!(parent_field) if parent_value.nil? && !_parent_has_default?(parent_field)
         update_subfield_value(parent_field, subfield, preprocessed_value)
       end
     end
@@ -675,7 +675,7 @@ module Axn
 
         next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
 
-        @context.provided_data[parent_field] = {} if parent_value.nil?
+        _materialize_object_parent!(parent_field) if parent_value.nil?
 
         default_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::DefaultAssignmentError,
@@ -758,13 +758,29 @@ module Axn
     # caller-supplied provided_data key.
     def _wire_parent_key(on) = @action_class._wire_parent_key(on)
 
-    # Whether the (top-level) parent field carries a default that apply_defaults! will materialize. A
-    # subfield's preprocess-able parent is always a top-level field (nested/dotted/ambient parents reject
-    # preprocess:), so it's found by wire key among internal_field_configs. `.compact`-equivalent: a nil
-    # default is "no default" (matches apply_defaults! building `{field => default}.compact`).
+    # A subfield's default-/preprocess-able parent is always a top-level field (nested/dotted/ambient
+    # parents reject default:/preprocess:), so its config is found by wire key among internal_field_configs.
+    def _parent_config(parent_field)
+      @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+    end
+
+    # Whether the parent carries a default that apply_defaults! will materialize (a nil default is "no
+    # default", matching apply_defaults! building `{field => default}.compact`).
     def _parent_has_default?(parent_field)
-      config = @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+      config = _parent_config(parent_field)
       config && !config.default.nil?
+    end
+
+    # Materialize a nil parent as `{}` so a subfield write (default or preprocess result) has somewhere to
+    # land — but only when `{}` satisfies the parent's declared type. An untyped parent qualifies; a type
+    # that admits a Hash (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g.
+    # `type: Array`) does NOT — injecting `{}` there would fail the parent's own type validator and turn an
+    # optional-absent parent into a validation error. Shared by the default and preprocess subfield paths.
+    def _materialize_object_parent!(parent_field)
+      type_opt = _parent_config(parent_field)&.validations&.dig(:type)
+      object_shaped = type_opt.nil? ||
+                      Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
+      @context.provided_data[parent_field] = {} if object_shaped
     end
 
     def update_subfield_value(parent_field, subfield, new_value)
