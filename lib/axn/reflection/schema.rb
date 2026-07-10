@@ -79,8 +79,10 @@ module Axn
 
         # Second pass (after all properties exist, so it's independent of declaration order): decide each
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
-        field_configs.select { |config| config.validations[:model] }
-                     .each { |config| apply_model_id_requiredness!(config, field_configs, properties, required) }
+        field_configs.select { |config| config.validations[:model] }.each do |config|
+          shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
+          apply_model_id_requiredness!(config, shallow, field_configs, properties, required)
+        end
 
         schema = { type: "object", properties: }
         schema[:required] = required.uniq unless required.empty?
@@ -107,17 +109,27 @@ module Axn
       # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
       # the shape's properties on OUTPUT matches serialize_exposed). Only asserted for types with a
       # language-guaranteed member-keyed serialization: `:params`, an untyped shape (caller supplies a
-      # Hash), Hash, Data, or Struct. Any other class is statically unknowable — its own `to_h`/`as_json`
-      # (which Values.serialize_value follows, as_json first) may emit a scalar/array/differently-keyed
-      # hash, and a reader-only class with neither serializes to a String (to_s) / instance-variable dump
-      # (Object#as_json) — so those stay untyped on output rather than promise an object.
+      # Hash), Hash, or a Data/Struct that does NOT define its OWN `as_json`. Values.serialize_value
+      # follows a value's own `as_json` before `to_h`, so a Data/Struct that overrides `as_json` may emit
+      # a scalar/array/differently-keyed hash — treat it (like any reader-only or custom-`to_h` class) as
+      # statically unknowable and leave it untyped on output.
       def shape_serializes_to_object?(config)
         type_klass = config.validations.dig(:type, :klass)
         return true if type_klass.nil?
 
-        Array(type_klass).all? do |k|
-          k == :params || (k.is_a?(Class) && (k <= Hash || k <= Data || k <= Struct))
-        end
+        Array(type_klass).all? { |k| member_keyed_object_type?(k) }
+      end
+
+      def member_keyed_object_type?(klass)
+        return true if klass == :params
+        return false unless klass.is_a?(Class)
+        return true if klass == Hash
+        return false unless klass < Data || klass < Struct
+
+        # A Data/Struct serializes member-keyed via to_h — unless it defines its OWN as_json (checked on
+        # the class itself, so the inherited active_support Data/Struct as_json, which IS member-keyed,
+        # doesn't count), which serialize_value would follow instead.
+        !klass.instance_methods(false).include?(:as_json)
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
@@ -409,20 +421,21 @@ module Axn
       # requiredness AND nullability, considering the model field plus any explicit `<field>_id` sibling
       # (order-independent — runs after all properties are built).
       #
-      # The id is OMITTABLE only when the model field itself is optional (a nil model is accepted), OR an
-      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
-      # the lookup). A merely nullable/optional explicit id with no default doesn't help — omitting both
-      # leaves the token nil and the model validation fails. When the id IS required it also can't be
-      # null, so any explicit `null` branch is stripped.
+      # The id is OMITTABLE only when the model field can itself be omitted at runtime (`field_optional?`
+      # — accounts for a nil-tolerant model AND any required shallow subfield that would still need the
+      # resolved record), OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults
+      # supply the token before the lookup). A merely nullable/optional explicit id with no default
+      # doesn't help — omitting both leaves the token nil and the model validation fails. When the id IS
+      # required it also can't be null, so any explicit `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, field_configs, properties, required)
+      def apply_model_id_requiredness!(config, shallow_subfields, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        return if optional_for_schema?(config) || (explicit_id && usable_default?(explicit_id, subfield: false))
+        return if field_optional?(config, shallow_subfields) || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
         required << key unless required.include?(key)

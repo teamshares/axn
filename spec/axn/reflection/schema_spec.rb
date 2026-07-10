@@ -983,6 +983,19 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
+    it "requires the model <field>_id when a nil-tolerant model field has a required shallow subfield" do
+      # `company` accepts nil, but a required `name` subfield still resolves off the record, so omitting
+      # the id leaves company nil and the call fails — the id must stay required despite allow_nil.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
+    end
+
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
       klass = Class.new do
         include Axn
@@ -1085,6 +1098,28 @@ RSpec.describe Axn::Reflection::Schema do
       out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
       expect(out).not_to have_key(:type)
       expect(out).not_to have_key(:properties)
+    end
+
+    it "does not advertise object OUTPUT for a Data/Struct that defines its OWN as_json (serialize follows it, not to_h)" do
+      custom_data = Data.define(:name) do
+        def as_json(*) = "scalar-#{name}"
+      end
+      klass = Class.new do
+        include Axn
+        exposes(:cfg, type: custom_data) { field :name, type: String }
+        define_method(:call) { expose(:cfg, custom_data.new(name: "x")) }
+      end
+
+      out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+      expect(out).not_to have_key(:type) # own as_json may return a non-object, so don't promise one
+      # a plain Data (inherited active_support as_json is member-keyed) still gets object output:
+      plain_data = Data.define(:name)
+      plain = Class.new do
+        include Axn
+        exposes(:cfg, type: plain_data) { field :name, type: String }
+        def call = nil
+      end
+      expect(described_class.build_output(plain.external_field_configs)[:properties][:cfg][:type]).to eq("object")
     end
 
     it "allows null alongside object for a nil-allowed class-shaped field" do
