@@ -131,6 +131,13 @@ RSpec.describe "coerce: DSL" do
       expect(result.day).to eq(1)
     end
 
+    it "does not let a blank string smuggle past presence on a required coerce: Symbol field" do
+      action = build_axn { expects :mode, coerce: Symbol }
+      blank = action.call(mode: "   ")
+      expect(blank).not_to be_ok
+      expect(blank.exception.message).to match(/can't be blank/)
+    end
+
     it "runs coercion BEFORE the field's own inclusion: validator, so a coerced value can pass or fail it" do
       action = build_axn do
         expects :mode, coerce: Symbol, inclusion: { in: %i[a b] }

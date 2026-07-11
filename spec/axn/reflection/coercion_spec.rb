@@ -28,6 +28,28 @@ RSpec.describe Axn::Reflection::Coercion do
       expect(described_class.coerce_value("12.5", Integer)).to eq("12.5")
     end
 
+    it "leaves a blank string uncoerced (so Symbol can't smuggle a blank past presence)" do
+      expect(described_class.coerce_value("", Symbol)).to eq("")
+      expect(described_class.coerce_value("   ", Symbol)).to eq("   ")
+      expect(described_class.coerce_value("", Date)).to eq("")
+    end
+
+    it "accepts ISO and Rails date/time wire formats" do
+      expect(described_class.coerce_value("2026-07-08", Date)).to eq(Date.new(2026, 7, 8))
+      # datetime-local (no seconds, no offset) — parsed in the local zone
+      t = described_class.coerce_value("2026-07-08T14:30", Time)
+      expect(t).to be_a(Time).and have_attributes(hour: 14, min: 30)
+      # Rails Time#to_s (space separator + spaced offset)
+      expect(described_class.coerce_value("2026-07-08 14:30:00 +0000", Time)).to eq(Time.new(2026, 7, 8, 14, 30, 0, "+00:00"))
+    end
+
+    it "leaves ambiguous / partial (non-ISO-shaped) date strings uncoerced instead of guessing against today" do
+      expect(described_class.coerce_value("12", Date)).to eq("12")
+      expect(described_class.coerce_value("01/02/2026", Date)).to eq("01/02/2026")
+      expect(described_class.coerce_value("14:30", Time)).to eq("14:30")
+      expect(described_class.coerce_value("July 8", Date)).to eq("July 8")
+    end
+
     it "tries union members in order and falls through to the original when none parse" do
       expect(described_class.coerce_value("2026-07-08", [Date, Symbol])).to eq(Date.new(2026, 7, 8))
       expect(described_class.coerce_value("hello", [Date, Symbol])).to eq(:hello)
