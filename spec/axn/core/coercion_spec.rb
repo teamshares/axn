@@ -129,4 +129,32 @@ RSpec.describe "coerce: DSL" do
       expect(coerced.input_schema).to eq(plain.input_schema)
     end
   end
+
+  describe "coercion-failure message" do
+    it "reports an uncoerceable string distinctly from a wrong-type value" do
+      action = build_axn { expects :on, coerce: Date }
+
+      uncoerceable = action.call(on: "nope")
+      expect(uncoerceable).not_to be_ok
+      expect(uncoerceable.exception.message).to match(/could not be coerced to a Date/)
+
+      wrong_type = action.call(on: 123)
+      expect(wrong_type).not_to be_ok
+      expect(wrong_type.exception.message).to match(/is not a Date/)
+      expect(wrong_type.exception.message).not_to match(/could not be coerced/)
+    end
+
+    it "does not emit the coercion message when a String branch validates the value" do
+      action = build_axn { expects :on, coerce: [Date, String] }
+      expect(action.call(on: "nope")).to be_ok
+    end
+
+    it "honors an explicit message: override" do
+      action = build_axn { expects :on, type: { klass: Date, coerce: true, message: "bad date" } }
+      result = action.call(on: "nope")
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/bad date/)
+      expect(result.exception.message).not_to match(/could not be coerced/)
+    end
+  end
 end
