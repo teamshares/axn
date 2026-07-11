@@ -3275,6 +3275,58 @@ RSpec.describe Axn::Reflection::Schema do
         expect(schema[:required]).to include("company_id")
       end
     end
+
+    describe "composition with shape: members" do
+      it "merges an implicit deep intermediate into an object-compatible shape member at the same key" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(Array(bar[:type])).to include("object")
+        expect(bar[:properties][:baz]).to include(type: "string")
+        expect(bar[:required]).to include("baz")
+      end
+
+      it "leaves a NON-object shape member untouched and drops the colliding deep config (warned via dropped_deep_subfields)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(bar).to include(type: "string")
+        expect(bar).not_to have_key(:properties)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz"])
+      end
+    end
+
+    describe "the same wire path declared via two routes" do
+      it "builds the property from the first-declared config, unions requiredness, and intersects nullability" do
+        klass = Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: String, allow_nil: true # route 1: optional/nullable
+          expects :baz, on: :bar, type: String # route 2: required, non-nullable
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        bar = schema[:properties][:foo][:properties][:bar]
+        expect(bar[:required]).to eq(["baz"]) # union: route 2 requires it
+        expect(bar[:properties][:baz][:type]).to eq("string") # intersection: null stripped (route 2 rejects nil)
+      end
+    end
   end
 
   # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
