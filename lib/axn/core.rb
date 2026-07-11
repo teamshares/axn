@@ -81,6 +81,11 @@ module Axn
         include Core::SemanticHints
         include Core::SchemaReflection
 
+        # Per-class config overrides: gives the action class-level accessors
+        # (`<name>` setter, `resolved_<name>`, `raw_<name>`) for every
+        # `overridable: true` setting on Axn.config. See Axn::Configurable.
+        include Axn::Configuration.overrides
+
         # Internal: tracks nesting depth for logging and duplicate-log suppression
         include Core::NestingTracking
 

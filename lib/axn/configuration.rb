@@ -10,6 +10,10 @@ module Axn
   class Configuration
     extend Axn::Configurable::Settings
 
+    # The live singleton whose values are the library-level fallback for any
+    # `overridable: true` setting's per-class override accessors.
+    overridable_config_source { Axn.config }
+
     # Simple value settings (defaults + validation) declared via the shared
     # Configurable kernel. Settings with global side effects, lazy/computed
     # values, or custom call semantics (env, logger, on_exception, the async
@@ -31,6 +35,7 @@ module Axn
     SIDEKIQ_JOB_TAG_SOURCES = %i[tag dimension].freeze
     setting :sidekiq_job_tag_sources,
             default: %i[tag dimension],
+            overridable: true,
             validate: ->(v) { v.is_a?(Array) && v.all? { |s| SIDEKIQ_JOB_TAG_SOURCES.include?(s) } }
 
     attr_writer :logger, :env, :on_exception, :rails

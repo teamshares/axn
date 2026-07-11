@@ -392,6 +392,64 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(last_job_tags.call).to contain_exactly("plan:pro")
     end
 
+    it "honors a per-action sidekiq_job_tag_sources override, independent of the global" do
+      # Global default is %i[tag dimension]; this action opts to bounded-only for its own jobs.
+      action = stub_const("PerActionBoundedTags", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        sidekiq_job_tag_sources %i[dimension]
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+      expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    end
+
+    it "honors the override even when the action shadows the resolved_ reader" do
+      # The adapter resolves through Axn's override store (Configuration.resolve_override_for), not
+      # the shadowable generated reader. Here the shadow claims both sources, but the real per-class
+      # override is bounded-only — so honoring the override (not the shadow) yields just the dimension tag.
+      action = stub_const("ShadowedResolvedTagSources", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        sidekiq_job_tag_sources %i[dimension]
+        def self.resolved_sidekiq_job_tag_sources = %i[tag dimension]
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+    end
+
+    it "resolves via the store even when the action shadows the bare sidekiq_job_tag_sources reader" do
+      # A consumer that defines its own `sidekiq_job_tag_sources` class method (returning garbage)
+      # must not derail enqueue-time resolution: routing through Configuration.resolve_override_for
+      # reads the store directly (empty here → Axn.config default %i[tag dimension]), so both facets
+      # still surface rather than the shadow's value being used and the broad rescue swallowing tags.
+      action = stub_const("ShadowedBareTagSources", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        def self.sidekiq_job_tag_sources(*) = :not_an_array
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("company_id:42", "plan:pro")
+    end
+
     it "adds no tags key when the action declares no facets" do
       Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
       expect(last_job_tags.call).to be_nil

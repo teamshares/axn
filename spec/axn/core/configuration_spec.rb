@@ -209,3 +209,76 @@ RSpec.describe Axn::Configuration do
     end
   end
 end
+
+RSpec.describe "per-class config overrides on actions" do
+  let(:action) { Class.new { include Axn } }
+
+  after do
+    # NOTE: unlike the hand-rolled settings elsewhere in this file (on_exception,
+    # ambient_context_provider), which use `@ivar ||= default` and so treat nil as
+    # "unset", the Settings-flavor reader (lib/axn/configurable.rb) memoizes via
+    # `instance_variable_defined?` — once set, even to nil, it never recomputes the
+    # default. `instance_variable_set(:@sidekiq_job_tag_sources, nil)` therefore does
+    # NOT reset this setting to its default; it wedges it at nil for every subsequent
+    # example. Removing the ivar entirely restores the "recompute default on next
+    # read" behavior the other resets rely on.
+    Axn.config.remove_instance_variable(:@sidekiq_job_tag_sources) if Axn.config.instance_variable_defined?(:@sidekiq_job_tag_sources)
+  end
+
+  it "gives every action the override accessors for sidekiq_job_tag_sources" do
+    expect(action).to respond_to(:sidekiq_job_tag_sources)
+    expect(action).to respond_to(:resolved_sidekiq_job_tag_sources)
+    expect(action).to respond_to(:raw_sidekiq_job_tag_sources)
+  end
+
+  it "resolves to Axn.config by default (no per-class override)" do
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    expect(action.raw_sidekiq_job_tag_sources).to equal(Axn::Configurable::UNSET)
+  end
+
+  it "tracks a change to the library-level value" do
+    Axn.config.sidekiq_job_tag_sources = %i[dimension]
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+  end
+
+  it "resolves to the per-class override when set, leaving Axn.config untouched" do
+    action.sidekiq_job_tag_sources %i[dimension]
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
+  end
+
+  it "validates a per-class override at set time" do
+    expect { action.sidekiq_job_tag_sources %i[bogus] }.to raise_error(ArgumentError)
+  end
+
+  it "inherits a per-class override into subclasses" do
+    action.sidekiq_job_tag_sources %i[dimension]
+    expect(Class.new(action).resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+  end
+
+  it "does not leak a per-class override to a sibling action" do
+    action.sidekiq_job_tag_sources %i[dimension]
+    sibling = Class.new { include Axn }
+    expect(sibling.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
+  end
+
+  # PRO-2875 makes the generic Naming/SchemaReflection DSLs DEFER to a base's same-named class
+  # method. Override accessors are opt-in, so axn still installs them (deferring would silently deny
+  # the requested override) — but the collision is surfaced with a debug breadcrumb, not silent.
+  describe "collision with a non-axn ancestor's same-named class method" do
+    let(:base) { Class.new { def self.sidekiq_job_tag_sources(*) = :base_value } }
+
+    it "leaves a debug breadcrumb rather than shadowing silently" do
+      messages = []
+      allow(Axn.config.logger).to receive(:debug) { |*args, &block| messages << (block ? block.call : args.first) }
+      Class.new(base) { include Axn } # trigger the overrides include hook
+      expect(messages).to include(a_string_matching(/override accessor `sidekiq_job_tag_sources` collides/))
+    end
+
+    it "still installs the opt-in accessor (does not defer)" do
+      action = Class.new(base) { include Axn }
+      action.sidekiq_job_tag_sources %i[dimension]
+      expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    end
+  end
+end

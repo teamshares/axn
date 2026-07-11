@@ -241,4 +241,93 @@ RSpec.describe Axn::Configurable::Settings do
     instance.additional_includes << :Foo
     expect(klass.new.additional_includes).to eq([])
   end
+
+  describe "overridable: settings" do
+    # A stand-in for a live config singleton (what Axn.config is for Axn::Configuration).
+    let(:singleton) { klass.new }
+
+    let(:klass) do
+      captured = -> { singleton }
+      Class.new do
+        extend Axn::Configurable::Settings
+        overridable_config_source { captured.call }
+        setting :mode, default: :a, one_of: %i[a b], overridable: true
+      end
+    end
+
+    let(:action_class) do
+      mod = klass.overrides
+      Class.new { include mod }
+    end
+
+    it "resolves to the live singleton value when no override is set" do
+      singleton.mode = :b
+      expect(action_class.resolved_mode).to eq(:b)
+    end
+
+    it "reads the singleton value at resolution time, not at declaration (late-bound)" do
+      expect(action_class.resolved_mode).to eq(:a) # singleton's default
+      singleton.mode = :b
+      expect(action_class.resolved_mode).to eq(:b) # picked up without redefining accessors
+    end
+
+    it "resolves to the class-level override when set" do
+      action_class.mode :b
+      expect(action_class.resolved_mode).to eq(:b)
+    end
+
+    it "validates the override value at set time" do
+      expect { action_class.mode :z }.to raise_error(ArgumentError, /mode/)
+    end
+
+    it "inherits an override from a parent class" do
+      action_class.mode :b
+      expect(Class.new(action_class).resolved_mode).to eq(:b)
+    end
+
+    it "exposes raw_<name> as the override with no singleton fallback" do
+      expect(action_class.raw_mode).to equal(Axn::Configurable::UNSET)
+      action_class.mode :b
+      expect(action_class.raw_mode).to eq(:b)
+    end
+
+    it "raises at declaration when overridable: true without a registered source" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+          setting :mode, default: :a, overridable: true
+        end
+      end.to raise_error(ArgumentError, /overridable_config_source/)
+    end
+
+    describe "consumer-defined accessor collisions" do
+      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+        action_class.mode :b
+        action_class.define_singleton_method(:raw_mode) { :hijacked }
+
+        expect(action_class.resolved_mode).to eq(:b)
+        expect(action_class.mode).to eq(:b)
+      end
+    end
+
+    describe ".resolve_override_for (collision-proof framework path)" do
+      it "resolves the override even when the class shadows every generated accessor" do
+        action_class.mode :b
+        action_class.define_singleton_method(:mode) { |*| :hijacked }
+        action_class.define_singleton_method(:resolved_mode) { :hijacked }
+        action_class.define_singleton_method(:raw_mode) { :hijacked }
+
+        expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
+      end
+
+      it "falls back to the live singleton when no override is set" do
+        singleton.mode = :b
+        expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
+      end
+
+      it "raises KeyError for a setting that isn't overridable" do
+        expect { klass.resolve_override_for(action_class, :not_a_setting) }.to raise_error(KeyError)
+      end
+    end
+  end
 end
