@@ -72,9 +72,9 @@ module Axn
           # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
           # and `resolve_parent` can walk it at runtime, but `AmbientContext#_filter_to_declared` only
           # keeps configs whose `on.to_sym == :ambient_context` exactly — a dotted ambient parent's
-          # data is silently stripped, so the subfield would always read from `{}`. Deep/dotted nesting
-          # is deferred project-wide (see the KNOWN LIMITATION note in reflection/schema.rb), so reject
-          # this at declaration rather than fail silently. Checked unconditionally (regardless of
+          # data is silently stripped, so the subfield would always read from `{}`. Deep ambient nesting
+          # is deferred (PRO-2844/PRO-2845), so reject this at declaration rather than fail silently.
+          # Checked unconditionally (regardless of
           # preprocess:/default:) since the underlying gap is in ambient resolution, not those options.
           if root == Axn::Core::AmbientContext::PARENT && on.to_s.include?(".")
             raise ArgumentError,

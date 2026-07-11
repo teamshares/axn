@@ -195,8 +195,10 @@ module Axn
       # Whether a node may be absent from its parent object. An implicit node (a dotted-path
       # intermediate with no declaration of its own) is omittable exactly when nothing beneath it
       # requires presence. An explicit node follows the single-level rule at every depth: a usable
-      # default always rescues omission (only depth-1 subfields can have one; a default whose contents
-      # fail a child's validators is the same accepted divergence as at the top level); otherwise it
+      # default always rescues omission (declaration allows a default only when `on:` names a top-level
+      # reader, but a dotted field NAME can land that defaulted config on a deeper node — honored here
+      # either way; a default whose contents fail a child's validators is the same accepted divergence
+      # as at the top level); otherwise it
       # must tolerate nil AND strand no required descendant. With multiple configs at one node (the
       # same wire path declared via two routes) runtime enforces all of them, so the node is omittable
       # only if every config is.
@@ -209,6 +211,9 @@ module Axn
       end
 
       # Whether any direct child carries a usable (truthy, non-Proc) default — the synthesis signal.
+      # A dotted-name subfield's default sits on a DEEPER node (under its implicit intermediate) and is
+      # deliberately not counted: the parent then reflects required though runtime synthesizes it — the
+      # safe, stricter direction.
       def defaulted_child?(children)
         children.values.any? { |node| node.configs.any? { |c| usable_default?(c, subfield: true) } }
       end
@@ -232,8 +237,9 @@ module Axn
         return true if nil_accepted?(config) && !has_required_child
 
         # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
-        # COMPLETE parent from subfield defaults — at least one depth-1 subfield supplies a value and none
-        # of the subtree is required (a required descendant has no default and can't be synthesized). This
+        # COMPLETE parent from subfield defaults — at least one direct child supplies a value (a
+        # dotted-name default is deliberately not counted; see defaulted_child?) and none of the
+        # subtree is required (a required descendant has no default and can't be synthesized). This
         # synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`,
         # which satisfies a Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed
         # class) whose top-level type validator rejects the `{}`.

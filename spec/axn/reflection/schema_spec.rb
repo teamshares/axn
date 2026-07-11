@@ -2229,7 +2229,7 @@ RSpec.describe Axn::Reflection::Schema do
 
     it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
       # The shallow child :mid is required, so an omitted :foo strands it at runtime — the parent is
-      # required regardless of the deeper :leaf the schema can't represent.
+      # required on that basis alone; the deeper :leaf (which also nests under :mid) merely reinforces it.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
