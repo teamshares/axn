@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/reflection/coercion"
 require "axn/reflection/schema"
 require "axn/reflection/values"
 
