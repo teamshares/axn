@@ -354,9 +354,12 @@ module Axn
           else
             child_prop = build_property(node.config, subfield: true)
             apply_nested_subfields!(child_prop, node.config, node.children)
-            # With two routes declared to one node, runtime enforces every config — so `null` survives
-            # only if ALL tolerate nil (the property itself is built from the first-declared config).
-            reject_null!(child_prop) unless node.configs.all? { |c| nil_allowed?(c) }
+            # `null` survives only when every declared route tolerates nil (runtime enforces all configs;
+            # the property itself is built from the first-declared one) AND no required descendant is
+            # stranded — a nil node yields every descendant absent (PRO-2857), so a required one below it
+            # forbids nil even for a non-object node whose subfield shape isn't nested here.
+            null_ok = node.configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node)
+            reject_null!(child_prop) unless null_ok
             prop[:properties][key] = child_prop.compact
             prop[:required] << key.to_s unless node_optional?(node)
           end

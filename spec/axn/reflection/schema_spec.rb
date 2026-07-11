@@ -3148,6 +3148,76 @@ RSpec.describe Axn::Reflection::Schema do
       expect(items[:type]).to eq("array")
       expect(items).not_to have_key(:properties)
     end
+
+    describe "transitive requiredness/nullability (a required descendant strands every nil/omitted ancestor)" do
+      it "forces an optional: intermediate AND its nil-tolerant top-level parent required when a deep leaf " \
+         "is required (fixes the old shallow-only divergence)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, allow_nil: true
+          expects :meta, on: :payload, type: Hash, optional: true
+          expects :id, on: :meta, type: Integer
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("payload")
+        payload = schema[:properties][:payload]
+        expect(payload[:type]).to eq("object")                       # null stripped: nil payload strands id
+        expect(payload[:required]).to eq(["meta"])                   # optional: meta is overridden by its required child
+        expect(payload[:properties][:meta][:type]).to eq("object")   # meta likewise non-nullable
+      end
+
+      it "keeps implicit intermediates required and non-nullable above a required deep leaf" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :id, on: "payload.a.b", type: Integer
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        a = schema[:properties][:payload][:properties][:a]
+        expect(a[:type]).to eq("object")
+        expect(a[:required]).to eq(["b"])
+        expect(a[:properties][:b][:type]).to eq("object")
+        expect(a[:properties][:b][:required]).to eq(["id"])
+      end
+
+      it "lets a usable default on the depth-1 parent rescue omission despite a required deep child (default contents are trusted, the standing divergence)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, allow_nil: true
+          expects :meta, on: :payload, type: Hash, default: { id: 1 }
+          expects :id, on: :meta, type: Integer
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        # meta's default materializes it, so meta is omittable — and payload strands nothing.
+        expect(Array(payload[:required])).not_to include("meta")
+        expect(schema[:required]).to be_nil
+        expect(payload[:properties][:meta][:required]).to eq(["id"])
+      end
+
+      it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
+         "though its shape is omitted (runtime still validates it)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, allow_nil: true
+          expects :items, on: :payload, type: Array, optional: true
+          expects :first_sku, on: :items, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        # first_sku is dropped from the schema shape (non-object parent) but runtime requires it,
+        # which requires items present, which requires payload present.
+        payload = schema[:properties][:payload]
+        expect(payload[:required]).to eq(["items"])
+        expect(payload[:type]).to eq("object")
+        expect(schema[:required]).to include("payload")
+        expect(payload[:properties][:items][:type]).to eq("array")
+        expect(payload[:properties][:items]).not_to have_key(:properties)
+      end
+    end
   end
 
   # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
