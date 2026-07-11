@@ -95,6 +95,27 @@ RSpec.describe "Axn include does not shadow a pre-existing base-class class meth
     expect(klass.raw_description).to eq("mine")
   end
 
+  # A satellite adapter (axn-mcp, axn-ruby-llm, ...) lives under a sibling `Axn::*` namespace, NOT
+  # `Axn::Core`. Its DSL is exactly what must be deferred to — only axn CORE's own modules are excluded
+  # from the shadowing check, so a base picking up `description` from an `Axn::MCP`-style module counts
+  # as external and is not clobbered.
+  it "defers to a description provided by a satellite Axn:: (non-core) module" do
+    dsl = Module.new do
+      def description(value = :__unset__)
+        value == :__unset__ ? @description : (@description = value)
+      end
+
+      def raw_description = @description
+    end
+    stub_const("Axn::FakeAdapter::ToolDSL", dsl)
+
+    base = Class.new { extend Axn::FakeAdapter::ToolDSL }
+    tool = Class.new(base) { include Axn }
+
+    tool.description("adapter text")
+    expect(tool.raw_description).to eq("adapter text")
+  end
+
   describe "a plain Axn (no external base) is unaffected" do
     let(:plain) do
       Class.new do

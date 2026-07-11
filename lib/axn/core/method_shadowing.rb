@@ -12,19 +12,24 @@ module Axn
     module MethodShadowing
       module_function
 
-      # True when `base` already provides class method `name` from somewhere other than an Axn-owned
+      # True when `base` already provides class method `name` from somewhere other than an axn-CORE
       # module — its superclass chain (the shadowing case) or an explicit `def self.#{name}` on the
       # class itself. Call before `extend`ing axn's own version; a false means the name is free.
       def externally_defined?(base, name)
         base.singleton_class.ancestors.any? do |mod|
-          next false if _axn_owned?(mod)
+          next false if _axn_core_owned?(mod)
 
           mod.instance_methods(false).include?(name) || mod.private_instance_methods(false).include?(name)
         end
       end
 
-      def _axn_owned?(mod)
-        !!mod.name&.start_with?("Axn::")
+      # Only axn CORE's own DSL modules (all namespaced `Axn::Core::*`) are excluded — deliberately NOT
+      # the whole `Axn::` namespace. Satellite adapters live under sibling namespaces like `Axn::MCP`
+      # (see Axn::Configurable), and their DSL is exactly what we must defer to: an adapter base that
+      # picks up `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as
+      # external, so axn won't re-extend and shadow it.
+      def _axn_core_owned?(mod)
+        !!mod.name&.start_with?("Axn::Core::")
       end
     end
   end
