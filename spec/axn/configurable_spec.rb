@@ -241,4 +241,63 @@ RSpec.describe Axn::Configurable::Settings do
     instance.additional_includes << :Foo
     expect(klass.new.additional_includes).to eq([])
   end
+
+  describe "overridable: settings" do
+    # A stand-in for a live config singleton (what Axn.config is for Axn::Configuration).
+    let(:singleton) { klass.new }
+
+    let(:klass) do
+      captured = -> { singleton }
+      Class.new do
+        extend Axn::Configurable::Settings
+        overridable_config_source { captured.call }
+        setting :mode, default: :a, one_of: %i[a b], overridable: true
+      end
+    end
+
+    let(:action_class) do
+      mod = klass.overrides
+      Class.new { include mod }
+    end
+
+    it "resolves to the live singleton value when no override is set" do
+      singleton.mode = :b
+      expect(action_class.resolved_mode).to eq(:b)
+    end
+
+    it "reads the singleton value at resolution time, not at declaration (late-bound)" do
+      expect(action_class.resolved_mode).to eq(:a) # singleton's default
+      singleton.mode = :b
+      expect(action_class.resolved_mode).to eq(:b) # picked up without redefining accessors
+    end
+
+    it "resolves to the class-level override when set" do
+      action_class.mode :b
+      expect(action_class.resolved_mode).to eq(:b)
+    end
+
+    it "validates the override value at set time" do
+      expect { action_class.mode :z }.to raise_error(ArgumentError, /mode/)
+    end
+
+    it "inherits an override from a parent class" do
+      action_class.mode :b
+      expect(Class.new(action_class).resolved_mode).to eq(:b)
+    end
+
+    it "exposes raw_<name> as the override with no singleton fallback" do
+      expect(action_class.raw_mode).to equal(Axn::Configurable::UNSET)
+      action_class.mode :b
+      expect(action_class.raw_mode).to eq(:b)
+    end
+
+    it "raises at declaration when overridable: true without a registered source" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+          setting :mode, default: :a, overridable: true
+        end
+      end.to raise_error(ArgumentError, /overridable_config_source/)
+    end
+  end
 end

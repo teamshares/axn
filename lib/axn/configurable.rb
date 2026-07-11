@@ -190,15 +190,29 @@ module Axn
     # Class-level flavor: declare validated *instance* settings on a class,
     # reusing the same Setting kernel (defaults, one_of:/validate:, callable:).
     # Used to dogfood Axn's own Configuration without contorting the
-    # module-singleton DSL above.
+    # module-singleton DSL above. `overridable: true` mints the same per-class
+    # override accessors (via PerClassOverrides), resolving their library-level
+    # fallback from a live singleton the extending class registers.
     #
     #   class Configuration
     #     extend Axn::Configurable::Settings
+    #     overridable_config_source { Axn.config }
     #     setting :log_level, default: :info
+    #     setting :sidekiq_job_tag_sources, default: [...], overridable: true
     #   end
     module Settings
-      def setting(name, default: nil, one_of: nil, validate: nil, callable: false)
-        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, callable:, overridable: false)
+      include PerClassOverrides
+
+      # Registers the live singleton whose values are the library-level fallback
+      # for per-class overrides (e.g. `Axn.config`). Read lazily on each
+      # resolution, so a swapped singleton is picked up. Must be declared before
+      # any `overridable: true` setting.
+      def overridable_config_source(&block)
+        @_overridable_config_source = block
+      end
+
+      def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
+        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, callable:, overridable:)
         ivar = :"@#{name}"
 
         define_method(name) do
@@ -210,6 +224,13 @@ module Axn
           setting.validate!(value)
           instance_variable_set(ivar, value)
         end
+
+        return unless overridable
+
+        raise ArgumentError, "setting #{name}: overridable: true requires overridable_config_source to be declared first" unless @_overridable_config_source
+
+        source = @_overridable_config_source
+        _define_override_methods(setting, -> { source.call.public_send(setting.name) })
       end
     end
   end
