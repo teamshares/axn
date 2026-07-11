@@ -44,4 +44,35 @@ RSpec.describe "coerce: DSL" do
         .to raise_error(ArgumentError, /coerce: needs at least one coercible type/)
     end
   end
+
+  describe "boundary (top-level expects only)" do
+    it "rejects coerce: on exposes" do
+      expect { build_axn { exposes :date, coerce: Date } }
+        .to raise_error(ArgumentError, /coerce: is not supported on exposes/)
+    end
+
+    it "rejects coerce: on a subfield" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :when, on: :payload, coerce: Date
+        end
+      end.to raise_error(ArgumentError, /coerce: is not supported on subfields/)
+    end
+
+    it "rejects coerce: on an ambient_context subfield" do
+      expect { build_axn { expects :when, on: :ambient_context, coerce: Date } }
+        .to raise_error(ArgumentError, /coerce: is not supported on subfields/)
+    end
+
+    it "rejects coerce: on a shape member" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :when, coerce: Date
+          end
+        end
+      end.to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+    end
+  end
 end

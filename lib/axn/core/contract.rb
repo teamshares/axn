@@ -142,6 +142,10 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
+            if configs.any? { |c| c.validations.dig(:type, :coerce) }
+              raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
+            end
+
             duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -396,6 +400,8 @@ module Axn
           field_validations[:shape] = _build_shape([name], validations: field_validations, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
+          raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
+
           ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata)
         end
 
