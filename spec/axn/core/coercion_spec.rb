@@ -22,6 +22,16 @@ RSpec.describe "coerce: DSL" do
       expect(action.internal_field_configs.first.validations[:type][:klass]).to eq([Date, String])
     end
 
+    it "accepts an explicit `coerce: false` as a no-op (type declared, coercion off)" do
+      action = build_axn { expects :date, type: { klass: Date, coerce: false } }
+      expect(action.internal_field_configs.first.validations[:type][:coerce]).to be(false)
+    end
+
+    it "raises when the explicit coerce flag is a non-boolean" do
+      expect { build_axn { expects :date, type: { klass: Date, coerce: :typo } } }
+        .to raise_error(ArgumentError, /coerce: must be true or false/)
+    end
+
     it "raises when coerce: and type: are combined" do
       expect { build_axn { expects :date, coerce: Date, type: Date } }
         .to raise_error(ArgumentError, /coerce: and type: cannot be combined/)

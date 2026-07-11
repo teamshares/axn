@@ -559,6 +559,13 @@ module Axn
         # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
         # member coerces nothing and is a declaration mistake.
         def _validate_coercion!(type_hash)
+          # The flag is a strict boolean — this base layer raises on DSL misuse rather than treating
+          # any truthy value (`coerce: :typo`) as enabled. `coerce: false` is a valid no-op (the type
+          # is declared, coercion off), so it passes here and skips the coercible-set checks below.
+          coerce = type_hash[:coerce]
+          raise ArgumentError, "coerce: must be true or false (got #{coerce.inspect})" unless [true, false].include?(coerce)
+          return unless coerce
+
           klasses = Array(type_hash[:klass])
           coercible = Axn::Reflection::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
@@ -597,7 +604,7 @@ module Axn
 
           # Validate the coerce target set (covers BOTH the sugar above and an explicit
           # `type: { klass:, coerce: true }`) once the type bag is canonical.
-          _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type][:coerce]
+          _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
           if validations.key?(:of)
             declared_klasses = Array(validations.dig(:type, :klass))
