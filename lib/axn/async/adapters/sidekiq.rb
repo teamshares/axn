@@ -137,11 +137,11 @@ module Axn
           # Resolve declared facets to Sidekiq job-tag strings at enqueue time. Input-phase only:
           # builds a throwaway (non-run) instance from the cleaned kwargs and resolves `from: :inputs`
           # facets from the raw inputs (no preprocess/defaults — see Executor#resolve_inbound_facets),
-          # for the sources enabled by Axn.config.sidekiq_job_tag_sources. Best-effort — never breaks
-          # the enqueue. Skips all work (no instance built) when the sink is disabled or the action
-          # declares no facets for the enabled sources. See PRO-2855.
+          # for the sources enabled by resolved_sidekiq_job_tag_sources (per-class override → Axn.config
+          # fallback). Best-effort — never breaks the enqueue. Skips all work (no instance built) when
+          # the sink is disabled or the action declares no facets for the enabled sources. See PRO-2855.
           def _resolve_sidekiq_job_tags(kwargs)
-            sources = Axn.config.sidekiq_job_tag_sources
+            sources = resolved_sidekiq_job_tag_sources
             return [] if sources.empty?
 
             declares_facets = (sources.include?(:tag) && _tags.any?) || (sources.include?(:dimension) && _dimensions.any?)

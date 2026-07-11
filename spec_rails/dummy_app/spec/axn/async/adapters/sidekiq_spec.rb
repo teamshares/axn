@@ -392,6 +392,24 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(last_job_tags.call).to contain_exactly("plan:pro")
     end
 
+    it "honors a per-action sidekiq_job_tag_sources override, independent of the global" do
+      # Global default is %i[tag dimension]; this action opts to bounded-only for its own jobs.
+      action = stub_const("PerActionBoundedTags", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        sidekiq_job_tag_sources %i[dimension]
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+      expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    end
+
     it "adds no tags key when the action declares no facets" do
       Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
       expect(last_job_tags.call).to be_nil
