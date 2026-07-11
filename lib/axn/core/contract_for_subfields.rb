@@ -15,6 +15,11 @@ module Axn
       def self.included(base)
         base.class_eval do
           class_attribute :subfield_configs, default: []
+          # Reader names axn actually generated for subfields (via `_define_subfield_reader`). Consulted
+          # by the readerless-parent guard, which must distinguish an axn-generated reader from any
+          # inherited public method of the same name (e.g. :class, :hash). Copy-on-write like
+          # `subfield_configs` so subclasses inherit the superclass's generated names.
+          class_attribute :_generated_subfield_reader_names, default: []
 
           extend ClassMethods
         end
@@ -58,6 +63,28 @@ module Axn
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
           end
 
+          # `resolve_parent` reads the root via `public_send(root)`, so the root must have a reader that
+          # axn actually generated. A top-level field always has one (contract.rb forbids readerless
+          # top-level `expects`); a subfield parent has one only when declared with the default
+          # `readers: true`. A `readers: false` subfield matches the `reader_as` list above (its config
+          # exists) but defined no method, so `public_send` either raises NoMethodError or — when the
+          # name shadows an inherited method like :class/:hash — silently invokes that method and reads
+          # the wrong object, all while reflection still advertises the nested path. Consult the record
+          # of readers axn generated rather than `method_defined?`, which can't tell an axn reader from
+          # an inherited public method. (A dotted parent name also defines no reader, but its `reader_as`
+          # never matches a root segment, so it's already caught by the no-such-reader check above and
+          # never reaches here. Ambient roots resolve per-invocation, not via a generated reader, so
+          # they're exempt.) The parent is always declared before the subfield, so its reader — when
+          # requested — is already recorded by now.
+          root_has_reader = internal_field_configs.map(&:reader_as).include?(root) ||
+                            _generated_subfield_reader_names.include?(root)
+          if root != Axn::Core::AmbientContext::PARENT && !root_has_reader
+            raise ArgumentError,
+                  "expects called with `on: #{on}`, but :#{root} was declared with `readers: false` — " \
+                  "a subfield parent must have a reader for the runtime to resolve " \
+                  "(drop `readers: false` on :#{root}, or name a readable parent)"
+          end
+
           # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
           # into a user-facing failure, but subfields are always dev-facing. Declaring a subfield on a
           # user-facing parent mixes the two — a violation of the parent and an independent subfield
@@ -72,9 +99,9 @@ module Axn
           # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
           # and `resolve_parent` can walk it at runtime, but `AmbientContext#_filter_to_declared` only
           # keeps configs whose `on.to_sym == :ambient_context` exactly — a dotted ambient parent's
-          # data is silently stripped, so the subfield would always read from `{}`. Deep/dotted nesting
-          # is deferred project-wide (see the KNOWN LIMITATION note in reflection/schema.rb), so reject
-          # this at declaration rather than fail silently. Checked unconditionally (regardless of
+          # data is silently stripped, so the subfield would always read from `{}`. Deep ambient nesting
+          # is deferred (PRO-2844/PRO-2845), so reject this at declaration rather than fail silently.
+          # Checked unconditionally (regardless of
           # preprocess:/default:) since the underlying gap is in ambient resolution, not those options.
           if root == Axn::Core::AmbientContext::PARENT && on.to_s.include?(".")
             raise ArgumentError,
@@ -215,6 +242,9 @@ module Axn
           return if source_field.to_s.include?(".")
 
           raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)" if method_defined?(reader)
+
+          # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
+          self._generated_subfield_reader_names += [reader]
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
             Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,

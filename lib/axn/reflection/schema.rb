@@ -3,6 +3,8 @@
 require "date"
 require "time"
 
+require "axn/reflection/subfield_tree"
+
 module Axn
   module Reflection
     # Builds JSON Schema (input/output) from an Axn's declared contract. Read-only, off the execution
@@ -13,13 +15,12 @@ module Axn
     # or a nil/blank-tolerant validator set (`optional:`/`allow_nil:`/`allow_blank:`/`presence: false`).
     # We deliberately do NOT run the field's validators against its default to confirm the omitted call
     # would actually pass; that duplicate-validation pass was expensive and fragile. The tradeoff is a
-    # few documented divergences from runtime, all narrow:
-    #   * a non-blank but otherwise-invalid default (`type: String, default: 123`; `type: :uuid,
-    #     default: "nope"`) is reflected as optional though the omitted call fails at runtime;
-    #   * a required deep subfield (dotted `on:`/name, subfield-of-subfield) under a nil-tolerant parent
-    #     doesn't force the parent required, so the parent may reflect as optional though runtime needs it.
-    # The safe direction (schema stricter than runtime) never causes failed calls; the unsafe cases above
-    # only arise from self-contradictory contracts and surface as a normal, recoverable validation error.
+    # documented divergence, narrow: a non-blank but otherwise-invalid default (`type: String,
+    # default: 123`; `type: :uuid, default: "nope"`) is reflected as optional though the omitted call
+    # fails at runtime. The safe direction (schema stricter than runtime) never causes failed calls; the
+    # unsafe case above only arises from a self-contradictory contract and surfaces as a normal,
+    # recoverable validation error. A required subfield at ANY depth forces its whole ancestor chain
+    # required and non-nullable (a nil/omitted ancestor yields every descendant absent, PRO-2857).
     module Schema
       TYPE_MAP = {
         String => "string",
@@ -46,21 +47,24 @@ module Axn
 
       module_function
 
-      # KNOWN LIMITATION: only single-level subfields are represented — those whose `on:` names a
-      # top-level field's reader (`on: :address`, incl. an `as:`/`prefix:` alias) with a non-dotted
-      # field name. Deeper nesting (a dotted `on:` path like `on: "address.billing"`, a subfield of a
-      # subfield, or a dotted field name like `expects "bar.baz", on: :foo`) validates at runtime but is
-      # omitted from the schema, deferred until an adapter needs deep tool-input schemas (axn-mcp
-      # PRO-2844 / axn-ruby_llm PRO-2845).
+      # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
+      # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
+      # aliases and dotted segments once, up front). STRUCTURAL EXCLUSIONS remain, three of them: a deep
+      # subfield whose chain passes through a `model:` parent (the client sends `<field>_id`, not the
+      # object) or a non-object parent (`type: Array`, a mixed union) has no JSON-object representation;
+      # and a dotted-NAME `model:` config (`expects "org.company", on: :payload, model:`) has no
+      # JSON-consumable id (dotted_model_config? — no reader is generated, so the runtime model lookup
+      # never runs). All are omitted — surfaced via dropped_deep_subfields / the input_schema warning. A
+      # depth-1 subfield under such a parent is silently omitted (the parent keeps its declared type), as ever.
       def build_input(field_configs, subfield_configs = [])
+        tree = SubfieldTree.build(field_configs, Array(subfield_configs))
         properties = {}
         required = []
-
-        subfields_by_parent = subfield_configs.group_by { |c| c.on.to_sym }
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
+          children = tree.roots[config.reader_as].children
           if config.validations[:model]
             # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
             # Its requiredness/nullability is decided in the post-pass below so it can account for an
@@ -69,19 +73,18 @@ module Axn
             properties[id_field] ||= id_prop
           else
             prop = build_property(config)
-            shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
-            apply_nested_subfields!(prop, config, shallow)
+            apply_nested_subfields!(prop, config, children)
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless field_optional?(config, shallow)
+            required << config.field.to_s unless field_optional?(config, children)
           end
         end
 
         # Second pass (after all properties exist, so it's independent of declaration order): decide each
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
         field_configs.select { |config| config.validations[:model] }.each do |config|
-          shallow = shallow_subfields(subfields_by_parent[config.reader_as], config)
-          apply_model_id_requiredness!(config, shallow, field_configs, properties, required)
+          children = tree.roots[config.reader_as].children
+          apply_model_id_requiredness!(config, children, field_configs, properties, required)
         end
 
         schema = { type: "object", properties: }
@@ -89,30 +92,18 @@ module Axn
         schema
       end
 
-      # Direct single-level children of `config`: `on:` names its reader exactly (not a dotted path or
-      # another subfield) and the child's own field name isn't dotted. Deeper descendants are omitted.
-      def shallow_subfields(nested, config)
-        Array(nested).select { |c| c.on.to_sym == config.reader_as && !c.field.to_s.include?(".") }
-      end
-
-      # The subfield configs build_input omits from the input schema because they aren't single-level: a
-      # dotted `on:` path, a subfield of a subfield, or a dotted field name (the KNOWN LIMITATION above;
-      # PRO-2872). They validate at runtime but have no schema representation, so a caller can surface
-      # this otherwise-silent gap. Skips subfields rooted at a deliberately-excluded parent
-      # (EXCLUDED_FROM_INPUT_SCHEMA, e.g. ambient_context), whose absence is intentional rather than a
-      # nesting-depth gap. Side-effect-free: membership is tested by object identity, never `==`, so a
-      # subfield's value never runs user code here.
+      # The subfield configs build_input omits from the input schema: deep configs (a dotted `on:`
+      # path, a subfield of a subfield, or a dotted field name) whose chain passes through a `model:`
+      # or non-object parent, so they have no JSON-object representation; PLUS a dotted-NAME `model:`
+      # config, which has no JSON-consumable id of its own (dotted_model_config? — no reader is generated,
+      # so the runtime model lookup never runs). They validate at runtime but are absent from the schema;
+      # a caller can surface this otherwise-silent gap. A representable deep chain (every explicit ancestor
+      # object-shaped) is NOT dropped — it nests in the schema.
+      # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
+      # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
+      # inspects declared configs only).
       def dropped_deep_subfields(field_configs, subfield_configs)
-        subfield_configs = Array(subfield_configs)
-        return [] if subfield_configs.empty?
-
-        by_parent = subfield_configs.group_by { |c| c.on.to_sym }
-        represented = field_configs.flat_map { |cfg| shallow_subfields(by_parent[cfg.reader_as], cfg) }.map(&:object_id)
-
-        subfield_configs.reject do |config|
-          represented.include?(config.object_id) ||
-            EXCLUDED_FROM_INPUT_SCHEMA.include?(config.on.to_s.split(".").first.to_sym)
-        end
+        SubfieldTree.build(field_configs, Array(subfield_configs)).dropped
       end
 
       # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
@@ -130,6 +121,31 @@ module Axn
       # `type: object` would disallow a valid array input.
       def nestable_as_object?(config)
         object_type_branches(config).all? { |k| [Hash, :params].include?(k) }
+      end
+
+      # Whether the configs declared at a subfield node forbid nesting its children as object properties:
+      # a `model:` route (the client sends `<field>_id`, not the object) or a non-nestable type (a
+      # non-object type or a mixed union) on ANY config. Single source of truth for the drop pass
+      # (SubfieldTree.blocking_ancestor?) and emission (apply_nested_subfields!), so the two never disagree
+      # on which deep structure is representable — a node the tree drops from is never re-nested in the
+      # schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
+      def node_configs_block_nesting?(configs)
+        configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
+      end
+
+      # Whether a `model:` config's field NAME is dotted (`expects "org.company", on: :payload, model:`).
+      # Such a config has NO JSON-consumable representation: a dotted subfield name generates no reader
+      # (ContractForSubfields#_define_subfield_reader returns early), so at runtime the id→record model
+      # lookup never runs — subfield validation falls back to the raw Extract resolver, which digs the
+      # object at `<parent>.<name>`, and the advertised `<leaf>_id` can never feed it. So it joins the
+      # structural exclusions (dropped, warned) rather than emit an id the runtime can't consume. A dotted
+      # `on:` with a NON-dotted name (`expects :company, on: "payload.org", model:`) DOES generate a reader
+      # that consumes the id, so it is NOT excluded. Single source of truth for BOTH the drop pass
+      # (SubfieldTree.compute_dropped) and emission (apply_children!), so the two never disagree.
+      def dotted_model_config?(config)
+        return false unless config.validations[:model]
+
+        config.field.to_s.include?(".")
       end
 
       def object_type_branches(config)
@@ -178,20 +194,91 @@ module Axn
       # the parent is neither omittable nor nullable. Single source of truth for both the parent's
       # requiredness (field_optional?) and nullability (apply_nested_subfields!), so the two never disagree.
       # Two sources:
-      #   * a required shallow `on:` subfield — runtime validates it directly against the (nil) parent; OR
-      #   * a required shape (`do…end`) member WHEN a truthy-default `on:` subfield synthesizes the parent:
-      #     that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator no longer
-      #     short-circuits on nil and enforces the member. Without such a synthesizer the parent stays nil
-      #     and ShapeValidator skips it, so shape members alone don't strand it.
-      def required_child?(config, shallow)
-        shallow = Array(shallow)
-        return true if shallow.any? { |c| !optional_for_schema?(c, subfield: true) }
+      #   * a required subfield ANYWHERE in the subtree — a nil parent yields every descendant absent
+      #     (PRO-2857), so a required grandchild is stranded exactly like a required child; OR
+      #   * a required shape (`do…end`) member WHEN a subfield default ANYWHERE in the subtree synthesizes
+      #     the parent: that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator
+      #     no longer short-circuits on nil and enforces the member. A dotted-NAME default lands on a deeper
+      #     node yet still materializes the parent, so this walks the whole subtree; and it counts ANY
+      #     applied default (a Proc included) because materialization fires before the default's value
+      #     matters — the applicability hazard, not reflective usability (subtree_has_applied_subfield_default?).
+      def required_child?(config, children)
+        return true if children_require_presence?(children)
 
         # A subfield default synthesizes the parent only when the parent is object-shaped — runtime injects
         # `{}` for Hash/`:params`/untyped parents but refuses for a non-object type (`type: Array`), which
-        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!).
-        synthesizer = object_shaped?(config) && shallow.any? { |c| usable_default?(c, subfield: true) }
+        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!). Walks the WHOLE
+        # subtree: a dotted-NAME default lands on a deeper node and still materializes the parent, firing
+        # the shape-member hazard.
+        synthesizer = object_shaped?(config) && subtree_has_applied_subfield_default?(children)
         synthesizer && required_shape_member?(config)
+      end
+
+      # Whether any direct child node may NOT be omitted from the parent object.
+      def children_require_presence?(children)
+        children.values.any? { |node| !node_optional?(node) }
+      end
+
+      # Whether omitting/nil-ing this node's value strands a required descendant — the transitive
+      # extension of the one-level required-child test.
+      def subtree_requires_presence?(node)
+        children_require_presence?(node.children)
+      end
+
+      # Whether a node may be absent from its parent object. An implicit node (a dotted-path
+      # intermediate with no declaration of its own) is omittable exactly when nothing beneath it
+      # requires presence. An explicit node follows the single-level rule at every depth: a usable
+      # default always rescues omission (declaration allows a default only when `on:` names a top-level
+      # reader, but a dotted field NAME can land that defaulted config on a deeper node — honored here
+      # either way; a default whose contents fail a child's validators is the same accepted divergence
+      # as at the top level); otherwise it
+      # must tolerate nil AND strand no required descendant. With multiple configs at one node (the
+      # same wire path declared via two routes) runtime enforces all of them, so the node is omittable
+      # only if every config is. `configs` defaults to the whole node but may be a subset: a merged
+      # node's model and non-model routes emit separate properties (`<leaf>_id` vs the object), each
+      # required per its own routes' configs, not the node as a whole.
+      def node_optional?(node, configs = node.configs)
+        return !subtree_requires_presence?(node) if node.implicit?
+
+        configs.all? do |c|
+          usable_default?(c, subfield: true) || (nil_accepted?(c) && !subtree_requires_presence?(node))
+        end
+      end
+
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE (truthy, non-Proc)
+      # default — the synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE
+      # parent (materializes `{}`, then writes the default) from a usable default at any depth: a
+      # dotted-NAME default lands on a deeper node yet still materializes the parent, so it rescues
+      # omission just like a direct child's default. Procs stay EXCLUDED (usable_default? drops them),
+      # unlike subtree_has_applied_subfield_default? (the hazard predicate, which counts Procs): here the
+      # Proc's SUCCESS is what would rescue omission, and a raising Proc would instead make omission FAIL,
+      # so counting it would reflect the parent omittable though runtime rejects the omitted call — the
+      # looser, unsafe direction. The hazard predicate counts Procs because materialization fires before
+      # the Proc runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
+      def subtree_has_usable_subfield_default?(children)
+        children.values.any? do |node|
+          node.configs.any? { |c| usable_default?(c, subfield: true) } ||
+            subtree_has_usable_subfield_default?(node.children)
+        end
+      end
+
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a subfield default runtime would
+      # APPLY. Under an omitted nil-tolerant model, such a default makes apply_defaults_for_subfields!
+      # materialize `{}` under the model's wire key BEFORE the default is even evaluated, and ModelValidator
+      # then rejects that `{}` (not a model instance) — so the model id can't be omitted. What strands the
+      # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
+      # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
+      # before the default's value matters — so this uses subfield_default_applies? (side-effect-free:
+      # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
+      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
+      # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
+      # so a dotted-NAME default on a deeper node is counted, but this HAZARD walk counts Procs and that
+      # rescue walk does not.
+      def subtree_has_applied_subfield_default?(children)
+        children.values.any? do |node|
+          node.configs.any? { |c| Internal::FieldConfig.subfield_default_applies?(c) } ||
+            subtree_has_applied_subfield_default?(node.children)
+        end
       end
 
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
@@ -200,9 +287,8 @@ module Axn
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
-      def field_optional?(config, shallow_subfields)
-        shallow = Array(shallow_subfields)
-        has_required_child = required_child?(config, shallow)
+      def field_optional?(config, children)
+        has_required_child = required_child?(config, children)
 
         # A usable default on the PARENT materializes it (with its declared contents) before validation,
         # so it may always be omitted — its own default, not its subfields, decides. (A default whose
@@ -214,14 +300,19 @@ module Axn
         return true if nil_accepted?(config) && !has_required_child
 
         # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
-        # COMPLETE parent from subfield defaults — at least one shallow subfield supplies a value and none
-        # is required (a required child has no default and can't be synthesized). This synthesis only
-        # rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`, which satisfies a
-        # Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed class) whose
-        # top-level type validator rejects the `{}`.
+        # COMPLETE parent from subfield defaults — a usable default ANYWHERE in the subtree supplies a
+        # value (a dotted-NAME default lands on a deeper node yet still materializes the parent) and none
+        # of the subtree is required (a required descendant has no default and can't be synthesized). Procs
+        # stay excluded (subtree_has_usable_subfield_default?): a Proc default is uninspectable and a
+        # raising one would make omission FAIL, so counting it would reflect the parent omittable though
+        # runtime rejects the omitted call — the looser, unsafe direction (the hazard side counts Procs
+        # because materialization fires before the Proc runs; here the Proc's success is what rescues, and
+        # that is unknowable). This synthesis only rescues an OBJECT-shaped parent:
+        # `apply_defaults_for_subfields!` injects `{}`, which satisfies a Hash/`:params`/untyped parent but
+        # not a non-object one (`type: Array`, a typed class) whose top-level type validator rejects the `{}`.
         return false unless object_shaped?(config)
 
-        shallow.any? { |c| usable_default?(c, subfield: true) } && !has_required_child
+        subtree_has_usable_subfield_default?(children) && !has_required_child
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -284,50 +375,184 @@ module Axn
         false
       end
 
-      # Mutates `prop` to nest `nested_subfields` as `prop[:properties]`/`prop[:required]`. Forces the
-      # parent to `type: object` (it now has structure). The parent is nullable only when it tolerates nil
-      # AND strands no required child: runtime now treats a nil parent as "subfields absent" (PRO-2857), so
-      # a nil-accepting parent with all-optional children accepts `null`, while a required child (which a
-      # nil parent can't yield) keeps it object-only. Only applies when EVERY admissible parent type is
-      # object-shaped (Hash/`:params`/untyped) — a non-object parent (`type: Array`) or a mixed union
-      # (`type: [Hash, Array]`) keeps its declared type(s) and its subfields' shape is omitted, since
-      # object properties can't represent a non-object branch.
-      def apply_nested_subfields!(prop, config, nested_subfields)
-        return if nested_subfields.blank?
-        return unless nestable_as_object?(config)
+      # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing
+      # through the whole subtree. Forces the parent to `type: object` (it now has structure). The parent
+      # is nullable only when it tolerates nil AND strands no required descendant: runtime treats a nil
+      # parent as "subfields absent" (PRO-2857), so a nil-accepting parent with an all-optional subtree
+      # accepts `null`, while a required descendant (which a nil parent can't yield) keeps it object-only.
+      # Only applies when EVERY admissible parent type is object-shaped (Hash/`:params`/untyped) — a
+      # non-object parent (`type: Array`) or a mixed union (`type: [Hash, Array]`) keeps its declared
+      # type(s) and its subfields' shape is omitted, since object properties can't represent a non-object
+      # branch (deep descendants there are in dropped_deep_subfields; its children still shape
+      # requiredness via required_child?, matching runtime).
+      # `config` shapes the property itself (type, nullability) — by design the FIRST non-model config at a
+      # merged node. `node_configs` is EVERY config at the node: it decides both whether to nest at all
+      # (node_configs_block_nesting?, the same predicate the drop pass uses, so a route the tree drops from
+      # is never re-nested) and, threaded on as parent configs, which `shape:` members might collide with
+      # an implicit child. It defaults to `[config]` for a single-config parent (the top level and any
+      # unmerged node).
+      def apply_nested_subfields!(prop, config, children, node_configs = [config])
+        return if children.empty?
+
+        if node_configs_block_nesting?(node_configs)
+          # A non-nestable parent (non-object type, mixed union, or model route) omits its children's
+          # SHAPE but NOT their OBLIGATION: field_optional? still forces the parent required when a child
+          # requires presence, so its nullability must agree. A nil parent yields every descendant absent
+          # (PRO-2857), stranding the required descendant, so strip the parent's `null` admission
+          # (reject_null! handles both a type array and an anyOf union) — mirroring the nested-child guard
+          # in apply_children!. Predicate: children_require_presence?(children), the same transitive
+          # presence test as the nested analog's subtree_requires_presence?(node); required_child?'s
+          # shape-synthesis clause is inert for a non-object parent, so the plain presence test is exact
+          # and keeps the two sites' reasoning identical.
+          reject_null!(prop) if children_require_presence?(children)
+          return
+        end
 
         prop.delete(:format)
         prop[:properties] ||= {}
         prop[:required] ||= []
 
-        required_model_ids = []
-        nested_subfields.each do |subconfig|
-          if subconfig.validations[:model]
-            id_field, subprop = model_id_property(subconfig)
-            # A user may declare an explicit nested `<field>_id` subfield before the `model:` subfield;
-            # don't clobber it with the generic model-generated one.
-            prop[:properties][id_field] ||= subprop
-            unless optional_for_schema?(subconfig, subfield: true)
-              prop[:required] << id_field.to_s
-              required_model_ids << id_field
-            end
-          else
-            prop[:properties][subconfig.field] = build_property(subconfig, subfield: true)
-            prop[:required] << subconfig.field.to_s unless optional_for_schema?(subconfig, subfield: true)
-          end
-        end
+        apply_children!(prop, children, node_configs)
 
         prop[:required] = prop[:required].uniq
         # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
         # accepts nil and no required nested obligation is stranded (required_child? — which counts a
         # required shape member only when a defaulted subfield synthesizes the parent). Decided from
-        # `config`/`nested_subfields`, NOT `prop[:required]`, which also carries shape members that a bare
+        # `config`/`children`, NOT `prop[:required]`, which also carries shape members that a bare
         # nil parent never triggers.
-        prop[:type] = nil_allowed?(config) && !required_child?(config, nested_subfields) ? %w[object null] : "object"
+        prop[:type] = nil_allowed?(config) && !required_child?(config, children) ? %w[object null] : "object"
+        prop[:required] = nil if prop[:required].empty?
+      end
+
+      # Emits one level of children into `prop` (which must already have :properties/:required arrays),
+      # recursing into each child's own subtree. `parent_configs` are the configs whose subfields these
+      # children are — used to decide, by the same predicate as the drop pass, whether an implicit child
+      # may merge into a colliding shape member. They are the top-level/subfield configs at an explicit
+      # parent (ALL of them at a merged node, mirroring SubfieldTree), or the shape members an implicit
+      # intermediate merged into (so nested members block at depth), or empty for a fresh implicit
+      # intermediate that claimed no shape member.
+      #
+      # A single wire path can be declared via two routes (Node#configs size > 1), and the routes can
+      # disagree on kind: a `model:` route emits the generated `<leaf>_id` while a plain route emits the
+      # object property. Both are enforced at runtime, so both are emitted, each required per its OWN
+      # route's configs — not the node as a whole.
+      #
+      # ACCEPTED DIVERGENCE (looser-than-runtime, the only such case here): at a merged model+non-model
+      # node the non-model route's raw-key object property admits an object value that runtime ALWAYS
+      # rejects — the model resolver reads the raw key as the record, and a JSON object is never a model
+      # instance, so only absent/null are JSON-satisfiable. Left as-is: sending the object yields a normal,
+      # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
+      def apply_children!(prop, children, parent_configs)
+        required_model_ids = []
+        children.each do |key, node|
+          if node.implicit?
+            apply_implicit_node!(prop, key, node, parent_configs)
+            next
+          end
+
+          # A dotted-NAME model config (dotted_model_config?) has no JSON-consumable representation — the
+          # id→record lookup never runs at runtime (no reader), so it emits no `<leaf>_id` and is dropped
+          # (it's in dropped_deep_subfields). It's excluded from BOTH kinds here, so if it's the only config
+          # at the node the node contributes no property at all. Its requiredness obligation still shapes
+          # ancestors via the tree (subtree_requires_presence?), exactly as other dropped configs do.
+          model_configs = node.configs.select { |c| c.validations[:model] && !dotted_model_config?(c) }
+          non_model_configs = node.configs.reject { |c| c.validations[:model] }
+
+          unless model_configs.empty?
+            # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
+            # the same nested parent at runtime). A user may declare an explicit nested `<field>_id`
+            # subfield; don't clobber it with the generic model-generated one.
+            id_field = Internal::FieldConfig.model_id_key(key)
+            _, subprop = model_id_property(model_configs.first)
+            prop[:properties][id_field] ||= subprop
+            unless node_optional?(node, model_configs)
+              prop[:required] << id_field.to_s
+              required_model_ids << id_field
+            end
+          end
+
+          representative = non_model_configs.first
+          next unless representative
+
+          child_prop = build_property(representative, subfield: true)
+          apply_nested_subfields!(child_prop, representative, node.children, node.configs)
+          # `null` survives only when every non-model route tolerates nil (runtime enforces all of them;
+          # the property itself is built from the first non-model config) AND no required descendant is
+          # stranded — a nil node yields every descendant absent (PRO-2857), so a required one below it
+          # forbids nil even for a non-object node whose subfield shape isn't nested here.
+          null_ok = non_model_configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node)
+          reject_null!(child_prop) unless null_ok
+          prop[:properties][key] = child_prop.compact
+          prop[:required] << key.to_s unless node_optional?(node, non_model_configs)
+        end
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
         required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
-        prop[:required] = nil if prop[:required].empty?
+      end
+
+      # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
+      # property whose only content is its children. When a `shape:` member of any `parent_configs`
+      # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
+      # predicate on the SAME member configs that SubfieldTree.blocking_ancestor? uses (it scans ALL of
+      # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
+      # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
+      # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
+      # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
+      # is built from the first non-model config, so a scalar member declared on a LATER config seeds
+      # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
+      #
+      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
+      # subfields regardless of representability, so when the dropped subtree requires presence
+      # (subtree_requires_presence? — the same predicate used everywhere) the colliding member's own
+      # property still inherits that obligation. The member is forced required and its `null` admission
+      # stripped (reject_null! handles both `type:` arrays and `anyOf` unions) — because a nil/absent
+      # member strands the required descendant (PRO-2857). Nothing else about the member is touched (no
+      # forced object type, no properties — its shape stays dropped). An all-optional dropped subtree
+      # strands nothing, so the member keeps its declared flags (runtime accepts omission/nil there).
+      def apply_implicit_node!(prop, key, node, parent_configs)
+        members = shape_members_at(parent_configs, key)
+        if members.any? { |member| !nestable_as_object?(member) }
+          if subtree_requires_presence?(node)
+            prop[:required] << key.to_s
+            reject_null!(prop[:properties][key]) if prop[:properties][key]
+          end
+          return
+        end
+
+        # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
+        # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members
+        # the drop pass carries, so the two agree at depth.
+        existing = prop[:properties][key]
+        target = existing || {}
+        target.delete(:format)
+        target[:properties] ||= {}
+        target[:required] ||= []
+        apply_children!(target, node.children, members)
+        target[:required] = target[:required].uniq
+        # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (a nil
+        # parent digs every descendant to nil, PRO-2857). A shape-member collision additionally caps it by
+        # the members' OWN nil-tolerance — nullable only when EVERY colliding member tolerates nil (runtime
+        # enforces all routes), read from each config via nil_allowed? (the same predicate the parent
+        # nesting uses) never sniffed off the emitted property: an untyped nil-tolerant member emits no
+        # `type`, so a null branch is invisible there and property-sniffing would force it non-nullable
+        # though runtime accepts a nil member. With no colliding member, an existing merge target (e.g. a
+        # Data placeholder property with no shape member) falls back to non-nullable (stricter than
+        # runtime), while a genuinely fresh node (no property, no member) follows its subtree.
+        nullable = !subtree_requires_presence?(node) &&
+                   (members.any? ? members.all? { |m| nil_allowed?(m) } : existing.nil?)
+        target[:type] = nullable ? %w[object null] : "object"
+        target[:required] = nil if target[:required].empty?
+        prop[:properties][key] = target.compact
+        prop[:required] << key.to_s if subtree_requires_presence?(node)
+      end
+
+      # Every `shape:` member declared at `key` across `parent_configs` (the implicit node collides with
+      # them). Each config is a top-level field config OR a shape-member config carried through implicit
+      # descent; both respond to `.validations` and expose nested members via `dig(:shape, :members)`.
+      def shape_members_at(parent_configs, key)
+        Array(parent_configs).flat_map do |config|
+          Array(config.validations.dig(:shape, :members)).select { |m| m.field.to_sym == key }
+        end
       end
 
       # Every exposed field is always present in the serialized output: Values.serialize_exposed iterates
@@ -519,11 +744,17 @@ module Axn
         end
       end
 
+      # A shape member's `field` is a raw declared name (`field "bar"`) that isn't symbolized at
+      # declaration, so key the emitted property by its symbol — every other schema property key is a
+      # Symbol (top-level `config.field`, symbolized wire keys), so this keeps a string-named member
+      # (`field "bar"`) colliding with a dotted/explicit subfield (`bar.baz`) resolving to the one `:bar`
+      # property that every downstream lookup (apply_implicit_node!'s `existing`, explicit-child overwrite)
+      # already keys by symbol — not a String duplicate alongside it. `required` already uses `.to_s`.
       def member_properties(members, for_output:)
         props = {}
         required = []
         members.each do |m|
-          props[m.field] = build_property(m, for_output:).compact
+          props[m.field.to_sym] = build_property(m, for_output:).compact
           required << m.field.to_s unless optional_for_schema?(m)
         end
         [props, required]
@@ -545,21 +776,25 @@ module Axn
       # (order-independent — runs after all properties are built).
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
-      # with its own usable default) AND it has NO shallow subfields, OR an explicit `<field>_id` sibling
-      # carries a usable DEFAULT (inbound defaults supply the token before the lookup). Subfield-default
-      # synthesis does NOT make a model field omittable: it injects a Hash under the field, but the model
-      # resolver returns that Hash and ModelValidator rejects it (not a model instance) — and a required
-      # subfield likewise strands an omitted record. A merely nullable/optional explicit id with no default
-      # doesn't help either. When the id IS required it also can't be null, so any `null` branch is stripped.
+      # with its own usable default) AND no descendant subfield requires presence (a required subfield at
+      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
+      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
+      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
+      # model instance — so an omitted id fails at runtime). OR an
+      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
+      # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
+      # required it also can't be null, so any `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, shallow_subfields, field_configs, properties, required)
+      def apply_model_id_requiredness!(config, children, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        model_omittable = Array(shallow_subfields).empty? && optional_for_schema?(config)
+        model_omittable = optional_for_schema?(config) &&
+                          !children_require_presence?(children) &&
+                          !subtree_has_applied_subfield_default?(children)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
