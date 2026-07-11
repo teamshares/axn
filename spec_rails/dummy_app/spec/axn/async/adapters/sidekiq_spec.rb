@@ -410,6 +410,26 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
     end
 
+    it "reads the override via the collision-safe accessor even if the action shadows resolved_" do
+      # The adapter must route through Axn's override store, not a consumer-defined `resolved_`
+      # accessor. Here the shadow claims both sources, but the real per-class override is
+      # bounded-only — so honoring the override (not the shadow) yields just the dimension tag.
+      action = stub_const("ShadowedResolvedTagSources", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        sidekiq_job_tag_sources %i[dimension]
+        def self.resolved_sidekiq_job_tag_sources = %i[tag dimension]
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("plan:pro")
+    end
+
     it "adds no tags key when the action declares no facets" do
       Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
       expect(last_job_tags.call).to be_nil
