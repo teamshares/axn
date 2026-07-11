@@ -72,23 +72,57 @@ module Axn
       # doesn't matter.
       def compute_dropped(deep_paths)
         deep_paths.filter_map do |config, hops|
-          config if hops.any? { |node, key| blocking_ancestor?(node, key) }
+          config if path_blocked?(hops)
         end
+      end
+
+      # Walk a deep config's ancestor chain hop by hop, carrying the shape member an implicit hop merged
+      # into so a deeper implicit hop can test that member's OWN nested shape members (a
+      # member-of-a-member). `carried` is the object-shaped member config the current node stands in for
+      # (nil for a real node or a fresh implicit intermediate that claimed no shape member).
+      def path_blocked?(hops)
+        carried = nil
+        hops.each do |node, key|
+          return true if blocking_ancestor?(node, key, carried)
+
+          carried = merged_shape_member(node, key, carried)
+        end
+        false
       end
 
       # An explicit ancestor blocks nesting when it has `model:` (the client sends `<field>_id`, not
       # the object) or isn't nestable as an object (non-object type, or a mixed union). An implicit
-      # ancestor never blocks (a runtime dig through it presumes hash access) — but descending into an
-      # IMPLICIT child whose key collides with a non-object `shape:` member does: the member property
-      # already claims that key with a non-object type, so the deep structure has nowhere to live.
-      def blocking_ancestor?(node, key)
+      # ancestor never blocks on its own type — but descending into an IMPLICIT child whose key collides
+      # with a non-object `shape:` member does: the member property already claims that key with a
+      # non-object type, so the deep structure has nowhere to live. Those members come from the node's
+      # own explicit configs OR the member this implicit node merged into (`carried`), so a member of a
+      # member is tested at depth.
+      def blocking_ancestor?(node, key, carried = nil)
         return true if node.configs.any? { |c| c.validations[:model] || !Schema.nestable_as_object?(c) }
         return false unless node.children[key]&.implicit?
 
-        node.configs.any? do |c|
-          member = Array(c.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
+        shape_member_configs(node, carried).any? do |c|
+          member = shape_member_at(c, key)
           member && !Schema.nestable_as_object?(member)
         end
+      end
+
+      # The object-shaped shape member a node (via an explicit config or the `carried` member it merged
+      # into) declares at `key`, when descending merges an implicit child there — carried into the next
+      # hop. nil when nothing merges (no such member; a non-nestable member would already have blocked).
+      def merged_shape_member(node, key, carried)
+        return nil unless node.children[key]&.implicit?
+
+        shape_member_configs(node, carried).filter_map { |c| shape_member_at(c, key) }
+                                           .find { |m| Schema.nestable_as_object?(m) }
+      end
+
+      def shape_member_configs(node, carried)
+        carried ? node.configs + [carried] : node.configs
+      end
+
+      def shape_member_at(config, key)
+        Array(config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
       end
     end
   end

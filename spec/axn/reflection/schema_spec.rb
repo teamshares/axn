@@ -1098,6 +1098,53 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
+    it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional shallow subfield" do
+      # `company` accepts nil and `name` is optional, so an omitted id resolves company to nil and the
+      # optional subfield validates as absent — the omitted call succeeds, so the id must not be required.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, type: String, optional: true
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(Array(schema[:required])).not_to include("company_id")
+      expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
+    end
+
+    it "requires the model <field>_id when a nil-tolerant model has an optional shallow subfield WITH a default" do
+      # The optional subfield's default synthesizes a Hash under `company`; the model resolver returns that
+      # Hash and ModelValidator rejects it, so omitting the id fails at runtime — the id stays required.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, type: String, default: "x", optional: true
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
+      expect(klass.call).not_to be_ok # runtime agreement: omitting the id fails (synthesized {} isn't the model)
+    end
+
+    it "requires the model <field>_id when a nil-tolerant model has an optional shallow subfield with a PROC default" do
+      # A Proc default is applied at runtime just like a literal one (subfield_default_applies? is truthy),
+      # and apply_defaults_for_subfields! materializes `{}` under `company` BEFORE evaluating the Proc, so
+      # ModelValidator rejects the synthesized Hash and omitting the id fails — the id stays required. The
+      # schema must not treat a Proc default as absent (usable_default? excludes Procs) and go looser.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, type: String, default: -> { "x" }, optional: true
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
+      expect(klass.call).not_to be_ok # runtime agreement: omitting the id fails (synthesized {} isn't the model)
+    end
+
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
       klass = Class.new do
         include Axn
@@ -3264,15 +3311,65 @@ RSpec.describe Axn::Reflection::Schema do
         expect(Array(meta[:required]).count("company_id")).to eq(1)
       end
 
-      it "requires the top-level model <field>_id when the model has only DEEP subfields (an omitted record strands them at runtime)" do
+      it "requires the top-level model <field>_id when the model has a REQUIRED deep subfield (an omitted record strands it at runtime)" do
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
           expects :theme, on: "company.settings", type: String
+          def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         expect(schema[:required]).to include("company_id")
+        expect(klass.call).not_to be_ok # runtime agreement: required deep subfield strands the omitted record
+      end
+
+      it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional deep subfield" do
+        # An omitted id resolves company to nil; the optional deep subfield validates as absent (resolving
+        # off a nil source yields nil), so the omitted call succeeds and the id must not be required.
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
+          expects :theme, on: "company.settings", type: String, optional: true
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(Array(schema[:required])).not_to include("company_id")
+        expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
+      end
+
+      it "requires the model <field>_id when a deep subfield carries a default via a dotted NAME (synthesized {} isn't the model)" do
+        # `expects \"settings.theme\", on: :company, default: \"x\"` lands the defaulted config on a DEEPER
+        # node; it still materializes a Hash under `company`, which ModelValidator rejects — so omitting the
+        # id fails at runtime and the id stays required (the subtree default scan must reach the deep node).
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
+          expects "settings.theme", on: :company, default: "x"
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("company_id")
+        expect(klass.call).not_to be_ok # runtime agreement: omitting the id fails
+      end
+
+      it "requires the model <field>_id when a deep subfield carries a PROC default via a dotted NAME (synthesized {} isn't the model)" do
+        # A Proc default lands on a DEEPER node via the dotted name; runtime still materializes a Hash under
+        # `company` (before evaluating the Proc), which ModelValidator rejects — so omitting the id fails and
+        # the id stays required. The subtree default scan must count a Proc default (applied at runtime),
+        # not exclude it as reflection-uninspectable.
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
+          expects "settings.theme", on: :company, type: String, default: -> { "x" }, optional: true
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("company_id")
+        expect(klass.call).not_to be_ok # runtime agreement: omitting the id fails
       end
     end
 
@@ -3326,6 +3423,64 @@ RSpec.describe Axn::Reflection::Schema do
         expect(Array(bar[:type])).not_to include("object")
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
         expect(dropped.map(&:field)).to eq([:"bar.baz"])
+      end
+
+      it "leaves a SCALAR member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: String
+            end
+          end
+          expects "bar.baz.qux", on: :payload
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
+        expect(baz).to include(type: "string") # scalar member kept as-is
+        expect(baz).not_to have_key(:properties) # no forced object / qux under it
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end
+
+      it "leaves a mixed-union member-of-a-member untouched and drops the deeper colliding config" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: [Hash, Array]
+            end
+          end
+          expects "bar.baz.qux", on: :payload
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
+        expect(baz).to have_key(:anyOf)
+        expect(baz).not_to have_key(:properties)
+        expect(Array(baz[:type])).not_to include("object")
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end
+
+      it "merges into an OBJECT member-of-a-member at depth 2 and does NOT drop the config (positive control)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: Hash
+            end
+          end
+          expects "bar.baz.qux", on: :payload
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
+        expect(Array(baz[:type])).to include("object")
+        expect(baz[:properties]).to have_key(:qux)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped).to eq([])
       end
     end
 

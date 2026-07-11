@@ -218,6 +218,24 @@ module Axn
         children.values.any? { |node| node.configs.any? { |c| usable_default?(c, subfield: true) } }
       end
 
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a subfield default runtime would
+      # APPLY. Under an omitted nil-tolerant model, such a default makes apply_defaults_for_subfields!
+      # materialize `{}` under the model's wire key BEFORE the default is even evaluated, and ModelValidator
+      # then rejects that `{}` (not a model instance) — so the model id can't be omitted. What strands the
+      # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
+      # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
+      # before the default's value matters — so this uses subfield_default_applies? (side-effect-free:
+      # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
+      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Unlike
+      # defaulted_child? (direct children only, for top-level parent synthesis), this walks the whole
+      # subtree: a dotted-NAME default lands on a deeper node.
+      def subtree_has_applied_subfield_default?(children)
+        children.values.any? do |node|
+          node.configs.any? { |c| Internal::FieldConfig.subfield_default_applies?(c) } ||
+            subtree_has_applied_subfield_default?(node.children)
+        end
+      end
+
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
       def required_shape_member?(config)
         Array(config.validations.dig(:shape, :members)).any? { |m| !optional_for_schema?(m) }
@@ -340,8 +358,10 @@ module Axn
 
       # Emits one level of children into `prop` (which must already have :properties/:required arrays),
       # recursing into each child's own subtree. `parent_config` is the config whose subfields these
-      # children are (nil when the parent is an implicit intermediate) — used to decide, by the same
-      # predicate as the drop pass, whether an implicit child may merge into a colliding shape member.
+      # children are — used to decide, by the same predicate as the drop pass, whether an implicit child
+      # may merge into a colliding shape member. It is a top-level/subfield config for an explicit parent,
+      # the shape member an implicit intermediate merged into (so nested members block at depth), or nil
+      # for a fresh implicit intermediate that claimed no shape member.
       def apply_children!(prop, children, parent_config)
         required_model_ids = []
         children.each do |key, node|
@@ -387,11 +407,15 @@ module Axn
         existing = prop[:properties][key]
         return if existing && shape_member_blocks_merge?(parent_config, key)
 
+        # When this implicit node merged into a shape member, carry that member as the parent config for
+        # its own children so a deeper implicit hop tests the member's NESTED shape members (a
+        # member-of-a-member). Same member config the drop pass carries, so the two agree at depth.
+        merged_member = existing ? shape_member_at(parent_config, key) : nil
         target = existing || {}
         target.delete(:format)
         target[:properties] ||= {}
         target[:required] ||= []
-        apply_children!(target, node.children, nil)
+        apply_children!(target, node.children, merged_member)
         target[:required] = target[:required].uniq
         # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (nil
         # digs to nil, PRO-2857); a shape-member merge target additionally keeps only the nil-tolerance
@@ -408,12 +432,17 @@ module Axn
       # SubfieldTree.blocking_ancestor? (same `nestable_as_object?` on the same member config). An implicit
       # parent (nil) has no shape, so nothing blocks.
       def shape_member_blocks_merge?(parent_config, key)
-        return false unless parent_config
+        member = shape_member_at(parent_config, key)
+        member ? !nestable_as_object?(member) : false
+      end
 
-        member = Array(parent_config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
-        return false unless member
+      # The `shape:` member `parent_config` declares at `key` (the implicit node collides with it), or nil.
+      # `parent_config` is a top-level field config OR a shape-member config carried through implicit
+      # descent; both respond to `.validations` and expose nested members via `dig(:shape, :members)`.
+      def shape_member_at(parent_config, key)
+        return nil unless parent_config
 
-        !nestable_as_object?(member)
+        Array(parent_config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
       end
 
       # Every exposed field is always present in the serialized output: Values.serialize_exposed iterates
@@ -631,13 +660,14 @@ module Axn
       # (order-independent — runs after all properties are built).
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
-      # with its own usable default) AND it has NO subfields (at any depth — a deep subfield still
-      # resolves off the record at runtime, so an omitted record strands it), OR an explicit `<field>_id`
-      # sibling carries a usable DEFAULT (inbound defaults supply the token before the lookup). Subfield-default
-      # synthesis does NOT make a model field omittable: it injects a Hash under the field, but the model
-      # resolver returns that Hash and ModelValidator rejects it (not a model instance) — and a required
-      # subfield likewise strands an omitted record. A merely nullable/optional explicit id with no default
-      # doesn't help either. When the id IS required it also can't be null, so any `null` branch is stripped.
+      # with its own usable default) AND no descendant subfield requires presence (a required subfield at
+      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
+      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
+      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
+      # model instance — so an omitted id fails at runtime). OR an
+      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
+      # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
+      # required it also can't be null, so any `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
@@ -646,7 +676,9 @@ module Axn
       def apply_model_id_requiredness!(config, children, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        model_omittable = children.empty? && optional_for_schema?(config)
+        model_omittable = optional_for_schema?(config) &&
+                          !children_require_presence?(children) &&
+                          !subtree_has_applied_subfield_default?(children)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s

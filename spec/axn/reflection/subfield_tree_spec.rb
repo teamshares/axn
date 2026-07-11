@@ -155,6 +155,51 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
     end
 
+    it "drops a deep config whose implicit intermediate collides with a SCALAR member of a member (carried through implicit descent)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :bar, type: Hash do
+            field :baz, type: String
+          end
+        end
+        expects "bar.baz.qux", on: :payload
+      end
+      tree = tree_for(klass)
+
+      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+    end
+
+    it "drops a deep config whose implicit intermediate collides with a mixed-union member of a member" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :bar, type: Hash do
+            field :baz, type: [Hash, Array]
+          end
+        end
+        expects "bar.baz.qux", on: :payload
+      end
+      tree = tree_for(klass)
+
+      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+    end
+
+    it "does NOT drop a deep config nesting through an OBJECT member of a member (member-of-member is nestable)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :bar, type: Hash do
+            field :baz, type: Hash
+          end
+        end
+        expects "bar.baz.qux", on: :payload
+      end
+      tree = tree_for(klass)
+
+      expect(tree.dropped).to eq([])
+    end
+
     it "does not drop a representable deep chain (object-shaped explicit ancestors)" do
       klass = Class.new do
         include Axn
