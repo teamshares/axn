@@ -417,10 +417,17 @@ module Axn
         target[:required] ||= []
         apply_children!(target, node.children, merged_member)
         target[:required] = target[:required].uniq
-        # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (nil
-        # digs to nil, PRO-2857); a shape-member merge target additionally keeps only the nil-tolerance
-        # it already declared.
-        nullable = !subtree_requires_presence?(node) && (existing.nil? || Array(existing[:type]).include?("null"))
+        # A fresh implicit intermediate (existing.nil?) is nullable exactly when nothing beneath requires
+        # presence (a nil parent digs every descendant to nil, PRO-2857). A shape-member merge target is
+        # additionally capped by the member's OWN nil-tolerance, read from its config via nil_allowed? —
+        # the same predicate the parent nesting uses — never sniffed off the emitted property: an untyped
+        # nil-tolerant member emits no `type`, so a null branch is invisible there and property-sniffing
+        # would force it non-nullable though runtime accepts a nil member. `merged_member` (located above)
+        # is non-nil whenever `existing` is — a merge only reaches here under a nestable parent, whose
+        # pre-seeded properties are exactly its shape members — but the guard falls back to non-nullable
+        # (stricter than runtime) were it ever absent.
+        nullable = !subtree_requires_presence?(node) &&
+                   (existing.nil? || (merged_member && nil_allowed?(merged_member)))
         target[:type] = nullable ? %w[object null] : "object"
         target[:required] = nil if target[:required].empty?
         prop[:properties][key] = target.compact
