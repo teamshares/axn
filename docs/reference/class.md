@@ -263,13 +263,20 @@ expects :id, on: :raw_channel    # ✅ reader name;  on: :channel would raise (n
 ```
 
 #### `preprocess`
-`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations.  This can be useful for type coercion, e.g.:
+`expects` also supports a `preprocess` option that, if set to a callable, will be executed _before_ applying any defaults or validations. Use it for a custom, field-specific transform. For the common case of turning a wire string into a Ruby type (`Date`/`Symbol`/…), prefer `coerce:` (below), which is the shared, standard inverse of the output serializer. If the preprocess callable raises an exception, that'll be swallowed and the action failed.
+
+#### `coerce`
+`expects` supports a `coerce:` option that parses an inbound wire string into its declared Ruby type _before_ your `preprocess`, defaults, and validation run — the inbound inverse of how a `Date`/`Symbol` result serializes on the way out. This closes the round-trip gap: a JSON client (or a Rails form) sending `"2026-07-08"` or `"active"` is accepted for a `Date`/`Symbol` field, rather than rejected for not already being the Ruby object.
 
 ```ruby
-expects :date, type: Date, preprocess: ->(d) { d.is_a?(Date) ? d : Date.parse(d) }
+expects :on, coerce: Date                          # "2026-07-08"  → Date
+expects :mode, coerce: Symbol, inclusion: { in: %i[a b] }  # "a" → :a, then validated
+expects :count, coerce: Integer                    # "123" → 123 (base 10)
+expects :on, type: { klass: Date, coerce: true }   # explicit form (use with sibling type options like message:)
+expects :on, coerce: [Date, String]                # union: parse a date if possible, else keep the string
 ```
 
-will succeed if given _either_ an actual Date object _or_ a string that Date.parse can convert into one.  If the preprocess callable raises an exception, that'll be swallowed and the action failed.
+The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, and `Float` — those with a strict, unambiguous string parse. Coercion is **coerce-or-leave**: only strings are transformed (a value already of the right type, or a JSON-native number, is untouched), and an unparseable string passes through to a normal validation error (reported as "could not be coerced to a Date", distinct from a wrong-type "is not a Date"). `coerce:` is opt-in per field, so a direct Ruby caller's strictness is unchanged, and it is valid on top-level `expects` fields only.
 
 ## `.success` and `.error`
 
@@ -659,7 +666,7 @@ These surface as ordinary, recoverable validation errors (a tool client simply g
 
 Only single-level subfields are represented; deeper nesting (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validates at runtime but is omitted from the schema for now. Calling `input_schema` on a class with such a subfield logs a one-time warning naming the omitted field(s), so the gap is visible rather than silent when you build tooling on the schema.
 
-::: warning Ruby-object input types need coercion
-The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. But core does **not** coerce inbound values: validation wants an actual `Date`/`Symbol`/`Time` object, so a JSON client sending the string `"2026-07-08"` or `"active"` is rejected. This round-trips cleanly on the **output** side (a `Date` result serializes to that string), but for **inputs** it's the consuming adapter's job to coerce the JSON scalar into the Ruby type (or declare the input as `type: String` and parse it in your action). Prefer JSON-native input types (`String`, `Integer`, `:boolean`, …) for fields a tool client will populate directly.
+::: tip Ruby-object input types are coercible
+The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. Add `coerce:` (see [`coerce`](#coerce) above) so a JSON client sending the string `"2026-07-08"` or `"active"` is parsed into the declared `Date`/`Symbol` — the inbound inverse of how the value serializes on output. Without `coerce:`, core still validates strictly against the Ruby type (a direct Ruby caller must pass a real `Date`).
 :::
 
