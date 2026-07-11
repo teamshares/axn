@@ -8,19 +8,31 @@ module Axn
     # JSON Schema / OpenAPI / MCP / LLM function calling); the internal builder speaks
     # inbound/outbound. Adapters wrap these Hashes into their transport objects.
     module SchemaReflection
+      # `input_schema`/`output_schema` are generic enough that an adapter base class (e.g. ::MCP::Tool)
+      # is likely to already define its own, transport-shaped versions. Layer axn's reflection reader on
+      # only when the name is free — otherwise `extend` would sit above that base class and silently
+      # shadow it (PRO-2875). Each name is guarded independently so a base class that owns only one still
+      # gets axn's reflection for the other.
       def self.included(base)
-        base.extend ClassMethods
+        _extend_reflection(base, :input_schema, InputSchemaMethod)
+        _extend_reflection(base, :output_schema, OutputSchemaMethod)
       end
 
-      module ClassMethods
+      def self._extend_reflection(base, name, mod)
+        if Axn::Core::MethodShadowing.externally_defined?(base, name)
+          Axn.config.logger.debug do
+            "[Axn] #{base.name || 'Action'}: skipping axn's reflected `#{name}` (already defined by a non-Axn ancestor)"
+          end
+        else
+          base.extend(mod)
+        end
+      end
+
+      module InputSchemaMethod
         def input_schema
           Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs).tap do
             _warn_dropped_deep_subfields
           end
-        end
-
-        def output_schema
-          Axn::Reflection::Schema.build_output(external_field_configs)
         end
 
         private
@@ -41,6 +53,12 @@ module Axn
             "nesting level: #{paths}. They validate at runtime but are absent from the reflected input " \
             "schema; flatten them to single-level subfields, or handle them in the adapter (PRO-2872).",
           )
+        end
+      end
+
+      module OutputSchemaMethod
+        def output_schema
+          Axn::Reflection::Schema.build_output(external_field_configs)
         end
       end
     end
