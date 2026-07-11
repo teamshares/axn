@@ -16,6 +16,28 @@ Axn.configure do |c|
 end
 ```
 
+## Per-Class Overrides
+
+Most settings are global — one value for every action. A few are also **per-axn overridable**: an individual action can override the library-level value for its own runs (and its subclasses'), falling back to `Axn.config` when it doesn't. Currently `sidekiq_job_tag_sources` is the overridable setting.
+
+For each overridable setting, every action gets three class-level accessors:
+
+```ruby
+class ChargeCompany
+  include Axn
+
+  sidekiq_job_tag_sources %i[dimension]   # set this class's override
+
+  # sidekiq_job_tag_sources               # → resolved value (override → Axn.config fallback)
+  # resolved_sidekiq_job_tag_sources      # → same resolved value, explicit name
+  # raw_sidekiq_job_tag_sources           # → this class's override, or unset (no fallback)
+end
+```
+
+- The bare `name`/`resolved_name` read the **resolved** value: the nearest override up the class ancestry, or `Axn.config`'s value if none is set.
+- `raw_name` returns only an override (the class's own or an inherited one); it does **not** fall back to `Axn.config`, so a caller can tell "no override" from "resolves to the global default".
+- Overrides are inherited by subclasses and never leak to siblings. Setting one leaves `Axn.config` untouched.
+
 ## `on_exception`
 
 By default any swallowed errors are noted in the logs, but it's _highly recommended_ to wire up an `on_exception` handler so those get reported to your error tracking service.
@@ -290,6 +312,19 @@ When an action runs as a Sidekiq job, its declared facets are also attached to t
 ```ruby
 Axn.config.sidekiq_job_tag_sources # => default %i[tag dimension]
 ```
+
+This is per-axn overridable — an individual action can narrow (or disable) its own job tags without changing the global:
+
+```ruby
+class ChargeCompany
+  include Axn
+  async :sidekiq
+
+  sidekiq_job_tag_sources %i[dimension]   # this action's jobs carry bounded tags only
+end
+```
+
+The Sidekiq adapter reads `resolved_sidekiq_job_tag_sources` at enqueue, so the per-class value wins with the global as fallback. See [Per-Class Overrides](#per-class-overrides).
 
 Because Sidekiq tags are ephemeral job-payload strings (gone when the job finishes) with no per-value metrics cost, both `tag` and `dimension` surface here by default — unlike the metrics sink. Set `%i[dimension]` for bounded-only, or `[]` to disable the sink entirely.
 
