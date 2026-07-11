@@ -3218,6 +3218,63 @@ RSpec.describe Axn::Reflection::Schema do
         expect(payload[:properties][:items]).not_to have_key(:properties)
       end
     end
+
+    describe "model: subfields at depth" do
+      it "emits <field>_id inside a deep nested object (not the model field itself)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash
+          expects :company, on: :meta, model: { klass: Struct.new(:id), finder: :find }
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        meta = schema[:properties][:payload][:properties][:meta]
+        expect(meta[:properties]).to have_key(:company_id)
+        expect(meta[:properties]).not_to have_key(:company)
+        expect(meta[:required]).to include("company_id")
+        expect(meta[:properties][:company_id]).to include(not: { type: "null" }) # required id can't be null
+      end
+
+      it "places a dotted-name model subfield's id at the leaf segment under the implicit intermediate" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects "org.company", on: :payload, model: { klass: Struct.new(:id), finder: :find }
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        org = schema[:properties][:payload][:properties][:org]
+        expect(org[:properties]).to have_key(:company_id)
+        expect(org[:properties]).not_to have_key(:"org.company_id")
+      end
+
+      it "keeps an explicitly-declared deep sibling id instead of clobbering it with the generated one" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash
+          expects :company_id, on: :meta, type: :uuid
+          expects :company, on: :meta, model: { klass: Struct.new(:id), finder: :find }
+        end
+        meta = described_class.build_input(klass.internal_field_configs,
+                                           klass.subfield_configs)[:properties][:payload][:properties][:meta]
+
+        expect(meta[:properties][:company_id]).to include(type: "string", format: "uuid")
+        expect(Array(meta[:required]).count("company_id")).to eq(1)
+      end
+
+      it "requires the top-level model <field>_id when the model has only DEEP subfields (an omitted record strands them at runtime)" do
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
+          expects :theme, on: "company.settings", type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("company_id")
+      end
+    end
   end
 
   # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
