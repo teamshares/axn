@@ -3,6 +3,8 @@
 require "date"
 require "time"
 
+require "axn/reflection/subfield_tree"
+
 module Axn
   module Reflection
     # Builds JSON Schema (input/output) from an Axn's declared contract. Read-only, off the execution
