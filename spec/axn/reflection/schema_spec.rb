@@ -769,6 +769,58 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:items]).not_to have_key(:properties)
   end
 
+  it "strips null from a non-nestable (Array) parent when a required DEEP descendant forbids a nil parent (PRO-2872)" do
+    # `items` is non-nestable (type: Array), so its subfield shape is omitted — but a required DEEP
+    # descendant (`items.first_item.sku`) still forces `items` required (field_optional?). A nil parent
+    # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
+    # non-nullable: type exactly "array", no null branch. Runtime agrees — `items: nil` and omission both fail.
+    klass = Class.new do
+      include Axn
+      expects :items, type: Array, allow_nil: true
+      expects :sku, on: "items.first_item", type: String
+      def call; end
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    expect(schema[:properties][:items][:type]).to eq("array")
+    expect(schema[:required]).to include("items")
+    expect(klass.call(items: nil)).not_to be_ok
+    expect(klass.call).not_to be_ok
+  end
+
+  it "strips the null member from a non-nestable UNION parent when a required DEEP descendant forbids nil (PRO-2872)" do
+    # A mixed union (type: [Hash, Array]) is non-nestable, so its subfield shape is omitted, but the
+    # required deep descendant forces it required and non-nullable — the anyOf must carry no `null` member.
+    klass = Class.new do
+      include Axn
+      expects :items, type: [Hash, Array], allow_nil: true
+      expects :sku, on: "items.first_item", type: String
+      def call; end
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    members = schema[:properties][:items][:anyOf]
+    expect(members).not_to include({ type: "null" })
+    expect(schema[:required]).to include("items")
+    expect(klass.call(items: nil)).not_to be_ok
+  end
+
+  it "keeps the null branch on a non-nestable parent when every deep descendant is optional (PRO-2872)" do
+    # Negative control: an all-optional dropped subtree strands nothing, so a nil/omitted `items` is
+    # accepted at runtime — the schema keeps the null branch and leaves `items` omittable, matching runtime.
+    klass = Class.new do
+      include Axn
+      expects :items, type: Array, allow_nil: true
+      expects :sku, on: "items.first_item", type: String, optional: true
+      def call; end
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    expect(schema[:properties][:items][:type]).to eq(%w[array null])
+    expect(Array(schema[:required])).not_to include("items")
+    expect(klass.call(items: nil)).to be_ok
+  end
+
   it "drops format: uuid for a blank-tolerant uuid field (allow_blank accepts \"\", which a strict uuid-format validator would reject)" do
     blank_ok = Class.new do
       include Axn

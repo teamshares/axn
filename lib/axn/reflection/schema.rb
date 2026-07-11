@@ -393,7 +393,20 @@ module Axn
       # unmerged node).
       def apply_nested_subfields!(prop, config, children, node_configs = [config])
         return if children.empty?
-        return if node_configs_block_nesting?(node_configs)
+
+        if node_configs_block_nesting?(node_configs)
+          # A non-nestable parent (non-object type, mixed union, or model route) omits its children's
+          # SHAPE but NOT their OBLIGATION: field_optional? still forces the parent required when a child
+          # requires presence, so its nullability must agree. A nil parent yields every descendant absent
+          # (PRO-2857), stranding the required descendant, so strip the parent's `null` admission
+          # (reject_null! handles both a type array and an anyOf union) — mirroring the nested-child guard
+          # in apply_children!. Predicate: children_require_presence?(children), the same transitive
+          # presence test as the nested analog's subtree_requires_presence?(node); required_child?'s
+          # shape-synthesis clause is inert for a non-object parent, so the plain presence test is exact
+          # and keeps the two sites' reasoning identical.
+          reject_null!(prop) if children_require_presence?(children)
+          return
+        end
 
         prop.delete(:format)
         prop[:properties] ||= {}
