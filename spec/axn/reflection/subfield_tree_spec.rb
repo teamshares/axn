@@ -142,6 +142,19 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
     end
 
+    it "drops a deep config whose implicit intermediate collides with a mixed-union shape member" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :bar, type: [Hash, Array]
+        end
+        expects "bar.baz", on: :payload, type: String
+      end
+      tree = tree_for(klass)
+
+      expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
+    end
+
     it "does not drop a representable deep chain (object-shaped explicit ancestors)" do
       klass = Class.new do
         include Axn

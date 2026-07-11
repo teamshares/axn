@@ -3309,6 +3309,24 @@ RSpec.describe Axn::Reflection::Schema do
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
         expect(dropped.map(&:field)).to eq([:"bar.baz"])
       end
+
+      it "leaves a mixed-union shape member untouched and drops the colliding deep config (emission and drop pass agree)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array]
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(bar).to have_key(:anyOf)
+        expect(bar).not_to have_key(:properties)
+        expect(Array(bar[:type])).not_to include("object")
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz"])
+      end
     end
 
     describe "the same wire path declared via two routes" do

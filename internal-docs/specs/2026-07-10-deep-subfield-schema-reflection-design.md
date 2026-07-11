@@ -17,7 +17,7 @@ This design represents all three in the emitted schema wherever the ancestor cha
 Runtime facts the design leans on:
 
 - `ContractForSubfields.resolve_parent` reads the `on:` root via its *reader* (the `as:`/`prefix:` alias, `reader_as`) and digs remaining dotted segments with indifferent access (`FieldResolvers::Extract`). Schema properties, by contrast, are keyed by *wire key* (`config.field`), so reader→wire-key translation is required at each explicit hop.
-- Declaration rejects `default:`/`preprocess:`/`sensitive:` on any nested parent (`contract_for_subfields.rb`), so deep (depth ≥ 2) subfields never carry defaults; defaults exist only at depth ≤ 1 where the current synthesizer logic already handles them. Deep/dotted ambient nesting is rejected at declaration outright.
+- Declaration rejects `default:`/`preprocess:`/`sensitive:` on a nested PARENT (`contract_for_subfields.rb`): a `default:` is legal only when `on:` names a top-level reader. A dotted field NAME can still land a defaulted config on a deeper node (`expects "bar.baz", on: :foo, default: "zzz"` places a defaulted config at depth 2). The implementation honors such a default where it lands (`node_optional?`), but parent synthesis deliberately ignores it (`defaulted_child?` counts only depth-1 children) — the safe, stricter-than-runtime direction, so synthesis stays top-level-only. Deep/dotted ambient nesting is rejected at declaration outright.
 - A nil/omitted parent yields every descendant as absent (PRO-2857): resolving any field from a nil source returns nil, so a required deep leaf makes its whole ancestor chain effectively required and non-nullable at runtime.
 - `on:` must name an already-declared reader, so subfield chains form a forest (no cycles) in declaration order.
 
@@ -49,7 +49,7 @@ For each subfield config, the anchor is resolved by walking `on:`: the root segm
 
 ### 2. Requiredness and nullability (one recursion)
 
-The one-level rules generalize because deep nodes cannot carry defaults:
+The one-level rules generalize. A deep node can carry a default only via a dotted field NAME (a nested `on:` parent rejects `default:`); where one lands it is honored for that node's own optionality, but parent synthesis deliberately ignores it, so the synthesizer stays top-level-only:
 
 - `required_within_parent?(node)` (membership in the parent's `required`): a node is omittable iff `usable_default?` (a usable default always rescues omission; its contents failing a child's validators remains the same accepted divergence as today), or `nil_accepted?` and no required descendant. An implicit node has no config — vacuously nil-tolerant — so it is required exactly when its subtree requires presence.
 - `subtree_requires_presence?(node)`: any child is `required_within_parent?`. Naturally recursive — a required grandchild strands a nil ancestor just as a required child does.
@@ -64,7 +64,7 @@ The one-level rules generalize because deep nodes cannot carry defaults:
 - Explicit nodes build their property via the existing `build_property(config, subfield: true)`; implicit nodes emit a bare object property (`type: "object"` or `["object", "null"]` per the nullability rule) whose only content is its children.
 - A node with children gets `properties`/`required` from its children and is forced to `type: object`/`["object", "null"]` with `format` dropped — today's `apply_nested_subfields!`, called recursively. An empty `required` is omitted. A non-nesting parent (which after the drop pass can only retain depth-1 children) keeps its declared type and emits no child properties, as today; its shallow children still participate in `required_child?`/`field_optional?` and model-id requiredness exactly as they do now.
 - `model:` subfields at depth reuse the existing nested-model branch at each level: emit `<field>_id` into the enclosing node without clobbering an explicitly-declared sibling id, and `reject_null!` required ids after the level's loop. A model node is never a nesting site (its children were dropped during tree building).
-- Shape merge precedence is unchanged: `apply_structured_schema!` runs inside `build_property` (shape members become `properties`), then subfield children overlay member properties at the same key, and `required` lists union. An *implicit* node colliding with an existing shape-member key merges into that property only if it is object-compatible (no `type`, or `object` among its types); otherwise the deep config is dropped and warned like any non-object ancestor.
+- Shape merge precedence is unchanged: `apply_structured_schema!` runs inside `build_property` (shape members become `properties`), then subfield children overlay member properties at the same key, and `required` lists union. An *implicit* node colliding with an existing shape-member key merges into that property only if the member config is `nestable_as_object?` — the SAME predicate on the SAME member config that the drop pass (`SubfieldTree.blocking_ancestor?`) uses, so emission and the drop pass cannot disagree; otherwise the deep config is left in `dropped_deep_subfields` and warned like any non-object ancestor (a mixed-union member — `type: [Hash, Array]` — is not nestable, so it is dropped, not merged into a self-contradictory `anyOf`+forced-`object` property).
 
 ### 4. Dropped set, warning, docs
 

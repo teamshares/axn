@@ -326,7 +326,7 @@ module Axn
         prop[:properties] ||= {}
         prop[:required] ||= []
 
-        apply_children!(prop, children)
+        apply_children!(prop, children, config)
 
         prop[:required] = prop[:required].uniq
         # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
@@ -339,12 +339,14 @@ module Axn
       end
 
       # Emits one level of children into `prop` (which must already have :properties/:required arrays),
-      # recursing into each child's own subtree.
-      def apply_children!(prop, children)
+      # recursing into each child's own subtree. `parent_config` is the config whose subfields these
+      # children are (nil when the parent is an implicit intermediate) — used to decide, by the same
+      # predicate as the drop pass, whether an implicit child may merge into a colliding shape member.
+      def apply_children!(prop, children, parent_config)
         required_model_ids = []
         children.each do |key, node|
           if node.implicit?
-            apply_implicit_node!(prop, key, node)
+            apply_implicit_node!(prop, key, node, parent_config)
           elsif node.config.validations[:model]
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
             # the same nested parent at runtime).
@@ -376,19 +378,20 @@ module Axn
       end
 
       # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
-      # property whose only content is its children. If a shape member already claimed the key, merge
-      # into it when it's object-compatible (untyped, or `object` among its types); otherwise leave the
-      # member property untouched — the deep configs below it have no JSON-object representation there
-      # (they're in dropped_deep_subfields, same predicate as SubfieldTree's drop pass).
-      def apply_implicit_node!(prop, key, node)
+      # property whose only content is its children. If a shape member of `parent_config` already claimed
+      # the key, merge into it only when that member is `nestable_as_object?` — the SAME predicate on the
+      # SAME member config that SubfieldTree.blocking_ancestor? uses, so emission and the drop pass agree:
+      # a non-nestable member (a scalar, or a mixed union like `type: [Hash, Array]`) blocks the merge and
+      # its deep configs stay in dropped_deep_subfields rather than forcing a self-contradictory property.
+      def apply_implicit_node!(prop, key, node, parent_config)
         existing = prop[:properties][key]
-        return if existing && !object_compatible_property?(existing)
+        return if existing && shape_member_blocks_merge?(parent_config, key)
 
         target = existing || {}
         target.delete(:format)
         target[:properties] ||= {}
         target[:required] ||= []
-        apply_children!(target, node.children)
+        apply_children!(target, node.children, nil)
         target[:required] = target[:required].uniq
         # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (nil
         # digs to nil, PRO-2857); a shape-member merge target additionally keeps only the nil-tolerance
@@ -400,9 +403,17 @@ module Axn
         prop[:required] << key.to_s if subtree_requires_presence?(node)
       end
 
-      # Whether an already-emitted property (a shape member) can absorb nested object structure.
-      def object_compatible_property?(prop)
-        !prop.key?(:type) || Array(prop[:type]).include?("object")
+      # Whether `parent_config`'s `shape:` declares a member at `key` that CANNOT nest object structure,
+      # so an implicit intermediate colliding with it must not merge. Mirrors the shape-member test in
+      # SubfieldTree.blocking_ancestor? (same `nestable_as_object?` on the same member config). An implicit
+      # parent (nil) has no shape, so nothing blocks.
+      def shape_member_blocks_merge?(parent_config, key)
+        return false unless parent_config
+
+        member = Array(parent_config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
+        return false unless member
+
+        !nestable_as_object?(member)
       end
 
       # Every exposed field is always present in the serialized output: Values.serialize_exposed iterates
