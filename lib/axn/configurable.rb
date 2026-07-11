@@ -55,8 +55,14 @@ module Axn
       def overrides
         @overrides ||= begin
           methods_module = _override_methods_module
+          config_source = self
           Module.new do
-            define_singleton_method(:included) { |base| base.extend(methods_module) }
+            define_singleton_method(:included) do |base|
+              # Breadcrumb before extending, while `base`'s own lookup still reflects only its
+              # ancestors (not yet axn's accessors), so the check sees a genuine external definition.
+              config_source.send(:_warn_on_shadowed_overrides, base)
+              base.extend(methods_module)
+            end
           end
         end
       end
@@ -73,6 +79,27 @@ module Axn
       end
 
       private
+
+      # Discoverability breadcrumb for the PRO-2875 shadowing class, applied to override accessors.
+      # Unlike the generic Naming/SchemaReflection DSLs — which DEFER to a base's same-named method —
+      # override accessors are opt-in (the app declared `overridable: true`), so axn still installs
+      # them; deferring would silently deny the requested override and would break the reflecting
+      # module's late-declaration guarantee. But a collision with a same-named class method on a
+      # non-axn ancestor is still worth surfacing rather than shadowing silently, so leave a debug
+      # breadcrumb (best-effort: only settings known when `base` includes the overrides module).
+      def _warn_on_shadowed_overrides(base)
+        return unless defined?(Axn::Core::MethodShadowing) && defined?(Axn.config)
+
+        _override_resolvers.each_key do |name|
+          next unless Axn::Core::MethodShadowing.externally_defined?(base, name)
+
+          Axn.config.logger.debug do
+            "[Axn] #{base.name || 'Action'}: per-class override accessor `#{name}` collides with a same-named " \
+              "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
+              "resolve_override_for). See PRO-2856."
+          end
+        end
+      end
 
       def _override_methods_module
         @_override_methods_module ||= Module.new

@@ -261,4 +261,24 @@ RSpec.describe "per-class config overrides on actions" do
     sibling = Class.new { include Axn }
     expect(sibling.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
   end
+
+  # PRO-2875 makes the generic Naming/SchemaReflection DSLs DEFER to a base's same-named class
+  # method. Override accessors are opt-in, so axn still installs them (deferring would silently deny
+  # the requested override) — but the collision is surfaced with a debug breadcrumb, not silent.
+  describe "collision with a non-axn ancestor's same-named class method" do
+    let(:base) { Class.new { def self.sidekiq_job_tag_sources(*) = :base_value } }
+
+    it "leaves a debug breadcrumb rather than shadowing silently" do
+      messages = []
+      allow(Axn.config.logger).to receive(:debug) { |*args, &block| messages << (block ? block.call : args.first) }
+      Class.new(base) { include Axn } # trigger the overrides include hook
+      expect(messages).to include(a_string_matching(/override accessor `sidekiq_job_tag_sources` collides/))
+    end
+
+    it "still installs the opt-in accessor (does not defer)" do
+      action = Class.new(base) { include Axn }
+      action.sidekiq_job_tag_sources %i[dimension]
+      expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    end
+  end
 end
