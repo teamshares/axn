@@ -142,19 +142,7 @@ module Axn
 
       def _hash_with_default_array = Hash.new { |h, k| h[k] = [] }
 
-      def _hydrate_hash(given)
-        return given if given.is_a?(Hash)
-
-        Array(given).each_with_object({}) do |key, acc|
-          if key.is_a?(Hash)
-            key.each_key do |k|
-              acc[k] = key[k]
-            end
-          else
-            acc[key] = {}
-          end
-        end
-      end
+      def _hydrate_hash(given) = Axn::FieldDeclarations.hydrate(given)
 
       def _apply_handlers(axn, method_name, value, _descriptor_class)
         return unless value.present?

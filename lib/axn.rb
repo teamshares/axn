@@ -5,6 +5,7 @@ require "active_support/concern"
 
 # Standalone
 require "axn/version"
+require "axn/field_declarations"
 require "axn/factory"
 require "axn/configurable"
 require "axn/configuration"
