@@ -1173,6 +1173,51 @@ RSpec.describe Axn::Reflection::Schema do
       expect(props[:required]).to include("label")
     end
 
+    # A shape member's name isn't symbolized at declaration (`field "bar"` keeps a String field), so its
+    # emitted property must still key by symbol — every other schema property key (top-level config.field,
+    # symbolized wire keys, implicit intermediates) is a Symbol. A string key would leave a duplicate
+    # alongside the symbol key a colliding subfield writes, which collide unpredictably in JSON.
+    context "with a string-named shape member (`field \"bar\"`)" do
+      it "reflects a plain string-named member under the symbol key (no string duplicate)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field "bar", type: Hash
+          end
+        end
+        prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+        expect(prop[:properties].keys).to eq([:bar])
+      end
+
+      it "merges a colliding dotted subfield into the ONE symbol key, not a string duplicate" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field "bar", type: Hash
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+        prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+        expect(prop[:properties].keys).to eq([:bar])
+        expect(prop[:properties][:bar][:properties]).to have_key(:baz)
+      end
+
+      it "overwrites the ONE symbol key with a colliding explicit subfield, not a string duplicate" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field "bar", type: Hash
+          end
+          expects :bar, on: :payload, type: Hash
+        end
+        prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+        expect(prop[:properties].keys).to eq([:bar])
+      end
+    end
+
     it "types a class-shaped field as object, not the string fallback from json_type_for" do
       cfg_klass = Data.define(:name)
       klass = Class.new do

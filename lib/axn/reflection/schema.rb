@@ -689,11 +689,17 @@ module Axn
         end
       end
 
+      # A shape member's `field` is a raw declared name (`field "bar"`) that isn't symbolized at
+      # declaration, so key the emitted property by its symbol — every other schema property key is a
+      # Symbol (top-level `config.field`, symbolized wire keys), so this keeps a string-named member
+      # (`field "bar"`) colliding with a dotted/explicit subfield (`bar.baz`) resolving to the one `:bar`
+      # property that every downstream lookup (apply_implicit_node!'s `existing`, explicit-child overwrite)
+      # already keys by symbol — not a String duplicate alongside it. `required` already uses `.to_s`.
       def member_properties(members, for_output:)
         props = {}
         required = []
         members.each do |m|
-          props[m.field] = build_property(m, for_output:).compact
+          props[m.field.to_sym] = build_property(m, for_output:).compact
           required << m.field.to_s unless optional_for_schema?(m)
         end
         [props, required]
