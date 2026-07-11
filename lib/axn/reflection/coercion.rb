@@ -28,6 +28,7 @@ module Axn
         Integer => ->(s) { Integer(s, 10) },
         Float => ->(s) { Float(s) },
       }.freeze
+      private_constant :COERCERS
 
       # Coerce-or-leave: only a String is a coercion candidate (a direct Ruby caller passing a real
       # Date, or a JSON-native number, is returned untouched). Union targets are tried in declaration

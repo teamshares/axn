@@ -566,14 +566,14 @@ module Axn
           unless unsupported.empty?
             raise ArgumentError,
                   "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
-                  "(supported: Date, DateTime, Time, Symbol, Integer, Float). " \
+                  "(supported: #{Axn::Reflection::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
 
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (Date, DateTime, Time, Symbol, Integer, Float); " \
+                "coerce: needs at least one coercible type (#{Axn::Reflection::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 

@@ -120,6 +120,23 @@ RSpec.describe "coerce: DSL" do
       expect(result).to be_ok
       expect(result.day).to eq(1)
     end
+
+    it "runs coercion BEFORE the field's own inclusion: validator, so a coerced value can pass or fail it" do
+      action = build_axn do
+        expects :mode, coerce: Symbol, inclusion: { in: %i[a b] }
+        exposes :mode, allow_blank: true
+        def call = expose(mode:)
+      end
+
+      included = action.call(mode: "a")
+      expect(included).to be_ok
+      expect(included.mode).to eq(:a)
+
+      excluded = action.call(mode: "z")
+      expect(excluded).not_to be_ok
+      expect(excluded.exception.message).to match(/is not included in the list/)
+      expect(excluded.exception.message).not_to match(/could not be coerced/)
+    end
   end
 
   describe "schema" do
@@ -147,6 +164,13 @@ RSpec.describe "coerce: DSL" do
     it "does not emit the coercion message when a String branch validates the value" do
       action = build_axn { expects :on, coerce: [Date, String] }
       expect(action.call(on: "nope")).to be_ok
+    end
+
+    it "names every union member in a union coercion-failure message" do
+      action = build_axn { expects :on, coerce: [Date, Integer] }
+      result = action.call(on: "nope")
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/could not be coerced to one of Date, Integer/)
     end
 
     it "honors an explicit message: override" do

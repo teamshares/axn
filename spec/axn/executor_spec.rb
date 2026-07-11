@@ -89,7 +89,6 @@ RSpec.describe Axn::Executor do
     it "coerces a wire string before a facet reads the field" do
       klass = build_axn do
         expects :on, coerce: Date
-        tag(:on) { on }
         def call; end
       end
       instance = prepare(klass, on: "2026-07-08")
