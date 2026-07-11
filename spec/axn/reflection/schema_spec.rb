@@ -2065,8 +2065,8 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a dotted subfield NAME denotes a deep extraction path and is omitted from the schema" do
-    it "omits a dotted-name subfield's flat property from the parent (deep extraction, not single-level nesting)" do
+  describe "a dotted subfield NAME nests as recursive object properties keyed by wire segment" do
+    it "nests a dotted-name subfield under an implicit intermediate (bar -> baz), not a flat dotted key" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
@@ -2075,11 +2075,17 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       foo = schema[:properties][:foo]
-      # The only subfield on :foo is the dotted-name one, so once it's filtered out there are no
-      # nested subfields left at all — apply_nested_subfields! never materializes :properties/:required.
-      expect(foo[:properties] || {}).not_to have_key("bar.baz")
-      expect(foo[:properties] || {}).not_to have_key(:"bar.baz")
-      expect(Array(foo[:required])).not_to include("bar.baz")
+      # The dotted name splits into an implicit :bar intermediate carrying the :baz leaf — never a flat
+      # "bar.baz" property key.
+      expect(foo[:properties]).not_to have_key("bar.baz")
+      expect(foo[:properties]).not_to have_key(:"bar.baz")
+      bar = foo[:properties][:bar]
+      expect(bar[:type]).to eq("object")
+      expect(bar[:properties]).to have_key(:baz)
+      # The untyped :baz leaf is required (default presence), so its implicit :bar and the parent :foo
+      # are required in turn.
+      expect(bar[:required]).to eq(["baz"])
+      expect(foo[:required]).to eq(["bar"])
     end
 
     it "still nests a normal single-level subfield under its parent (regression guard)" do
@@ -2094,7 +2100,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(foo[:properties][:bar]).to include(type: "string")
     end
 
-    it "keeps a normal sibling subfield while omitting a dotted-name subfield on the same parent" do
+    it "nests both a normal sibling subfield and a dotted-name subfield on the same parent" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
@@ -2104,7 +2110,11 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       foo = schema[:properties][:foo]
-      expect(foo[:properties].keys).to eq([:bar])
+      expect(foo[:properties].keys).to contain_exactly(:bar, :deep)
+      expect(foo[:properties][:bar]).to include(type: "string")
+      deep = foo[:properties][:deep]
+      expect(deep[:type]).to eq("object")
+      expect(deep[:properties]).to have_key(:path)
       expect(foo[:properties]).not_to have_key("deep.path")
       expect(foo[:properties]).not_to have_key(:"deep.path")
     end
@@ -2125,13 +2135,14 @@ RSpec.describe Axn::Reflection::Schema do
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
       # accepted divergence: runtime rejects both omitted calls (a nil parent can't yield the child);
-      # the schema reflects both as optional because `optional: true` is a nil-tolerant declared signal.
-      # Parity is the criterion: a dotted-only subfield reflects identically to the shallow case.
+      # the schema reflects both as optional because `optional: true` is a nil-tolerant declared signal
+      # and the sole child is itself optional. Parity is the criterion: the dotted subfield's parent
+      # reflects its optionality identically to the shallow case.
       expect(shallow_schema[:required] || []).not_to include("foo")
       expect(dotted_schema[:required] || []).not_to include("foo")
 
-      # The dotted subfield's own SHAPE is still omitted.
-      expect(dotted_schema[:properties][:foo][:properties] || {}).not_to have_key("bar.baz")
+      # The dotted subfield nests under an implicit :bar intermediate (never a flat "bar.baz" key).
+      expect(dotted_schema[:properties][:foo][:properties][:bar][:properties]).to have_key(:baz)
     end
 
     it "still requires a parent with only an optional dotted child when its literal default is a blank {} " \
@@ -2157,7 +2168,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).not_to include("foo")
     end
 
-    it "still requires the parent when its only child is a REQUIRED dotted subfield (deep required key not provably covered)" do
+    it "requires the parent when its only child is a REQUIRED dotted subfield (a required descendant strands a nil parent)" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash, default: {}
@@ -2169,9 +2180,9 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a dotted `on:` PARENT or an `on:` pointing at another subfield contributes no shape and does " \
-           "not force its top-level root required" do
-    it "requires an allow_nil parent with a required SHALLOW child but not the dotted-deep analog it can't prove" do
+  describe "a dotted `on:` PARENT or an `on:` pointing at another subfield nests recursively and forces " \
+           "its ancestor chain required when a descendant is required" do
+    it "requires an allow_nil parent through both a required SHALLOW child and its dotted-deep analog" do
       shallow = Class.new do
         include Axn
         expects :address, allow_nil: true
@@ -2186,25 +2197,22 @@ RSpec.describe Axn::Reflection::Schema do
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
-      # A required SHALLOW child strands an omitted parent at runtime, so the nil-tolerant parent stays
-      # required despite allow_nil. The dotted-deep child is not a shallow subfield of :address, so the
-      # schema can't prove requiredness through it and keeps the parent optional (documented limitation:
-      # deep required leaves don't force the root required).
+      # A required child strands an omitted parent at runtime, so the nil-tolerant parent stays required
+      # despite allow_nil — whether the required leaf is shallow or reached through a dotted-deep chain
+      # (a required descendant at any depth forces the ancestor chain required, PRO-2857).
       expect(shallow_schema[:required] || []).to include("address")
-      expect(dotted_schema[:required] || []).not_to include("address")
+      expect(dotted_schema[:required] || []).to include("address")
 
-      # The dotted parent's deep shape is not represented.
-      address_props = dotted_schema[:properties][:address][:properties] || {}
-      expect(address_props).not_to have_key("address.billing")
-      expect(address_props).not_to have_key(:billing)
-      expect(address_props).not_to have_key(:zip)
+      # The dotted parent nests through an implicit :billing intermediate carrying the required :zip leaf.
+      billing = dotted_schema[:properties][:address][:properties][:billing]
+      expect(billing[:type]).to eq("object")
+      expect(billing[:properties]).to have_key(:zip)
+      expect(billing[:required]).to eq(["zip"])
     end
 
-    it "leaves the top-level root optional when only a DEEP leaf (subfield-of-a-subfield) is required" do
-      # accepted divergence: runtime needs the omitted root, but the schema reflects it as optional
-      # because `optional: true` is a nil-tolerant signal and the only required key (:leaf) is a deep
-      # descendant the schema can't prove — the shallow child :mid is itself optional, so it doesn't
-      # force the root required.
+    it "requires the top-level root when only a DEEP leaf (subfield-of-a-subfield) is required" do
+      # A required descendant (:leaf) at any depth forces its whole ancestor chain required: the nil
+      # parent (:foo) can't yield the descendant, so runtime and schema agree it must be present.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
@@ -2213,11 +2221,10 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("foo")
-      # :mid still nests directly under :foo (it's a shallow child of :foo); :leaf's shape (a deep
-      # descendant rooted through :mid) is omitted.
-      expect(schema[:properties][:foo][:properties]).to have_key(:mid)
-      expect(schema[:properties][:foo][:properties]).not_to have_key(:leaf)
+      expect(schema[:required] || []).to include("foo")
+      # :mid nests under :foo, and :leaf nests recursively under :mid.
+      mid = schema[:properties][:foo][:properties][:mid]
+      expect(mid[:properties]).to have_key(:leaf)
     end
 
     it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
@@ -3048,12 +3055,107 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Deep subfields (a dotted `on:` path, a subfield-of-a-subfield, or a dotted field name) validate at
-  # runtime but are omitted from the input schema (the single-level limitation, PRO-2872). This query
-  # names exactly those omitted configs so the caller can warn — it must NOT flag a represented shallow
-  # subfield, nor a subfield under the deliberately-excluded ambient_context parent.
+  # Deep subfields (PRO-2872): a dotted `on:` path, a subfield-of-a-subfield, and a dotted field
+  # name nest as recursive object properties, keyed by wire key at every level. Intermediates
+  # introduced by a dotted segment are IMPLICIT (no declaration of their own): bare object
+  # properties whose requiredness/nullability derive purely from their descendants.
+  describe "deep subfield nesting (PRO-2872)" do
+    it "nests a subfield-of-a-subfield recursively" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash
+        expects :id, on: :meta, type: Integer
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      payload = schema[:properties][:payload]
+      expect(payload[:type]).to eq("object")
+      meta = payload[:properties][:meta]
+      expect(meta[:type]).to eq("object")
+      expect(meta[:properties][:id]).to include(type: "integer")
+      expect(meta[:required]).to eq(["id"])
+      expect(payload[:required]).to eq(["meta"])
+      expect(schema[:required]).to include("payload")
+    end
+
+    it "nests a dotted on: path through an implicit intermediate object" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :zip, on: "payload.address", type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      address = schema[:properties][:payload][:properties][:address]
+      expect(address[:type]).to eq("object")
+      expect(address[:properties][:zip]).to include(type: "string")
+      expect(address[:required]).to eq(["zip"])
+    end
+
+    it "nests a dotted field name through an implicit intermediate object" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects "bar.baz", on: :foo, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      bar = schema[:properties][:foo][:properties][:bar]
+      expect(bar[:type]).to eq("object")
+      expect(bar[:properties][:baz]).to include(type: "string")
+      expect(bar[:required]).to eq(["baz"])
+    end
+
+    it "keys every level by wire key when on: chains through as: aliases" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, as: :data
+        expects :meta, on: :data, type: Hash, as: :details
+        expects :id, on: :details, type: Integer
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties]).to have_key(:payload)
+      expect(schema[:properties][:payload][:properties][:meta][:properties][:id]).to include(type: "integer")
+    end
+
+    it "makes an all-optional deep chain omittable and nullable at every level" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :zip, on: "payload.address", type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      payload = schema[:properties][:payload]
+      expect(payload[:type]).to eq(%w[object null])
+      expect(payload[:properties][:address][:type]).to eq(%w[object null])
+      expect(payload).not_to have_key(:required)
+      expect(schema[:required]).to be_nil
+    end
+
+    it "keeps a deep subfield under a non-object explicit intermediate out of the schema (parent keeps its declared type)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :items, on: :payload, type: Array
+        expects :first_sku, on: :items, type: String, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      items = schema[:properties][:payload][:properties][:items]
+      expect(items[:type]).to eq("array")
+      expect(items).not_to have_key(:properties)
+    end
+  end
+
+  # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
+  # representation (PRO-2872 represents every OTHER deep chain). This query names exactly those
+  # omitted configs so the caller can warn — it must NOT flag a represented (object-shaped) chain,
+  # a shallow subfield, nor a subfield under the deliberately-excluded ambient_context parent.
   describe ".dropped_deep_subfields" do
-    it "flags the three deep cases and leaves shallow subfields alone" do
+    it "returns [] for the three deep forms under object-shaped parents (they are represented now)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -3063,8 +3165,30 @@ RSpec.describe Axn::Reflection::Schema do
         expects "bar.baz", on: :payload                  # deep: dotted field name
       end
 
+      expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+    end
+
+    it "flags a deep subfield under a model: parent" do
+      klass = Class.new do
+        include Axn
+        expects :user, model: { klass: Struct.new(:id, :profile), finder: :find }
+        expects :name, on: "user.profile", type: String
+      end
+
       dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-      expect(dropped.map(&:field)).to contain_exactly(:id, :deep, :"bar.baz")
+      expect(dropped.map(&:field)).to eq([:name])
+    end
+
+    it "flags a deep subfield under a non-object intermediate, regardless of declaration order" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :sku, on: "payload.items", type: String
+        expects :items, on: :payload, type: Array
+      end
+
+      dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+      expect(dropped.map(&:field)).to eq([:sku])
     end
 
     it "returns [] when every subfield is a shallow child of a top-level field" do

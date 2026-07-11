@@ -29,24 +29,34 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(klass.input_schema).to eq(plain.input_schema)
   end
 
-  describe "deep-subfield omission warning (PRO-2872 is silent otherwise)" do
+  describe "unrepresentable-subfield omission warning" do
     let(:deep_klass) do
       Class.new do
         include Axn
-        expects :payload, type: Hash
-        expects :meta, on: :payload, type: Hash
-        expects :id, on: :meta, type: Integer # deep — omitted from the schema
+        expects :user, model: { klass: Struct.new(:id, :profile), finder: :find }
+        expects :name, on: "user.profile", type: String # deep under a model: parent — no object representation
       end
     end
 
-    it "warns, naming the omitted field and pointing at the follow-up" do
-      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield.*\bid\b.*PRO-2872/m)
+    it "warns, naming the omitted field" do
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield.*model: or non-object parent.*\bname\b/m)
       deep_klass.input_schema
     end
 
     it "warns at most once per class across repeated input_schema calls" do
       expect(Axn.config.logger).to receive(:warn).once
       3.times { deep_klass.input_schema }
+    end
+
+    it "does not warn for a representable deep chain (object-shaped parents)" do
+      representable = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash
+        expects :id, on: :meta, type: Integer
+      end
+      expect(Axn.config.logger).not_to receive(:warn)
+      representable.input_schema
     end
 
     it "does not warn when every subfield is shallow" do
