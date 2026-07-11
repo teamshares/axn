@@ -33,7 +33,7 @@ module Axn
           self.class.value_matches?(value, klass: type, allow_blank: options[:allow_blank])
         end
 
-        record.errors.add attribute, (options[:message] || msg) unless valid
+        record.errors.add attribute, (options[:message] || failure_message(value)) unless valid
       end
 
       # Shared matcher used by OfValidator for per-element type checking.
@@ -57,6 +57,19 @@ module Axn
 
       def types = Array(options[:klass])
       def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(', ')}"
+
+      # A field that opted into coercion but is still holding a String means the string couldn't be
+      # parsed into any target type -- distinguish that from a plain wrong-type value (a non-String
+      # that was never a coercion candidate). Value-free, like `msg`, so no sensitive input leaks.
+      def failure_message(value)
+        return coercion_msg if options[:coerce] && value.is_a?(String)
+
+        msg
+      end
+
+      def coercion_msg
+        types.size == 1 ? "could not be coerced to a #{types.first}" : "could not be coerced to one of #{types.join(', ')}"
+      end
     end
   end
 end

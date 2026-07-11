@@ -192,6 +192,12 @@ module Axn
           allow_blank ||= optional
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+            if parsed_validations.dig(:type, :coerce)
+              raise ArgumentError,
+                    "coerce: is not supported on subfields (top-level `expects` fields only; " \
+                    "an adapter can coerce deeper by walking the schema)."
+            end
+
             reader = reader_names[field] || field
             SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader).tap do |config|
               if readers

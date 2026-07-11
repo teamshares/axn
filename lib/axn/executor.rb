@@ -46,12 +46,14 @@ module Axn
 
     # Best-effort inbound preparation for OUT-OF-BAND facet resolution — the async exhaustion/discard
     # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args and
-    # never executed. Applies the same inbound preprocessing and defaults a normal `.call` would, so a
-    # facet reading a defaulted/preprocessed input resolves the value the worker saw rather than the
-    # raw constructor value. Deliberately does NOT validate (a report on already-dead work must never
-    # raise) and does NOT run the action; model: readers still resolve lazily on read. Any failure is
-    # swallowed — a partially-prepared instance still yields more facets than a bare one.
+    # never executed. Applies the same inbound coercion, preprocessing, and defaults a normal `.call`
+    # would (in that order), so a facet reading a coerced/defaulted/preprocessed input resolves the
+    # value the worker saw rather than the raw constructor value. Deliberately does NOT validate (a
+    # report on already-dead work must never raise) and does NOT run the action; model: readers still
+    # resolve lazily on read. Any failure is swallowed — a partially-prepared instance still yields
+    # more facets than a bare one.
     def prepare_inbound_for_facets!
+      apply_inbound_coercion!
       apply_inbound_preprocessing!
       apply_defaults!(:inbound)
     rescue StandardError => e
@@ -366,6 +368,7 @@ module Axn
     # =========================================================================
 
     def with_contract(&block)
+      apply_inbound_coercion!
       return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
 
@@ -410,6 +413,24 @@ module Axn
       @context.__record_early_completion(e.message, standalone: e.standalone)
       trigger_on_success
       true
+    end
+
+    # Wire→Ruby coercion for declared-inbound fields that opted in via `coerce:` (a `coerce: true`
+    # flag inside the type bag). Runs first in the inbound pipeline — before any user preprocess:,
+    # defaults, and validation — so downstream stages see the Ruby value. Coerce-or-leave
+    # (Axn::Reflection::Coercion): only String values are transformed, an unparseable string passes
+    # through to the normal TypeValidator error, and a present real object is untouched. Top-level
+    # fields only (subfields reject coerce: at declaration); absent keys are not materialized.
+    def apply_inbound_coercion!
+      @action_class.send(:internal_field_configs).each do |config|
+        type_opt = config.validations[:type]
+        next unless type_opt.is_a?(Hash) && type_opt[:coerce]
+        next unless @context.provided_data.key?(config.field)
+
+        klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
+        @context.provided_data[config.field] =
+          Axn::Reflection::Coercion.coerce_value(@context.provided_data[config.field], klasses)
+      end
     end
 
     def apply_inbound_preprocessing!

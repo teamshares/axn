@@ -142,6 +142,10 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
+            if configs.any? { |c| c.validations.dig(:type, :coerce) }
+              raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
+            end
+
             duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -347,7 +351,7 @@ module Axn
         KNOWN_VALIDATION_KEYS = Set.new(%i[
                                           absence acceptance comparison confirmation exclusion format
                                           inclusion length numericality presence uniqueness
-                                          type model validate of shape
+                                          type model validate of shape coerce
                                           if unless on message strict
                                         ]).freeze
 
@@ -396,6 +400,8 @@ module Axn
           field_validations[:shape] = _build_shape([name], validations: field_validations, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
+          raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
+
           ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata)
         end
 
@@ -524,6 +530,60 @@ module Axn
           alias_method predicate_name, field
         end
 
+        # `coerce: <Type>` → `type: { klass: <Type>, coerce: true }`. The sugar value carries the
+        # target type (a Class or array of Classes), never a boolean — the boolean lives only inside
+        # the type hash. Combining with an explicit `type:` is contradictory (the sugar already
+        # declares the type), so it raises.
+        def _expand_coerce_sugar!(validations)
+          return unless validations.key?(:coerce)
+
+          if validations.key?(:type)
+            raise ArgumentError,
+                  "coerce: and type: cannot be combined (coerce: already declares the type). " \
+                  "Use `type: { klass: …, coerce: true }` when you also need sibling type options."
+          end
+
+          target = validations.delete(:coerce)
+          if [true, false].include?(target)
+            raise ArgumentError,
+                  "coerce: must be a type (a Class or array of Classes), not a boolean. " \
+                  "The boolean form lives inside `type: { klass: …, coerce: true }`."
+          end
+
+          validations[:type] = { klass: target, coerce: true }
+        end
+
+        # A coerce target must be in the v1 coercible set (Axn::Reflection::Coercion::SUPPORTED); an
+        # unsupported type raises not-yet-supported so expanding the set stays a deliberate future
+        # ticket. `String` may accompany a coercible type as a passthrough branch (the raw wire scalar
+        # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
+        # member coerces nothing and is a declaration mistake.
+        def _validate_coercion!(type_hash)
+          # The flag is a strict boolean — this base layer raises on DSL misuse rather than treating
+          # any truthy value (`coerce: :typo`) as enabled. `coerce: false` is a valid no-op (the type
+          # is declared, coercion off), so it passes here and skips the coercible-set checks below.
+          coerce = type_hash[:coerce]
+          raise ArgumentError, "coerce: must be true or false (got #{coerce.inspect})" unless [true, false].include?(coerce)
+          return unless coerce
+
+          klasses = Array(type_hash[:klass])
+          coercible = Axn::Reflection::Coercion.coercible_klasses(type_hash)
+          unsupported = klasses - coercible - [String]
+
+          unless unsupported.empty?
+            raise ArgumentError,
+                  "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
+                  "(supported: #{Axn::Reflection::Coercion::SUPPORTED.join(', ')}). " \
+                  "String may accompany a coercible type as a passthrough."
+          end
+
+          return unless coercible.empty?
+
+          raise ArgumentError,
+                "coerce: needs at least one coercible type (#{Axn::Reflection::Coercion::SUPPORTED.join(', ')}); " \
+                "got #{klasses.map(&:inspect).join(', ')}."
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
@@ -532,10 +592,19 @@ module Axn
           allow_blank: false,
           **validations
         )
+          # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
+          # it is meaningless without one). Runs before the type: sugar so the resulting `{ klass: }`
+          # hash flows through the normal path.
+          _expand_coerce_sugar!(validations)
+
           # Apply syntactic sugar for our custom validators (convert shorthand to full hash of options)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+
+          # Validate the coerce target set (covers BOTH the sugar above and an explicit
+          # `type: { klass:, coerce: true }`) once the type bag is canonical.
+          _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
           if validations.key?(:of)
             declared_klasses = Array(validations.dig(:type, :klass))
