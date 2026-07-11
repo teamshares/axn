@@ -3425,6 +3425,82 @@ RSpec.describe Axn::Reflection::Schema do
         expect(dropped.map(&:field)).to eq([:"bar.baz"])
       end
 
+      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: the colliding member's own
+      # entry still inherits requiredness/non-nullability from the dropped subtree, because runtime
+      # validates the dropped subfields regardless of representability. Here the deep `baz` is required
+      # and resolves off `payload.bar`, so a nil/absent `bar` strands it (PRO-2857) — `bar` is
+      # effectively required and non-nullable within `payload` even though its shape stays dropped.
+      it "forces a blocked mixed-union member required + non-nullable when the dropped subtree requires presence" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array], optional: true
+          end
+          expects :baz, on: "payload.bar", type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(payload[:required]).to include("bar")
+        expect(bar).to have_key(:anyOf)
+        expect(bar).not_to have_key(:properties) # still blocked — no nested shape
+        expect(bar[:anyOf]).not_to include(hash_including(type: "null")) # null admission stripped
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:baz])
+
+        # Runtime agreement: the deep required baz can only resolve off a present, object-valued bar.
+        expect(klass.call(payload: {})).not_to be_ok
+        expect(klass.call(payload: { bar: nil })).not_to be_ok
+        expect(klass.call(payload: { bar: { baz: "x" } })).to be_ok
+      end
+
+      it "leaves the blocked member's declared flags intact when the dropped subtree is all-optional (negative control)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array], optional: true
+          end
+          expects :baz, on: "payload.bar", type: String, optional: true
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(Array(payload[:required])).not_to include("bar")
+        expect(bar[:anyOf]).to include(hash_including(type: "null")) # null branch preserved
+        expect(bar).not_to have_key(:properties)
+        expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
+      end
+
+      # Scalar member variant: same required/non-nullable treatment. (No satisfying call exists — a String
+      # bar can't yield the deep baz — so only the failure modes are asserted; the schema still forbids the
+      # nil/omitted member that runtime also rejects.)
+      it "forces a blocked SCALAR member required + non-nullable when the dropped subtree requires presence" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: String, optional: true
+          end
+          expects :baz, on: "payload.bar", type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(payload[:required]).to include("bar")
+        expect(bar[:type]).to eq("string") # null branch stripped from ["string", "null"]
+        expect(bar).not_to have_key(:properties)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:baz])
+
+        expect(klass.call(payload: {})).not_to be_ok
+        expect(klass.call(payload: { bar: nil })).not_to be_ok
+      end
+
       it "leaves a SCALAR member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
         klass = Class.new do
           include Axn

@@ -445,9 +445,24 @@ module Axn
       # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
       # is built from the first non-model config, so a scalar member declared on a LATER config seeds
       # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
+      #
+      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
+      # subfields regardless of representability, so when the dropped subtree requires presence
+      # (subtree_requires_presence? — the same predicate used everywhere) the colliding member's own
+      # property still inherits that obligation. The member is forced required and its `null` admission
+      # stripped (reject_null! handles both `type:` arrays and `anyOf` unions) — because a nil/absent
+      # member strands the required descendant (PRO-2857). Nothing else about the member is touched (no
+      # forced object type, no properties — its shape stays dropped). An all-optional dropped subtree
+      # strands nothing, so the member keeps its declared flags (runtime accepts omission/nil there).
       def apply_implicit_node!(prop, key, node, parent_configs)
         members = shape_members_at(parent_configs, key)
-        return if members.any? { |member| !nestable_as_object?(member) }
+        if members.any? { |member| !nestable_as_object?(member) }
+          if subtree_requires_presence?(node)
+            prop[:required] << key.to_s
+            reject_null!(prop[:properties][key]) if prop[:properties][key]
+          end
+          return
+        end
 
         # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
         # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members
