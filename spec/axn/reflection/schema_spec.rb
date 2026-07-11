@@ -1741,6 +1741,85 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
+    it "types the parent object-only + required when a DEEP (dotted-name) subfield default synthesizes it " \
+       "into a required shape member (PRO-2872)" do
+      # `expects "address.zip", on: :payload, default: "x"` lands the defaulted config on a DEEPER node
+      # (under an implicit `address`). Runtime still materializes `{}` under `payload` BEFORE writing the
+      # default, so ShapeValidator no longer short-circuits on nil and enforces the required `status`
+      # member — omission AND `payload: nil` FAIL. The shape-member hazard must walk the whole subtree,
+      # not just direct children, so the schema agrees: payload required AND non-nullable.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects "address.zip", on: :payload, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:required]).to include("payload")
+      expect(klass.call).not_to be_ok                          # runtime agreement: omission fails
+      expect(klass.call(payload: nil)).not_to be_ok            # runtime agreement: nil fails
+      expect(klass.call(payload: { status: "ok" })).to be_ok   # a satisfying call passes
+    end
+
+    it "types the parent object-only + required when a DEEP (dotted-name) subfield PROC default synthesizes " \
+       "it (the hazard counts Procs — materialization fires before the Proc runs, PRO-2872)" do
+      # Same as above but the default is a Proc. Runtime materializes `{}` under `payload` BEFORE the Proc
+      # is evaluated, so the required `status` member is still enforced — omission/nil FAIL. The hazard
+      # predicate counts Procs, so the schema marks payload required AND non-nullable.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        # optional: so the zip itself isn't a required descendant — the shape-member hazard clause,
+        # not the required-child clause, must be what forces the parent.
+        expects "address.zip", on: :payload, type: String, default: -> { "x" }, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:required]).to include("payload")
+      expect(klass.call).not_to be_ok               # runtime agreement: omission fails
+      expect(klass.call(payload: nil)).not_to be_ok # runtime agreement: nil fails
+    end
+
+    it "leaves the parent omittable when a DEEP (dotted-name) usable subfield default synthesizes it and " \
+       "nothing is required (rescue walks the subtree, PRO-2872)" do
+      # `expects "address.zip", on: :payload, default: "x"` on a plain Hash parent with no required member:
+      # runtime synthesizes a complete `payload` from the deep default, so omission PASSES. The rescue walk
+      # must count a usable default at ANY depth (not just direct children), so the schema agrees — payload
+      # is omittable.
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects "address.zip", on: :payload, default: "x"
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("payload")
+      expect(klass.call).to be_ok # runtime agreement: omission passes (deep default synthesizes payload)
+    end
+
+    it "keeps the parent required when the only DEEP (dotted-name) subfield default is a Proc (rescue " \
+       "excludes Procs — stricter than runtime, PRO-2872)" do
+      # A Proc default's success is what would rescue omission, and a raising Proc would make omission FAIL,
+      # so the rescue walk deliberately excludes Procs — the parent stays required. This is the safe,
+      # stricter-than-runtime direction: runtime omission may pass when the Proc behaves, but reflecting
+      # required never causes a failed call. Schema-only assertion (runtime may legitimately differ).
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        # optional: so nothing in the subtree requires presence — the rescue clause alone decides.
+        expects "address.zip", on: :payload, type: String, default: -> { "x" }, optional: true
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+    end
+
     it "does NOT force object on a MIXED-union parent (type: [Hash, Array]) with a subfield — preserves the array branch" do
       # Runtime reads the subfield from either branch (e.g. Array#length), so `payload: [1,2]` is valid;
       # forcing type: object would reject it. Keep the anyOf and omit the (unrepresentable) subfield shape.

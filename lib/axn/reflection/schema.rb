@@ -196,17 +196,21 @@ module Axn
       # Two sources:
       #   * a required subfield ANYWHERE in the subtree — a nil parent yields every descendant absent
       #     (PRO-2857), so a required grandchild is stranded exactly like a required child; OR
-      #   * a required shape (`do…end`) member WHEN a truthy-default subfield synthesizes the parent:
-      #     that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator no longer
-      #     short-circuits on nil and enforces the member. Only depth-1 subfields can carry a default
-      #     (declaration rejects `default:` on a nested parent), so synthesis stays top-level-only.
+      #   * a required shape (`do…end`) member WHEN a subfield default ANYWHERE in the subtree synthesizes
+      #     the parent: that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator
+      #     no longer short-circuits on nil and enforces the member. A dotted-NAME default lands on a deeper
+      #     node yet still materializes the parent, so this walks the whole subtree; and it counts ANY
+      #     applied default (a Proc included) because materialization fires before the default's value
+      #     matters — the applicability hazard, not reflective usability (subtree_has_applied_subfield_default?).
       def required_child?(config, children)
         return true if children_require_presence?(children)
 
         # A subfield default synthesizes the parent only when the parent is object-shaped — runtime injects
         # `{}` for Hash/`:params`/untyped parents but refuses for a non-object type (`type: Array`), which
-        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!).
-        synthesizer = object_shaped?(config) && defaulted_child?(children)
+        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!). Walks the WHOLE
+        # subtree: a dotted-NAME default lands on a deeper node and still materializes the parent, firing
+        # the shape-member hazard.
+        synthesizer = object_shaped?(config) && subtree_has_applied_subfield_default?(children)
         synthesizer && required_shape_member?(config)
       end
 
@@ -241,12 +245,21 @@ module Axn
         end
       end
 
-      # Whether any direct child carries a usable (truthy, non-Proc) default — the synthesis signal.
-      # A dotted-name subfield's default sits on a DEEPER node (under its implicit intermediate) and is
-      # deliberately not counted: the parent then reflects required though runtime synthesizes it — the
-      # safe, stricter direction.
-      def defaulted_child?(children)
-        children.values.any? { |node| node.configs.any? { |c| usable_default?(c, subfield: true) } }
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE (truthy, non-Proc)
+      # default — the synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE
+      # parent (materializes `{}`, then writes the default) from a usable default at any depth: a
+      # dotted-NAME default lands on a deeper node yet still materializes the parent, so it rescues
+      # omission just like a direct child's default. Procs stay EXCLUDED (usable_default? drops them),
+      # unlike subtree_has_applied_subfield_default? (the hazard predicate, which counts Procs): here the
+      # Proc's SUCCESS is what would rescue omission, and a raising Proc would instead make omission FAIL,
+      # so counting it would reflect the parent omittable though runtime rejects the omitted call — the
+      # looser, unsafe direction. The hazard predicate counts Procs because materialization fires before
+      # the Proc runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
+      def subtree_has_usable_subfield_default?(children)
+        children.values.any? do |node|
+          node.configs.any? { |c| usable_default?(c, subfield: true) } ||
+            subtree_has_usable_subfield_default?(node.children)
+        end
       end
 
       # Whether any config ANYWHERE in the subtree (at any depth) carries a subfield default runtime would
@@ -257,9 +270,10 @@ module Axn
       # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
       # before the default's value matters — so this uses subfield_default_applies? (side-effect-free:
       # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
-      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Unlike
-      # defaulted_child? (direct children only, for top-level parent synthesis), this walks the whole
-      # subtree: a dotted-NAME default lands on a deeper node.
+      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
+      # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
+      # so a dotted-NAME default on a deeper node is counted, but this HAZARD walk counts Procs and that
+      # rescue walk does not.
       def subtree_has_applied_subfield_default?(children)
         children.values.any? do |node|
           node.configs.any? { |c| Internal::FieldConfig.subfield_default_applies?(c) } ||
@@ -286,15 +300,19 @@ module Axn
         return true if nil_accepted?(config) && !has_required_child
 
         # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
-        # COMPLETE parent from subfield defaults — at least one direct child supplies a value (a
-        # dotted-name default is deliberately not counted; see defaulted_child?) and none of the
-        # subtree is required (a required descendant has no default and can't be synthesized). This
-        # synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`,
-        # which satisfies a Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed
-        # class) whose top-level type validator rejects the `{}`.
+        # COMPLETE parent from subfield defaults — a usable default ANYWHERE in the subtree supplies a
+        # value (a dotted-NAME default lands on a deeper node yet still materializes the parent) and none
+        # of the subtree is required (a required descendant has no default and can't be synthesized). Procs
+        # stay excluded (subtree_has_usable_subfield_default?): a Proc default is uninspectable and a
+        # raising one would make omission FAIL, so counting it would reflect the parent omittable though
+        # runtime rejects the omitted call — the looser, unsafe direction (the hazard side counts Procs
+        # because materialization fires before the Proc runs; here the Proc's success is what rescues, and
+        # that is unknowable). This synthesis only rescues an OBJECT-shaped parent:
+        # `apply_defaults_for_subfields!` injects `{}`, which satisfies a Hash/`:params`/untyped parent but
+        # not a non-object one (`type: Array`, a typed class) whose top-level type validator rejects the `{}`.
         return false unless object_shaped?(config)
 
-        defaulted_child?(children) && !has_required_child
+        subtree_has_usable_subfield_default?(children) && !has_required_child
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
