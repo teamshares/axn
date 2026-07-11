@@ -75,4 +75,25 @@ RSpec.describe Axn::Executor do
       expect(resolve(klass, company_id: 42)).to eq([{ company_id: 42 }, {}])
     end
   end
+
+  describe "#prepare_inbound_for_facets!" do
+    # Build a throwaway (non-run) instance and prepare it, mirroring the async exhaustion/discard
+    # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args
+    # and never executed.
+    def prepare(klass, **inputs)
+      instance = klass.send(:new, **inputs)
+      described_class.new(instance).prepare_inbound_for_facets!
+      instance
+    end
+
+    it "coerces a wire string before a facet reads the field" do
+      klass = build_axn do
+        expects :on, coerce: Date
+        tag(:on) { on }
+        def call; end
+      end
+      instance = prepare(klass, on: "2026-07-08")
+      expect(instance.on).to eq(Date.new(2026, 7, 8))
+    end
+  end
 end

@@ -46,12 +46,14 @@ module Axn
 
     # Best-effort inbound preparation for OUT-OF-BAND facet resolution — the async exhaustion/discard
     # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args and
-    # never executed. Applies the same inbound preprocessing and defaults a normal `.call` would, so a
-    # facet reading a defaulted/preprocessed input resolves the value the worker saw rather than the
-    # raw constructor value. Deliberately does NOT validate (a report on already-dead work must never
-    # raise) and does NOT run the action; model: readers still resolve lazily on read. Any failure is
-    # swallowed — a partially-prepared instance still yields more facets than a bare one.
+    # never executed. Applies the same inbound coercion, preprocessing, and defaults a normal `.call`
+    # would (in that order), so a facet reading a coerced/defaulted/preprocessed input resolves the
+    # value the worker saw rather than the raw constructor value. Deliberately does NOT validate (a
+    # report on already-dead work must never raise) and does NOT run the action; model: readers still
+    # resolve lazily on read. Any failure is swallowed — a partially-prepared instance still yields
+    # more facets than a bare one.
     def prepare_inbound_for_facets!
+      apply_inbound_coercion!
       apply_inbound_preprocessing!
       apply_defaults!(:inbound)
     rescue StandardError => e
