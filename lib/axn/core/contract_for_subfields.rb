@@ -58,6 +58,21 @@ module Axn
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
           end
 
+          # `resolve_parent` reads the root via `public_send(root)`, so the root must have an actual
+          # reader. A parent declared `readers: false` matches the `reader_as` list above (its config
+          # exists) but defined no method, so every call would raise NoMethodError reaching for it while
+          # reflection still advertises the nested path — reject the unusable combination at declaration.
+          # (A dotted parent name also defines no reader, but its `reader_as` never matches a root segment,
+          # so it's already caught by the no-such-reader check above and never reaches here. Ambient roots
+          # resolve per-invocation, not via a generated reader, so they're exempt.) The parent is always
+          # declared before the subfield, so its reader — when requested — already exists by now.
+          if root != Axn::Core::AmbientContext::PARENT && !method_defined?(root)
+            raise ArgumentError,
+                  "expects called with `on: #{on}`, but :#{root} was declared with `readers: false` — " \
+                  "a subfield parent must have a reader for the runtime to resolve " \
+                  "(drop `readers: false` on :#{root}, or name a readable parent)"
+          end
+
           # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
           # into a user-facing failure, but subfields are always dev-facing. Declaring a subfield on a
           # user-facing parent mixes the two — a violation of the parent and an independent subfield

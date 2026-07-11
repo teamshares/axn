@@ -396,6 +396,26 @@ RSpec.describe Axn do
           expect(result.exception).to be_a(NameError)
         end
       end
+
+      # `resolve_parent` reads a subfield parent via `public_send`, which a `readers: false` parent has
+      # no method to answer — so naming one as an `on:` target crashed every call with NoMethodError while
+      # reflection still advertised the nested path. Reject the unusable combination at declaration.
+      context "when on: names a readers: false subfield (no reader to resolve the parent)" do
+        it "raises at declaration naming the readers: false cause" do
+          expect do
+            build_axn do
+              expects :payload
+              expects :bar, on: :payload, readers: false
+              expects :baz, on: :bar
+            end
+          end.to raise_error(
+            ArgumentError,
+            "expects called with `on: bar`, but :bar was declared with `readers: false` — " \
+            "a subfield parent must have a reader for the runtime to resolve " \
+            "(drop `readers: false` on :bar, or name a readable parent)",
+          )
+        end
+      end
     end
 
     context "digging to nested fields" do

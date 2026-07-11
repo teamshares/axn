@@ -119,6 +119,16 @@ module Axn
         object_type_branches(config).all? { |k| [Hash, :params].include?(k) }
       end
 
+      # Whether the configs declared at a subfield node forbid nesting its children as object properties:
+      # a `model:` route (the client sends `<field>_id`, not the object) or a non-nestable type (a
+      # non-object type or a mixed union) on ANY config. Single source of truth for the drop pass
+      # (SubfieldTree.blocking_ancestor?) and emission (apply_nested_subfields!), so the two never disagree
+      # on which deep structure is representable — a node the tree drops from is never re-nested in the
+      # schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
+      def node_configs_block_nesting?(configs)
+        configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
+      end
+
       def object_type_branches(config)
         type_opt = config.validations[:type]
         return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
@@ -201,11 +211,13 @@ module Axn
       # as at the top level); otherwise it
       # must tolerate nil AND strand no required descendant. With multiple configs at one node (the
       # same wire path declared via two routes) runtime enforces all of them, so the node is omittable
-      # only if every config is.
-      def node_optional?(node)
+      # only if every config is. `configs` defaults to the whole node but may be a subset: a merged
+      # node's model and non-model routes emit separate properties (`<leaf>_id` vs the object), each
+      # required per its own routes' configs, not the node as a whole.
+      def node_optional?(node, configs = node.configs)
         return !subtree_requires_presence?(node) if node.implicit?
 
-        node.configs.all? do |c|
+        configs.all? do |c|
           usable_default?(c, subfield: true) || (nil_accepted?(c) && !subtree_requires_presence?(node))
         end
       end
@@ -336,15 +348,21 @@ module Axn
       # type(s) and its subfields' shape is omitted, since object properties can't represent a non-object
       # branch (deep descendants there are in dropped_deep_subfields; its children still shape
       # requiredness via required_child?, matching runtime).
-      def apply_nested_subfields!(prop, config, children)
+      # `config` shapes the property itself (type, nullability) — by design the FIRST non-model config at a
+      # merged node. `node_configs` is EVERY config at the node: it decides both whether to nest at all
+      # (node_configs_block_nesting?, the same predicate the drop pass uses, so a route the tree drops from
+      # is never re-nested) and, threaded on as parent configs, which `shape:` members might collide with
+      # an implicit child. It defaults to `[config]` for a single-config parent (the top level and any
+      # unmerged node).
+      def apply_nested_subfields!(prop, config, children, node_configs = [config])
         return if children.empty?
-        return unless nestable_as_object?(config)
+        return if node_configs_block_nesting?(node_configs)
 
         prop.delete(:format)
         prop[:properties] ||= {}
         prop[:required] ||= []
 
-        apply_children!(prop, children, config)
+        apply_children!(prop, children, node_configs)
 
         prop[:required] = prop[:required].uniq
         # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
@@ -357,40 +375,60 @@ module Axn
       end
 
       # Emits one level of children into `prop` (which must already have :properties/:required arrays),
-      # recursing into each child's own subtree. `parent_config` is the config whose subfields these
+      # recursing into each child's own subtree. `parent_configs` are the configs whose subfields these
       # children are — used to decide, by the same predicate as the drop pass, whether an implicit child
-      # may merge into a colliding shape member. It is a top-level/subfield config for an explicit parent,
-      # the shape member an implicit intermediate merged into (so nested members block at depth), or nil
-      # for a fresh implicit intermediate that claimed no shape member.
-      def apply_children!(prop, children, parent_config)
+      # may merge into a colliding shape member. They are the top-level/subfield configs at an explicit
+      # parent (ALL of them at a merged node, mirroring SubfieldTree), or the shape members an implicit
+      # intermediate merged into (so nested members block at depth), or empty for a fresh implicit
+      # intermediate that claimed no shape member.
+      #
+      # A single wire path can be declared via two routes (Node#configs size > 1), and the routes can
+      # disagree on kind: a `model:` route emits the generated `<leaf>_id` while a plain route emits the
+      # object property. Both are enforced at runtime, so both are emitted, each required per its OWN
+      # route's configs — not the node as a whole.
+      #
+      # ACCEPTED DIVERGENCE (looser-than-runtime, the only such case here): at a merged model+non-model
+      # node the non-model route's raw-key object property admits an object value that runtime ALWAYS
+      # rejects — the model resolver reads the raw key as the record, and a JSON object is never a model
+      # instance, so only absent/null are JSON-satisfiable. Left as-is: sending the object yields a normal,
+      # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
+      def apply_children!(prop, children, parent_configs)
         required_model_ids = []
         children.each do |key, node|
           if node.implicit?
-            apply_implicit_node!(prop, key, node, parent_config)
-          elsif node.config.validations[:model]
+            apply_implicit_node!(prop, key, node, parent_configs)
+            next
+          end
+
+          model_configs = node.configs.select { |c| c.validations[:model] }
+          non_model_configs = node.configs.reject { |c| c.validations[:model] }
+
+          unless model_configs.empty?
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
-            # the same nested parent at runtime).
+            # the same nested parent at runtime). A user may declare an explicit nested `<field>_id`
+            # subfield; don't clobber it with the generic model-generated one.
             id_field = Internal::FieldConfig.model_id_key(key)
-            _, subprop = model_id_property(node.config)
-            # A user may declare an explicit nested `<field>_id` subfield before the `model:` subfield;
-            # don't clobber it with the generic model-generated one.
+            _, subprop = model_id_property(model_configs.first)
             prop[:properties][id_field] ||= subprop
-            unless node_optional?(node)
+            unless node_optional?(node, model_configs)
               prop[:required] << id_field.to_s
               required_model_ids << id_field
             end
-          else
-            child_prop = build_property(node.config, subfield: true)
-            apply_nested_subfields!(child_prop, node.config, node.children)
-            # `null` survives only when every declared route tolerates nil (runtime enforces all configs;
-            # the property itself is built from the first-declared one) AND no required descendant is
-            # stranded — a nil node yields every descendant absent (PRO-2857), so a required one below it
-            # forbids nil even for a non-object node whose subfield shape isn't nested here.
-            null_ok = node.configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node)
-            reject_null!(child_prop) unless null_ok
-            prop[:properties][key] = child_prop.compact
-            prop[:required] << key.to_s unless node_optional?(node)
           end
+
+          representative = non_model_configs.first
+          next unless representative
+
+          child_prop = build_property(representative, subfield: true)
+          apply_nested_subfields!(child_prop, representative, node.children, node.configs)
+          # `null` survives only when every non-model route tolerates nil (runtime enforces all of them;
+          # the property itself is built from the first non-model config) AND no required descendant is
+          # stranded — a nil node yields every descendant absent (PRO-2857), so a required one below it
+          # forbids nil even for a non-object node whose subfield shape isn't nested here.
+          null_ok = non_model_configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node)
+          reject_null!(child_prop) unless null_ok
+          prop[:properties][key] = child_prop.compact
+          prop[:required] << key.to_s unless node_optional?(node, non_model_configs)
         end
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
@@ -398,58 +436,53 @@ module Axn
       end
 
       # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
-      # property whose only content is its children. If a shape member of `parent_config` already claimed
-      # the key, merge into it only when that member is `nestable_as_object?` — the SAME predicate on the
-      # SAME member config that SubfieldTree.blocking_ancestor? uses, so emission and the drop pass agree:
-      # a non-nestable member (a scalar, or a mixed union like `type: [Hash, Array]`) blocks the merge and
-      # its deep configs stay in dropped_deep_subfields rather than forcing a self-contradictory property.
-      def apply_implicit_node!(prop, key, node, parent_config)
-        existing = prop[:properties][key]
-        return if existing && shape_member_blocks_merge?(parent_config, key)
+      # property whose only content is its children. When a `shape:` member of any `parent_configs`
+      # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
+      # predicate on the SAME member configs that SubfieldTree.blocking_ancestor? uses (it scans ALL of
+      # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
+      # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
+      # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
+      # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
+      # is built from the first non-model config, so a scalar member declared on a LATER config seeds
+      # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
+      def apply_implicit_node!(prop, key, node, parent_configs)
+        members = shape_members_at(parent_configs, key)
+        return if members.any? { |member| !nestable_as_object?(member) }
 
-        # When this implicit node merged into a shape member, carry that member as the parent config for
-        # its own children so a deeper implicit hop tests the member's NESTED shape members (a
-        # member-of-a-member). Same member config the drop pass carries, so the two agree at depth.
-        merged_member = existing ? shape_member_at(parent_config, key) : nil
+        # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
+        # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members
+        # the drop pass carries, so the two agree at depth.
+        existing = prop[:properties][key]
         target = existing || {}
         target.delete(:format)
         target[:properties] ||= {}
         target[:required] ||= []
-        apply_children!(target, node.children, merged_member)
+        apply_children!(target, node.children, members)
         target[:required] = target[:required].uniq
-        # A fresh implicit intermediate (existing.nil?) is nullable exactly when nothing beneath requires
-        # presence (a nil parent digs every descendant to nil, PRO-2857). A shape-member merge target is
-        # additionally capped by the member's OWN nil-tolerance, read from its config via nil_allowed? —
-        # the same predicate the parent nesting uses — never sniffed off the emitted property: an untyped
-        # nil-tolerant member emits no `type`, so a null branch is invisible there and property-sniffing
-        # would force it non-nullable though runtime accepts a nil member. `merged_member` (located above)
-        # is non-nil whenever `existing` is — a merge only reaches here under a nestable parent, whose
-        # pre-seeded properties are exactly its shape members — but the guard falls back to non-nullable
-        # (stricter than runtime) were it ever absent.
+        # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (a nil
+        # parent digs every descendant to nil, PRO-2857). A shape-member collision additionally caps it by
+        # the members' OWN nil-tolerance — nullable only when EVERY colliding member tolerates nil (runtime
+        # enforces all routes), read from each config via nil_allowed? (the same predicate the parent
+        # nesting uses) never sniffed off the emitted property: an untyped nil-tolerant member emits no
+        # `type`, so a null branch is invisible there and property-sniffing would force it non-nullable
+        # though runtime accepts a nil member. With no colliding member, an existing merge target (e.g. a
+        # Data placeholder property with no shape member) falls back to non-nullable (stricter than
+        # runtime), while a genuinely fresh node (no property, no member) follows its subtree.
         nullable = !subtree_requires_presence?(node) &&
-                   (existing.nil? || (merged_member && nil_allowed?(merged_member)))
+                   (members.any? ? members.all? { |m| nil_allowed?(m) } : existing.nil?)
         target[:type] = nullable ? %w[object null] : "object"
         target[:required] = nil if target[:required].empty?
         prop[:properties][key] = target.compact
         prop[:required] << key.to_s if subtree_requires_presence?(node)
       end
 
-      # Whether `parent_config`'s `shape:` declares a member at `key` that CANNOT nest object structure,
-      # so an implicit intermediate colliding with it must not merge. Mirrors the shape-member test in
-      # SubfieldTree.blocking_ancestor? (same `nestable_as_object?` on the same member config). An implicit
-      # parent (nil) has no shape, so nothing blocks.
-      def shape_member_blocks_merge?(parent_config, key)
-        member = shape_member_at(parent_config, key)
-        member ? !nestable_as_object?(member) : false
-      end
-
-      # The `shape:` member `parent_config` declares at `key` (the implicit node collides with it), or nil.
-      # `parent_config` is a top-level field config OR a shape-member config carried through implicit
+      # Every `shape:` member declared at `key` across `parent_configs` (the implicit node collides with
+      # them). Each config is a top-level field config OR a shape-member config carried through implicit
       # descent; both respond to `.validations` and expose nested members via `dig(:shape, :members)`.
-      def shape_member_at(parent_config, key)
-        return nil unless parent_config
-
-        Array(parent_config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
+      def shape_members_at(parent_configs, key)
+        Array(parent_configs).flat_map do |config|
+          Array(config.validations.dig(:shape, :members)).select { |m| m.field.to_sym == key }
+        end
       end
 
       # Every exposed field is always present in the serialized output: Values.serialize_exposed iterates

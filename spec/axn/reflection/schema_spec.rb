@@ -3535,6 +3535,56 @@ RSpec.describe Axn::Reflection::Schema do
         expect(bar[:type]).to eq("object") # member rejects nil regardless of the child
         expect(klass.call(payload: { bar: nil })).not_to be_ok # schema agrees: nil member rejected
       end
+
+      # A scalar shape member declared on the SECOND config at a merged node blocks the deep structure the
+      # SAME as one on the first: emission consults every config's shape members, mirroring SubfieldTree,
+      # so the config the tree dropped isn't quietly re-nested by the property (built from the first
+      # config, which has no shape). (A subfield can't take a `do…end` block, so the shape rides a raw
+      # `shape:` kwarg — the same structure the block DSL builds.)
+      it "drops a deep config colliding with a SCALAR shape member declared on the node's SECOND config" do
+        x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
+        klass = Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash                                                  # baz config #1 (no shape)
+          expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (scalar member x)
+          expects "baz.x.y", on: :bar                                                              # implicit x under baz + grandchild y
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:foo][:properties][:bar][:properties][:baz]
+        expect(baz[:properties]).not_to have_key(:y)                        # not force-nested under a blocking member
+        expect(baz.dig(:properties, :x, :properties, :y)).to be_nil         # the deep x.y structure is dropped, matching the tree
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"baz.x.y"])
+      end
+
+      # Two routes to a merged node each carry a nestable Hash member `x`, but their NESTED members at
+      # `y` disagree: route 1's `y` is a nestable Hash, route 2's `y` is a scalar String. Emission carries
+      # ALL colliding members through the implicit hop, so at `y` it sees the scalar and drops `x.y.z`. The
+      # drop pass must carry them ALL too (not just the first nestable `x`), or `x.y.z` validates at runtime
+      # yet is absent from BOTH the schema and dropped_deep_subfields — a silent, unwarned gap.
+      it "drops a deep config when merged colliding shape members carry disagreeing nested members" do
+        y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
+        x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
+        y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
+        x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
+        klass = Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash } # route 1: x -> y (Hash)
+          expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }      # route 2: x -> y (String)
+          expects "x.y.z", on: :baz                                                          # implicit x, implicit y, leaf z
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema.dig(:properties, :foo, :properties, :bar, :properties, :baz)
+        expect(baz.dig(:properties, :x, :properties, :y, :properties, :z)).to be_nil # scalar y blocks the deep z
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"x.y.z"]) # and it is warned, not silently gone
+      end
     end
 
     describe "the same wire path declared via two routes" do
@@ -3551,6 +3601,119 @@ RSpec.describe Axn::Reflection::Schema do
         bar = schema[:properties][:foo][:properties][:bar]
         expect(bar[:required]).to eq(["baz"]) # union: route 2 requires it
         expect(bar[:properties][:baz][:type]).to eq("string") # intersection: null stripped (route 2 rejects nil)
+      end
+
+      # A merged node whose routes disagree on KIND: one is a plain object subfield, the other a `model:`
+      # subfield. Emission must consult ALL configs (not just the first), emitting the model's `<leaf>_id`
+      # AND the plain route's object property, each required per its OWN route — reading only `node.config`
+      # (the first) would drop whichever kind wasn't declared first.
+      describe "a model: route and a non-model route at the same node" do
+        model = Struct.new(:id) do
+          def self.find(id) = id.nil? ? nil : new(id)
+        end
+        before { stub_const("MergedRouteUser", model) }
+
+        subject(:account) do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash
+            expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first), optional
+            expects :account, on: :payload, type: Hash
+            expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find } # model route (second), required
+            def call = nil
+          end
+          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload][:properties][:account]
+        end
+
+        it "emits the model's user_id (required, non-nullable) even though the model config is not first" do
+          expect(account[:properties]).to have_key(:user_id)
+          expect(account[:required]).to include("user_id")
+          expect(account[:properties][:user_id]).to include(not: { type: "null" })
+        end
+
+        it "keeps the non-model route's user property and leaves it optional" do
+          expect(account[:properties]).to have_key(:user)
+          expect(Array(account[:required])).not_to include("user")
+        end
+      end
+
+      it "runtime agreement: the merged model+non-model node resolves via user_id and rejects its omission" do
+        stub_const("MergedRouteUser", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects "account.user", on: :payload, type: Hash, optional: true
+          expects :account, on: :payload, type: Hash
+          expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }
+          def call = nil
+        end
+
+        expect(klass.call(payload: { account: { user_id: 7 } })).to be_ok       # model resolves via user_id
+        expect(klass.call(payload: { account: { note: "x" } })).not_to be_ok    # omitted user_id strands the model
+      end
+
+      # The decision to NEST a merged node's children must consult ALL configs at the node, not just the
+      # first non-model one, mirroring SubfieldTree.blocking_ancestor? (which scans every config). A merged
+      # node with one nestable Hash route and one non-nestable mixed-union route cannot hold object
+      # properties, so its deep child is dropped — and must NOT also be nested, or the input_schema warning
+      # lies (claims omitted while it is present) and the outcome flips with declaration order.
+      describe "nesting a merged node whose routes disagree on nestability" do
+        it "drops the deep child and does not nest it (route 1 nestable declared first)" do
+          klass = Class.new do
+            include Axn
+            expects :foo, type: Hash
+            expects :bar, on: :foo, type: Hash
+            expects "bar.baz", on: :foo, type: Hash         # route 1: nestable
+            expects :baz, on: :bar, type: [Hash, Array]     # route 2: NON-nestable (mixed union)
+            expects :qux, on: :baz, type: String
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+          dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+
+          baz = schema.dig(:properties, :foo, :properties, :bar, :properties, :baz)
+          expect(baz&.dig(:properties, :qux)).to be_nil      # not nested (a route rejects object nesting)
+          expect(dropped.map(&:field)).to include(:qux)      # and warned as dropped — the two agree
+        end
+
+        it "reaches the same decision when the non-nestable route is declared first (order-invariant)" do
+          klass = Class.new do
+            include Axn
+            expects :foo, type: Hash
+            expects :bar, on: :foo, type: Hash
+            expects :baz, on: :bar, type: [Hash, Array]     # route 2 FIRST
+            expects "bar.baz", on: :foo, type: Hash         # route 1 SECOND
+            expects :qux, on: :baz, type: String
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+          dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+
+          baz = schema.dig(:properties, :foo, :properties, :bar, :properties, :baz)
+          expect(baz&.dig(:properties, :qux)).to be_nil
+          expect(dropped.map(&:field)).to include(:qux)
+        end
+      end
+
+      # A merged model+non-model node's deep grandchild resolves off the model record at runtime (the
+      # client sends `<leaf>_id`, not the object), so the drop pass omits it. Emission must not nest it
+      # under the non-model route's object property either — the nesting gate consults every config, so a
+      # model route at the node blocks nesting exactly as blocking_ancestor? does.
+      it "does not nest a deep grandchild under a merged model+non-model node (agrees with dropped)" do
+        stub_const("MergedRouteUser", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first)
+          expects :account, on: :payload, type: Hash
+          expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }, optional: true # model route
+          expects :name, on: :user, type: String # deep grandchild
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+
+        user = schema.dig(:properties, :payload, :properties, :account, :properties, :user)
+        expect(user&.dig(:properties, :name)).to be_nil # a model route sends user_id, not the object
+        expect(dropped.map(&:field)).to include(:name)
       end
     end
   end

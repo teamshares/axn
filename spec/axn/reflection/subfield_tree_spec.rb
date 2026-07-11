@@ -155,6 +155,50 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
     end
 
+    it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
+      # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the scalar
+      # member x. blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
+      # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
+      x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects :bar, on: :foo, type: Hash
+        expects "bar.baz", on: :foo, type: Hash
+        expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }
+        expects "baz.x.y", on: :bar
+      end
+      tree = tree_for(klass)
+
+      baz = tree.roots[:foo].children[:bar].children[:baz]
+      expect(baz.configs.size).to eq(2) # merged node
+      expect(tree.dropped.map(&:field)).to eq([:"baz.x.y"])
+    end
+
+    it "drops a deep config when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
+      # baz is a merged node; both routes declare a nestable Hash member `x`, but their NESTED members at
+      # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a scalar String. Carrying only
+      # the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying ALL colliding members
+      # tests route 2's scalar `y` and drops `x.y.z`, matching emission (which carries every member).
+      y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
+      x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
+      y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
+      x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects :bar, on: :foo, type: Hash
+        expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash }
+        expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }
+        expects "x.y.z", on: :baz
+      end
+      tree = tree_for(klass)
+
+      baz = tree.roots[:foo].children[:bar].children[:baz]
+      expect(baz.configs.size).to eq(2) # merged node
+      expect(tree.dropped.map(&:field)).to eq([:"x.y.z"])
+    end
+
     it "drops a deep config whose implicit intermediate collides with a SCALAR member of a member (carried through implicit descent)" do
       klass = Class.new do
         include Axn

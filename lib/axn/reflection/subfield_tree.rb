@@ -76,53 +76,50 @@ module Axn
         end
       end
 
-      # Walk a deep config's ancestor chain hop by hop, carrying the shape member an implicit hop merged
-      # into so a deeper implicit hop can test that member's OWN nested shape members (a
-      # member-of-a-member). `carried` is the object-shaped member config the current node stands in for
-      # (nil for a real node or a fresh implicit intermediate that claimed no shape member).
+      # Walk a deep config's ancestor chain hop by hop, carrying the shape members an implicit hop merged
+      # into so a deeper implicit hop can test their OWN nested shape members (a member-of-a-member).
+      # `carried` is the object-shaped member configs the current node stands in for (empty for a real
+      # node or a fresh implicit intermediate that claimed no shape member).
       def path_blocked?(hops)
-        carried = nil
+        carried = []
         hops.each do |node, key|
           return true if blocking_ancestor?(node, key, carried)
 
-          carried = merged_shape_member(node, key, carried)
+          carried = merged_shape_members(node, key, carried)
         end
         false
       end
 
-      # An explicit ancestor blocks nesting when it has `model:` (the client sends `<field>_id`, not
-      # the object) or isn't nestable as an object (non-object type, or a mixed union). An implicit
-      # ancestor never blocks on its own type — but descending into an IMPLICIT child whose key collides
-      # with a non-object `shape:` member does: the member property already claims that key with a
-      # non-object type, so the deep structure has nowhere to live. Those members come from the node's
-      # own explicit configs OR the member this implicit node merged into (`carried`), so a member of a
-      # member is tested at depth.
-      def blocking_ancestor?(node, key, carried = nil)
-        return true if node.configs.any? { |c| c.validations[:model] || !Schema.nestable_as_object?(c) }
+      # An explicit ancestor blocks nesting when its configs forbid it (a `model:` route, or a non-object /
+      # mixed-union type on any route) — the SAME predicate emission gates on (Schema.node_configs_block_nesting?),
+      # so the drop pass and the schema agree. An implicit ancestor never blocks on its own type — but
+      # descending into an IMPLICIT child whose key collides with a non-object `shape:` member does: the
+      # member property already claims that key with a non-object type, so the deep structure has nowhere to
+      # live. Those members come from the node's own explicit configs AND every member this implicit node
+      # merged into (`carried`), so a member of a member is tested at depth.
+      def blocking_ancestor?(node, key, carried = [])
+        return true if Schema.node_configs_block_nesting?(node.configs)
         return false unless node.children[key]&.implicit?
 
-        shape_member_configs(node, carried).any? do |c|
-          member = shape_member_at(c, key)
-          member && !Schema.nestable_as_object?(member)
-        end
+        colliding_shape_members(node, key, carried).any? { |m| !Schema.nestable_as_object?(m) }
       end
 
-      # The object-shaped shape member a node (via an explicit config or the `carried` member it merged
+      # The object-shaped shape members a node (via its explicit configs or the `carried` members it merged
       # into) declares at `key`, when descending merges an implicit child there — carried into the next
-      # hop. nil when nothing merges (no such member; a non-nestable member would already have blocked).
-      def merged_shape_member(node, key, carried)
-        return nil unless node.children[key]&.implicit?
+      # hop. Empty when nothing merges. ALL nestable colliding members are carried (not just the first), so
+      # a deeper hop tests every route's nested member; a non-nestable one would already have blocked. This
+      # mirrors emission's apply_implicit_node!, which carries every colliding member.
+      def merged_shape_members(node, key, carried)
+        return [] unless node.children[key]&.implicit?
 
-        shape_member_configs(node, carried).filter_map { |c| shape_member_at(c, key) }
-                                           .find { |m| Schema.nestable_as_object?(m) }
+        colliding_shape_members(node, key, carried).select { |m| Schema.nestable_as_object?(m) }
       end
 
-      def shape_member_configs(node, carried)
-        carried ? node.configs + [carried] : node.configs
-      end
-
-      def shape_member_at(config, key)
-        Array(config.validations.dig(:shape, :members)).find { |m| m.field.to_sym == key }
+      # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
+      # a shallower hop — via Schema.shape_members_at, the same locator emission uses, so the two sides
+      # can't disagree on which members collide with the implicit child at `key`.
+      def colliding_shape_members(node, key, carried)
+        Schema.shape_members_at(node.configs + carried, key)
       end
     end
   end
