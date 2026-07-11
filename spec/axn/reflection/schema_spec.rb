@@ -3328,17 +3328,69 @@ RSpec.describe Axn::Reflection::Schema do
         expect(meta[:properties][:company_id]).to include(not: { type: "null" }) # required id can't be null
       end
 
-      it "places a dotted-name model subfield's id at the leaf segment under the implicit intermediate" do
+      it "DROPS a dotted-name model subfield (its id is not JSON-consumable) instead of emitting an id" do
+        # A dotted subfield NAME generates no reader (ContractForSubfields#_define_subfield_reader returns
+        # early), so at runtime the id->record model lookup never runs: subfield validation falls back to
+        # the raw Extract resolver, which digs the OBJECT at payload.org.company, and the advertised
+        # `company_id` can never feed it. Runtime evidence: the previously-advertised `{payload: {org:
+        # {company_id: N}}}` shape FAILS ("... company is not a <Model>"); the only call that succeeds sends
+        # the record object itself, which JSON can't represent — so there is NO JSON-satisfiable call for
+        # this required dotted-name model. It therefore has no JSON-object representation and joins the
+        # structural exclusions: no `company_id` property anywhere under payload, and it's in
+        # dropped_deep_subfields (warned) — emitting a `company_id` here would advertise a shape the
+        # runtime rejects. The required-model obligation still forces the ancestor `org` present.
+        model_klass = Class.new do
+          def self.name = "Co"
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = id.nil? ? nil : new(id)
+        end
         klass = Class.new do
           include Axn
           expects :payload, type: Hash
-          expects "org.company", on: :payload, model: { klass: Struct.new(:id), finder: :find }
+          expects "org.company", on: :payload, model: { klass: model_klass, finder: :find }
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        org = schema[:properties][:payload][:properties][:org]
+        expect(org[:properties]).not_to have_key(:company_id)
+        expect(org[:properties]).not_to have_key(:"org.company_id")
+        expect(org[:properties]).to be_empty
+        expect(schema[:properties][:payload][:required]).to include("org") # required obligation kept
+        expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
+          .to eq([:"org.company"])
+
+        # runtime agreement: the previously-advertised id shape fails; only the (non-JSON) record succeeds.
+        expect(klass.call(payload: { org: { company_id: 7 } })).not_to be_ok
+        expect(klass.call(payload: { org: { company: model_klass.new(7) } })).to be_ok
+      end
+
+      it "still emits and consumes the id for a dotted ON: with a NON-dotted model name (a reader IS generated)" do
+        # CONTRAST with the dropped dotted-NAME case above: here the NAME is plain (`:company`) and only the
+        # `on:` is dotted, so ContractForSubfields generates a reader that runs the id->record lookup. The
+        # `company_id` under `payload.org` stays represented and the runtime consumes it.
+        model_klass = Class.new do
+          def self.name = "Co"
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = id.nil? ? nil : new(id)
+        end
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :org, on: :payload, type: Hash
+          expects :company, on: "payload.org", model: { klass: model_klass, finder: :find }
+          def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         org = schema[:properties][:payload][:properties][:org]
         expect(org[:properties]).to have_key(:company_id)
-        expect(org[:properties]).not_to have_key(:"org.company_id")
+        expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+        expect(klass.call(payload: { org: { company_id: 7 } })).to be_ok # runtime consumes the id
       end
 
       it "keeps an explicitly-declared deep sibling id instead of clobbering it with the generated one" do
