@@ -255,4 +255,10 @@ RSpec.describe "per-class config overrides on actions" do
     action.sidekiq_job_tag_sources %i[dimension]
     expect(Class.new(action).resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
   end
+
+  it "does not leak a per-class override to a sibling action" do
+    action.sidekiq_job_tag_sources %i[dimension]
+    sibling = Class.new { include Axn }
+    expect(sibling.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
+  end
 end

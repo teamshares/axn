@@ -299,5 +299,15 @@ RSpec.describe Axn::Configurable::Settings do
         end
       end.to raise_error(ArgumentError, /overridable_config_source/)
     end
+
+    describe "consumer-defined accessor collisions" do
+      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+        action_class.mode :b
+        action_class.define_singleton_method(:raw_mode) { :hijacked }
+
+        expect(action_class.resolved_mode).to eq(:b)
+        expect(action_class.mode).to eq(:b)
+      end
+    end
   end
 end
