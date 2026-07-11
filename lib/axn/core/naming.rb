@@ -11,6 +11,17 @@ module Axn
           class_attribute :_axn_name, :_axn_description, instance_accessor: false, default: nil
           extend ClassMethods
         end
+
+        # `description` is generic enough that an adapter base class (e.g. ::MCP::Tool) is likely to
+        # already define its own, differently-scoped one. Only layer axn's on when the name is free —
+        # otherwise `extend` would sit above that base class and silently shadow it (PRO-2875).
+        if Axn::Core::MethodShadowing.externally_defined?(base, :description)
+          Axn.config.logger.debug do
+            "[Axn] #{base.name || 'Action'}: skipping axn's class-level `description` DSL (already defined by a non-Axn ancestor)"
+          end
+        else
+          base.extend(DescriptionMethod)
+        end
       end
 
       module ClassMethods
@@ -24,16 +35,20 @@ module Axn
           self._axn_name = value
         end
 
-        def description(value = NOT_SET)
-          return _axn_description if value.equal?(NOT_SET)
-
-          self._axn_description = value
-        end
-
         # The single canonical display name: explicit override, else Ruby's class name,
         # else a stable fallback (replaces the old literal "Anonymous Class").
         def resolved_axn_name
           axn_name.presence || name.presence || ANONYMOUS
+        end
+      end
+
+      # Split out of ClassMethods so `included` can extend it conditionally (see above): a shared
+      # module can't be selectively un-extended per including class.
+      module DescriptionMethod
+        def description(value = ClassMethods::NOT_SET)
+          return _axn_description if value.equal?(ClassMethods::NOT_SET)
+
+          self._axn_description = value
         end
       end
     end
