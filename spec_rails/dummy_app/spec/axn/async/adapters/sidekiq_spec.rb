@@ -410,10 +410,10 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
     end
 
-    it "reads the override via the collision-safe accessor even if the action shadows resolved_" do
-      # The adapter must route through Axn's override store, not a consumer-defined `resolved_`
-      # accessor. Here the shadow claims both sources, but the real per-class override is
-      # bounded-only — so honoring the override (not the shadow) yields just the dimension tag.
+    it "honors the override even when the action shadows the resolved_ reader" do
+      # The adapter resolves through Axn's override store (Configuration.resolve_override_for), not
+      # the shadowable generated reader. Here the shadow claims both sources, but the real per-class
+      # override is bounded-only — so honoring the override (not the shadow) yields just the dimension tag.
       action = stub_const("ShadowedResolvedTagSources", Class.new do
         include Axn
         async :sidekiq
@@ -428,6 +428,26 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
 
       action.call_async(company_id: 42, plan: "pro")
       expect(last_job_tags.call).to contain_exactly("plan:pro")
+    end
+
+    it "resolves via the store even when the action shadows the bare sidekiq_job_tag_sources reader" do
+      # A consumer that defines its own `sidekiq_job_tag_sources` class method (returning garbage)
+      # must not derail enqueue-time resolution: routing through Configuration.resolve_override_for
+      # reads the store directly (empty here → Axn.config default %i[tag dimension]), so both facets
+      # still surface rather than the shadow's value being used and the broad rescue swallowing tags.
+      action = stub_const("ShadowedBareTagSources", Class.new do
+        include Axn
+        async :sidekiq
+        expects :company_id
+        expects :plan, default: "free"
+        tag(:company_id) { company_id }
+        dimension(:plan) { plan }
+        def self.sidekiq_job_tag_sources(*) = :not_an_array
+        def call; end
+      end)
+
+      action.call_async(company_id: 42, plan: "pro")
+      expect(last_job_tags.call).to contain_exactly("company_id:42", "plan:pro")
     end
 
     it "adds no tags key when the action declares no facets" do

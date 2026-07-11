@@ -309,5 +309,25 @@ RSpec.describe Axn::Configurable::Settings do
         expect(action_class.mode).to eq(:b)
       end
     end
+
+    describe ".resolve_override_for (collision-proof framework path)" do
+      it "resolves the override even when the class shadows every generated accessor" do
+        action_class.mode :b
+        action_class.define_singleton_method(:mode) { |*| :hijacked }
+        action_class.define_singleton_method(:resolved_mode) { :hijacked }
+        action_class.define_singleton_method(:raw_mode) { :hijacked }
+
+        expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
+      end
+
+      it "falls back to the live singleton when no override is set" do
+        singleton.mode = :b
+        expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
+      end
+
+      it "raises KeyError for a setting that isn't overridable" do
+        expect { klass.resolve_override_for(action_class, :not_a_setting) }.to raise_error(KeyError)
+      end
+    end
   end
 end

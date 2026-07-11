@@ -61,10 +61,27 @@ module Axn
         end
       end
 
+      # Resolves `name` for `klass` through the same override store + fallback the
+      # generated accessors use, WITHOUT dispatching to a class method on `klass`.
+      # For framework code that consumes an override: the generated `<name>` /
+      # `resolved_<name>` readers are all shadowable by a same-named class method
+      # on the action (or a subclass), which would silently bypass the override
+      # store — so the framework resolves through this registry instead. Raises
+      # KeyError if `name` isn't an overridable setting (a declaration-time bug).
+      def resolve_override_for(klass, name)
+        _override_resolvers.fetch(name.to_sym).call(klass)
+      end
+
       private
 
       def _override_methods_module
         @_override_methods_module ||= Module.new
+      end
+
+      # Per-setting resolver lambdas, keyed by name — the collision-proof path
+      # `resolve_override_for` dispatches through.
+      def _override_resolvers
+        @_override_resolvers ||= {}
       end
 
       # Generates `<name>(value = UNSET)` / `raw_<name>` / `resolved_<name>` on the
@@ -97,6 +114,10 @@ module Axn
           found = raw_lookup.call(start)
           UNSET.equal?(found) ? fallback.call : setting.resolve(found)
         end
+
+        # Register for the collision-proof `resolve_override_for` path, so framework
+        # code never has to dispatch through a shadowable generated accessor.
+        _override_resolvers[name] = resolve_override
 
         _override_methods_module.module_eval do
           define_method(name) do |value = UNSET|
