@@ -3329,6 +3329,71 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  # The schema's deep requiredness claims must AGREE with runtime outcomes (or diverge only in the
+  # stricter direction). Each example asserts both sides against the same class.
+  describe "runtime agreement for deep subfields" do
+    it "required deep leaf: schema requires the chain, runtime rejects omission and accepts the full path" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :id, on: :meta, type: Integer
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+      expect(klass.call).not_to be_ok                                   # omitted payload strands id
+      expect(klass.call(payload: { meta: nil })).not_to be_ok           # nil meta strands id
+      expect(klass.call(payload: { meta: { id: 7 } })).to be_ok
+    end
+
+    it "all-optional deep chain: schema omits requiredness, runtime accepts omission, nil parent, and full path" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :zip, on: "payload.address", type: String, optional: true
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to be_nil
+      expect(klass.call).to be_ok
+      expect(klass.call(payload: nil)).to be_ok
+      expect(klass.call(payload: { address: nil })).to be_ok
+      expect(klass.call(payload: { address: { zip: "10001" } })).to be_ok
+    end
+
+    it "dotted field name: runtime digs the same path the schema advertises" do
+      klass = Class.new do
+        include Axn
+        expects :foo, type: Hash
+        expects "bar.baz", on: :foo, type: String
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:foo][:properties][:bar][:required]).to eq(["baz"])
+      expect(klass.call(foo: {})).not_to be_ok
+      expect(klass.call(foo: { bar: {} })).not_to be_ok
+      expect(klass.call(foo: { bar: { baz: "ok" } })).to be_ok
+    end
+
+    it "defaulted depth-1 parent with a required deep child: schema optional, runtime accepts omission (default materializes)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :meta, on: :payload, type: Hash, default: { id: 1 }
+        expects :id, on: :meta, type: Integer
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to be_nil
+      expect(klass.call).to be_ok
+    end
+  end
+
   # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
   # representation (PRO-2872 represents every OTHER deep chain). This query names exactly those
   # omitted configs so the caller can warn — it must NOT flag a represented (object-shaped) chain,
