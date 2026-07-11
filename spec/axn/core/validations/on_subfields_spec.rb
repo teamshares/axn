@@ -415,6 +415,80 @@ RSpec.describe Axn do
             "(drop `readers: false` on :bar, or name a readable parent)",
           )
         end
+
+        # `readers: false` skips reader generation and therefore the duplicate-sub-keys collision check,
+        # so a subfield whose name shadows an inherited public method (e.g. :class, :hash) leaves
+        # `method_defined?(name)` true even though axn generated no reader. The guard must consult the
+        # set of readers axn actually generated, not `method_defined?` — otherwise `public_send(:class)`
+        # reads the action class (not `payload[:class]`) at runtime while reflection advertises the path.
+        it "raises when the readers: false parent's name shadows an inherited method (:class)" do
+          expect do
+            build_axn do
+              expects :payload
+              expects :class, on: :payload, readers: false
+              expects :name, on: :class
+            end
+          end.to raise_error(
+            ArgumentError,
+            "expects called with `on: class`, but :class was declared with `readers: false` — " \
+            "a subfield parent must have a reader for the runtime to resolve " \
+            "(drop `readers: false` on :class, or name a readable parent)",
+          )
+        end
+
+        it "raises for another inherited-method name (:hash), proving it is not :class-specific" do
+          expect do
+            build_axn do
+              expects :payload
+              expects :hash, on: :payload, readers: false
+              expects :name, on: :hash
+            end
+          end.to raise_error(
+            ArgumentError,
+            "expects called with `on: hash`, but :hash was declared with `readers: false` — " \
+            "a subfield parent must have a reader for the runtime to resolve " \
+            "(drop `readers: false` on :hash, or name a readable parent)",
+          )
+        end
+
+        # `readers: true` (the default) DOES generate the reader, so the collision check still fires
+        # first for an inherited-method name — unchanged by the readerless-parent guard.
+        it "still raises the duplicate-sub-keys error for a readers: true subfield named :class" do
+          expect do
+            build_axn do
+              expects :payload
+              expects :class, on: :payload
+            end
+          end.to raise_error(
+            ArgumentError,
+            "expects does not support duplicate sub-keys (i.e. `class` is already defined)",
+          )
+        end
+      end
+
+      # The generated-reader record must inherit copy-on-write so a subclass can anchor a subfield on a
+      # parent whose reader was generated in the superclass.
+      context "a normal chain (readers: true parent)" do
+        it "declares without raising and resolves at runtime" do
+          action = build_axn do
+            expects :payload
+            expects :bar, on: :payload
+            expects :baz, on: :bar
+          end
+
+          expect(action.call(payload: { bar: { baz: 3 } })).to be_ok
+        end
+
+        it "lets a subclass anchor a subfield on a parent whose reader the superclass generated" do
+          parent = build_axn do
+            expects :payload
+            expects :bar, on: :payload
+          end
+
+          child = Class.new(parent)
+          expect { child.expects :baz, on: :bar }.not_to raise_error
+          expect(child.call(payload: { bar: { baz: 3 } })).to be_ok
+        end
       end
     end
 
