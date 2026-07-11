@@ -366,6 +366,7 @@ module Axn
     # =========================================================================
 
     def with_contract(&block)
+      apply_inbound_coercion!
       return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
 
@@ -410,6 +411,24 @@ module Axn
       @context.__record_early_completion(e.message, standalone: e.standalone)
       trigger_on_success
       true
+    end
+
+    # Wire→Ruby coercion for declared-inbound fields that opted in via `coerce:` (a `coerce: true`
+    # flag inside the type bag). Runs first in the inbound pipeline — before any user preprocess:,
+    # defaults, and validation — so downstream stages see the Ruby value. Coerce-or-leave
+    # (Axn::Reflection::Coercion): only String values are transformed, an unparseable string passes
+    # through to the normal TypeValidator error, and a present real object is untouched. Top-level
+    # fields only (subfields reject coerce: at declaration); absent keys are not materialized.
+    def apply_inbound_coercion!
+      @action_class.send(:internal_field_configs).each do |config|
+        type_opt = config.validations[:type]
+        next unless type_opt.is_a?(Hash) && type_opt[:coerce]
+        next unless @context.provided_data.key?(config.field)
+
+        klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
+        @context.provided_data[config.field] =
+          Axn::Reflection::Coercion.coerce_value(@context.provided_data[config.field], klasses)
+      end
     end
 
     def apply_inbound_preprocessing!
