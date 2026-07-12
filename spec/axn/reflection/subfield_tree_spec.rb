@@ -141,104 +141,101 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.dropped.map(&:field)).to eq([:id])
     end
 
-    it "drops a deep config whose implicit intermediate collides with a non-object shape member" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash do
-          field :bar, type: String
-        end
-        expects "bar.baz", on: :payload, type: String
-      end
-      tree = tree_for(klass)
+    # A deep config whose implicit intermediate collides with a non-object/mixed-union shape member (at
+    # any depth, including a member-of-a-member, and however the merge is assembled) is no longer
+    # dropped+warned: it now raises ArgumentError at declaration (PRO-2877 family 2 — see
+    # subfield_contradictions_spec.rb and on_subfields_spec.rb's "family 2" examples for the message
+    # contract). The structural variants below are converted to declaration-raise assertions rather than
+    # deleted, since each still exercises a distinct shape of the underlying collision.
 
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
+    it "raises at declaration when an implicit intermediate collides with a non-object shape member" do
+      expect do
+        Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+      end.to raise_error(ArgumentError, /:bar\.baz \(on: payload\) nests beneath shape member :bar on :payload/)
     end
 
-    it "drops a deep config whose implicit intermediate collides with a mixed-union shape member" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash do
-          field :bar, type: [Hash, Array]
+    it "raises at declaration when an implicit intermediate collides with a mixed-union shape member" do
+      expect do
+        Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array]
+          end
+          expects "bar.baz", on: :payload, type: String
         end
-        expects "bar.baz", on: :payload, type: String
-      end
-      tree = tree_for(klass)
-
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
+      end.to raise_error(ArgumentError, /:bar\.baz \(on: payload\) nests beneath shape member :bar on :payload/)
     end
 
-    it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
+    it "raises at declaration when a non-object shape member declared on a merged node's SECOND config collides" do
       # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the scalar
-      # member x. blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
+      # member x. blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still collides.
       # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
       x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
-      klass = Class.new do
-        include Axn
-        expects :foo, type: Hash
-        expects :bar, on: :foo, type: Hash
-        expects "bar.baz", on: :foo, type: Hash
-        expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }
-        expects "baz.x.y", on: :bar
-      end
-      tree = tree_for(klass)
-
-      baz = tree.roots[:foo].children[:bar].children[:baz]
-      expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:"baz.x.y"])
+      expect do
+        Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash
+          expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }
+          expects "baz.x.y", on: :bar
+        end
+      end.to raise_error(ArgumentError, /:baz\.x\.y \(on: bar\) nests beneath shape member :x on :baz/)
     end
 
-    it "drops a deep config when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
+    it "raises at declaration when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
       # baz is a merged node; both routes declare a nestable Hash member `x`, but their NESTED members at
       # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a scalar String. Carrying only
-      # the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying ALL colliding members
-      # tests route 2's scalar `y` and drops `x.y.z`, matching emission (which carries every member).
+      # the FIRST nestable `x` would test route 1's `y` alone and not collide; carrying ALL colliding
+      # members tests route 2's scalar `y` too, matching emission (which carries every member).
       y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
       x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
       y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
       x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
-      klass = Class.new do
-        include Axn
-        expects :foo, type: Hash
-        expects :bar, on: :foo, type: Hash
-        expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash }
-        expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }
-        expects "x.y.z", on: :baz
-      end
-      tree = tree_for(klass)
-
-      baz = tree.roots[:foo].children[:bar].children[:baz]
-      expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:"x.y.z"])
+      expect do
+        Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash }
+          expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }
+          expects "x.y.z", on: :baz
+        end
+      end.to raise_error(ArgumentError, /:x\.y\.z \(on: baz\) nests beneath shape member :y on :x/)
     end
 
-    it "drops a deep config whose implicit intermediate collides with a SCALAR member of a member (carried through implicit descent)" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash do
-          field :bar, type: Hash do
-            field :baz, type: String
+    it "raises at declaration when an implicit intermediate collides with a SCALAR member of a member (carried through implicit descent)" do
+      expect do
+        Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: String
+            end
           end
+          expects "bar.baz.qux", on: :payload
         end
-        expects "bar.baz.qux", on: :payload
-      end
-      tree = tree_for(klass)
-
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end.to raise_error(ArgumentError, /:bar\.baz\.qux \(on: payload\) nests beneath shape member :baz on :bar/)
     end
 
-    it "drops a deep config whose implicit intermediate collides with a mixed-union member of a member" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash do
-          field :bar, type: Hash do
-            field :baz, type: [Hash, Array]
+    it "raises at declaration when an implicit intermediate collides with a mixed-union member of a member" do
+      expect do
+        Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: [Hash, Array]
+            end
           end
+          expects "bar.baz.qux", on: :payload
         end
-        expects "bar.baz.qux", on: :payload
-      end
-      tree = tree_for(klass)
-
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end.to raise_error(ArgumentError, /:bar\.baz\.qux \(on: payload\) nests beneath shape member :baz on :bar/)
     end
 
     it "does NOT drop a deep config nesting through an OBJECT member of a member (member-of-member is nestable)" do

@@ -1373,5 +1373,34 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
     end
+
+    describe "family 2: non-object shape member + colliding deep subfield" do
+      it "raises when a deep subfield nests under a non-object (String) shape member" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: String
+            end
+            expects "bar.baz", on: :payload, type: String
+          end
+        end.to raise_error(
+          ArgumentError,
+          ":bar.baz (on: payload) nests beneath shape member :bar on :payload, which is declared a non-object " \
+          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
+          "(Hash/:params), or drop the nested subfield.",
+        )
+      end
+
+      it "does not raise when the colliding shape member is object-shaped" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: Hash
+            end
+            expects "bar.baz", on: :payload, type: String
+          end
+        end.not_to raise_error
+      end
+    end
   end
 end

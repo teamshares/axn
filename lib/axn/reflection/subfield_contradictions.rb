@@ -144,12 +144,45 @@ module Axn
         )
       end
 
-      # Filled in by Task 3.
-      def family_2(_parent_node, _member, _deep_config) = nil
+      # `parent_node` is unused: it may itself be IMPLICIT (nil `.config`) when the collision is a member
+      # of a member reached through `carried_members` — the naive `parent_node.config.field` crashes
+      # there, and even when `parent_node` is explicit-but-merged, `configs.first` isn't necessarily the
+      # config that declared `member`'s shape. `shape_parent_field` derives the true immediate carrier
+      # from `deep_config`'s own dotted on:/field chain instead, which is robust to both.
+      def family_2(_parent_node, member, deep_config)
+        parent_field = shape_parent_field(member, deep_config)
+        Contradiction.new(
+          family: 2,
+          message: "#{label(deep_config)} nests beneath shape member :#{member.field} on :#{parent_field}, " \
+                   "which is declared a non-object type (#{member_type_desc(member)}) — a nested subfield has " \
+                   "nowhere to live. Make :#{member.field} an object-shaped member (Hash/:params), " \
+                   "or drop the nested subfield.",
+        )
+      end
 
       # Filled in by Task 4.
       def family_3(_model_ancestor, _defaulted) = nil
       # rubocop:enable Naming/VariableNumber
+
+      # A short human name for the shape member's declared type, for the error message.
+      def member_type_desc(member)
+        klass = member.validations.dig(:type, :klass) || member.validations[:type]
+        Array(klass).map { |k| k.is_a?(Class) ? k.name : k.to_s }.join(" | ")
+      end
+
+      # The field that immediately carries `member`'s shape — reconstructed from `deep_config`'s own
+      # dotted `on:`/`field` chain (the same segments SubfieldTree splits into hops) rather than from a
+      # `parent_node` reference, because that node may be implicit (member-of-a-member, reached only
+      # through `carried_members`) or an explicit-but-merged node whose FIRST config isn't necessarily the
+      # one that declared `member`'s shape. `member.field` always equals the exact hop key at the
+      # collision point, so its position in the reconstructed chain recovers its true immediate parent —
+      # the chain's own root (deep_config's `on:`) when `member` collides at the first hop.
+      def shape_parent_field(member, deep_config)
+        root, *on_rest = deep_config.on.to_s.split(".").map(&:to_sym)
+        chain = on_rest + deep_config.field.to_s.split(".").map(&:to_sym)
+        idx = chain.index(member.field.to_sym) || 0
+        idx.positive? ? chain[idx - 1] : root
+      end
     end
   end
 end
