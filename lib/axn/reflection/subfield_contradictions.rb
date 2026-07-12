@@ -160,8 +160,16 @@ module Axn
         )
       end
 
-      # Filled in by Task 4.
-      def family_3(_model_ancestor, _defaulted) = nil
+      def family_3(model_ancestor, defaulted)
+        Contradiction.new(
+          family: 3,
+          message: "expects :#{model_ancestor.field} is a nil-tolerant model: (allow_nil:) but " \
+                   "#{label(defaulted)} carries a default — the default materializes an empty object under " \
+                   ":#{model_ancestor.field}, which the model validator rejects as not a record, so " \
+                   ":#{model_ancestor.field} can never be omitted. Drop allow_nil: on :#{model_ancestor.field}, " \
+                   "or drop the subfield default.",
+        )
+      end
       # rubocop:enable Naming/VariableNumber
 
       # A short human name for the shape member's declared type, for the error message.

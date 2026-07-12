@@ -1402,5 +1402,43 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
     end
+
+    describe "family 3: nil-tolerant model: parent + applied-default descendant" do
+      it "raises when a nil-tolerant model parent has a defaulted subfield" do
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, allow_nil: true
+            expects :name, on: :company, default: "Acme"
+          end
+        end.to raise_error(
+          ArgumentError,
+          "expects :company is a nil-tolerant model: (allow_nil:) but :name (on: company) carries a default " \
+          "— the default materializes an empty object under :company, which the model validator rejects as " \
+          "not a record, so :company can never be omitted. Drop allow_nil: on :company, or drop the subfield default.",
+        )
+      end
+
+      it "counts a Proc default (materialization fires before the Proc runs)" do
+        # `optional: true` keeps this isolated to family 3: a bare Proc default (no allow_nil:/optional:)
+        # already trips family 1 first (self_required? treats a Proc as unusable, per usable_default?'s
+        # side-effect-free design — it never calls the Proc to see whether the result would satisfy
+        # presence), which is a genuine, separate contradiction and not what this example targets.
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, allow_nil: true
+            expects :name, on: :company, default: -> { "x" }, optional: true
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+      end
+
+      it "does not raise for a required model parent with a defaulted subfield" do
+        expect do
+          build_axn do
+            expects :company, model: FakeModel
+            expects :name, on: :company, default: "Acme"
+          end
+        end.not_to raise_error
+      end
+    end
   end
 end
