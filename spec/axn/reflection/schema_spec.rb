@@ -3828,4 +3828,207 @@ RSpec.describe Axn::Reflection::Schema do
       expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
     end
   end
+
+  # PIN: exact input_schema Hashes captured from the pre-refactor (per-site recomputation) emission
+  # logic, before PRO-2877 introduces a single bottom-up `{required, nullable}` derivation. This is a
+  # pure consolidation refactor — computed once vs. recomputed at each emission site — so every one of
+  # these Hashes must stay byte-identical after the derivation lands. One example per row of the
+  # legal-contract table: object parent, model parent, `type: Array` parent, mixed union, a
+  # representable deep chain, a defaulted subtree, nested shape members, and the shape-member
+  # synthesis hazard (both a shallow and a deep dotted-name trigger).
+  describe "single-pass derivation parity (PRO-2877)" do
+    it "emits the same input_schema for a representable deep chain" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash
+        expects :id, on: "payload.meta", type: Integer
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: {
+            type: "object",
+            properties: {
+              meta: {
+                type: "object",
+                properties: { id: { type: "integer" } },
+                required: ["id"],
+              },
+            },
+            required: ["meta"],
+          },
+        },
+        required: ["payload"],
+      )
+    end
+
+    it "emits the same input_schema for a model: parent with a nested subfield" do
+      klass = Class.new do
+        include Axn
+        expects :user, model: { klass: Struct.new(:id), finder: :find }
+        expects :name, on: :user, type: String
+      end
+
+      schema = klass.input_schema
+      expect(schema[:properties].keys).to eq([:user_id])
+      expect(schema[:properties][:user_id]).to include(not: { type: "null" })
+      expect(schema[:required]).to eq(["user_id"])
+    end
+
+    it "emits the same input_schema for a type: Array parent with a shape" do
+      klass = Class.new do
+        include Axn
+        expects :items, type: Array do
+          field :status, type: String
+        end
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { status: { type: "string" } },
+              required: ["status"],
+            },
+          },
+        },
+        required: ["items"],
+      )
+    end
+
+    it "emits the same input_schema for a mixed-union (type: [Hash, Array]) parent with a subfield" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: [Hash, Array]
+        expects :length, on: :payload, type: Integer
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: { anyOf: [{ type: "object" }, { type: "array" }] },
+        },
+        required: ["payload"],
+      )
+    end
+
+    it "emits the same input_schema for a defaulted deep (dotted-name) subtree" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects "address.zip", on: :payload, default: "x"
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: {
+            type: "object",
+            properties: {
+              address: {
+                type: %w[object null],
+                properties: {
+                  zip: { default: "x", not: { type: "null" } },
+                },
+              },
+            },
+          },
+        },
+      )
+    end
+
+    it "emits the same input_schema for nested shape members (member of a member)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :status, type: String
+          field :meta, type: Hash do
+            field :count, type: Integer
+          end
+        end
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: {
+            type: "object",
+            properties: {
+              status: { type: "string" },
+              meta: {
+                type: "object",
+                properties: { count: { type: "integer" } },
+                required: ["count"],
+              },
+            },
+            required: %w[status meta],
+          },
+        },
+        required: ["payload"],
+      )
+    end
+
+    it "emits the same input_schema for the shape-member synthesis hazard: a nil-tolerant Hash parent " \
+       "with a required do...end shape member plus a defaulted shallow on: subfield " \
+       "(required_child?'s surviving second disjunct)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects :note, on: :payload, optional: true, type: String, default: "x"
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: {
+            type: "object",
+            properties: {
+              status: { type: "string" },
+              note: { type: %w[string null], default: "x" },
+            },
+            required: ["status"],
+          },
+        },
+        required: ["payload"],
+      )
+    end
+
+    it "emits the same input_schema for the shape-member synthesis hazard triggered by a DEEP " \
+       "(dotted-name) default" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true do
+          field :status, type: String
+        end
+        expects "address.zip", on: :payload, default: "x"
+      end
+
+      expect(klass.input_schema).to eq(
+        type: "object",
+        properties: {
+          payload: {
+            type: "object",
+            properties: {
+              status: { type: "string" },
+              address: {
+                type: %w[object null],
+                properties: {
+                  zip: { default: "x", not: { type: "null" } },
+                },
+              },
+            },
+            required: ["status"],
+          },
+        },
+        required: ["payload"],
+      )
+    end
+  end
 end
