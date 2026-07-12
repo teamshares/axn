@@ -49,13 +49,11 @@ module Axn
 
       # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
       # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
-      # aliases and dotted segments once, up front). STRUCTURAL EXCLUSIONS remain, three of them: a deep
-      # subfield whose chain passes through a `model:` parent (the client sends `<field>_id`, not the
-      # object) or a non-object parent (`type: Array`, a mixed union) has no JSON-object representation;
-      # and a dotted-NAME `model:` config (`expects "org.company", on: :payload, model:`) has no
-      # JSON-consumable id (dotted_model_config? — no reader is generated, so the runtime model lookup
-      # never runs). All are omitted — surfaced via dropped_deep_subfields / the input_schema warning. A
-      # depth-1 subfield under such a parent is silently omitted (the parent keeps its declared type), as ever.
+      # aliases and dotted segments once, up front). A STRUCTURAL EXCLUSION remains: a deep subfield
+      # whose chain passes through a `model:` parent (the client sends `<field>_id`, not the object) or
+      # a non-object parent (`type: Array`, a mixed union) has no JSON-object representation, so it's
+      # omitted — surfaced via dropped_deep_subfields / the input_schema warning. A depth-1 subfield
+      # under such a parent is silently omitted (the parent keeps its declared type), as ever.
       def build_input(field_configs, subfield_configs = [])
         tree = SubfieldTree.build(field_configs, Array(subfield_configs))
         properties = {}
@@ -94,11 +92,9 @@ module Axn
 
       # The subfield configs build_input omits from the input schema: deep configs (a dotted `on:`
       # path, a subfield of a subfield, or a dotted field name) whose chain passes through a `model:`
-      # or non-object parent, so they have no JSON-object representation; PLUS a dotted-NAME `model:`
-      # config, which has no JSON-consumable id of its own (dotted_model_config? — no reader is generated,
-      # so the runtime model lookup never runs). They validate at runtime but are absent from the schema;
-      # a caller can surface this otherwise-silent gap. A representable deep chain (every explicit ancestor
-      # object-shaped) is NOT dropped — it nests in the schema.
+      # or non-object parent, so they have no JSON-object representation. They validate at runtime but
+      # are absent from the schema; a caller can surface this otherwise-silent gap. A representable deep
+      # chain (every explicit ancestor object-shaped) is NOT dropped — it nests in the schema.
       # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
       # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
       # inspects declared configs only).
@@ -131,21 +127,6 @@ module Axn
       # schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
       def node_configs_block_nesting?(configs)
         configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
-      end
-
-      # Whether a `model:` config's field NAME is dotted (`expects "org.company", on: :payload, model:`).
-      # Such a config has NO JSON-consumable representation: a dotted subfield name generates no reader
-      # (ContractForSubfields#_define_subfield_reader returns early), so at runtime the id→record model
-      # lookup never runs — subfield validation falls back to the raw Extract resolver, which digs the
-      # object at `<parent>.<name>`, and the advertised `<leaf>_id` can never feed it. So it joins the
-      # structural exclusions (dropped, warned) rather than emit an id the runtime can't consume. A dotted
-      # `on:` with a NON-dotted name (`expects :company, on: "payload.org", model:`) DOES generate a reader
-      # that consumes the id, so it is NOT excluded. Single source of truth for BOTH the drop pass
-      # (SubfieldTree.compute_dropped) and emission (apply_children!), so the two never disagree.
-      def dotted_model_config?(config)
-        return false unless config.validations[:model]
-
-        config.field.to_s.include?(".")
       end
 
       def object_type_branches(config)
@@ -449,12 +430,7 @@ module Axn
             next
           end
 
-          # A dotted-NAME model config (dotted_model_config?) has no JSON-consumable representation — the
-          # id→record lookup never runs at runtime (no reader), so it emits no `<leaf>_id` and is dropped
-          # (it's in dropped_deep_subfields). It's excluded from BOTH kinds here, so if it's the only config
-          # at the node the node contributes no property at all. Its requiredness obligation still shapes
-          # ancestors via the tree (subtree_requires_presence?), exactly as other dropped configs do.
-          model_configs = node.configs.select { |c| c.validations[:model] && !dotted_model_config?(c) }
+          model_configs = node.configs.select { |c| c.validations[:model] }
           non_model_configs = node.configs.reject { |c| c.validations[:model] }
 
           unless model_configs.empty?
@@ -491,32 +467,11 @@ module Axn
 
       # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
       # property whose only content is its children. When a `shape:` member of any `parent_configs`
-      # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
-      # predicate on the SAME member configs that SubfieldTree.blocking_ancestor? uses (it scans ALL of
-      # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
-      # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
-      # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
-      # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
-      # is built from the first non-model config, so a scalar member declared on a LATER config seeds
-      # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
-      #
-      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
-      # subfields regardless of representability, so when the dropped subtree requires presence
-      # (subtree_requires_presence? — the same predicate used everywhere) the colliding member's own
-      # property still inherits that obligation. The member is forced required and its `null` admission
-      # stripped (reject_null! handles both `type:` arrays and `anyOf` unions) — because a nil/absent
-      # member strands the required descendant (PRO-2857). Nothing else about the member is touched (no
-      # forced object type, no properties — its shape stays dropped). An all-optional dropped subtree
-      # strands nothing, so the member keeps its declared flags (runtime accepts omission/nil there).
+      # claims the key, it merges into that member's property instead: every colliding member is
+      # guaranteed `nestable_as_object?` (a non-object member colliding with a nested subfield is rejected
+      # at declaration, PRO-2877), so the merge is unconditional.
       def apply_implicit_node!(prop, key, node, parent_configs)
         members = shape_members_at(parent_configs, key)
-        if members.any? { |member| !nestable_as_object?(member) }
-          if subtree_requires_presence?(node)
-            prop[:required] << key.to_s
-            reject_null!(prop[:properties][key]) if prop[:properties][key]
-          end
-          return
-        end
 
         # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
         # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members
@@ -776,10 +731,7 @@ module Axn
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
       # with its own usable default) AND no descendant subfield requires presence (a required subfield at
-      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
-      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
-      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
-      # model instance — so an omitted id fails at runtime). OR an
+      # any depth resolves off the record, so an omitted record strands it). OR an
       # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
       # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
       # required it also can't be null, so any `null` branch is stripped.
@@ -791,9 +743,7 @@ module Axn
       def apply_model_id_requiredness!(config, children, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        model_omittable = optional_for_schema?(config) &&
-                          !children_require_presence?(children) &&
-                          !subtree_has_applied_subfield_default?(children)
+        model_omittable = optional_for_schema?(config) && !children_require_presence?(children)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
