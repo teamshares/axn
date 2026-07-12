@@ -1274,4 +1274,36 @@ RSpec.describe Axn do
       end
     end
   end
+
+  describe "contradiction rejections (PRO-2877)" do
+    # A minimal model target; the raise fires at declaration, before any resolution.
+    # rubocop:disable Lint/ConstantDefinitionInBlock
+    class FakeModel; def self.find(_id) = new; end
+    # rubocop:enable Lint/ConstantDefinitionInBlock
+
+    describe "family 4: dotted-name model: subfield" do
+      it "raises, pointing at the reader spelling" do
+        expect do
+          build_axn do
+            expects :payload
+            expects "org.company", on: :payload, model: FakeModel
+          end
+        end.to raise_error(
+          ArgumentError,
+          'a dotted-name model: subfield (["org.company"] with on: payload) has no consumable id — ' \
+          "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+          'Use the reader spelling instead: expects :company, on: "payload.org", model: ...',
+        )
+      end
+
+      it "does not raise for the reader spelling (dotted on:, single-level name)" do
+        expect do
+          build_axn do
+            expects :payload
+            expects :company, on: "payload.org", model: FakeModel
+          end
+        end.not_to raise_error
+      end
+    end
+  end
 end

@@ -225,6 +225,21 @@ module Axn
                     "an adapter can coerce deeper by walking the schema)."
             end
 
+            # A dotted field NAME (e.g. "org.company") generates no reader (see
+            # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
+            # which is wired onto the generated reader — never runs, and the advertised
+            # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
+            # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
+            # still gets a reader. Point the error at that spelling.
+            if parsed_validations.key?(:model) && field.to_s.include?(".")
+              *parents, leaf = field.to_s.split(".")
+              working_on = ([on] + parents).join(".")
+              raise ArgumentError,
+                    "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{on}) has no consumable id — " \
+                    "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+                    "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
+            end
+
             reader = reader_names[field] || field
             SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader).tap do |config|
               if readers
