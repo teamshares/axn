@@ -174,7 +174,8 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     it "raises at declaration when a non-object shape member declared on a merged node's SECOND config collides" do
       # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the scalar
-      # member x. blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still collides.
+      # member x. The drop pass (path_blocked? / node_configs_block_nesting?) scans EVERY config at the
+      # node, so the deep `baz.x.y` still collides.
       # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
       x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
       expect do

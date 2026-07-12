@@ -3635,7 +3635,8 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       # The decision to NEST a merged node's children must consult ALL configs at the node, not just the
-      # first non-model one, mirroring SubfieldTree.blocking_ancestor? (which scans every config). A merged
+      # first non-model one, mirroring the drop pass's node_configs_block_nesting? check, which scans every
+      # config. A merged
       # node with one nestable Hash route and one non-nestable mixed-union route cannot hold object
       # properties, so its deep child is dropped — and must NOT also be nested, or the input_schema warning
       # lies (claims omitted while it is present) and the outcome flips with declaration order.
@@ -3678,7 +3679,7 @@ RSpec.describe Axn::Reflection::Schema do
       # A merged model+non-model node's deep grandchild resolves off the model record at runtime (the
       # client sends `<leaf>_id`, not the object), so the drop pass omits it. Emission must not nest it
       # under the non-model route's object property either — the nesting gate consults every config, so a
-      # model route at the node blocks nesting exactly as blocking_ancestor? does.
+      # model route at the node blocks nesting exactly as node_configs_block_nesting? does.
       it "does not nest a deep grandchild under a merged model+non-model node (agrees with dropped)" do
         # Both routes are required (not optional:) — an optional merged route here would be a nil-tolerant
         # ancestor above the required :name grandchild, which PRO-2877 family 1 now rejects at declaration;
