@@ -122,7 +122,7 @@ module Axn
       # Whether the configs declared at a subfield node forbid nesting its children as object properties:
       # a `model:` route (the client sends `<field>_id`, not the object) or a non-nestable type (a
       # non-object type or a mixed union) on ANY config. Single source of truth for the drop pass
-      # (SubfieldTree.blocking_ancestor?) and emission (apply_nested_subfields!), so the two never disagree
+      # (SubfieldTree.path_blocked?) and emission (apply_nested_subfields!), so the two never disagree
       # on which deep structure is representable — a node the tree drops from is never re-nested in the
       # schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
       def node_configs_block_nesting?(configs)

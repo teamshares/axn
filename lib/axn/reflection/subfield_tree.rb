@@ -73,16 +73,12 @@ module Axn
         deep_paths.filter_map { |config, hops| config if path_blocked?(hops) }
       end
 
-      # Walk a deep config's ancestor chain hop by hop.
+      # Walk a deep config's ancestor chain hop by hop. An explicit ancestor blocks when its configs
+      # forbid nesting (a `model:` route, or a non-object/mixed-union type on any route) — the SAME
+      # predicate emission gates on (Schema.node_configs_block_nesting?), so the drop pass and the
+      # schema agree. An implicit ancestor never blocks.
       def path_blocked?(hops)
         hops.any? { |node, _key| Schema.node_configs_block_nesting?(node.configs) }
-      end
-
-      # An explicit ancestor blocks nesting when its configs forbid it (a `model:` route, or a non-object /
-      # mixed-union type on any route) — the SAME predicate emission gates on (Schema.node_configs_block_nesting?),
-      # so the drop pass and the schema agree. An implicit ancestor never blocks.
-      def blocking_ancestor?(node, _key, _carried = [])
-        Schema.node_configs_block_nesting?(node.configs)
       end
     end
   end
