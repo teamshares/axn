@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/subfields"
+require "axn/reflection/subfield_contradictions"
 
 module Axn
   module Core
@@ -166,6 +167,14 @@ module Axn
 
             # NOTE: avoid <<, which would update value for parents and children
             self.subfield_configs += configs
+
+            # Reject contradiction-only contracts (families 1–3) once the new configs are in the tree. Built
+            # fresh (not cached) — this is class-load time, off the runtime hot path. Family 4 is a local
+            # check in _parse_subfield_configs.
+            tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs)
+            if (contradiction = Axn::Reflection::SubfieldContradictions.detect(tree))
+              raise ArgumentError, contradiction.message
+            end
           end
         end
 

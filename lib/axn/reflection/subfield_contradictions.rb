@@ -1,0 +1,146 @@
+# frozen_string_literal: true
+
+require "axn/reflection/subfield_tree"
+
+module Axn
+  module Reflection
+    # Declaration-time detector for contradiction-only subfield contracts (PRO-2877). Walks the
+    # resolved SubfieldTree once, top-down, carrying ancestor context, and returns the first
+    # contradiction found (or nil). Reuses Schema's leaf predicates so declaration (which raises here)
+    # and reflection (which emits) share one notion of "contradictory". Side-effect-free: inspects
+    # declared configs only, never runs user code.
+    module SubfieldContradictions
+      Contradiction = Data.define(:family, :message)
+
+      module_function
+
+      def detect(tree)
+        tree.roots.each_value do |root|
+          found = walk(root, nil_tolerant_ancestor: nil, nil_tolerant_model_ancestor: nil, carried_members: [])
+          return found if found
+        end
+        nil
+      end
+
+      # `nil_tolerant_ancestor` / `nil_tolerant_model_ancestor` are the OUTERMOST such ancestor configs
+      # above this node (nil when none). `carried_members` are the object-shaped shape members an
+      # implicit ancestor merged into (for a member-of-a-member family-2 collision at depth).
+      def walk(node, nil_tolerant_ancestor:, nil_tolerant_model_ancestor:, carried_members:)
+        # Family 1: this node must be present, but a nil-tolerant ancestor can strand it.
+        return family_1(nil_tolerant_ancestor, node.config) if nil_tolerant_ancestor && self_required?(node)
+
+        # Family 3 (Task 4 fills this in): applied default under a nil-tolerant model ancestor.
+        if nil_tolerant_model_ancestor && (defaulted = applied_default_config(node))
+          return family_3(nil_tolerant_model_ancestor, defaulted)
+        end
+
+        # A node whose EVERY config carries a usable default is unconditionally omittable regardless of
+        # what's below it (Schema.node_optional?'s first disjunct — the same "trust the default's
+        # contents" divergence emission already relies on): omitting THIS node means runtime materializes
+        # it wholesale from the default, so nothing beneath it is ever stranded by an ancestor's
+        # nil-tolerance. It shields its subtree from any nil-tolerant ancestor above (a required
+        # descendant below a defaulted node is synthesized by that default, not left for the outer
+        # ancestor to strand) — otherwise a working, runtime-verified contract (defaulted intermediate
+        # rescuing a required deep leaf under a nil-tolerant top-level field) would be rejected as if it
+        # couldn't be satisfied, though it demonstrably can.
+        shielded = !node.implicit? && node.configs.all? { |c| Schema.usable_default?(c, subfield: true) }
+        child_nil_tolerant = shielded ? nil : (nil_tolerant_ancestor || outermost_nil_tolerant(node))
+        child_model = shielded ? nil : (nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node))
+
+        node.children.each do |key, child|
+          child_carried = []
+          if child.implicit?
+            # Family 2 (Task 3 fills this in): collision with a non-object shape member.
+            members = Schema.shape_members_at(node.configs + carried_members, key)
+            if (blocker = members.find { |m| !Schema.nestable_as_object?(m) })
+              return family_2(node, blocker, first_leaf_config(child))
+            end
+
+            child_carried = members.select { |m| Schema.nestable_as_object?(m) }
+          end
+
+          found = walk(child, nil_tolerant_ancestor: child_nil_tolerant, nil_tolerant_model_ancestor: child_model, carried_members: child_carried)
+          return found if found
+        end
+        nil
+      end
+
+      # --- family predicates (leaf; reuse Schema) ---
+
+      # A node whose OWN declared signals force it to be present: some config neither carries a usable
+      # subfield default nor tolerates nil. Implicit nodes carry no validators, so they are never
+      # self-required (their obligation lives in their explicit descendants, caught on their own hop).
+      def self_required?(node)
+        return false if node.implicit?
+
+        node.configs.any? { |c| !(Schema.usable_default?(c, subfield: true) || Schema.nil_accepted?(c)) }
+      end
+
+      def nil_tolerant?(node)
+        !node.implicit? && node.configs.any? { |c| Schema.nil_accepted?(c) }
+      end
+
+      def nil_tolerant_config(node)
+        node.configs.find { |c| Schema.nil_accepted?(c) }
+      end
+
+      def nil_tolerant_model?(node)
+        !node.implicit? && node.configs.any? { |c| c.validations[:model] && Schema.nil_accepted?(c) }
+      end
+
+      def nil_tolerant_model_config(node)
+        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) }
+      end
+
+      # This node's own nil-tolerant config, when it is itself nil-tolerant — nil otherwise (no ancestor
+      # concern originates here). Named for what `walk` uses it for: becoming the new outermost
+      # nil-tolerant ancestor for this node's children when none was already carried from above.
+      def outermost_nil_tolerant(node)
+        nil_tolerant?(node) ? nil_tolerant_config(node) : nil
+      end
+
+      def outermost_nil_tolerant_model(node)
+        nil_tolerant_model?(node) ? nil_tolerant_model_config(node) : nil
+      end
+
+      def applied_default_config(node)
+        return nil if node.implicit?
+
+        node.configs.find { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
+      end
+
+      def first_leaf_config(node)
+        return node.config unless node.implicit?
+
+        node.children.each_value do |child|
+          found = first_leaf_config(child)
+          return found if found
+        end
+        nil
+      end
+
+      # A top-level field config has no `on:`; a subfield config does. Render each as declared.
+      def label(config)
+        on = config.respond_to?(:on) ? config.on : nil
+        on ? ":#{config.field} (on: #{on})" : ":#{config.field}"
+      end
+
+      # --- messages ---
+
+      def family_1(ancestor, descendant)
+        Contradiction.new(
+          family: 1,
+          message: "expects #{label(ancestor)} is declared nil-tolerant (allow_nil:/optional:) but " \
+                   "#{label(descendant)} is required — a nil or omitted :#{ancestor.field} can never " \
+                   "satisfy it. Drop allow_nil:/optional: on :#{ancestor.field}, or make :#{descendant.field} optional.",
+        )
+      end
+
+      # Filled in by Task 3.
+      def family_2(_parent_node, _member, _deep_config) = nil
+
+      # Filled in by Task 4.
+      def family_3(_model_ancestor, _defaulted) = nil
+    end
+  end
+end

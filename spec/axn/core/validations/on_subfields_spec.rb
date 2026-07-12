@@ -186,20 +186,17 @@ RSpec.describe Axn do
       end
 
       context "with a required subfield" do
-        let(:action) do
-          build_axn do
-            expects :payload, optional: true
-            expects :name, on: :payload, type: String
-            def call = nil
-          end
-        end
-
-        it "surfaces a clean InboundValidationError (not a bare RuntimeError)" do
-          result = action.call(payload: nil)
-          expect(result).not_to be_ok
-          expect(result.exception).to be_a(Axn::InboundValidationError)
-          expect(result.exception.message).to include("can't be blank")
-          expect(result.exception.message).not_to match(/Unclear how to extract/)
+        # A nil-tolerant parent (optional:) can never satisfy a required subfield — a nil/omitted
+        # parent yields the subfield absent (PRO-2857), so this is now rejected at declaration rather
+        # than reconciled at runtime (family 1, PRO-2877).
+        it "raises at declaration instead of reconciling at runtime" do
+          expect do
+            build_axn do
+              expects :payload, optional: true
+              expects :name, on: :payload, type: String
+              def call = nil
+            end
+          end.to raise_error(ArgumentError, %r{:payload is declared nil-tolerant \(allow_nil:/optional:\) but :name .* is required})
         end
       end
 
@@ -1301,6 +1298,50 @@ RSpec.describe Axn do
           build_axn do
             expects :payload
             expects :company, on: "payload.org", model: FakeModel
+          end
+        end.not_to raise_error
+      end
+    end
+
+    describe "family 1: nil-tolerant ancestor + required descendant" do
+      it "raises when a nil-tolerant top-level parent has a required deep subfield" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :id, on: "payload.meta", type: Integer
+          end
+        end.to raise_error(
+          ArgumentError,
+          "expects :payload is declared nil-tolerant (allow_nil:/optional:) but :id (on: payload.meta) " \
+          "is required — a nil or omitted :payload can never satisfy it. " \
+          "Drop allow_nil:/optional: on :payload, or make :id optional.",
+        )
+      end
+
+      it "raises when an intermediate subfield is optional: but its subtree requires presence" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, optional: true
+            expects :id, on: "payload.meta", type: Integer
+          end
+        end.to raise_error(ArgumentError, /:meta .* but :id \(on: payload\.meta\) is required/)
+      end
+
+      it "does not raise when the required descendant is itself optional" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :id, on: "payload.meta", type: Integer, optional: true
+          end
+        end.not_to raise_error
+      end
+
+      it "does not raise when the parent is required (no nil-tolerance)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :id, on: "payload.meta", type: Integer
           end
         end.not_to raise_error
       end
