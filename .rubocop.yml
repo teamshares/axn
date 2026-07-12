@@ -86,8 +86,6 @@ Layout/LineLength:
 Naming/VariableNumber:
   Exclude:
     - 'spec/**/*'
-    # family_1/family_2/family_3 name the PRO-2877 contradiction families; renaming them loses that link.
-    - 'lib/axn/reflection/subfield_contradictions.rb'
 
 # Sidekiq::RetrySet doesn't have empty? method
 Style/ZeroLengthPredicate:

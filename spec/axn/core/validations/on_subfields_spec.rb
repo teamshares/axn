@@ -1314,7 +1314,7 @@ RSpec.describe Axn do
           ArgumentError,
           "expects :payload is declared nil-tolerant (allow_nil:/optional:) but :id (on: payload.meta) " \
           "is required — a nil or omitted :payload can never satisfy it. " \
-          "Drop allow_nil:/optional: on :payload, or make :id optional.",
+          "Drop allow_nil:/optional: on :payload, or make :id optional on every declaration that reaches it.",
         )
       end
 
@@ -1342,6 +1342,33 @@ RSpec.describe Axn do
           build_axn do
             expects :payload, type: Hash
             expects :id, on: "payload.meta", type: Integer
+          end
+        end.not_to raise_error
+      end
+
+      it "raises when a defaulted intermediate can't rescue a required descendant under a " \
+         "non-object (type: Array) nil-tolerant ancestor" do
+        # Executor#_materialize_object_parent! refuses to inject `{}` for a non-object parent (type:
+        # Array, a mixed union) — so a nil :payload never materializes, :meta's default never applies,
+        # and :id is genuinely stranded. The defaulted-node shield must NOT suppress this.
+        expect do
+          build_axn do
+            expects :payload, type: Array, allow_nil: true
+            expects :meta, on: :payload, type: Hash, default: { id: 1 }
+            expects :id, on: :meta, type: Integer
+          end
+        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:id .* is required/)
+      end
+
+      it "does not raise when a defaulted intermediate rescues a required descendant under an " \
+         "object-shaped (type: Hash) nil-tolerant ancestor" do
+        # Here a nil :payload CAN be materialized as `{}` by the executor, :meta's default then applies,
+        # and :id is satisfied — the shield correctly suppresses the would-be family-1 contradiction.
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :meta, on: :payload, type: Hash, default: { id: 1 }
+            expects :id, on: :meta, type: Integer
           end
         end.not_to raise_error
       end

@@ -38,14 +38,19 @@ module Axn
         # what's below it (Schema.node_optional?'s first disjunct — the same "trust the default's
         # contents" divergence emission already relies on): omitting THIS node means runtime materializes
         # it wholesale from the default, so nothing beneath it is ever stranded by an ancestor's
-        # nil-tolerance. It shields its subtree from any nil-tolerant ancestor above (a required
-        # descendant below a defaulted node is synthesized by that default, not left for the outer
-        # ancestor to strand) — otherwise a working, runtime-verified contract (defaulted intermediate
-        # rescuing a required deep leaf under a nil-tolerant top-level field) would be rejected as if it
-        # couldn't be satisfied, though it demonstrably can.
+        # nil-tolerance — PROVIDED that materialization can actually happen. A defaulted node shields its
+        # subtree from a nil-tolerant ancestor only when that ancestor is object-shaped
+        # (Schema.object_shaped?), mirroring Executor#_materialize_object_parent!'s own gate: runtime
+        # refuses to inject `{}` for a non-object parent (`type: Array`, a mixed union), so under a
+        # non-object nil-tolerant ancestor the default never applies and a required descendant below IS
+        # stranded — that contradiction must still raise. The MODEL ancestor is never shielded away here:
+        # a default under a nil-tolerant model ancestor doesn't rescue anything either (materialized `{}`
+        # is rejected by ModelValidator), but that is family 3, caught at the defaulted node itself, so
+        # there is nothing for this shield to suppress.
         shielded = !node.implicit? && node.configs.all? { |c| Schema.usable_default?(c, subfield: true) }
-        child_nil_tolerant = shielded ? nil : (nil_tolerant_ancestor || outermost_nil_tolerant(node))
-        child_model = shielded ? nil : (nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node))
+        shield_ancestor = shielded && nil_tolerant_ancestor && Schema.object_shaped?(nil_tolerant_ancestor)
+        child_nil_tolerant = shield_ancestor ? nil : (nil_tolerant_ancestor || outermost_nil_tolerant(node))
+        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
         node.children.each do |key, child|
           child_carried = []
@@ -127,12 +132,15 @@ module Axn
 
       # --- messages ---
 
+      # rubocop:disable Naming/VariableNumber -- family_1/family_2/family_3 name the PRO-2877
+      # contradiction families; renaming them loses that link.
       def family_1(ancestor, descendant)
         Contradiction.new(
           family: 1,
           message: "expects #{label(ancestor)} is declared nil-tolerant (allow_nil:/optional:) but " \
                    "#{label(descendant)} is required — a nil or omitted :#{ancestor.field} can never " \
-                   "satisfy it. Drop allow_nil:/optional: on :#{ancestor.field}, or make :#{descendant.field} optional.",
+                   "satisfy it. Drop allow_nil:/optional: on :#{ancestor.field}, or make :#{descendant.field} " \
+                   "optional on every declaration that reaches it.",
         )
       end
 
@@ -141,6 +149,7 @@ module Axn
 
       # Filled in by Task 4.
       def family_3(_model_ancestor, _defaulted) = nil
+      # rubocop:enable Naming/VariableNumber
     end
   end
 end
