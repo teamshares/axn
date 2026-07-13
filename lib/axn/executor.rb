@@ -572,7 +572,7 @@ module Axn
         return path.wire_path[0..i + 1].join(".") if value.nil?
       end
       nil
-    rescue Core::FieldResolvers::UnextractableError
+    rescue Axn::ContractViolation::UnextractableError
       # A malformed intermediate isn't a nil strand — its own validation reports it; no diagnostic.
       nil
     end
@@ -811,7 +811,7 @@ module Axn
       return root_value if below.empty?
 
       Core::FieldResolvers.resolve(type: :extract, field: below.join("."), provided_data: root_value)
-    rescue Core::FieldResolvers::UnextractableError
+    rescue Axn::ContractViolation::UnextractableError
       # A malformed source reads as absent (PRO-2857): the pre-validation passes skip/no-op and the
       # source's own validation classifies the bad value.
       nil
@@ -842,7 +842,7 @@ module Axn
         value = value.nil? ? nil : Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
       end
       true
-    rescue Core::FieldResolvers::UnextractableError
+    rescue Axn::ContractViolation::UnextractableError
       # A malformed (present but key-less) intermediate can't be written into — the default is
       # skipped and the intermediate's own validation classifies the bad value.
       false

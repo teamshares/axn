@@ -43,7 +43,7 @@ module Axn
           value = Axn::Core::FieldResolvers.resolve(type: :extract, field: hop.last.to_s, provided_data: value)
         end
         value
-      rescue Axn::Core::FieldResolvers::UnextractableError
+      rescue Axn::ContractViolation::UnextractableError
         nil
       end
 

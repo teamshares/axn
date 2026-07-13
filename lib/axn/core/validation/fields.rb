@@ -25,7 +25,7 @@ module Axn
         else
           Axn::Core::FieldResolvers.resolve(type: :extract, field: attr, provided_data: @source)
         end
-      rescue Axn::Core::FieldResolvers::UnextractableError
+      rescue Axn::ContractViolation::UnextractableError
         # A malformed source (can hold neither key nor method) reads as absent — this field's own
         # validators report against nil while the source's own type validation classifies the bad
         # value, instead of a raw extraction error pre-empting the whole contract.
