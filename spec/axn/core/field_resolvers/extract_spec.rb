@@ -56,6 +56,14 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
     it "raises when a non-terminal segment lands on a value that can neither dig nor answer the reader" do
       expect { extract("a.b", { a: 5 }) }.to raise_error(/Unclear how to extract/)
     end
+
+    it "raises the typed UnextractableError (not a raw ArgumentError) for an Array reader needing arguments" do
+      # `Array#fetch`/`#at` respond_to? true but can't be invoked bare — that's "unclear how to
+      # extract", not a crash, so it stays within the malformed-input doctrine (absent via
+      # extract_or_nil) rather than leaking ArgumentError. Same for the single-segment reader path.
+      expect { extract("items.fetch", { items: [1, 2] }) }.to raise_error(Axn::ContractViolation::UnextractableError)
+      expect { extract(:fetch, [1, 2]) }.to raise_error(Axn::ContractViolation::UnextractableError)
+    end
   end
 
   describe "Array sources" do

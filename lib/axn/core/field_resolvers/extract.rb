@@ -38,8 +38,18 @@ module Axn
             return base[segment]
           end
 
-          # Object/Array sources: use the reader method.
-          return source.public_send(segment) if source.respond_to?(segment)
+          # Object/Array sources: use the reader method. A reader that can't be invoked bare — it
+          # needs arguments (e.g. `Array#fetch`, `#at`, `#dig`) — can't answer the path, so surface
+          # the typed UnextractableError (read as absent) rather than leaking a raw ArgumentError
+          # past the malformed-input doctrine. Arity/params can't distinguish these up front (both
+          # `count` and `fetch` reflect as `[[:rest]]`), so we dispatch and classify the arity failure.
+          if source.respond_to?(segment)
+            begin
+              return source.public_send(segment)
+            rescue ArgumentError
+              raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+            end
+          end
 
           raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
         end
