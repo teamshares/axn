@@ -13,7 +13,8 @@ module Axn
 
       def self.included(base)
         base.class_eval do
-          class_attribute :subfield_configs, default: []
+          # Copy-on-write, frozen at every assignment (see Contract's stores).
+          class_attribute :subfield_configs, default: [].freeze
 
           extend ClassMethods
         end
@@ -182,8 +183,9 @@ module Axn
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
             # reload path, metaprogrammed construction, a test — never leaves the class carrying an orphaned
             # config or generated reader, so a corrected retry starts clean.
-            # NOTE: avoid <<, which would update value for parents and children.
-            self.subfield_configs += configs
+            # Copy-on-write + freeze: `<<` would mutate the superclass's contract, and
+            # identity-keyed caching relies on replacement.
+            self.subfield_configs = (subfield_configs + configs).freeze
             _define_subfield_readers!(configs)
           end
         end

@@ -15,7 +15,11 @@ module Axn
     module Contract
       def self.included(base)
         base.class_eval do
-          class_attribute :internal_field_configs, :external_field_configs, default: []
+          # Copy-on-write stores, frozen at every assignment: declaration replaces the array (`+`,
+          # never `<<` — which would now raise FrozenError rather than silently mutating the
+          # superclass's contract), so the per-class resolved-subfield cache can key on array
+          # identity and concurrent readers always see an immutable snapshot.
+          class_attribute :internal_field_configs, :external_field_configs, default: [].freeze
 
           extend ClassMethods
           include InstanceMethods
@@ -151,9 +155,9 @@ module Axn
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
-            # carrying an orphaned config or generated reader.
-            # NOTE: avoid <<, which would update value for parents and children
-            self.internal_field_configs += configs
+            # carrying an orphaned config or generated reader. Copy-on-write + freeze: `<<` would
+            # mutate the superclass's contract, and identity-keyed caching relies on replacement.
+            self.internal_field_configs = (internal_field_configs + configs).freeze
             _define_field_readers!(configs)
           end
         end
@@ -188,8 +192,8 @@ module Axn
             duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # NOTE: avoid <<, which would update value for parents and children
-            self.external_field_configs += configs
+            # Copy-on-write + freeze (see internal_field_configs above).
+            self.external_field_configs = (external_field_configs + configs).freeze
           end
         end
 
