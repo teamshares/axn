@@ -3532,21 +3532,20 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
       end
 
-      it "strips null from a merged untyped nil-tolerant member when the colliding deep child is required" do
-        klass = Class.new do
-          include Axn
-          expects :payload, type: Hash do
-            field :bar, allow_nil: true, length: { maximum: 10 }
+      it "rejects at declaration a nil-tolerant member with a required colliding deep child (PRO-2877 family 1)" do
+        # A nil-tolerant `shape:` member (`allow_nil:`) with a required deep child nesting into it is a
+        # family-1 contradiction: a nil member strands the required leaf, so the member can never actually
+        # be nil — the `allow_nil:` is a dead flag. It now raises at declaration rather than being silently
+        # reconciled by stripping `null` from the reflected member.
+        expect do
+          Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :bar, allow_nil: true, length: { maximum: 10 }
+            end
+            expects "bar.baz", on: :payload, type: String
           end
-          expects "bar.baz", on: :payload, type: String
-          def call = nil
-        end
-        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-        bar = schema[:properties][:payload][:properties][:bar]
-        expect(bar[:type]).to eq("object") # a nil member strands the required leaf
-        expect(bar[:required]).to include("baz")
-        expect(klass.call(payload: { bar: nil })).not_to be_ok # schema agrees: nil member rejected
+        end.to raise_error(ArgumentError, /:bar is declared nil-tolerant.*:bar\.baz \(on: payload\) is required/)
       end
 
       it "keeps a merged non-nil-tolerant typed member object-only even when the colliding deep child is optional" do

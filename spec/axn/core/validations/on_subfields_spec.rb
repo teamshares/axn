@@ -1432,6 +1432,32 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
+      it "raises when a required deep subfield nests into a nil-tolerant shape member" do
+        # The deep subfield `bar.baz` nests into payload's `shape:` member `:bar`, which is allow_nil: — a
+        # nil `:bar` strands the required `:baz`, exactly the family-1 contradiction, with the nil-tolerant
+        # ancestor being the shape MEMBER (not a top-level field or an explicit subfield).
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: Hash, allow_nil: true
+            end
+            expects "bar.baz", on: :payload, type: String
+          end
+        end.to raise_error(ArgumentError, /:bar is declared nil-tolerant.*:bar\.baz \(on: payload\) is required/)
+      end
+
+      it "does not raise when the colliding shape member is nil-tolerant but the deep subfield is optional" do
+        # Same nesting, but `:baz` tolerates nil — a nil `:bar` no longer strands it, so no contradiction.
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: Hash, allow_nil: true
+            end
+            expects "bar.baz", on: :payload, type: String, optional: true
+          end
+        end.not_to raise_error
+      end
+
       it "does not raise when a nil-tolerant intermediate with its OWN usable default rescues its subtree" do
         # :meta is BOTH nil-tolerant (optional:) AND defaulted — its own default materializes it, so a
         # required :id below is never stranded even though the parent :payload is not itself nil-tolerant.

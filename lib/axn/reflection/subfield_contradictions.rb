@@ -34,34 +34,7 @@ module Axn
           return family_3(nil_tolerant_model_ancestor, defaulted)
         end
 
-        # A node whose EVERY config carries a usable default is unconditionally omittable regardless of
-        # what's below it (Schema.node_optional?'s first disjunct — the same "trust the default's
-        # contents" divergence emission already relies on): omitting THIS node means runtime materializes
-        # it wholesale from the default, so nothing beneath it is ever stranded by an ancestor's
-        # nil-tolerance — PROVIDED that materialization can actually happen. A defaulted node shields its
-        # subtree from a nil-tolerant ancestor only when that ancestor is object-shaped
-        # (Schema.object_shaped?), mirroring Executor#_materialize_object_parent!'s own gate: runtime
-        # refuses to inject `{}` for a non-object parent (`type: Array`, a mixed union), so under a
-        # non-object nil-tolerant ancestor the default never applies and a required descendant below IS
-        # stranded — that contradiction must still raise. The MODEL ancestor is never shielded away here:
-        # a default under a nil-tolerant model ancestor doesn't rescue anything either (materialized `{}`
-        # is rejected by ModelValidator), but that is family 3, caught at the defaulted node itself, so
-        # there is nothing for this shield to suppress.
-        shielded = shielded?(node)
-        # An OUTER nil-tolerant ancestor is rescued by this node's default only if it can be materialized
-        # while nil — i.e. it is object-shaped (Executor#_materialize_object_parent!'s gate). A non-object
-        # ancestor (type: Array) can't be, so it still strands and must keep being tracked.
-        shield_ancestor = shielded && nil_tolerant_ancestor && Schema.object_shaped?(nil_tolerant_ancestor)
-        # A shielded node's default materializes its whole subtree, so it neither strands its own children
-        # (it does NOT register itself as a nil-tolerant ancestor below) nor lets an object-shaped outer
-        # ancestor strand them. When it is NOT shielded, it tracks the outer ancestor and — if itself
-        # nil-tolerant — registers itself.
-        child_nil_tolerant =
-          if shielded
-            shield_ancestor ? nil : nil_tolerant_ancestor
-          else
-            nil_tolerant_ancestor || outermost_nil_tolerant(node)
-          end
+        child_nil_tolerant = child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members)
         child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
         node.children.each do |key, child|
@@ -81,6 +54,32 @@ module Axn
           return found if found
         end
         nil
+      end
+
+      # The nil-tolerant ancestor to carry into `node`'s children (nil if none). Governs family 1.
+      #
+      # A SHIELDED node (every-config-defaulted, non-model — shielded?) materializes its whole subtree from
+      # its default, so it never strands its own children: it does NOT register itself, and it clears an
+      # OUTER nil-tolerant ancestor too — but only an object-shaped one, since Executor#_materialize_object_
+      # parent! refuses to synthesize `{}` under a non-object parent (type: Array, a mixed union), where the
+      # default never applies and a required descendant below IS still stranded. (A nil-tolerant MODEL
+      # ancestor is never cleared here — its materialized `{}` is rejected by ModelValidator — but that's
+      # family 3, caught at the defaulted node itself.)
+      #
+      # A NON-shielded node keeps the outer ancestor, or — if none — registers its own nil-tolerance: its
+      # own config (outermost_nil_tolerant), or a nil-tolerant object-shaped `shape:` member it stands in
+      # for (an implicit node's carried_members; e.g. `field :bar, type: Hash, allow_nil: true` with a
+      # required deep subfield nesting into `bar`).
+      def child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members)
+        unless shielded?(node)
+          own_nil_tolerance = outermost_nil_tolerant(node) || carried_members.find { |m| Schema.nil_accepted?(m) }
+          return nil_tolerant_ancestor || own_nil_tolerance
+        end
+
+        # shielded: clear an object-shaped outer ancestor (materializable), keep a non-object one, never self.
+        return nil if nil_tolerant_ancestor && Schema.object_shaped?(nil_tolerant_ancestor)
+
+        nil_tolerant_ancestor
       end
 
       # --- family predicates (leaf; reuse Schema) ---
