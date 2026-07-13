@@ -1422,6 +1422,19 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
+      it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
+        # The executor applies ANY truthy subfield default (Procs included) and materializes the parent
+        # before validation, so omitting :payload succeeds. The detector counts a Proc default as a rescue
+        # (via subfield_default_applies?), unlike reflection's usable_default? which excludes Procs because
+        # a Proc's success is unknowable for the (safe, stricter) requiredness it reflects.
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :meta, on: :payload, default: -> { { id: 1 } }
+          end
+        end.not_to raise_error
+      end
+
       it "still raises for a nil-tolerant model parent with its own default (a model default does not rescue)" do
         # A model node's materialized default is a non-record value ModelValidator rejects, so — unlike a
         # plain object default — it rescues nothing: the model node stays a nil-tolerant ancestor and a

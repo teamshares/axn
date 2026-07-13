@@ -85,24 +85,32 @@ module Axn
 
       # --- family predicates (leaf; reuse Schema) ---
 
-      # A node whose OWN declared signals force it to be present: some config neither carries a usable
-      # subfield default nor tolerates nil. Implicit nodes carry no validators, so they are never
+      # A node whose OWN declared signals force it to be present: some config neither carries a default the
+      # runtime would apply nor tolerates nil. Implicit nodes carry no validators, so they are never
       # self-required (their obligation lives in their explicit descendants, caught on their own hop).
+      #
+      # Default handling uses `subfield_default_applies?` (the runtime's own test — any truthy default,
+      # Procs INCLUDED), NOT reflection's `usable_default?` (which excludes Procs). The two answer different
+      # questions: reflection asks "is this provably omittable?" (a Proc's success is unknowable, so it
+      # stays required — the safe, stricter direction), while the DETECTOR asks "is this contract
+      # impossible?" — and a Proc/defaulted node is NOT impossible (the executor applies the default and
+      # materializes the parent before validation), so it must not drive a contradiction rejection.
       def self_required?(node)
         return false if node.implicit?
 
-        node.configs.any? { |c| !(Schema.usable_default?(c, subfield: true) || Schema.nil_accepted?(c)) }
+        node.configs.any? { |c| !(Axn::Internal::FieldConfig.subfield_default_applies?(c) || Schema.nil_accepted?(c)) }
       end
 
-      # A node whose OWN configs materialize it wholesale from a usable default, rescuing its subtree from
-      # omission/nil regardless of its own nil-tolerance. Only a NON-model node qualifies: a model node's
-      # materialized default is a non-record value ModelValidator rejects (family 3), so it rescues nothing
-      # — leaving it un-shielded keeps it tracked as a nil-tolerant ancestor, so a required descendant of a
-      # defaulted nil-tolerant model still raises (a broken contract) rather than slipping through.
+      # A node whose OWN configs materialize it wholesale from a default the runtime applies (Procs
+      # included — see self_required?), rescuing its subtree from omission/nil regardless of its own
+      # nil-tolerance. Only a NON-model node qualifies: a model node's materialized default is a non-record
+      # value ModelValidator rejects (family 3), so it rescues nothing — leaving it un-shielded keeps it
+      # tracked as a nil-tolerant ancestor, so a required descendant of a defaulted nil-tolerant model still
+      # raises (a broken contract) rather than slipping through.
       def shielded?(node)
         !node.implicit? &&
           node.configs.none? { |c| c.validations[:model] } &&
-          node.configs.all? { |c| Schema.usable_default?(c, subfield: true) }
+          node.configs.all? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
       end
 
       def nil_tolerant?(node)
