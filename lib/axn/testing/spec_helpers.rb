@@ -8,6 +8,20 @@ module Axn
         action.class_eval(&block) if block
         action
       end
+
+      # Block-scoped injection for `on: :ambient_context` inputs. Swaps the global
+      # `ambient_context_provider` for the block, so the action under test AND any nested
+      # actions it calls resolve their ambient subfields from `attrs` — without touching
+      # `Current` / any `CurrentAttributes`. Restores the previous provider on exit (safe
+      # under nesting and when the block raises). An explicit `ambient_context:` kwarg on a
+      # specific call still overrides `attrs` (existing precedence in `_resolve_ambient_context`).
+      def with_ambient_context(**attrs)
+        previous = Axn.config.ambient_context_provider
+        Axn.config.ambient_context_provider = -> { attrs }
+        yield
+      ensure
+        Axn.config.ambient_context_provider = previous
+      end
     end
   end
 end

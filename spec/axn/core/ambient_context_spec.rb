@@ -145,6 +145,19 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     expect(klass).to be_a(Class)
   end
 
+  it "runs an ambient subfield whose only constraint is allow_blank: (no other validator)" do
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, allow_blank: true
+      exposes :cid, allow_nil: true
+      def call = expose(cid: company)
+    end
+    result = klass.call(ambient_context: { company: 42 })
+    expect(result).to be_ok
+    expect(result.cid).to eq(42)
+    expect(klass.call).to be_ok # absent ambient value is tolerated
+  end
+
   it "rejects a dotted `on:` path rooted at ambient_context (deep ambient nesting is deferred)" do
     expect do
       Class.new do
