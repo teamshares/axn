@@ -1514,6 +1514,18 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
+      it "raises when a required subfield's default is blank-rejected by presence (a dead nil-tolerant flag)" do
+        # `default: ""` on a String subfield is truthy (the runtime applies it), but presence then rejects
+        # the blank — so materializing `{ name: "" }` on an omitted :payload still fails. The default can't
+        # rescue, so :payload's allow_nil: is a dead flag: family 1, not a silently-suppressed contradiction.
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :name, on: :payload, type: String, default: ""
+          end
+        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:name \(on: payload\) is required/)
+      end
+
       it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
         # The executor applies ANY truthy subfield default (Procs included) and materializes the parent
         # before validation, so omitting :payload succeeds. The detector counts a Proc default as a rescue

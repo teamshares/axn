@@ -95,15 +95,8 @@ module Axn
       # such default, the node is stranded if ANY config requires presence (rejects nil). Judged across all
       # configs collectively, so a required config sharing a wire path with a defaulted one isn't falsely
       # flagged. Implicit nodes carry no validators, so they are never stranded themselves (their obligation
-      # lives in their explicit descendants, caught on their own hop).
-      #
-      # Default detection uses `subfield_default_applies?` (the runtime's own test — any truthy default,
-      # Procs INCLUDED), NOT reflection's `usable_default?` (which excludes Procs). The two answer different
-      # questions: reflection asks "is this provably omittable?" (a Proc's success is unknowable, so it
-      # stays required — the safe, stricter direction), while the DETECTOR asks "is this contract
-      # impossible?" — and a Proc/defaulted node under an object-shaped ancestor is NOT impossible (the
-      # executor applies the default and materializes the parent before validation), so it must not drive a
-      # contradiction rejection.
+      # lives in their explicit descendants, caught on their own hop). "A default the runtime would apply"
+      # means `rescuing_default?` — see it for why Procs count but a blank-rejected literal does not.
       def stranded_by?(node, ancestor)
         return false if node.implicit?
 
@@ -113,7 +106,7 @@ module Axn
         # one materialized value). So a materializable default rescues the whole node, not just its own
         # config; it applies only when the ancestor is object-shaped (see below). Judged across all configs
         # rather than per-config, so a required sibling isn't falsely flagged.
-        return false if Schema.object_shaped?(ancestor) && node.configs.any? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
+        return false if Schema.object_shaped?(ancestor) && node.configs.any? { |c| rescuing_default?(c) }
 
         # No materializable default: the node is stranded if any config requires presence (rejects nil) —
         # a nil/omitted ancestor leaves the node absent (PRO-2857) and that config can't be satisfied.
@@ -131,7 +124,19 @@ module Axn
       def shielded?(node)
         !node.implicit? &&
           node.configs.none? { |c| c.validations[:model] } &&
-          node.configs.any? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
+          node.configs.any? { |c| rescuing_default?(c) }
+      end
+
+      # Whether a config carries a default that could actually RESCUE the node from a nil ancestor. Reuses
+      # reflection's `usable_default?` for literals — which already excludes a blank default that presence
+      # would reject (`default: ""` on a String field materializes but then fails presence, so it rescues
+      # nothing and the ancestor's nil-tolerance stays a dead flag) — but ADDS Procs, which usable_default?
+      # excludes as uninspectable: the detector rejects only impossible contracts, and a Proc default might
+      # return a satisfying value, so it must not drive a rejection. (Family 3 stays on
+      # subfield_default_applies? — its hazard is that runtime materializes `{}` at all, blank or not.)
+      def rescuing_default?(config)
+        Schema.usable_default?(config, subfield: true) ||
+          (config.respond_to?(:default) && config.default.is_a?(Proc))
       end
 
       def nil_tolerant?(node)
