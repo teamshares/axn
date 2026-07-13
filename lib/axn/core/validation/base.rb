@@ -39,5 +39,15 @@ module Axn
 
       def _action_for_validation = nil
     end
+
+    # Carrier object for errors aggregated ACROSS validator instances (top-level + subfield + model
+    # consistency in one settled exception). ActiveModel::Errors renders full messages through its
+    # base's class (human_attribute_name), so the base must be an ActiveModel::Validations-bearing
+    # object — an action instance isn't one.
+    class Aggregate
+      include ActiveModel::Validations
+
+      def self.name = "Axn::Validation::Aggregate"
+    end
   end
 end

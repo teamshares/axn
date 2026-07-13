@@ -506,54 +506,53 @@ module Axn
       end
     end
 
-    # Inbound validation has three sources — top-level fields, subfields, and model consistency.
-    # Classification follows each failing config's own `user_facing:` at any depth; model-consistency
-    # mismatches are structurally dev-facing. The settling rule: any dev-facing violation dominates
-    # and raises unreclassified (a real contract bug always pages); only when EVERY violation lands
-    # on a user-facing config does the failure compose into one user-facing message. To keep that
-    # honest, a top-level failure isn't reclassified until the later checks pass — and checks whose
-    # ancestor chain includes an already-failed field are causally suppressed (a nil/invalid parent
-    # strands every descendant, PRO-2857, so a stranded subfield's noise must not page over its
-    # parent's user-facing message).
+    # Inbound validation has three sources — top-level fields, subfields, and model consistency —
+    # and runs collect-then-settle: EVERY check is collected first (one aggregate top-level pass,
+    # per-subfield errors, model-consistency mismatches), stranded checks are pruned with complete
+    # failure knowledge, and the survivors settle once. Classification follows each failing config's
+    # own `user_facing:` at any depth; model-consistency mismatches are structurally dev-facing. The
+    # settling rule: any dev-facing violation dominates and the whole (unsuppressed) violation set
+    # raises unreclassified — a real contract bug always pages, with every co-occurring violation in
+    # one report; only when EVERY violation lands on a user-facing config does the failure compose
+    # into one user-facing message.
     def _validate_inbound!(validations:, context:, configs:)
-      fields_error = _capture_inbound_validation_error do
-        Axn::Validation::Fields.validate!(validations:, context:, exception_klass: InboundValidationError)
-      end
+      top_errors = Axn::Validation::Fields.collect_errors(validations:, context:)
+      failing_roots = top_errors.map { |err| err.attribute.to_sym }.uniq
+
+      subfield_failures = _collect_subfield_failures
+      failed_nodes = {}.compare_by_identity
+      subfield_failures.each { |failure| failed_nodes[failure.path.node] = true if failure.path }
+
+      # Causal suppression, post-hoc with COMPLETE failure knowledge (declaration order can't hide an
+      # ancestor that failed after a descendant validated): a nil/invalid ancestor strands every
+      # descendant (PRO-2857), so a stranded check's noise is attributed to the ancestor — it must
+      # never page over a user-facing ancestor's message, nor pad a dev-facing report.
+      subfield_failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failing_roots, failed_nodes) }
+      mismatches = _model_consistency_mismatches(failing_roots, failed_nodes)
+
+      return if top_errors.empty? && subfield_failures.empty? && mismatches.empty?
 
       user_facing = _user_facing_configs(configs)
-      failing = fields_error ? fields_error.errors.map { |err| err.attribute.to_sym }.uniq : []
-      # A dev-facing top-level field failed → it dominates; raise immediately (later checks not
-      # consulted, exactly as before).
-      raise fields_error if fields_error && !failing.all? { |field| user_facing.key?(field) }
+      all_user_facing = mismatches.empty? &&
+                        failing_roots.all? { |field| user_facing.key?(field) } &&
+                        subfield_failures.all? { |failure| failure.config.user_facing }
 
-      # Any top-level failures are now known user-facing (wire-key-identified for suppression).
-      uf_subfield_failures, failed_nodes = _validate_subfields_settling!(failed_roots: failing)
-      validate_model_consistency!(failed_roots: failing, failed_nodes:)
-
-      return unless fields_error || uf_subfield_failures.any?
+      raise InboundValidationError, _aggregate_errors(top_errors, subfield_failures, mismatches) unless all_user_facing
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
-      # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
+      # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
       # discarded reclassification never fires an expensive/side-effecting handler for nothing.
-      raise _composed_user_facing_error(fields_error, failing, user_facing, uf_subfield_failures)
+      raise _composed_user_facing_error(top_errors, failing_roots, user_facing, subfield_failures)
     end
 
-    # Validate every subfield in declaration order, settling per config: a dev-facing failure raises
-    # immediately (dominance, as ever); a user-facing failure is accumulated and marks its tree node
-    # failed so its descendants' checks are causally suppressed. Suppression sees ancestors that
-    # failed BEFORE the descendant validates — a parent must be declared before a subfield anchors on
-    # its reader, so the canonical nesting always suppresses in order. (The one exception: an
-    # explicit config attached to an already-created implicit node — `expects "a.b", on: :x` then
-    # `expects :b, on: :"a"` spelled later — validates after deeper configs that dug through it.)
-    def _validate_subfields_settling!(failed_roots:)
+    SubfieldFailure = Data.define(:config, :path, :errors)
+
+    # Every subfield's errors, collected in declaration order with no early exit — settling needs the
+    # complete set (both to aggregate the report and to suppress stranded descendants accurately).
+    def _collect_subfield_failures
       coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
-      failed_nodes = {}.compare_by_identity
-      uf_failures = []
 
-      @action_class.send(:subfield_configs).each do |config|
-        path = _resolved_path_for(config)
-        next if path && _suppressed_by_failed_ancestor?(path, failed_roots, failed_nodes)
-
+      @action_class.send(:subfield_configs).filter_map do |config|
         errors = Axn::Validation::Subfields.collect_errors(
           field: config.field,
           validations: coerce_input_types ? _with_effective_coerce(config.validations) : config.validations,
@@ -561,45 +560,39 @@ module Axn
           action: @action,
           reader: config.reader_as,
         )
-        next if errors.empty?
-
-        raise InboundValidationError, errors unless config.user_facing
-
-        uf_failures << [config, errors]
-        failed_nodes[path.node] = true if path
+        SubfieldFailure.new(config:, path: _resolved_path_for(config), errors:) if errors.any?
       end
-
-      [uf_failures, failed_nodes]
     end
 
     def _suppressed_by_failed_ancestor?(path, failed_roots, failed_nodes)
       failed_roots.include?(path.wire_path.first) || path.ancestors.any? { |node, _seg| failed_nodes.key?(node) }
     end
 
+    # The one dev-facing exception: every unsuppressed violation from all three sources in a single
+    # errors object, in source order (top-level fields, then subfields in declaration order, then
+    # model-consistency mismatches on :base).
+    def _aggregate_errors(top_errors, subfield_failures, mismatches)
+      errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+      top_errors.each { |err| errors.import(err) }
+      subfield_failures.each do |failure|
+        failure.errors.each { |err| errors.import(err) }
+      end
+      mismatches.each { |msg| errors.add(:base, msg) }
+      errors
+    end
+
     # The one exception raised when every violation is user-facing: all errors aggregated (so
     # dev-facing introspection still sees the full picture), with the composed message drawn from
     # each failing config's own `user_facing:` setting.
-    def _composed_user_facing_error(fields_error, failing, user_facing, uf_subfield_failures)
-      errors = ActiveModel::Errors.new(@action)
-      fields_error&.errors&.each { |err| errors.import(err) }
-      uf_subfield_failures.map(&:last).each do |sub_errors|
-        sub_errors.each { |err| errors.import(err) }
+    def _composed_user_facing_error(top_errors, failing_roots, user_facing, subfield_failures)
+      parts = _user_facing_message_parts(top_errors, failing_roots, user_facing)
+      parts += subfield_failures.flat_map do |failure|
+        _resolve_user_facing_override(failure.config.user_facing, own: failure.errors.map(&:full_message),
+                                                                  scoped_error: InboundValidationError.new(failure.errors))
       end
 
-      parts = fields_error ? _user_facing_message_parts(fields_error, failing, user_facing) : []
-      parts += uf_subfield_failures.flat_map do |config, sub_errors|
-        _resolve_user_facing_override(config.user_facing, own: sub_errors.map(&:full_message),
-                                                          scoped_error: InboundValidationError.new(sub_errors))
-      end
-
-      InboundValidationError.new(errors, user_facing: true, user_facing_message: parts.to_sentence)
-    end
-
-    def _capture_inbound_validation_error
-      yield
-      nil
-    rescue InboundValidationError => e
-      e
+      InboundValidationError.new(_aggregate_errors(top_errors, subfield_failures, []),
+                                 user_facing: true, user_facing_message: parts.to_sentence)
     end
 
     def _user_facing_configs(configs)
@@ -613,10 +606,10 @@ module Axn
     # One message part per failing user-facing field, in failure order, joined (with the subfield
     # parts) like `ValidationError#message`. The composed reason is then headlined by any declared
     # base `error` in Result (attached by default, like a `fail!` reason).
-    def _user_facing_message_parts(error, failing, user_facing)
-      failing.flat_map do |field|
-        _resolve_user_facing_override(user_facing[field], own: _field_validation_messages(error, field),
-                                                          scoped_error: _field_scoped_error(error, field))
+    def _user_facing_message_parts(top_errors, failing_roots, user_facing)
+      failing_roots.flat_map do |field|
+        _resolve_user_facing_override(user_facing[field], own: _field_validation_messages(top_errors, field),
+                                                          scoped_error: _field_scoped_error(top_errors, field))
       end
     end
 
@@ -642,25 +635,30 @@ module Axn
     # The InboundValidationError handed to a per-field Symbol/Proc handler, carrying only that
     # field's validation errors — `user_facing:` is configured per field, so its handler must see a
     # field-scoped error (otherwise `e.message` leaks every failing field into each field's part).
-    def _field_scoped_error(error, field)
-      scoped = ActiveModel::Errors.new(error.errors.first.base)
-      _field_errors(error, field).each { |err| scoped.import(err) }
+    def _field_scoped_error(top_errors, field)
+      scoped = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+      _field_errors(top_errors, field).each { |err| scoped.import(err) }
       InboundValidationError.new(scoped)
     end
 
-    def _field_validation_messages(error, field)
-      _field_errors(error, field).map(&:full_message)
+    def _field_validation_messages(top_errors, field)
+      _field_errors(top_errors, field).map(&:full_message)
     end
 
-    def _field_errors(error, field)
-      error.errors.group_by_attribute[field] || []
+    def _field_errors(top_errors, field)
+      top_errors.group_by_attribute[field] || []
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
     # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
     # a primary key and a record-vs-id comparison would be meaningless.
-    def validate_model_consistency!(failed_roots: [], failed_nodes: {})
+    # Model-consistency mismatch messages, both levels, structurally dev-facing. Aggregated into the
+    # settled exception's errors on :base (InboundValidationError renders its message via
+    # errors.full_messages, and base messages render verbatim — each mismatch carries its own field
+    # prefix). Subfield checks are causally suppressed like subfield validation: a failed ancestor
+    # means this chain's data is already known-bad, so a consistency mismatch under it is stranding noise.
+    def _model_consistency_mismatches(failed_roots, failed_nodes)
       mismatches = []
 
       @action_class.send(:internal_field_configs).each do |config|
@@ -672,23 +670,13 @@ module Axn
 
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
-        # Causally suppressed like subfield validation: a failed ancestor means this chain's data is
-        # already known-bad, so a consistency mismatch under it is stranding noise.
         next if (path = _resolved_path_for(config)) && _suppressed_by_failed_ancestor?(path, failed_roots, failed_nodes)
 
         msg = _model_record_id_mismatch(source: _resolved_parent_value(config.on), field: config.field)
         mismatches << msg if msg
       end
 
-      return if mismatches.empty?
-
-      # InboundValidationError (a ValidationError) renders its message via errors.full_messages, so
-      # it must be raised with an ActiveModel::Errors object — a plain String would NoMethodError the
-      # moment anything reads result.error/message. Mismatches carry their own field prefix, so add
-      # them on :base (full_messages returns base messages verbatim, no attribute prefix).
-      errors = ActiveModel::Errors.new(@action)
-      mismatches.each { |msg| errors.add(:base, msg) }
-      raise InboundValidationError, errors
+      mismatches
     end
 
     def _id_based_model?(config)

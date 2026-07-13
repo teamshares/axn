@@ -386,6 +386,69 @@ RSpec.describe "expects ..., user_facing:" do
       expect(action.call(payload: { other: 1 }).outcome).to be_exception
     end
 
+    describe "aggregate reporting (collect-then-settle)" do
+      it "co-reports multiple dev-facing subfield violations in one exception" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          expects :count, on: :payload, type: Integer
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x", count: "y" })
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:id, :count)
+      end
+
+      it "co-reports a dev-facing top-level violation with an independent subfield violation" do
+        action = build_axn do
+          expects :title
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x" })
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:title, :id)
+      end
+
+      it "co-reports a model-consistency mismatch alongside a subfield violation" do
+        model = Class.new do
+          def self.find(id) = Struct.new(:id).new(id)
+          def self.name = "FakeAggModel"
+        end
+
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          expects :company, model: { klass: model }, optional: true
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x" }, company: Struct.new(:id).new(1), company_id: 2)
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:id, :base)
+        expect(result.exception.message).to include("conflicts with")
+      end
+
+      it "prunes a stranded descendant even when it was declared (and validated) before its failing ancestor" do
+        # The dotted-path config attaches to an implicit node that a LATER explicit declaration then
+        # claims — post-hoc suppression with complete failure knowledge still attributes the stranded
+        # deep check to the ancestor, regardless of declaration order.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :city, on: "payload.address", type: String
+          expects :address, on: :payload, type: Hash, user_facing: "Please provide your address"
+          def call = nil
+        end
+
+        result = action.call(payload: { other: 1 })
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Please provide your address")
+      end
+    end
+
     describe "a user_facing parent with subfields (causal suppression)" do
       let(:action) do
         build_axn do

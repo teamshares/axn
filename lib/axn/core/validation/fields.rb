@@ -17,6 +17,13 @@ module Axn
       end
 
       def self.validate!(validations:, context:, exception_klass:)
+        errors = collect_errors(validations:, context:)
+        raise exception_klass, errors if errors.any?
+      end
+
+      # Non-raising variant (mirroring Subfields.collect_errors): one aggregate pass over every
+      # field's validations, returning the combined ActiveModel::Errors (empty if all valid).
+      def self.collect_errors(validations:, context:)
         validator = Class.new(self) do
           def self.name = "Axn::Validation::Fields::OneOff"
 
@@ -27,9 +34,8 @@ module Axn
           end
         end.new(context)
 
-        return if validator.valid?
-
-        raise exception_klass, validator.errors
+        validator.valid?
+        validator.errors
       end
 
       private
