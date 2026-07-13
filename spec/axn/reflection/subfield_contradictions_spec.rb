@@ -9,9 +9,6 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
   end
 
   describe ".detect" do
-    # A contradiction-only contract can't be built through the DSL at all (declaration raises before the
-    # tree is ever handed to detect) — that raise is exercised in on_subfields_spec.rb's "family 1"
-    # examples. This confirms the converse: a legitimately contradiction-free tree detects nothing.
     it "returns nil for a contradiction-free contract (nested, nil-tolerant, dotted)" do
       tree = tree_for do
         expects :payload, type: Hash, allow_nil: true

@@ -293,10 +293,7 @@ RSpec.describe "expects ..., user_facing:" do
     it "pages when a subfield of a separate (non-user-facing) parent can't resolve" do
       # :note is the (blank) user-facing field; :payload is a separate required field that's absent, so
       # both its own presence and its required subfield :id fail. That's an independent dev-facing
-      # contract error, so it pages exactly as it would with no user_facing field in play. (:payload
-      # can't be declared nil-tolerant here — allow_nil:/optional: alongside a required :id is rejected
-      # at declaration, PRO-2877 family 1 — but a required, simply-absent parent exercises the same
-      # "independent dev-facing violation dominates" behavior.)
+      # contract error, so it pages exactly as it would with no user_facing field in play.
       fired = []
       recorder = fired
       action = build_axn do

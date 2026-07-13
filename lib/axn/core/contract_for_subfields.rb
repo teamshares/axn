@@ -165,9 +165,11 @@ module Axn
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # Reject contradiction-only contracts (families 1–3) on the PROSPECTIVE config set (committed
-            # configs plus this batch), before any mutation. Built fresh (not cached) — class-load time,
-            # off the runtime hot path. Family 4 is a local check in _parse_subfield_configs.
+            # Reject contradiction-only contracts (PRO-2877: a non-object shape member colliding with a
+            # nested deep subfield, or a nil-tolerant model: parent with a defaulted subfield) on the
+            # PROSPECTIVE config set (committed configs plus this batch), before any mutation. Built fresh
+            # (not cached) — class-load time, off the runtime hot path. The dotted-name model: rejection is
+            # a local check in _parse_subfield_configs.
             tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs + configs)
             if (contradiction = Axn::Reflection::SubfieldContradictions.detect(tree))
               raise ArgumentError, contradiction.message

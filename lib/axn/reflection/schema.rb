@@ -266,9 +266,9 @@ module Axn
       # default always rescues omission (declaration allows a default only when `on:` names a top-level
       # reader, but a dotted field NAME can land that defaulted config on a deeper node — honored here
       # either way; a default whose contents fail a child's validators is the same accepted divergence
-      # as at the top level); otherwise nil/blank-tolerance alone rescues it — a nil-tolerant node can
-      # never strand a required subtree (declaring both is rejected at declaration, PRO-2877), so
-      # `nil_accepted?` need not be paired with a presence check here. With multiple configs at one node
+      # as at the top level); otherwise it must tolerate nil AND strand no required descendant — a nil
+      # node yields every descendant absent (PRO-2857), so a nil-tolerant node with a required subtree is
+      # NOT omittable (reflected required/non-nullable, matching runtime). With multiple configs at one node
       # (the same wire path declared via two routes) runtime enforces all of them, so the node is
       # omittable only if every config is. `configs` defaults to the whole node but may be a subset: a
       # merged node's model and non-model routes emit separate properties (`<leaf>_id` vs the object),
@@ -276,7 +276,7 @@ module Axn
       def node_optional?(node, ann, configs = node.configs)
         return !subtree_requires_presence?(node, ann) if node.implicit?
 
-        configs.all? { |c| usable_default?(c, subfield: true) || nil_accepted?(c) }
+        configs.all? { |c| usable_default?(c, subfield: true) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
       end
 
       # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE (truthy, non-Proc)

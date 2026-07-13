@@ -405,13 +405,15 @@ RSpec.describe Axn::Validators::ModelValidator do
       expect(result.user_name).to be_nil
     end
 
-    it "rejects a required nested model under a nil-tolerant parent at declaration (PRO-2877 family 1)" do
-      expect do
-        build_axn do
-          expects :data, optional: true
-          expects :user, model: { klass: User }, on: :data
-        end
-      end.to raise_error(ArgumentError, /:data is declared nil-tolerant.*:user \(on: data\) is required/)
+    it "fails cleanly when a required nested model's parent is nil" do
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, model: { klass: User }, on: :data
+      end
+
+      result = action.call(data: nil)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
     end
 
     it "handles model: true syntax for nested fields" do

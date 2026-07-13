@@ -186,17 +186,20 @@ RSpec.describe Axn do
       end
 
       context "with a required subfield" do
-        # A nil-tolerant parent (optional:) can never satisfy a required subfield — a nil/omitted
-        # parent yields the subfield absent (PRO-2857), so this is now rejected at declaration rather
-        # than reconciled at runtime (family 1, PRO-2877).
-        it "raises at declaration instead of reconciling at runtime" do
-          expect do
-            build_axn do
-              expects :payload, optional: true
-              expects :name, on: :payload, type: String
-              def call = nil
-            end
-          end.to raise_error(ArgumentError, %r{:payload is declared nil-tolerant \(allow_nil:/optional:\) but :name .* is required})
+        let(:action) do
+          build_axn do
+            expects :payload, optional: true
+            expects :name, on: :payload, type: String
+            def call = nil
+          end
+        end
+
+        it "surfaces a clean InboundValidationError (not a bare RuntimeError)" do
+          result = action.call(payload: nil)
+          expect(result).not_to be_ok
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("can't be blank")
+          expect(result.exception.message).not_to match(/Unclear how to extract/)
         end
       end
 
@@ -1278,7 +1281,7 @@ RSpec.describe Axn do
     class FakeModel; def self.find(_id) = new; end
     # rubocop:enable Lint/ConstantDefinitionInBlock
 
-    describe "family 4: dotted-name model: subfield" do
+    describe "dotted-name model: subfield" do
       it "raises, pointing at the reader spelling" do
         expect do
           build_axn do
@@ -1306,30 +1309,34 @@ RSpec.describe Axn do
     describe "verify-before-commit" do
       it "does not commit the rejected subfield when the contradiction error is rescued" do
         klass = build_axn do
-          expects :payload, type: Hash, allow_nil: true
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
         end
 
         # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfield
         # behind — the contract is validated on the prospective config set BEFORE the configs are committed.
         expect do
           klass.class_eval do
-            expects :id, on: "payload.meta", type: Integer
+            expects :id, on: "payload.bar", type: Integer
           end
-        end.to raise_error(ArgumentError, /nil-tolerant/)
+        end.to raise_error(ArgumentError, /nests beneath shape member/)
 
         expect(klass.subfield_configs.map(&:field)).not_to include(:id)
       end
 
       it "does not leave an orphaned reader when the contradiction error is rescued" do
         klass = build_axn do
-          expects :payload, type: Hash, allow_nil: true
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
         end
 
         expect do
           klass.class_eval do
-            expects :thing, on: "payload.meta", type: Integer
+            expects :thing, on: "payload.bar", type: Integer
           end
-        end.to raise_error(ArgumentError, /nil-tolerant/)
+        end.to raise_error(ArgumentError, /nests beneath shape member/)
 
         # Reader generation is deferred until after every declaration check passes, so a rejected subfield
         # leaves no orphaned reader method or recorded reader name — a corrected retry won't collide with
@@ -1361,223 +1368,7 @@ RSpec.describe Axn do
       end
     end
 
-    describe "family 1: nil-tolerant ancestor + required descendant" do
-      it "raises when a nil-tolerant top-level parent has a required deep subfield" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :id, on: "payload.meta", type: Integer
-          end
-        end.to raise_error(
-          ArgumentError,
-          "expects :payload is declared nil-tolerant (allow_nil:/optional:) but :id (on: payload.meta) " \
-          "is required — a nil or omitted :payload can never satisfy it. " \
-          "Drop allow_nil:/optional: on :payload, or make :id optional on every declaration that reaches it.",
-        )
-      end
-
-      it "raises when an intermediate subfield is optional: but its subtree requires presence" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :meta, on: :payload, type: Hash, optional: true
-            expects :id, on: "payload.meta", type: Integer
-          end
-        end.to raise_error(ArgumentError, /:meta .* but :id \(on: payload\.meta\) is required/)
-      end
-
-      it "does not raise when the required descendant is itself optional" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :id, on: "payload.meta", type: Integer, optional: true
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise when the parent is required (no nil-tolerance)" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :id, on: "payload.meta", type: Integer
-          end
-        end.not_to raise_error
-      end
-
-      it "raises when a defaulted intermediate can't rescue its subtree under a " \
-         "non-object (type: Array) nil-tolerant ancestor" do
-        # Executor#_materialize_object_parent! refuses to inject `{}` for a non-object parent (type:
-        # Array, a mixed union) — so a nil :payload never materializes, :meta's default never applies, and
-        # :meta (and :id below it) is genuinely stranded. The defaulted-node shield must NOT suppress this;
-        # :meta, the shallowest stranded node, is named (its own default can't rescue it under :payload).
-        expect do
-          build_axn do
-            expects :payload, type: Array, allow_nil: true
-            expects :meta, on: :payload, type: Hash, default: { id: 1 }
-            expects :id, on: :meta, type: Integer
-          end
-        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:meta \(on: payload\) is required/)
-      end
-
-      it "does not raise when a defaulted intermediate rescues a required descendant under an " \
-         "object-shaped (type: Hash) nil-tolerant ancestor" do
-        # Here a nil :payload CAN be materialized as `{}` by the executor, :meta's default then applies,
-        # and :id is satisfied — the shield correctly suppresses the would-be family-1 contradiction.
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :meta, on: :payload, type: Hash, default: { id: 1 }
-            expects :id, on: :meta, type: Integer
-          end
-        end.not_to raise_error
-      end
-
-      it "raises when a required deep subfield nests into a nil-tolerant shape member" do
-        # The deep subfield `bar.baz` nests into payload's `shape:` member `:bar`, which is allow_nil: — a
-        # nil `:bar` strands the required `:baz`, exactly the family-1 contradiction, with the nil-tolerant
-        # ancestor being the shape MEMBER (not a top-level field or an explicit subfield).
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: Hash, allow_nil: true
-            end
-            expects "bar.baz", on: :payload, type: String
-          end
-        end.to raise_error(ArgumentError, /:bar is declared nil-tolerant.*:bar\.baz \(on: payload\) is required/)
-      end
-
-      it "does not raise when the colliding shape member is nil-tolerant but the deep subfield is optional" do
-        # Same nesting, but `:baz` tolerates nil — a nil `:bar` no longer strands it, so no contradiction.
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: Hash, allow_nil: true
-            end
-            expects "bar.baz", on: :payload, type: String, optional: true
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise when a nil-tolerant intermediate with its OWN usable default rescues its subtree" do
-        # :meta is BOTH nil-tolerant (optional:) AND defaulted — its own default materializes it, so a
-        # required :id below is never stranded even though the parent :payload is not itself nil-tolerant.
-        # A shielded node must not register its OWN nil-tolerance as a stranding ancestor for its children.
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :meta, on: :payload, optional: true, default: { id: 1 }
-            expects :id, on: :meta, type: Integer
-          end
-        end.not_to raise_error
-      end
-
-      it "raises for a defaulted leaf under a NON-object (type: Array) nil-tolerant parent (default can't materialize)" do
-        # Executor#_materialize_object_parent! skips subfield defaults for a non-object parent, so an
-        # omitted/nil :items never materializes and :count's default never applies — :count is genuinely
-        # stranded. A default only suppresses family 1 when the nil-tolerant ancestor is object-shaped.
-        expect do
-          build_axn do
-            expects :items, type: Array, allow_nil: true
-            expects :count, on: :items, type: Integer, default: 5
-          end
-        end.to raise_error(ArgumentError, /:items is declared nil-tolerant.*:count .* is required/)
-      end
-
-      it "does not raise when a default on one merged-path config rescues a required sibling config" do
-        # The wire path payload.bar.baz is declared via two routes onto the SAME node: a dotted-name config
-        # carrying default: "x", and a required :baz. At runtime the default materializes the one shared
-        # baz value before validation, satisfying the required route — so the merged node is not stranded
-        # even under a nil-tolerant :payload. Configs are judged collectively, not in isolation.
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :bar, on: :payload, type: Hash, optional: true
-            expects "bar.baz", on: :payload, default: "x"
-            expects :baz, on: :bar, type: String
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise when one merged-path route's default shields a required grandchild" do
-        # Only ONE route onto :baz (the dotted "bar.baz") carries a default; the other (:baz on :bar) is
-        # merely optional. That default materializes the shared :baz hash, so the required :qux grandchild
-        # below it is satisfiable. The shield must fire on ANY co-located default, not require every route
-        # to carry one.
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :bar, on: :payload, type: Hash, optional: true
-            expects "bar.baz", on: :payload, default: { qux: 1 }
-            expects :baz, on: :bar, type: Hash, optional: true
-            expects :qux, on: :baz, type: Integer
-          end
-        end.not_to raise_error
-      end
-
-      it "raises when a required subfield's default is blank-rejected by presence (a dead nil-tolerant flag)" do
-        # `default: ""` on a String subfield is truthy (the runtime applies it), but presence then rejects
-        # the blank — so materializing `{ name: "" }` on an omitted :payload still fails. The default can't
-        # rescue, so :payload's allow_nil: is a dead flag: family 1, not a silently-suppressed contradiction.
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :name, on: :payload, type: String, default: ""
-          end
-        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:name \(on: payload\) is required/)
-      end
-
-      it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
-        # The executor applies ANY truthy subfield default (Procs included) and materializes the parent
-        # before validation, so omitting :payload succeeds. The detector counts a Proc default as a rescue
-        # (via subfield_default_applies?), unlike reflection's usable_default? which excludes Procs because
-        # a Proc's success is unknowable for the (safe, stricter) requiredness it reflects.
-        expect do
-          build_axn do
-            expects :payload, type: Hash, allow_nil: true
-            expects :meta, on: :payload, default: -> { { id: 1 } }
-          end
-        end.not_to raise_error
-      end
-
-      it "still raises for a nil-tolerant model parent whose own default is a NON-record (a Hash can't supply a record)" do
-        # A Hash/id/scalar model default is not a record — ModelValidator rejects the materialized value —
-        # so it rescues nothing: the model node stays a nil-tolerant ancestor and a required subfield under
-        # it is genuinely stranded on omission.
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, optional: true, default: { id: 1 }
-            expects :name, on: :company, type: String
-          end
-        end.to raise_error(ArgumentError, /:company is declared nil-tolerant.*:name .* is required/)
-      end
-
-      it "does not raise for a nil-tolerant model parent whose OWN default may supply a record (a Proc)" do
-        # A model field's own default that may resolve to a record rescues omission — the resolver uses the
-        # defaulted record before subfield validation, so the nil-tolerance is not a dead flag. A Proc is
-        # uninspectable, so the detector optimistically treats it as possibly-rescuing rather than rejecting.
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, allow_nil: true, default: -> { FakeModel.new }
-            expects :name, on: :company, type: String
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise for a nil-tolerant model parent rescued by an explicit defaulted <field>_id sibling" do
-        # An explicit `company_id` with a usable default is applied before the model reader, so `company`
-        # resolves from the defaulted id even on omission and `name` validates — the nil-tolerance is not a
-        # dead flag. (Mirrors the explicit-id-default path apply_model_id_requiredness! already honors.)
-        expect do
-          build_axn do
-            expects :company_id, default: 1
-            expects :company, model: FakeModel, allow_nil: true
-            expects :name, on: :company, type: String
-          end
-        end.not_to raise_error
-      end
-    end
-
-    describe "family 2: non-object shape member + colliding deep subfield" do
+    describe "non-object shape member + colliding deep subfield" do
       it "raises when a deep subfield nests under a non-object (String) shape member" do
         expect do
           build_axn do
@@ -1626,8 +1417,8 @@ RSpec.describe Axn do
       it "raises when an EXPLICIT object subfield collides with a non-object shape member" do
         # The colliding key :bar is declared both as a scalar shape member (String) and as an explicit
         # object subfield with its own nested :baz. The merged node is explicit, not implicit — but the
-        # nested structure still has nowhere to live in the String member, so it's the same family-2
-        # contradiction and must raise (no input can satisfy both String and the nested object).
+        # nested structure still has nowhere to live in the String member, so it's the same non-object
+        # shape member collision and must raise (no input can satisfy both String and the nested object).
         expect do
           build_axn do
             expects :payload, type: Hash do
@@ -1645,7 +1436,7 @@ RSpec.describe Axn do
       end
     end
 
-    describe "family 3: nil-tolerant model: parent + applied-default descendant" do
+    describe "nil-tolerant model: parent + applied-default descendant" do
       it "raises when a nil-tolerant model parent has a defaulted subfield" do
         expect do
           build_axn do
@@ -1661,10 +1452,10 @@ RSpec.describe Axn do
       end
 
       it "counts a Proc default (materialization fires before the Proc runs)" do
-        # This targets family 3's Proc handling: the detector counts a Proc default (subfield_default_applies?)
-        # because the executor applies it before the model resolves. `optional: true` is incidental — a Proc
-        # default under a nil-tolerant model trips family 3 either way (stranded_by? treats a Proc under an
-        # object-shaped ancestor as rescuable, so family 1 does not fire first).
+        # This targets the nil-tolerant-model-plus-default detector's Proc handling: it counts a Proc
+        # default (subfield_default_applies?) because the executor applies it before the model resolves.
+        # `optional: true` is incidental — a Proc default under a nil-tolerant model trips this
+        # contradiction either way.
         expect do
           build_axn do
             expects :company, model: FakeModel, allow_nil: true

@@ -143,10 +143,10 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     # A deep config whose implicit intermediate collides with a non-object/mixed-union shape member (at
     # any depth, including a member-of-a-member, and however the merge is assembled) is no longer
-    # dropped+warned: it now raises ArgumentError at declaration (PRO-2877 family 2 — see
-    # subfield_contradictions_spec.rb and on_subfields_spec.rb's "family 2" examples for the message
-    # contract). The structural variants below are converted to declaration-raise assertions rather than
-    # deleted, since each still exercises a distinct shape of the underlying collision.
+    # dropped+warned: it now raises ArgumentError at declaration (PRO-2877's non-object shape member
+    # collision — see subfield_contradictions_spec.rb and on_subfields_spec.rb's "non-object shape member"
+    # examples for the message contract). The structural variants below are converted to declaration-raise
+    # assertions rather than deleted, since each still exercises a distinct shape of the underlying collision.
 
     it "raises at declaration when an implicit intermediate collides with a non-object shape member" do
       expect do

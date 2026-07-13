@@ -769,31 +769,40 @@ RSpec.describe Axn::Reflection::Schema do
     expect(schema[:properties][:items]).not_to have_key(:properties)
   end
 
-  it "rejects at declaration a non-nestable (Array) allow_nil parent with a required DEEP descendant (PRO-2877 family 1)" do
-    # `items` (type: Array, allow_nil:) is non-nestable, but a required DEEP descendant
-    # (`items.first_item.sku`) would still strand it on a nil/omitted `items` — the same family-1
-    # contradiction as an object-shaped ancestor. The descendant has no default, so it is stranded
-    # whatever the ancestor's type (stranded_by? consults the ancestor's shape only to decide whether a
-    # DEFAULT could be materialized to rescue — irrelevant here).
-    expect do
-      Class.new do
-        include Axn
-        expects :items, type: Array, allow_nil: true
-        expects :sku, on: "items.first_item", type: String
-        def call; end
-      end
-    end.to raise_error(ArgumentError, /:items is declared nil-tolerant .* but :sku \(on: items\.first_item\) is required/)
+  it "strips null from a non-nestable (Array) parent when a required DEEP descendant forbids a nil parent (PRO-2872)" do
+    # `items` is non-nestable (type: Array), so its subfield shape is omitted — but a required DEEP
+    # descendant (`items.first_item.sku`) still forces `items` required (field_optional?). A nil parent
+    # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
+    # non-nullable: type exactly "array", no null branch. Runtime agrees — `items: nil` and omission both fail.
+    klass = Class.new do
+      include Axn
+      expects :items, type: Array, allow_nil: true
+      expects :sku, on: "items.first_item", type: String
+      def call; end
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    expect(schema[:properties][:items][:type]).to eq("array")
+    expect(schema[:required]).to include("items")
+    expect(klass.call(items: nil)).not_to be_ok
+    expect(klass.call).not_to be_ok
   end
 
-  it "rejects at declaration a non-nestable UNION (type: [Hash, Array]) allow_nil parent with a required DEEP descendant (PRO-2877 family 1)" do
-    expect do
-      Class.new do
-        include Axn
-        expects :items, type: [Hash, Array], allow_nil: true
-        expects :sku, on: "items.first_item", type: String
-        def call; end
-      end
-    end.to raise_error(ArgumentError, /:items is declared nil-tolerant .* but :sku \(on: items\.first_item\) is required/)
+  it "strips the null member from a non-nestable UNION parent when a required DEEP descendant forbids nil (PRO-2872)" do
+    # A mixed union (type: [Hash, Array]) is non-nestable, so its subfield shape is omitted, but the
+    # required deep descendant forces it required and non-nullable — the anyOf must carry no `null` member.
+    klass = Class.new do
+      include Axn
+      expects :items, type: [Hash, Array], allow_nil: true
+      expects :sku, on: "items.first_item", type: String
+      def call; end
+    end
+    schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+    members = schema[:properties][:items][:anyOf]
+    expect(members).not_to include({ type: "null" })
+    expect(schema[:required]).to include("items")
+    expect(klass.call(items: nil)).not_to be_ok
   end
 
   it "keeps the null branch on a non-nestable parent when every deep descendant is optional (PRO-2872)" do
@@ -1115,24 +1124,25 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "rejects at declaration a nil-tolerant model field with a required shallow subfield (PRO-2877 family 1)" do
-      # `company` accepts nil, but a required `name` subfield still resolves off the record — an omitted
-      # company can never satisfy it, the same family-1 contradiction as a plain nil-tolerant ancestor
-      # (a model: route is not exempt from stranded_by?/nil_accepted?).
-      expect do
-        Class.new do
-          include Axn
-          expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
-          expects :name, on: :company, type: String
-        end
-      end.to raise_error(ArgumentError, /:company is declared nil-tolerant .* but :name \(on: company\) is required/)
+    it "requires the model <field>_id when a nil-tolerant model field has a required shallow subfield" do
+      # `company` accepts nil, but a required `name` subfield still resolves off the record, so omitting
+      # the id leaves company nil and the call fails — the id must stay required despite allow_nil.
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
+        expects :name, on: :company, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("company_id")
     end
 
     # The three "requires the model <field>_id when ... a DEFAULTED subfield" hazard-scan cases formerly
     # here (shallow non-Proc, shallow optional+default, shallow optional+Proc-default) now raise at
-    # declaration instead of reaching reflection — PRO-2877 family 3 (subfield_contradictions.rb) rejects
-    # a nil-tolerant model: parent with any applied-default subfield in its subtree. Covered by
-    # spec/axn/core/validations/on_subfields_spec.rb "family 3" examples.
+    # declaration instead of reaching reflection — PRO-2877's nil-tolerant-model-plus-default contradiction
+    # (subfield_contradictions.rb) rejects a nil-tolerant model: parent with any applied-default subfield
+    # in its subtree. Covered by spec/axn/core/validations/on_subfields_spec.rb's "nil-tolerant model:
+    # parent + applied-default descendant" examples.
 
     it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional shallow subfield" do
       # `company` accepts nil and `name` is optional, so an omitted id resolves company to nil and the
@@ -1626,9 +1636,17 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
     end
 
-    # A nil-tolerant parent with a REQUIRED subfield is now rejected at declaration (PRO-2877 family 1;
-    # see spec/axn/core/validations/on_subfields_spec.rb's "family 1" examples) — this combination can no
-    # longer reach build_input at all.
+    it "types an allow_nil parent as plain object when it has a REQUIRED subfield (a nil parent can't yield it)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :name, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:properties][:payload][:properties]).to have_key(:name)
+    end
   end
 
   # A nil parent is now valid at runtime (subfields treated as absent) when the parent tolerates nil and
@@ -1645,8 +1663,16 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:payload][:type]).to eq(%w[object null])
     end
 
-    # A nil-tolerant parent with a required subfield ("keeps it object-only") is now rejected at
-    # declaration instead (PRO-2877 family 1; see on_subfields_spec.rb's "family 1" examples).
+    it "keeps a nil-tolerant parent object-only when a required subfield can't be yielded by nil" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :nick, on: :payload, type: String
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:payload][:type]).to eq("object")
+    end
 
     it "keeps a non-nil-tolerant parent (type: Hash) object-only even with an all-optional subfield" do
       klass = Class.new do
@@ -2341,27 +2367,64 @@ RSpec.describe Axn::Reflection::Schema do
 
   describe "a dotted `on:` PARENT or an `on:` pointing at another subfield nests recursively and forces " \
            "its ancestor chain required when a descendant is required" do
-    # A nil-tolerant :address with a required shallow OR dotted-deep :zip is now rejected at declaration
-    # (PRO-2877 family 1; see on_subfields_spec.rb's "family 1" examples) — neither variant reaches
-    # build_input any more.
+    it "requires an allow_nil parent through both a required SHALLOW child and its dotted-deep analog" do
+      shallow = Class.new do
+        include Axn
+        expects :address, allow_nil: true
+        expects :zip, on: :address
+      end
+      dotted = Class.new do
+        include Axn
+        expects :address, allow_nil: true
+        expects :zip, on: "address.billing"
+      end
 
-    it "rejects at declaration when the OUTERMOST of several nested nil-tolerant ancestors has a required " \
-       "deep descendant (PRO-2877 family 1 names the outermost ancestor, not the nearer :mid)" do
-      # Both :foo and :mid tolerate nil (optional:), and :leaf (on: :mid) is required. The outermost
-      # nil-tolerant ancestor (:foo) is the one that can never be satisfied by a nil/omitted value — :mid's
-      # own nil-tolerance is beside the point once :foo is already absent — so the message names :foo.
-      expect do
-        Class.new do
-          include Axn
-          expects :foo, optional: true
-          expects :mid, on: :foo, optional: true
-          expects :leaf, on: :mid
-        end
-      end.to raise_error(ArgumentError, /:foo is declared nil-tolerant .* but :leaf \(on: mid\) is required/)
+      shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
+      dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
+
+      # A required child strands an omitted parent at runtime, so the nil-tolerant parent stays required
+      # despite allow_nil — whether the required leaf is shallow or reached through a dotted-deep chain
+      # (a required descendant at any depth forces the ancestor chain required, PRO-2857).
+      expect(shallow_schema[:required] || []).to include("address")
+      expect(dotted_schema[:required] || []).to include("address")
+
+      # The dotted parent nests through an implicit :billing intermediate carrying the required :zip leaf.
+      billing = dotted_schema[:properties][:address][:properties][:billing]
+      expect(billing[:type]).to eq("object")
+      expect(billing[:properties]).to have_key(:zip)
+      expect(billing[:required]).to eq(["zip"])
     end
 
-    # A nil-tolerant :foo with a required shallow :mid (regardless of a deeper :leaf) is likewise rejected
-    # at declaration (PRO-2877 family 1; the basic shallow case is covered in on_subfields_spec.rb).
+    it "requires the top-level root when only a DEEP leaf (subfield-of-a-subfield) is required" do
+      # A required descendant (:leaf) at any depth forces its whole ancestor chain required: the nil
+      # parent (:foo) can't yield the descendant, so runtime and schema agree it must be present.
+      klass = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects :mid, on: :foo, optional: true
+        expects :leaf, on: :mid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).to include("foo")
+      # :mid nests under :foo, and :leaf nests recursively under :mid.
+      mid = schema[:properties][:foo][:properties][:mid]
+      expect(mid[:properties]).to have_key(:leaf)
+    end
+
+    it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
+      # The shallow child :mid is required, so an omitted :foo strands it at runtime — the parent is
+      # required on that basis alone; the deeper :leaf (which also nests under :mid) merely reinforces it.
+      klass = Class.new do
+        include Axn
+        expects :foo, optional: true
+        expects :mid, on: :foo
+        expects :leaf, on: :mid
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).to include("foo")
+    end
 
     it "still requires a defaulted top-level root whose only descendant is an optional dotted-parent subfield " \
        "when its default is a blank {} (runtime rejects the omitted call: \"Address can't be blank\")" do
@@ -3272,9 +3335,22 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     describe "transitive requiredness/nullability (a required descendant strands every nil/omitted ancestor)" do
-      # A nil-tolerant top-level parent + an optional: intermediate + a required deep leaf is now rejected
-      # at declaration (PRO-2877 family 1; see on_subfields_spec.rb's "family 1" examples) — it never
-      # reaches build_input.
+      it "forces an optional: intermediate AND its nil-tolerant top-level parent required when a deep leaf " \
+         "is required (fixes the old shallow-only divergence)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, allow_nil: true
+          expects :meta, on: :payload, type: Hash, optional: true
+          expects :id, on: :meta, type: Integer
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("payload")
+        payload = schema[:properties][:payload]
+        expect(payload[:type]).to eq("object")                       # null stripped: nil payload strands id
+        expect(payload[:required]).to eq(["meta"])                   # optional: meta is overridden by its required child
+        expect(payload[:properties][:meta][:type]).to eq("object")   # meta likewise non-nullable
+      end
 
       it "keeps implicit intermediates required and non-nullable above a required deep leaf" do
         klass = Class.new do
@@ -3307,17 +3383,24 @@ RSpec.describe Axn::Reflection::Schema do
         expect(payload[:properties][:meta][:required]).to eq(["id"])
       end
 
-      it "rejects at declaration a required deep leaf below a NON-OBJECT optional: intermediate, under a " \
-         "nil-tolerant top-level parent (PRO-2877 family 1; the required leaf has no default, so the " \
-         "intermediate's shape doesn't change the stranding)" do
-        expect do
-          Class.new do
-            include Axn
-            expects :payload, type: Hash, allow_nil: true
-            expects :items, on: :payload, type: Array, optional: true
-            expects :first_sku, on: :items, type: String
-          end
-        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant .* but :first_sku \(on: items\) is required/)
+      it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
+         "though its shape is omitted (runtime still validates it)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, allow_nil: true
+          expects :items, on: :payload, type: Array, optional: true
+          expects :first_sku, on: :items, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        # first_sku is dropped from the schema shape (non-object parent) but runtime requires it,
+        # which requires items present, which requires payload present.
+        payload = schema[:properties][:payload]
+        expect(payload[:required]).to eq(["items"])
+        expect(payload[:type]).to eq("object")
+        expect(schema[:required]).to include("payload")
+        expect(payload[:properties][:items][:type]).to eq("array")
+        expect(payload[:properties][:items]).not_to have_key(:properties)
       end
     end
 
@@ -3379,16 +3462,17 @@ RSpec.describe Axn::Reflection::Schema do
         expect(Array(meta[:required]).count("company_id")).to eq(1)
       end
 
-      it "rejects at declaration a nil-tolerant model parent with a REQUIRED deep (dotted) subfield " \
-         "(PRO-2877 family 1; an omitted record would strand it at runtime)" do
-        expect do
-          Class.new do
-            include Axn
-            expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
-            expects :theme, on: "company.settings", type: String
-            def call = nil
-          end
-        end.to raise_error(ArgumentError, /:company is declared nil-tolerant .* but :theme \(on: company\.settings\) is required/)
+      it "requires the top-level model <field>_id when the model has a REQUIRED deep subfield (an omitted record strands it at runtime)" do
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
+          expects :theme, on: "company.settings", type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        expect(schema[:required]).to include("company_id")
+        expect(klass.call).not_to be_ok # runtime agreement: required deep subfield strands the omitted record
       end
 
       it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional deep subfield" do
@@ -3407,11 +3491,12 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       it "rejects at declaration a deep subfield default reached via a dotted NAME under a nil-tolerant " \
-         "model parent (PRO-2877 family 3; synthesized {} isn't the model)" do
+         "model parent (synthesized {} isn't the model)" do
         # `expects "settings.theme", on: :company, default: "x"` lands the defaulted config on a DEEPER,
-        # implicit node (`settings`); PRO-2877 family 3 (subfield_contradictions.rb) must still find it
-        # while walking through that implicit intermediate — the same materialize-{}-then-reject-as-not-a-
-        # record hazard as a shallow defaulted subfield, just reached one hop further down.
+        # implicit node (`settings`); the nil-tolerant-model-plus-default check (subfield_contradictions.rb)
+        # must still find it while walking through that implicit intermediate — the same
+        # materialize-{}-then-reject-as-not-a-record hazard as a shallow defaulted subfield, just reached
+        # one hop further down.
         expect do
           Class.new do
             include Axn
@@ -3422,8 +3507,8 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       it "rejects at declaration a deep subfield PROC default reached via a dotted NAME under a " \
-         "nil-tolerant model parent (PRO-2877 family 3)" do
-        # A Proc default lands on the same DEEPER, implicit node via the dotted name; family 3 counts it
+         "nil-tolerant model parent" do
+        # A Proc default lands on the same DEEPER, implicit node via the dotted name; the check counts it
         # too (subfield_default_applies?'s `!!config.default` includes Procs — materialization happens
         # before the Proc runs), so this raises the same as the literal-default variant above.
         expect do
@@ -3454,10 +3539,11 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       # A non-object/mixed-union shape member colliding with an implicit deep intermediate is no longer
-      # dropped+warned: it now raises ArgumentError at declaration (PRO-2877 family 2). The canonical
-      # scalar and mixed-union cases are covered by subfield_tree_spec.rb's "raises at declaration when an
-      # implicit intermediate collides with a[n] ... shape member" examples and
-      # on_subfields_spec.rb's "family 2" examples — no drop+warn behavior survives to characterize here.
+      # dropped+warned: it now raises ArgumentError at declaration (PRO-2877's non-object shape member
+      # collision). The canonical scalar and mixed-union cases are covered by subfield_tree_spec.rb's
+      # "raises at declaration when an implicit intermediate collides with a[n] ... shape member" examples
+      # and on_subfields_spec.rb's "non-object shape member" examples — no drop+warn behavior survives to
+      # characterize here.
 
       # Reached via a dotted `on:` chain ("payload.bar") rather than a dotted field name — a distinct
       # route to the same implicit-intermediate collision, so still worth its own coverage.
@@ -3485,13 +3571,14 @@ RSpec.describe Axn::Reflection::Schema do
 
       # The scalar-member variant of the dotted `on:` chain collision (same coverage as the mixed-union
       # case above, distinct member type) is covered by subfield_tree_spec.rb / on_subfields_spec.rb's
-      # "family 2" examples; the drop+warn / forced-required-property behavior these used to characterize
-      # no longer exists (declaration raises first).
+      # "non-object shape member" examples; the drop+warn / forced-required-property behavior these used to
+      # characterize no longer exists (declaration raises first).
 
       # A member-of-a-member collision (an implicit intermediate colliding with a nested member of an
       # already-carried member) is covered by subfield_tree_spec.rb's "raises at declaration when an
-      # implicit intermediate collides with a[n] ... member of a member" examples (PRO-2877 family 2) —
-      # the scalar and mixed-union variants here characterized drop+warn behavior that no longer exists.
+      # implicit intermediate collides with a[n] ... member of a member" examples (PRO-2877's non-object
+      # shape member collision) — the scalar and mixed-union variants here characterized drop+warn behavior
+      # that no longer exists.
 
       it "merges into an OBJECT member-of-a-member at depth 2 and does NOT drop the config (positive control)" do
         klass = Class.new do
@@ -3532,20 +3619,21 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
       end
 
-      it "rejects at declaration a nil-tolerant member with a required colliding deep child (PRO-2877 family 1)" do
-        # A nil-tolerant `shape:` member (`allow_nil:`) with a required deep child nesting into it is a
-        # family-1 contradiction: a nil member strands the required leaf, so the member can never actually
-        # be nil — the `allow_nil:` is a dead flag. It now raises at declaration rather than being silently
-        # reconciled by stripping `null` from the reflected member.
-        expect do
-          Class.new do
-            include Axn
-            expects :payload, type: Hash do
-              field :bar, allow_nil: true, length: { maximum: 10 }
-            end
-            expects "bar.baz", on: :payload, type: String
+      it "strips null from a merged untyped nil-tolerant member when the colliding deep child is required" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, allow_nil: true, length: { maximum: 10 }
           end
-        end.to raise_error(ArgumentError, /:bar is declared nil-tolerant.*:bar\.baz \(on: payload\) is required/)
+          expects "bar.baz", on: :payload, type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(bar[:type]).to eq("object") # a nil member strands the required leaf
+        expect(bar[:required]).to include("baz")
+        expect(klass.call(payload: { bar: nil })).not_to be_ok # schema agrees: nil member rejected
       end
 
       it "keeps a merged non-nil-tolerant typed member object-only even when the colliding deep child is optional" do
@@ -3565,10 +3653,10 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       # A scalar shape member colliding at a merged node's SECOND config, and disagreeing carried members
-      # at a deeper implicit hop, both now raise at declaration (PRO-2877 family 2) instead of
-      # dropping+warning — covered by subfield_tree_spec.rb's "raises at declaration when a non-object
-      # shape member declared on a merged node's SECOND config collides" and "... when merged colliding
-      # members carry DISAGREEING nested members" examples.
+      # at a deeper implicit hop, both now raise at declaration (PRO-2877's non-object shape member
+      # collision) instead of dropping+warning — covered by subfield_tree_spec.rb's "raises at declaration
+      # when a non-object shape member declared on a merged node's SECOND config collides" and "... when
+      # merged colliding members carry DISAGREEING nested members" examples.
     end
 
     describe "the same wire path declared via two routes" do
@@ -3683,16 +3771,13 @@ RSpec.describe Axn::Reflection::Schema do
       # under the non-model route's object property either — the nesting gate consults every config, so a
       # model route at the node blocks nesting exactly as node_configs_block_nesting? does.
       it "does not nest a deep grandchild under a merged model+non-model node (agrees with dropped)" do
-        # Both routes are required (not optional:) — an optional merged route here would be a nil-tolerant
-        # ancestor above the required :name grandchild, which PRO-2877 family 1 now rejects at declaration;
-        # that's an orthogonal concern to what this test exercises (merged-node deep-nesting agreement).
         stub_const("MergedRouteUser", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
         klass = Class.new do
           include Axn
           expects :payload, type: Hash
-          expects "account.user", on: :payload, type: Hash # non-model route (first)
+          expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first)
           expects :account, on: :payload, type: Hash
-          expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find } # model route
+          expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }, optional: true # model route
           expects :name, on: :user, type: String # deep grandchild
           def call = nil
         end
@@ -3709,10 +3794,21 @@ RSpec.describe Axn::Reflection::Schema do
   # The schema's deep requiredness claims must AGREE with runtime outcomes (or diverge only in the
   # stricter direction). Each example asserts both sides against the same class.
   describe "runtime agreement for deep subfields" do
-    # A nil-tolerant :payload + an optional: :meta intermediate + a required :id leaf is now rejected at
-    # declaration (PRO-2877 family 1) — the "runtime rejects omission" agreement this used to document is
-    # superseded by declaration rejecting the contract outright (see on_subfields_spec.rb's "family 1"
-    # examples).
+    it "required deep leaf: schema requires the chain, runtime rejects omission and accepts the full path" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, allow_nil: true
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :id, on: :meta, type: Integer
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("payload")
+      expect(klass.call).not_to be_ok                                   # omitted payload strands id
+      expect(klass.call(payload: { meta: nil })).not_to be_ok           # nil meta strands id
+      expect(klass.call(payload: { meta: { id: 7 } })).to be_ok
+    end
 
     it "all-optional deep chain: schema omits requiredness, runtime accepts omission, nil parent, and full path" do
       klass = Class.new do
