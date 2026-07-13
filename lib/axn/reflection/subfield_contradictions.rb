@@ -58,7 +58,8 @@ module Axn
             # Family 2 (Task 3 fills this in): collision with a non-object shape member.
             members = Schema.shape_members_at(node.configs + carried_members, key)
             if (blocker = members.find { |m| !Schema.nestable_as_object?(m) })
-              return family_2(node, blocker, first_leaf_config(child))
+              carrier = shape_carrier_config(node.configs + carried_members, blocker)
+              return family_2(carrier&.field, blocker, first_leaf_config(child))
             end
 
             child_carried = members.select { |m| Schema.nestable_as_object?(m) }
@@ -124,6 +125,13 @@ module Axn
         nil
       end
 
+      # The config (among `configs`) whose declared shape members include `blocker`, by identity — the
+      # true immediate carrier of the colliding shape member, unambiguous even when a shape member name
+      # repeats at two nesting depths.
+      def shape_carrier_config(configs, blocker)
+        configs.find { |c| Array(c.validations.dig(:shape, :members)).any? { |m| m.equal?(blocker) } }
+      end
+
       # A top-level field config has no `on:`; a subfield config does. Render each as declared.
       def label(config)
         on = config.respond_to?(:on) ? config.on : nil
@@ -144,13 +152,11 @@ module Axn
         )
       end
 
-      # `parent_node` is unused: it may itself be IMPLICIT (nil `.config`) when the collision is a member
-      # of a member reached through `carried_members` — the naive `parent_node.config.field` crashes
-      # there, and even when `parent_node` is explicit-but-merged, `configs.first` isn't necessarily the
-      # config that declared `member`'s shape. `shape_parent_field` derives the true immediate carrier
-      # from `deep_config`'s own dotted on:/field chain instead, which is robust to both.
-      def family_2(_parent_node, member, deep_config)
-        parent_field = shape_parent_field(member, deep_config)
+      # `parent_field` is the `.field` of whichever config in `(node.configs + carried_members)` declared
+      # `member`'s shape — resolved by identity at the collision site in `walk`, so it is unambiguous even
+      # when a shape member name repeats at two nesting depths (the true immediate carrier, not merely the
+      # first chain segment matching `member.field`).
+      def family_2(parent_field, member, deep_config)
         Contradiction.new(
           family: 2,
           message: "#{label(deep_config)} nests beneath shape member :#{member.field} on :#{parent_field}, " \
@@ -176,20 +182,6 @@ module Axn
       def member_type_desc(member)
         klass = member.validations.dig(:type, :klass) || member.validations[:type]
         Array(klass).map { |k| k.is_a?(Class) ? k.name : k.to_s }.join(" | ")
-      end
-
-      # The field that immediately carries `member`'s shape — reconstructed from `deep_config`'s own
-      # dotted `on:`/`field` chain (the same segments SubfieldTree splits into hops) rather than from a
-      # `parent_node` reference, because that node may be implicit (member-of-a-member, reached only
-      # through `carried_members`) or an explicit-but-merged node whose FIRST config isn't necessarily the
-      # one that declared `member`'s shape. `member.field` always equals the exact hop key at the
-      # collision point, so its position in the reconstructed chain recovers its true immediate parent —
-      # the chain's own root (deep_config's `on:`) when `member` collides at the first hop.
-      def shape_parent_field(member, deep_config)
-        root, *on_rest = deep_config.on.to_s.split(".").map(&:to_sym)
-        chain = on_rest + deep_config.field.to_s.split(".").map(&:to_sym)
-        idx = chain.index(member.field.to_sym) || 0
-        idx.positive? ? chain[idx - 1] : root
       end
     end
   end

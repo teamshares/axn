@@ -1401,6 +1401,24 @@ RSpec.describe Axn do
           end
         end.not_to raise_error
       end
+
+      it "names the true (inner) immediate carrier when a shape member name repeats at two depths" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: Hash do
+                field :bar, type: String
+              end
+            end
+            expects "bar.bar.baz", on: :payload
+          end
+        end.to raise_error(
+          ArgumentError,
+          ":bar.bar.baz (on: payload) nests beneath shape member :bar on :bar, which is declared a non-object " \
+          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
+          "(Hash/:params), or drop the nested subfield.",
+        )
+      end
     end
 
     describe "family 3: nil-tolerant model: parent + applied-default descendant" do
