@@ -384,4 +384,24 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     single.configure(:mcp) { |c| c.shared = :m }
     expect(single.resolved_shared).to eq(:m)
   end
+
+  it "defers to a base class's own `configure` instead of shadowing it" do
+    base = Class.new do
+      def self.configure(*args) = "base:#{args.inspect}"
+    end
+    mod = mcp.overrides
+    sub = Class.new(base) { include mod }
+
+    expect(sub.configure(:anything)).to eq("base:[:anything]")
+  end
+
+  it "raises when config_namespace is declared after an overridable setting" do
+    expect do
+      Module.new do
+        extend Axn::Configurable
+        setting :x, default: 1, overridable: true
+        config_namespace :late
+      end
+    end.to raise_error(ArgumentError, /config_namespace/)
+  end
 end

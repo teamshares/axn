@@ -61,7 +61,16 @@ module Axn
               # Breadcrumb before extending, while `base`'s own lookup still reflects only its
               # ancestors (not yet axn's accessors), so the check sees a genuine external definition.
               config_source.send(:_warn_on_shadowed_overrides, base)
-              base.extend(ClassConfigWriter)
+              # `configure` is a generic name a non-axn base class may already own as its own
+              # class-level DSL. Ruby places an extended module above the superclass chain, so an
+              # unconditional extend would shadow that base hook and reroute its `configure(...)`
+              # calls into axn's namespace writer. Defer instead — the same PRO-2875 discipline the
+              # Naming/SchemaReflection generic names use. The flat override accessors and the
+              # collision-proof `resolve_override_for` path still work; only the block form is
+              # unavailable on such a base.
+              shadowed = defined?(Axn::Core::MethodShadowing) &&
+                         Axn::Core::MethodShadowing.externally_defined?(base, :configure)
+              base.extend(ClassConfigWriter) unless shadowed
               base.extend(methods_module)
             end
           end
@@ -77,6 +86,15 @@ module Axn
       # consumers stay collision-safe without declaring anything.
       def config_namespace(value = UNSET)
         return (@_config_namespace ||= self) if UNSET.equal?(value)
+
+        # Each overridable setting's accessors close over the namespace at declaration time, so
+        # changing it afterward would strand those settings under the old key while `configure(value)`
+        # writes under the new one — silently ignored. Enforce the documented "declare it first" rule.
+        if @_overridable_settings_declared && value != @_config_namespace
+          raise ArgumentError,
+                "config_namespace must be declared before any overridable setting " \
+                "(got #{value.inspect} after settings were defined under #{(@_config_namespace || self).inspect})"
+        end
 
         @_config_namespace = value
       end
@@ -137,6 +155,7 @@ module Axn
       def _define_override_methods(setting, fallback)
         name = setting.name
         namespace = config_namespace
+        @_overridable_settings_declared = true
 
         raw_lookup = lambda do |start|
           klass = start
