@@ -645,6 +645,24 @@ RSpec.describe Axn do
           expect(result.parent).to eq({ other: 1 })
         end
 
+        it "drops a nested preprocess result when the implicit intermediate collides with a non-object shape member" do
+          # Same synthesis gate as defaults: the write would have to create `settings` as an object
+          # where the shape declares a String, so the result has nowhere to land and is dropped.
+          action = build_axn do
+            expects :payload, type: Hash do
+              field :settings, type: String, optional: true
+            end
+            expects :flag, on: "payload.settings", optional: true, preprocess: ->(v) { v.nil? ? "computed" : v }
+            exposes :parent, optional: true
+
+            def call = expose(parent: payload)
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result).to be_ok
+          expect(result.parent).to eq({ other: 1 })
+        end
+
         it "still applies a nested default through an implicit intermediate matching an OBJECT shape member" do
           action = build_axn do
             expects :payload, type: Hash do

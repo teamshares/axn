@@ -484,7 +484,11 @@ module Axn
         ) do
           @action.instance_exec(current_value, &config.preprocess)
         end
-        _write_value_at!(path, preprocessed_value)
+        # The write may synthesize missing IMPLICIT intermediates (never the root — a nil root
+        # drops the value, see _write_value_at!), so it obeys the same synthesis gate as defaults:
+        # an intermediate whose declared types/shape members can't hold an object is not created,
+        # and the preprocess result is dropped (nowhere to land).
+        _write_value_at!(path, preprocessed_value) if _write_chain_materializable?(path)
       end
     end
 
@@ -706,7 +710,7 @@ module Axn
         # materialization refuses to inject `{}` where it would fail that ancestor's own declared
         # type — so the subfield is absent. Skip evaluating/writing its default: a Proc default would
         # run its side effects for nothing, and the write would synthesize a type-violating value.
-        next unless _default_chain_materializable?(path)
+        next unless _write_chain_materializable?(path)
 
         @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
@@ -836,7 +840,7 @@ module Axn
     # nestability predicate the tree's drop pass uses (Schema.shape_members_at /
     # nestable_as_object?, carrying merged members so a member-of-a-member is tested at depth).
     # Present values are not judged here (the write path digs through whatever the caller supplied).
-    def _default_chain_materializable?(path)
+    def _write_chain_materializable?(path)
       # Depth 0: the default value IS the root — nothing is synthesized, so there is nothing to gate.
       return true if path.ancestors.empty?
 
