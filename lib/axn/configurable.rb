@@ -161,12 +161,14 @@ module Axn
         return unless defined?(Axn::Core::MethodShadowing) && defined?(Axn.config)
 
         _override_resolvers.each_key do |name|
-          next unless Axn::Core::MethodShadowing.externally_defined?(base, name)
+          [name, :"#{name}?"].each do |accessor|
+            next unless Axn::Core::MethodShadowing.externally_defined?(base, accessor)
 
-          Axn.config.logger.debug do
-            "[Axn] #{base.name || 'Action'}: per-class override accessor `#{name}` collides with a same-named " \
-              "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
-              "resolve_override_for). See PRO-2856."
+            Axn.config.logger.debug do
+              "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
+                "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
+                "resolve_override_for). See PRO-2856."
+            end
           end
         end
       end
@@ -296,6 +298,8 @@ module Axn
               ((@_axn_config_overrides ||= {})[namespace] ||= {})[name] = value
             end
           end
+
+          define_method(:"#{name}?") { !!resolve_override.call(self) }
 
           define_method(:"raw_#{name}") { raw_lookup.call(self) }
 

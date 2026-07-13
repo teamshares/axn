@@ -149,6 +149,48 @@ RSpec.describe Axn::Configurable do
       expect(klass.resolved_late).to eq(:y)
     end
 
+    describe "<name>?: boolean read of the resolved value" do
+      let(:boolean_mod) do
+        Module.new do
+          extend Axn::Configurable
+          setting :enabled, default: true, callable: true, overridable: true
+        end
+      end
+
+      let(:boolean_class) do
+        mod = boolean_mod.overrides
+        Class.new { include mod }
+      end
+
+      it "reflects the library default when no override is set" do
+        expect(boolean_class.enabled?).to be(true)
+      end
+
+      it "reflects a falsey per-class override" do
+        boolean_class.enabled(false)
+        expect(boolean_class.enabled?).to be(false)
+      end
+
+      it "resolves a callable default at read time" do
+        boolean_mod.config.enabled = -> { false }
+        expect(boolean_class.enabled?).to be(false)
+      end
+
+      it "inherits a parent's override" do
+        boolean_class.enabled(false)
+        expect(Class.new(boolean_class).enabled?).to be(false)
+      end
+
+      it "is not generated for non-overridable settings" do
+        plain = Module.new do
+          extend Axn::Configurable
+          setting :default_model, default: "x"
+        end
+        klass = Class.new { include plain.overrides }
+        expect(klass).not_to respond_to(:default_model?)
+      end
+    end
+
     describe "raw_<name>: the override with no config fallback" do
       it "returns UNSET when no override is set anywhere in the ancestry" do
         expect(action_class.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
@@ -307,6 +349,10 @@ RSpec.describe Axn::Configurable::Settings do
     it "inherits an override from a parent class" do
       action_class.mode :b
       expect(Class.new(action_class).resolved_mode).to eq(:b)
+    end
+
+    it "exposes <name>? resolving override then live singleton" do
+      expect(action_class.mode?).to be(true) # :a is truthy
     end
 
     it "exposes raw_<name> as the override with no singleton fallback" do

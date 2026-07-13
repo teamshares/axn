@@ -316,5 +316,13 @@ RSpec.describe "per-class config overrides on actions" do
       action.sidekiq_job_tag_sources %i[dimension]
       expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
     end
+
+    it "leaves a breadcrumb when the predicate name collides" do
+      predicate_base = Class.new { def self.sidekiq_job_tag_sources? = :base_value }
+      messages = []
+      allow(Axn.config.logger).to receive(:debug) { |*args, &block| messages << (block ? block.call : args.first) }
+      Class.new(predicate_base) { include Axn }
+      expect(messages).to include(a_string_matching(/override accessor `sidekiq_job_tag_sources\?` collides/))
+    end
   end
 end
