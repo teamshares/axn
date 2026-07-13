@@ -545,7 +545,7 @@ module Axn
       raise _composed_user_facing_error(top_errors, failing_roots, user_facing, subfield_failures)
     end
 
-    SubfieldFailure = Data.define(:config, :path, :errors)
+    SubfieldFailure = Data.define(:config, :path, :errors, :stranded_at)
 
     # Every subfield's errors, collected in declaration order with no early exit — settling needs the
     # complete set (both to aggregate the report and to suppress stranded descendants accurately).
@@ -560,8 +560,27 @@ module Axn
           action: @action,
           reader: config.reader_as,
         )
-        SubfieldFailure.new(config:, path: _resolved_path_for(config), errors:) if errors.any?
+        next if errors.empty?
+
+        path = _resolved_path_for(config)
+        SubfieldFailure.new(config:, path:, errors:, stranded_at: path && _stranded_ancestor_path(path))
       end
+    end
+
+    # The dotted wire path of the first nil INTERMEDIATE ancestor along a failing subfield's chain
+    # (nil when the chain is intact, or when the nil is the top-level root itself — a nil root is
+    # self-evident in the report: its own presence error co-reports, or its absence is the classic
+    # PRO-2857 semantics). Purely diagnostic: names which nested hop stranded the failing check, so
+    # a "Note can't be blank" three levels deep doesn't send the caller hunting.
+    def _stranded_ancestor_path(path)
+      value = @context.provided_data[path.wire_path.first]
+      return nil if value.nil?
+
+      path.wire_path[1..-2].each_with_index do |seg, i|
+        value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+        return path.wire_path[0..i + 1].join(".") if value.nil?
+      end
+      nil
     end
 
     def _suppressed_by_failed_ancestor?(path, failed_roots, failed_nodes)
@@ -570,7 +589,7 @@ module Axn
 
     # The one dev-facing exception: every unsuppressed violation from all three sources in a single
     # errors object, in source order (top-level fields, then subfields in declaration order, then
-    # model-consistency mismatches on :base).
+    # model-consistency mismatches and stranded-path diagnostics on :base).
     def _aggregate_errors(top_errors, subfield_failures, mismatches)
       errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
       top_errors.each { |err| errors.import(err) }
@@ -578,6 +597,9 @@ module Axn
         failure.errors.each { |err| errors.import(err) }
       end
       mismatches.each { |msg| errors.add(:base, msg) }
+      subfield_failures.filter_map(&:stranded_at).uniq.each do |strand|
+        errors.add(:base, "'#{strand}' is nil, so nested expectations beneath it cannot be satisfied")
+      end
       errors
     end
 

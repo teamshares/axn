@@ -13,7 +13,7 @@
 # - Result/Failure: result.ok?, result.exception (Axn::Failure for fail!)
 # - Field config access: internal_field_configs, external_field_configs, subfield_configs
 # - Field config shape: field, validations, default, preprocess, sensitive, metadata, description
-# - Internal API: Axn::Internal::FieldConfig.optional?(config)
+# - Config API: config.optional? (instance method on FieldConfig and ShapeConfig members)
 # - Testing: Axn::Testing::SpecHelpers#build_axn
 # =============================================================================
 
@@ -375,9 +375,23 @@ RSpec.describe "Axn-MCP interface contract" do
     end
   end
 
-  describe "Axn::Internal::FieldConfig.optional?" do
-    it "is a module function" do
-      expect(Axn::Internal::FieldConfig).to respond_to(:optional?)
+  describe "config#optional? (instance method on FieldConfig AND ShapeConfig members)" do
+    # PRO-2883 moved optionality onto the config objects themselves; the old
+    # Axn::Internal::FieldConfig.optional?(config) module function is gone. axn-mcp derives
+    # `required` by calling `.optional?` directly on field configs and nested shape members alike.
+    it "is an instance method on both config types" do
+      action = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :name, type: String
+        end
+
+        def call; end
+      end
+
+      config = action.internal_field_configs.find { |c| c.field == :payload }
+      expect(config).to respond_to(:optional?)
+      expect(config.validations[:shape][:members].first).to respond_to(:optional?)
     end
 
     it "returns false for required field (presence: true)" do
@@ -389,7 +403,7 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.internal_field_configs.find { |c| c.field == :required_field }
-      expect(Axn::Internal::FieldConfig.optional?(config)).to be false
+      expect(config.optional?).to be false
     end
 
     it "returns true for optional field (optional: true)" do
@@ -401,7 +415,7 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.internal_field_configs.find { |c| c.field == :optional_field }
-      expect(Axn::Internal::FieldConfig.optional?(config)).to be true
+      expect(config.optional?).to be true
     end
 
     it "returns true for field with allow_blank: true" do
@@ -413,7 +427,7 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.internal_field_configs.find { |c| c.field == :blank_allowed }
-      expect(Axn::Internal::FieldConfig.optional?(config)).to be true
+      expect(config.optional?).to be true
     end
 
     it "returns true for boolean type (no presence validation)" do
@@ -425,7 +439,23 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.internal_field_configs.find { |c| c.field == :flag }
-      expect(Axn::Internal::FieldConfig.optional?(config)).to be true
+      expect(config.optional?).to be true
+    end
+
+    it "derives shape-member optionality the same way" do
+      action = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :id, type: Integer
+          field :note, type: String, optional: true
+        end
+
+        def call; end
+      end
+
+      members = action.internal_field_configs.find { |c| c.field == :payload }.validations[:shape][:members]
+      expect(members.find { |m| m.field == :id }.optional?).to be false
+      expect(members.find { |m| m.field == :note }.optional?).to be true
     end
   end
 
@@ -618,8 +648,8 @@ RSpec.describe "Axn-MCP interface contract" do
 
       required_config = action.internal_field_configs.find { |c| c.field == :ids }
       optional_config = action.internal_field_configs.find { |c| c.field == :opt_ids }
-      expect(Axn::Internal::FieldConfig.optional?(required_config)).to be false
-      expect(Axn::Internal::FieldConfig.optional?(optional_config)).to be true
+      expect(required_config.optional?).to be false
+      expect(optional_config.optional?).to be true
     end
   end
 
@@ -628,7 +658,7 @@ RSpec.describe "Axn-MCP interface contract" do
     # config.validations[:shape][:members]. Each member responds to #field, #validations,
     # #metadata, and #description — the same surface as a FieldConfig — so axn-mcp can build
     # nested properties (items.properties for Array, properties for Hash/class) and derive
-    # `required` via Axn::Internal::FieldConfig.optional?. Nesting recurses through the same
+    # `required` via each member's own #optional?. Nesting recurses through the same
     # member.validations[:shape][:members] path.
     #
     # NOTE: schema "enrich" — deriving bare property names from a Data.define's .members for
@@ -689,7 +719,7 @@ RSpec.describe "Axn-MCP interface contract" do
       expect(meta.validations[:shape][:container]).to eq(Hash)
     end
 
-    it "derives required vs optional per member via FieldConfig.optional?" do
+    it "derives required vs optional per member via member#optional?" do
       action = Class.new do
         include Axn
         exposes :rows, type: Array, allow_blank: true do
@@ -703,8 +733,8 @@ RSpec.describe "Axn-MCP interface contract" do
       members = action.external_field_configs.find { |c| c.field == :rows }.validations[:shape][:members]
       id = members.find { |m| m.field == :id }
       note = members.find { |m| m.field == :note }
-      expect(Axn::Internal::FieldConfig.optional?(id)).to be false
-      expect(Axn::Internal::FieldConfig.optional?(note)).to be true
+      expect(id.optional?).to be false
+      expect(note.optional?).to be true
     end
 
     it "nests recursively via member.validations[:shape][:members]" do

@@ -22,6 +22,18 @@ module Axn
         end
       end
 
+      # Optionality is shared by FieldConfig and ShapeConfig (axn-mcp derives `required` from BOTH —
+      # field configs and nested shape members — through the same predicate).
+      module FieldOptionality
+        # A field is optional when it carries no `presence: true` validation, or any validator
+        # tolerates blank.
+        def optional?
+          return true unless validations.key?(:presence) && validations[:presence] == true
+
+          validations.values.any? { |v| v.is_a?(Hash) && v[:allow_blank] == true }
+        end
+      end
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
@@ -37,12 +49,7 @@ module Axn
 
         def subfield? = !on.nil?
 
-        # A field is optional when it carries no `presence: true` validation, or any validator
-        # tolerates blank. The implementation stays in Internal::FieldConfig (duck-typed on
-        # #validations) because axn-mcp also applies it to ShapeConfig members.
-        def optional?
-          Axn::Internal::FieldConfig.optional?(self)
-        end
+        include FieldOptionality
 
         # Whether the field is declared `type: :boolean` (drives the generated `?` predicate reader).
         def boolean?
@@ -62,6 +69,8 @@ module Axn
       # Nested members live in validations[:shape][:members], so the tree is uniform
       # at every depth and walked by both ShapeValidator (runtime) and axn-mcp (schema).
       ShapeConfig = Data.define(:field, :validations, :metadata) do
+        include FieldOptionality
+
         def description = metadata[:description]
       end
 

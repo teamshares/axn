@@ -673,6 +673,48 @@ RSpec.describe Axn do
         end
       end
 
+      describe "stranded-path diagnostics" do
+        it "names the first nil intermediate ancestor in the validation report" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :city, on: "payload.address", type: String
+
+            def call = nil
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result.outcome).to be_exception
+          expect(result.exception.message).to include("City can't be blank")
+          expect(result.exception.message).to include("'payload.address' is nil, so nested expectations beneath it cannot be satisfied")
+        end
+
+        it "reports one diagnostic per stranded chain, shared across its failing subfields" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :city, on: "payload.address", type: String
+            expects :zip, on: "payload.address", type: String
+
+            def call = nil
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result.exception.message.scan("'payload.address' is nil").count).to eq(1)
+        end
+
+        it "adds no diagnostic for a plain nil top-level parent (self-evident from the report)" do
+          action = build_axn do
+            expects :payload, type: Hash, optional: true, allow_nil: true
+            expects :note, on: :payload
+
+            def call = nil
+          end
+
+          result = action.call
+          expect(result.outcome).to be_exception
+          expect(result.exception.message).to eq("Note can't be blank")
+        end
+      end
+
       describe "sensitive: with a nested on: (kwarg parity)" do
         it "filters a nested sensitive subfield out of the inspect output" do
           action = build_axn do
