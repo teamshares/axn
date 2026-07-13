@@ -28,8 +28,8 @@ Axn::MCP.reset_config!                            # discard assigned values — 
 | ------ | ------ |
 | `default:` | Value returned until one is assigned. Mutable defaults (e.g. `[]`) are copied per config, so they're safe to assign-then-mutate. |
 | `one_of:` | Whitelist of permitted values; assigning anything else raises `ArgumentError`. |
-| `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. |
-| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. |
+| `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. The callable may instead raise its own `ArgumentError` for a custom message. |
+| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. A callable **default** is re-evaluated on every read, so "unset ⇒ derive from the environment now" is expressible: `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }, callable: true`. |
 | `overridable:` | When `true`, individual actions can override the value per-class (see below). |
 
 When migrating an existing config onto `one_of:` or `validate:`, note that the `ArgumentError` raised on an invalid assignment uses the DSL's own wording (e.g. `mode must be one of :a, :b; got :z`) rather than any message your hand-written setter used before — so any tests asserting on the old message text will need updating.
