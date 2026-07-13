@@ -251,6 +251,25 @@ RSpec.describe "per-class config overrides on actions" do
     expect { action.sidekiq_job_tag_sources %i[bogus] }.to raise_error(ArgumentError)
   end
 
+  it "reads a value written through the no-arg configure bag (core namespace)" do
+    action.configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+  end
+
+  it "rejects a typo'd setter in the no-arg configure bag (core schema is always known)" do
+    expect { action.configure { |c| c.sidekiq_job_tag_sorces = %i[dimension] } }
+      .to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "validates the value in the no-arg configure bag" do
+    expect { action.configure { |c| c.sidekiq_job_tag_sources = %i[bogus] } }.to raise_error(ArgumentError)
+  end
+
+  it "always exposes axn_configure as the collision-proof form" do
+    action.axn_configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+  end
+
   it "inherits a per-class override into subclasses" do
     action.sidekiq_job_tag_sources %i[dimension]
     expect(Class.new(action).resolved_sidekiq_job_tag_sources).to eq(%i[dimension])

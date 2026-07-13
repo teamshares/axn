@@ -10,6 +10,11 @@ module Axn
   class Configuration
     extend Axn::Configurable::Settings
 
+    # Axn's own overridable settings live under the `:core` namespace, so the no-arg
+    # `configure { |c| … }` bag on an action reaches them (and never collides with an
+    # adapter gem's namespaced settings).
+    config_namespace :core
+
     # The live singleton whose values are the library-level fallback for any
     # `overridable: true` setting's per-class override accessors.
     overridable_config_source { Axn.config }

@@ -331,3 +331,169 @@ RSpec.describe Axn::Configurable::Settings do
     end
   end
 end
+
+RSpec.describe "Axn::Configurable namespaced per-class config" do
+  let(:mcp) do
+    Module.new do
+      extend Axn::Configurable
+      config_namespace :mcp
+      setting :shared, default: :mcp_default, one_of: %i[mcp_default m], overridable: true
+    end
+  end
+
+  let(:ruby_llm) do
+    Module.new do
+      extend Axn::Configurable
+      config_namespace :ruby_llm
+      setting :shared, default: :llm_default, overridable: true
+    end
+  end
+
+  # A class composing two adapters that happen to share a setting name — the
+  # tool topology the namespacing exists for.
+  let(:tool) do
+    a = mcp.overrides
+    b = ruby_llm.overrides
+    Class.new do
+      include a
+      include b
+    end
+  end
+
+  it "keeps same-named settings from different namespaces independent" do
+    tool.configure(:mcp) { |c| c.shared = :m }
+    tool.configure(:ruby_llm) { |c| c.shared = :r }
+
+    expect(mcp.resolve_override_for(tool, :shared)).to eq(:m)
+    expect(ruby_llm.resolve_override_for(tool, :shared)).to eq(:r)
+  end
+
+  it "stores config for an unregistered namespace inertly, leaving loaded ones untouched" do
+    expect { tool.configure(:not_loaded) { |c| c.anything = :x } }.not_to raise_error
+    expect(mcp.resolve_override_for(tool, :shared)).to eq(:mcp_default)
+  end
+
+  it "validates eagerly when the namespace's source is registered on the class" do
+    expect { tool.configure(:mcp) { |c| c.shared = :bogus } }.to raise_error(ArgumentError, /shared/)
+  end
+
+  it "rejects an unknown setter name for a registered namespace" do
+    expect { tool.configure(:mcp) { |c| c.no_such_setting = :x } }.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "stores an unregistered namespace tolerantly, validating only when the adapter resolves it" do
+    mod = ruby_llm.overrides # gives the class `configure`, but does NOT register :mcp
+    plain = Class.new { include mod }
+
+    expect { plain.configure(:mcp) { |c| c.shared = :bogus } }.not_to raise_error
+    expect { mcp.resolve_override_for(plain, :shared) }.to raise_error(ArgumentError, /shared/)
+  end
+
+  it "surfaces a typo'd tolerant key when the source resolves the namespace" do
+    mod = ruby_llm.overrides
+    plain = Class.new { include mod }
+    plain.configure(:mcp) { |c| c.shraed = :m } # typo: real setting is :shared
+
+    expect { mcp.resolve_override_for(plain, :shared) }.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "surfaces a typo'd tolerant key when the source's overrides are later included" do
+    rmod = ruby_llm.overrides
+    mmod = mcp.overrides
+
+    expect do
+      Class.new do
+        include rmod                          # `configure` available, :mcp still unregistered
+        configure(:mcp) { |c| c.shraed = :m } # tolerant, typo'd
+        include mmod                          # registers :mcp → validates the existing slot
+      end
+    end.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "agrees with the flat accessor on the same namespace slot" do
+    mod = mcp.overrides
+    single = Class.new { include mod }
+    single.configure(:mcp) { |c| c.shared = :m }
+    expect(single.resolved_shared).to eq(:m)
+  end
+
+  it "defers to a base class's own `configure`, exposing axn's config as axn_configure" do
+    base = Class.new do
+      def self.configure(*args) = "base:#{args.inspect}"
+    end
+    mod = mcp.overrides
+    sub = Class.new(base) { include mod }
+
+    # Bare `configure` still reaches the base's own hook, untouched.
+    expect(sub.configure(:anything)).to eq("base:[:anything]")
+
+    # axn_configure is always available as the collision-proof form.
+    sub.axn_configure(:mcp) { |c| c.shared = :m }
+    expect(mcp.resolve_override_for(sub, :shared)).to eq(:m)
+  end
+
+  it "exposes axn_configure alongside configure on an unshadowed action" do
+    mod = mcp.overrides
+    single = Class.new { include mod }
+    single.axn_configure(:mcp) { |c| c.shared = :m }
+    expect(single.resolved_shared).to eq(:m)
+  end
+
+  it "raises when two different sources claim the same config_namespace on one class" do
+    a = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup
+      setting :foo, default: 1, overridable: true
+    end
+    b = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup
+      setting :bar, default: 2, overridable: true
+    end
+    am = a.overrides
+    bm = b.overrides
+
+    expect do
+      Class.new do
+        include am
+        include bm
+      end
+    end.to raise_error(ArgumentError, /namespace :dup is already owned/)
+  end
+
+  it "raises when a subclass adds a second source for a namespace its parent already owns" do
+    a = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup2
+      setting :foo, default: 1, overridable: true
+    end
+    b = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup2
+      setting :bar, default: 2, overridable: true
+    end
+    am = a.overrides
+    bm = b.overrides
+    parent = Class.new { include am }
+
+    expect { Class.new(parent) { include bm } }.to raise_error(ArgumentError, /namespace :dup2 is already owned/)
+  end
+
+  it "raises when config_namespace is declared after an overridable setting" do
+    expect do
+      Module.new do
+        extend Axn::Configurable
+        setting :x, default: 1, overridable: true
+        config_namespace :late
+      end
+    end.to raise_error(ArgumentError, /config_namespace/)
+  end
+
+  it "raises when config_namespace is declared after the overrides were included" do
+    src = Module.new { extend Axn::Configurable }
+    mod = src.overrides
+    Class.new { include mod } # include locks the (default) namespace
+
+    expect { src.config_namespace(:mcp) }.to raise_error(ArgumentError, /config_namespace/)
+  end
+end
