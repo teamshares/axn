@@ -70,9 +70,7 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
       expect(action.call(payload: { note: nil, other: 1 }).got).to eq("d")
     end
 
-    it "does NOT apply a falsey default (default: false is skipped today)" do
-      # Pinned pre-parity behavior: the subfield defaults pass gates on default truthiness, unlike
-      # top-level defaults. The kwarg-parity commit changes this deliberately (with schema co-update).
+    it "applies default: false (kwarg parity: non-nil defaults apply, matching top-level semantics)" do
       action = build_axn do
         expects :payload, type: Hash
         expects :flag, on: :payload, optional: true, type: :boolean, default: false
@@ -81,7 +79,7 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
         def call = expose(got: flag)
       end
 
-      expect(action.call(payload: { other: 1 }).got).to be_nil
+      expect(action.call(payload: { other: 1 }).got).to be(false)
     end
 
     it "instance_execs a Proc default against the action" do

@@ -2677,8 +2677,8 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "falsey subfield defaults are not optional-making in the schema (Bug Z2)" do
-    it "still requires a nested subfield whose default is falsey (runtime only applies truthy subfield defaults)" do
+  describe "falsey subfield defaults are optional-making in the schema (kwarg parity)" do
+    it "does not require a nested subfield whose default is false (runtime applies any non-nil default)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -2686,7 +2686,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:payload][:required]).to include("flag")
+      expect(schema[:properties][:payload][:required] || []).not_to include("flag")
     end
 
     it "does not require a nested subfield whose default is truthy" do
@@ -2701,8 +2701,8 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a falsey subfield default is not emitted in the schema (Bug HH)" do
-    it "does not emit default: false for a subfield with a falsey default (runtime never applies it)" do
+  describe "a false subfield default is emitted in the schema (kwarg parity)" do
+    it "emits default: false for a subfield with a false default (runtime applies any non-nil default)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -2710,7 +2710,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:payload][:properties][:flag]).not_to have_key(:default)
+      expect(schema[:properties][:payload][:properties][:flag]).to include(default: false)
     end
 
     it "still emits default: for a subfield with a truthy default" do
@@ -2758,7 +2758,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "still requires the parent when the only subfield default is falsey (not applied at runtime)" do
+    it "does not require the parent when a subfield carries a false default (applied at runtime, so it materializes the parent)" do
       klass = Class.new do
         include Axn
         expects :payload
@@ -2766,7 +2766,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
     end
   end
 

@@ -49,12 +49,12 @@ module Axn
           Array(validations.dig(:type, :klass)) == [:boolean]
         end
 
-        # Runtime materializes a SUBFIELD's default only when it is truthy — Executor's subfield
-        # defaults pass skips a falsey default (`false`/`nil`), unlike top-level defaults, which
-        # apply by key-absence. Schema reflection keys off the same rule (a falsey subfield default
-        # neither relaxes requiredness nor is emitted).
+        # Whether the declared default is applied at runtime: any non-nil default counts (`default:
+        # false` on a boolean is meaningful), matching top-level defaults' key-absence semantics.
+        # Schema reflection keys off the same rule, so a declared falsey default is emitted and
+        # relaxes requiredness exactly when the runtime would apply it.
         def applied_default?
-          !!default
+          !default.nil?
         end
       end
 
@@ -113,30 +113,26 @@ module Axn
           end
 
           _validate_user_facing!(user_facing)
-          raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
 
           reader_names = _resolve_reader_names(fields, as:, prefix:)
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
-
-          if on.present?
-            raise ArgumentError, "a shape block is not supported with `on:`" if block
-
-            return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                               reader_names:, **validations)
-          end
-
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
-          # validates nested members, which `ShapeValidator` reports under this same top-level
-          # attribute — so reclassifying the field user-facing would wrongly turn a malformed-member
-          # (structural) failure into a user-facing one. Nested checks stay dev-facing, exactly like
-          # subfields, so reject the combination (top-level fields only). Keyed on the resolved
-          # `validations[:shape]`, not the block, so a direct `shape:` kwarg is caught too.
+          # validates nested members, which `ShapeValidator` reports under this same attribute — so
+          # reclassifying the field user-facing would wrongly turn a malformed-member (structural)
+          # failure into a user-facing one. Nested member checks stay dev-facing at every level, so
+          # reject the combination. Keyed on the resolved `validations[:shape]`, not the block, so a
+          # direct `shape:` kwarg is caught too.
           if user_facing && validations[:shape]
             raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
+          end
+
+          if on.present?
+            return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                               reader_names:, user_facing:, **validations)
           end
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
@@ -239,19 +235,6 @@ module Axn
 
         def _build_instance_filter(action_instance)
           ActiveSupport::ParameterFilter.new(_resolve_sensitive_fields(action_instance))
-        end
-
-        # `on:` references a parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
-        # provided_data and the inspector's subfield filtering are keyed by the caller-facing *wire*
-        # key. Translate an aliased top-level parent back to its wire key. Identity for non-aliased
-        # parents (reader_as == field) and for names that match no top-level reader. Only top-level
-        # parents are consulted: a nested/subfield parent can't be written through the single-level
-        # mutation machinery and is rejected at declaration when combined with
-        # default:/preprocess:/sensitive: (see ContractForSubfields#_expects_subfields), so it never
-        # reaches the mutation or sensitive-filtering paths.
-        def _wire_parent_key(on)
-          config = internal_field_configs.find { |c| c.reader_as.to_s == on.to_s }
-          config ? config.field : on.to_sym
         end
 
         def _declared_fields(direction)

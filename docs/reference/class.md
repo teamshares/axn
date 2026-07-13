@@ -82,7 +82,7 @@ While we _support_ complex interface validations, in practice you usually just w
 In addition to the [standard ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html), we also support five additional custom validators:
 * `type: Foo` - fails unless the provided value `.is_a?(Foo)`
   * Edge case: use `type: :boolean` to handle a boolean field (since ruby doesn't have a Boolean class to pass in directly)
-    * Boolean `expects` fields also define a predicate reader, so `expects :enabled, type: :boolean` provides both `enabled` and `enabled?` on the action instance. The same applies to subfield readers unless `readers: false` is set. Boolean `exposes` fields provide predicate readers on the result, so `exposes :enabled, type: :boolean` provides `result.enabled?`.
+    * Boolean `expects` fields also define a predicate reader, so `expects :enabled, type: :boolean` provides both `enabled` and `enabled?` on the action instance. The same applies to subfield readers. Boolean `exposes` fields provide predicate readers on the result, so `exposes :enabled, type: :boolean` provides `result.enabled?`.
   * Edge case: use `type: :uuid` to handle a confirming given string is a UUID (with or without `-` chars)
   * Edge case: use `type: :params` to accept either a Hash or ActionController::Parameters (Rails-compatible)
 * `of: Foo` - for `type: Array` fields, validates each element (fails unless every element `.is_a?(Foo)`)
@@ -186,7 +186,7 @@ expects :note, user_facing: :note_message   # call an action method to compute i
 expects :note, user_facing: ->(e) { ... }   # compute it from the InboundValidationError
 ```
 
-The value matches the `error`/`fail!`/`fails_on` handler shape — `true`, a String, a Symbol naming an action method, or a Proc; one that resolves blank falls back to the field's own validation message. The surfaced message is a failure **reason**, so a declared base `error` [attaches it under the base](/usage/writing#prefixing-failure-reasons) by default (standalone with no base), just like a `fail!` message. The field stays **required** (unlike `optional:`, which removes the check) — `user_facing:` changes who is blamed for a violation, not whether it's validated. In a mixed failure (a `user_facing:` field *and* a plain one both invalid), the dev-facing one dominates and the call still pages. **`user_facing:` is for top-level fields only:** it can't be declared on a subfield (`on:`), and it's rejected on a field that *has* nested expectations — subfields (`on:`) or a shape block (`do … end`). Those nested/member checks are always dev-facing, so mixing them with `user_facing:` is a declaration error. See [the narrative](/usage/writing#user-facing-contract-violations) for the full picture.
+The value matches the `error`/`fail!`/`fails_on` handler shape — `true`, a String, a Symbol naming an action method, or a Proc; one that resolves blank falls back to the field's own validation message. The surfaced message is a failure **reason**, so a declared base `error` [attaches it under the base](/usage/writing#prefixing-failure-reasons) by default (standalone with no base), just like a `fail!` message. The field stays **required** (unlike `optional:`, which removes the check) — `user_facing:` changes who is blamed for a violation, not whether it's validated. In a mixed failure (a `user_facing:` field *and* a plain one both invalid), the dev-facing one dominates and the call still pages. `user_facing:` works at **any depth**: on a subfield (`on:`), classification follows the subfield's own declaration, and on a parent whose subfields fail *because the parent itself* failed, those stranded checks are attributed to the parent rather than paging over its user-facing message. Any dev-facing violation anywhere still dominates a mixed failure. Two exceptions remain declaration errors: a shape block's member checks are always structural/dev-facing (so `user_facing:` + `do … end` is rejected at every level), and an ambient_context subfield is framework-supplied — there is no user to face. See [the narrative](/usage/writing#user-facing-contract-violations) for the full picture.
 
 #### Nested/Subfield expectations
 
@@ -221,18 +221,12 @@ expects :zip, on: "address.billing", type: String  # validates address[:billing]
 The **root** segment (`address`) must be a declared field (or subfield); intermediate segments are assumed to be hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
 
 ::: warning
-`default:`, `preprocess:`, and `sensitive:` are **not** supported on a **nested** parent (they raise at declaration time) — `default:`/`preprocess:` write into the parent, and `sensitive:` relies on the log filter matching a top-level field, neither of which handles a nested path yet. A parent is nested whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield (whose value lives inside *its* parent). Use them on a subfield of a top-level field, or declare the intermediate levels explicitly.
+`default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the default is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments.
 :::
 
-#### Disabling subfield readers
+#### Subfield readers always generate
 
-By default, subfields create top-level reader methods (e.g., `random` in the example above). You can disable this with `readers: false`:
-
-```ruby
-expects :data, type: Hash, on: :event, readers: false
-```
-
-This is useful when you have duplicate sub-keys across different parent fields, or when you want to access subfields only through the parent. Note that `readers: false` is only valid for subfields (i.e., when using `on:`) — using it on top-level fields will raise an `ArgumentError`.
+Every subfield defines a top-level reader method (e.g., `random` in the example above). When a sub-key's name would collide with an existing reader, rename it with `as:`/`prefix:` (below) instead — the removed `readers: false` escape hatch suppressed access entirely, while a rename keeps both values reachable.
 
 #### Renaming the reader (`as:` / `prefix:`)
 
@@ -253,7 +247,7 @@ expects :id, on: :event_params, as: :event_id           # reader: event_id (extr
 expects :id, :type, on: :event_params, prefix: :event_  # readers: event_id, event_type
 ```
 
-`as:`/`prefix:` cannot be combined, can't be used with `readers: false`, and can't rename a dotted `on:` path (which generates no reader) — each raises at declaration time. A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader.
+`as:`/`prefix:` cannot be combined, and can't rename a dotted `on:` path (which generates no reader) — each raises at declaration time. A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader.
 
 When you declare subfields `on:` a renamed parent, reference it by its **reader name** (the alias), not the wire key — `on:` is resolved by calling the parent's reader:
 
@@ -277,7 +271,7 @@ expects :on, type: { klass: Date, coerce: true }   # explicit form (use with sib
 expects :on, coerce: [Date, String]                # union: parse a date if possible, else keep the string
 ```
 
-The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, `Float`, and `:boolean`. Coercion is **coerce-or-leave**: only strings are transformed (a value already of the right type, or a JSON-native number, is untouched; a blank string is left as-is so presence validation still applies), and an unparseable string passes through to a normal validation error (reported as "could not be coerced to a Date", distinct from a wrong-type "is not a Date"). `coerce:` is opt-in per field, so a direct Ruby caller's strictness is unchanged, and it is valid on top-level `expects` fields only.
+The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, `Float`, and `:boolean`. Coercion is **coerce-or-leave**: only strings are transformed (a value already of the right type, or a JSON-native number, is untouched; a blank string is left as-is so presence validation still applies), and an unparseable string passes through to a normal validation error (reported as "could not be coerced to a Date", distinct from a wrong-type "is not a Date"). `coerce:` is opt-in per field, so a direct Ruby caller's strictness is unchanged. It works on top-level `expects` fields and subfields (`on:`) alike — except ambient_context subfields, whose values are never read from the inbound arguments.
 
 `:boolean` accepts the case-insensitive strings `1/true/t/yes/y/on` and `0/false/f/no/n/off`, plus the integers `1`/`0` (the one type that also coerces a non-string wire form). Both sides are an explicit allowlist — an unrecognized value (`"maybe"`, `2`) is left uncoerced and fails validation rather than silently becoming `true`.
 
@@ -312,7 +306,7 @@ class ImportRow
 end
 ```
 
-Scope matches `coerce:` itself — **top-level `expects` fields only** today (non-coercible types like `String`/`Hash` are untouched; subfields are not reached). When subfield coercion is added in a future release, `coerce_input_types` will extend to subfields automatically.
+Scope matches `coerce:` itself — top-level fields **and subfields** (non-coercible types like `String`/`Hash` are untouched either way), with each field's own tri-state `coerce:` flag still winning over the action-wide setting.
 
 ## `.success` and `.error`
 

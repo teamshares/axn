@@ -576,40 +576,117 @@ RSpec.describe Axn do
         end.to raise_error(ArgumentError, /no such method|address/)
       end
 
-      it "rejects default: combined with a nested on:" do
-        expect do
-          build_axn do
+      describe "default:/preprocess:/sensitive: with a nested on: (kwarg parity)" do
+        it "applies a default through a nested on: path, materializing the intermediate" do
+          action = build_axn do
             expects :address, type: Hash
-            expects :postcode, on: "address.billing", default: "00000"
-          end
-        end.to raise_error(ArgumentError, /not supported with a nested/)
-      end
+            expects :postcode, on: "address.billing", optional: true, default: "00000"
+            exposes :got, optional: true
 
-      it "rejects a falsey default: (e.g. default: false) combined with a nested on:" do
-        expect do
-          build_axn do
+            def call = expose(got: postcode)
+          end
+
+          expect(action.call(address: { other: 1 }).got).to eq("00000")
+          expect(action.call(address: { billing: { postcode: "11111" } }).got).to eq("11111")
+        end
+
+        it "applies a falsey default (default: false) through a nested on: path" do
+          action = build_axn do
             expects :settings, type: Hash
-            expects :enabled, on: "settings.flags", type: :boolean, default: false
+            expects :enabled, on: "settings.flags", optional: true, type: :boolean, default: false
+            exposes :got, optional: true, allow_nil: true, type: :boolean
+
+            def call = expose(got: enabled)
           end
-        end.to raise_error(ArgumentError, /not supported with a nested/)
+
+          expect(action.call(settings: { other: 1 }).got).to be(false)
+        end
+
+        it "materializes the whole chain (root included) for a nested default under an absent parent" do
+          action = build_axn do
+            expects :address, type: Hash, optional: true, allow_nil: true
+            expects :postcode, on: "address.billing", optional: true, default: "00000"
+            exposes :parent, optional: true, allow_nil: true
+
+            def call = expose(parent: address)
+          end
+
+          expect(action.call.parent).to eq({ billing: { postcode: "00000" } })
+        end
+
+        it "skips a nested default when an absent intermediate ancestor is declared non-object" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :flags, on: :payload, optional: true, allow_nil: true, type: Array
+            expects :first, on: "payload.flags", optional: true, default: "x"
+            exposes :parent, optional: true
+
+            def call = expose(parent: payload)
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result).to be_ok
+          expect(result.parent).to eq({ other: 1 })
+        end
+
+        it "shares one materialized intermediate across two nested defaults (no re-materialization race)" do
+          action = build_axn do
+            expects :payload, type: Hash, optional: true, allow_nil: true
+            expects :width, on: "payload.dims", optional: true, default: 1
+            expects :height, on: "payload.dims", optional: true, default: 2
+            exposes :parent, optional: true, allow_nil: true
+
+            def call = expose(parent: payload)
+          end
+
+          expect(action.call.parent).to eq({ dims: { width: 1, height: 2 } })
+        end
+
+        it "preprocesses through a nested on: path without synthesizing an absent root" do
+          action = build_axn do
+            expects :address, type: Hash, optional: true, allow_nil: true
+            expects :postcode, on: "address.billing", optional: true, preprocess: ->(v) { v.to_s.strip }
+            exposes :got, :parent, optional: true, allow_nil: true
+
+            def call = expose(got: postcode, parent: address)
+          end
+
+          expect(action.call(address: { billing: { postcode: " 123 " } }).got).to eq("123")
+
+          absent = action.call
+          expect(absent).to be_ok
+          expect(absent.parent).to be_nil
+        end
+
+        it "applies a default on a subfield anchored on another subfield (parent chain via readers)" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :settings, on: :payload, optional: true, type: Hash
+            expects :enabled, on: :settings, optional: true, type: :boolean, default: true
+            exposes :got, optional: true, type: :boolean
+
+            def call = expose(got: enabled)
+          end
+
+          expect(action.call(payload: { settings: {} }).got).to be(true)
+          expect(action.call(payload: { other: 1 }).got).to be(true)
+        end
       end
 
-      it "rejects preprocess: combined with a nested on:" do
-        expect do
-          build_axn do
+      describe "sensitive: with a nested on: (kwarg parity)" do
+        it "filters a nested sensitive subfield out of the inspect output" do
+          action = build_axn do
             expects :address, type: Hash
-            expects :postcode, on: "address.billing", preprocess: ->(_value) { "static" }
-          end
-        end.to raise_error(ArgumentError, /not supported with a nested/)
-      end
+            expects :ssn, on: "address.billing", optional: true, sensitive: true
 
-      it "rejects sensitive: combined with a nested on: (the log filter can't redact a nested path)" do
-        expect do
-          build_axn do
-            expects :address, type: Hash
-            expects :ssn, on: "address.billing", sensitive: true
+            def call = nil
           end
-        end.to raise_error(ArgumentError, /not supported with a nested/)
+
+          instance = action.send(:new, address: { billing: { ssn: "123-45-6789" } })
+          inspected = instance.internal_context.inspect
+          expect(inspected).to include("[FILTERED]")
+          expect(inspected).not_to include("123-45-6789")
+        end
       end
     end
 

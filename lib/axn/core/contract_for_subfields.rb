@@ -52,7 +52,7 @@ module Axn
           value
         end
 
-        def _expects_subfields( # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
+        def _expects_subfields( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
           allow_blank: false,
@@ -63,6 +63,7 @@ module Axn
           sensitive: false,
           metadata: {},
           reader_names: {},
+          user_facing: false,
           **validations
         )
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
@@ -76,15 +77,13 @@ module Axn
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
           end
 
-          # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
-          # into a user-facing failure, but subfields are always dev-facing. Declaring a subfield on a
-          # user-facing parent mixes the two — a violation of the parent and an independent subfield
-          # violation can't both settle as one outcome cleanly — so reject it. (A subfield must be
-          # declared after its parent, so checking here catches the combination in either order.)
-          if _on_roots_at_user_facing_field?(on)
+          # An ambient subfield's value is framework-supplied (the ambient provider /
+          # CurrentAttributes), not caller input — there is no user to face, so reclassifying its
+          # violation as user-facing is a category error.
+          if user_facing && _on_roots_at_ambient?(on)
             raise ArgumentError,
-                  "expects called with `on: #{on}`, but :#{root} (or its root) is declared `user_facing:` — " \
-                  "user_facing: is for top-level fields without nested subfield expectations"
+                  "`user_facing:` is not supported for an ambient_context subfield " \
+                  "(ambient values are framework-supplied, not caller input)"
           end
 
           # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
@@ -138,20 +137,8 @@ module Axn
                   "compute defaults/preprocessing in your ambient_context_provider or a before hook. `sensitive:` is supported."
           end
 
-          # default:/preprocess: write into the parent, and sensitive: relies on the log filter
-          # matching config.on to a top-level field — none of which support an arbitrary nested
-          # path yet. A parent is nested whether reached via a dotted path ("address.billing") or by
-          # pointing `on:` at another subfield (whose value lives inside its own parent, not at the
-          # top level). Reject the combination explicitly rather than silently ignoring it (use .nil?
-          # for default/preprocess so an explicit `default: false`/`nil` is still caught).
-          nested_parent = on.to_s.include?(".") || subfield_configs.map(&:reader_as).include?(root)
-          if nested_parent && (!default.nil? || !preprocess.nil? || sensitive)
-            raise ArgumentError,
-                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested `on:` (got on: #{on.inspect})"
-          end
-
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                           metadata:, reader_names:, **validations).tap do |configs|
+                                           metadata:, reader_names:, user_facing:, **validations).tap do |configs|
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -172,19 +159,6 @@ module Axn
 
         private
 
-        # Walk an `on:` reader path back to its ultimate top-level field and report whether that field
-        # is declared `user_facing:`. `on:` names a reader, which may be dotted ("payload.meta") or
-        # rooted at another subfield; only top-level fields can carry `user_facing:`, so recurse
-        # through any intervening subfield to the top-level config.
-        def _on_roots_at_user_facing_field?(on)
-          root = on.to_s.split(".").first
-          top = internal_field_configs.find { |c| c.reader_as.to_s == root }
-          return !!top.user_facing if top
-
-          sub = subfield_configs.find { |c| c.reader_as.to_s == root }
-          sub ? _on_roots_at_user_facing_field?(sub.on) : false
-        end
-
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.
         def _on_roots_at_ambient?(on)
@@ -202,7 +176,7 @@ module Axn
           end
         end
 
-        def _parse_subfield_configs(
+        def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
           allow_blank: false,
@@ -213,6 +187,7 @@ module Axn
           default: nil,
           metadata: {},
           reader_names: {},
+          user_facing: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -239,10 +214,13 @@ module Axn
           end
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            if parsed_validations.dig(:type, :coerce)
+            # An ambient subfield's value is resolved per-invocation, never read from provided_data —
+            # which is the only place coercion writes — so a `coerce:` there would silently never
+            # apply. Reject it like ambient default:/preprocess:.
+            if parsed_validations.dig(:type, :coerce) && on.to_s.split(".").first.to_sym == Axn::Core::AmbientContext::PARENT
               raise ArgumentError,
-                    "coerce: is not supported on subfields (top-level `expects` fields only; " \
-                    "an adapter can coerce deeper by walking the schema)."
+                    "`coerce:` is not supported for an `on: :ambient_context` subfield " \
+                    "(the ambient parent is resolved per-invocation, not read from provided_data)"
             end
 
             # A dotted field NAME (e.g. "org.company") generates no reader (see
@@ -262,7 +240,7 @@ module Axn
 
             reader = reader_names[field] || field
             Contract::FieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:,
-                                      reader_as: reader)
+                                      reader_as: reader, user_facing:)
           end
         end
 

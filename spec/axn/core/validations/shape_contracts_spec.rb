@@ -262,15 +262,27 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end.to raise_error(ArgumentError, /structured type/)
     end
 
-    it "raises when a shape block is combined with on:" do
+    it "accepts a shape block combined with on: (kwarg parity) and enforces the members" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :dims, on: :payload, type: Hash, optional: true do
+          field :width, type: Integer
+        end
+      end
+
+      expect(action.call(payload: { dims: { width: 3 } })).to be_ok
+      expect(action.call(payload: { dims: { width: "wide" } })).not_to be_ok
+    end
+
+    it "still enforces the structured-type rule for a shape block under on:" do
       expect do
         build_axn do
           expects :payload, type: Hash
-          expects :tags, on: :payload, type: Array do
+          expects :thing, on: :payload, type: [Array, String] do
             field :x, type: String
           end
         end
-      end.to raise_error(ArgumentError, /on:/)
+      end.to raise_error(ArgumentError, /structured type/)
     end
 
     it "raises when a shape block is declared across multiple fields" do

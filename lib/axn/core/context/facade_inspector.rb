@@ -77,11 +77,12 @@ module Axn
       action.subfield_configs.any? { |config| sensitive_subfield_on?(config, field) }
     end
 
-    # `field` is the parent's wire key; `config.on` is the parent's *reader* name, which may be an
-    # `as:`/`prefix:` alias — normalize it back to the wire key before comparing, otherwise an
-    # aliased parent never matches and its sensitive subfields leak into the inspect output.
+    # `field` is the top-level parent's wire key; the config's resolved wire path (from the per-class
+    # SubfieldTree cache) already translated any `as:`/`prefix:` alias and nested `on:` chain back to
+    # wire keys, so a sensitive subfield matches whichever top-level value it ultimately lives under.
     def sensitive_subfield_on?(config, field)
-      action.class._wire_parent_key(config.on) == field && action.class._resolve_sensitive_value(config.sensitive, action)
+      path = action.class._resolved_subfields.index[config]
+      path && path.wire_path.first == field && action.class._resolve_sensitive_value(config.sensitive, action)
     end
 
     def filter_subfields(field, value)
@@ -89,7 +90,7 @@ module Axn
 
       sensitive_subfield_paths = action.subfield_configs
                                        .select { |config| sensitive_subfield_on?(config, field) }
-                                       .map { |config| "#{field}.#{config.field}" }
+                                       .map { |config| action.class._resolved_subfields.index[config].wire_path.join(".") }
 
       return value if sensitive_subfield_paths.empty?
 

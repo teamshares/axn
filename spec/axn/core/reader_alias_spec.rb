@@ -193,16 +193,19 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(payload: { settings: { enabled: true } }).got).to be(true)
     end
 
-    it "rejects a default on a subfield declared `on:` an aliased subfield parent (nested write)" do
-      # The parent (`raw_settings`) is itself a subfield, so its value lives nested inside `payload`
-      # — the single-level mutation machinery can't write there, same as a dotted `on:` path.
-      expect do
-        build_axn do
-          expects :payload
-          expects :settings, on: :payload, as: :raw_settings
-          expects :enabled, on: :raw_settings, default: true
-        end
-      end.to raise_error(ArgumentError, /not supported with a nested/)
+    it "applies a default on a subfield declared `on:` an aliased subfield parent (chain-aware write)" do
+      # The parent (`raw_settings`) is itself a subfield reached through an alias; the resolved wire
+      # path (payload → settings → enabled) drives the nested write.
+      action = build_axn do
+        expects :payload
+        expects :settings, on: :payload, as: :raw_settings, optional: true
+        expects :enabled, on: :raw_settings, optional: true, default: true
+        exposes :parent, optional: true
+
+        def call = expose(parent: payload)
+      end
+
+      expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1, settings: { enabled: true } })
     end
   end
 
