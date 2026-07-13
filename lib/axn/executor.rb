@@ -415,22 +415,52 @@ module Axn
       true
     end
 
-    # Wire→Ruby coercion for declared-inbound fields that opted in via `coerce:` (a `coerce: true`
-    # flag inside the type bag). Runs first in the inbound pipeline — before any user preprocess:,
-    # defaults, and validation — so downstream stages see the Ruby value. Coerce-or-leave
-    # (Axn::Reflection::Coercion): only String values are transformed, an unparseable string passes
-    # through to the normal TypeValidator error, and a present real object is untouched. Top-level
-    # fields only (subfields reject coerce: at declaration); absent keys are not materialized.
+    # Wire→Ruby coercion for declared-inbound fields, for those that opted in via `coerce:` (a
+    # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
+    # every coercible-typed field that didn't opt out (see #coerce_field_inbound?). Runs first in the
+    # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
+    # see the Ruby value. Coerce-or-leave (Axn::Reflection::Coercion): only String values are
+    # transformed, an unparseable string passes through to the normal TypeValidator error, and a
+    # present real object is untouched. Top-level fields only (subfields reject coerce: at declaration,
+    # and coerce_input_types only reaches where coercion is legal); absent keys are not materialized.
     def apply_inbound_coercion!
+      coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
+
       @action_class.send(:internal_field_configs).each do |config|
-        type_opt = config.validations[:type]
-        next unless type_opt.is_a?(Hash) && type_opt[:coerce]
         next unless @context.provided_data.key?(config.field)
 
+        type_opt = config.validations[:type]
         klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
+        next if klasses.empty?
+        next unless coerce_field_inbound?(type_opt, coerce_input_types)
+
         @context.provided_data[config.field] =
           Axn::Reflection::Coercion.coerce_value(@context.provided_data[config.field], klasses)
       end
+    end
+
+    # Whether a field coerces this run. A field's own `coerce` flag is a tri-state (true/false/absent)
+    # and always wins: explicit true coerces, explicit false opts out (even when coerce_input_types is
+    # on), and absent follows the resolved coerce_input_types flag. Only reached for a field with ≥1
+    # coercible member, so a coerce_input_types-on action still leaves non-coercible types untouched.
+    def coerce_field_inbound?(type_opt, coerce_input_types)
+      explicit = type_opt.is_a?(Hash) ? type_opt[:coerce] : nil
+      explicit.nil? ? coerce_input_types : explicit
+    end
+
+    # With coerce_input_types resolved on, surface `coerce: true` in the type bag for a coercible field
+    # that didn't set `coerce:` explicitly, so TypeValidator emits the "could not be coerced" message on
+    # a parse failure exactly as for an explicit `coerce:` field. Message-only — the coercion itself
+    # already ran in apply_inbound_coercion!; this returns a copy and never mutates the shared config.
+    # A field with an explicit coerce flag (true or false) is left as-is, so field-level intent wins.
+    def _with_effective_coerce(field_validations)
+      type_opt = field_validations[:type]
+      return field_validations if type_opt.nil?
+      return field_validations if type_opt.is_a?(Hash) && type_opt.key?(:coerce)
+      return field_validations if Axn::Reflection::Coercion.coercible_klasses(type_opt).empty?
+
+      type_hash = type_opt.is_a?(Hash) ? type_opt : { klass: type_opt }
+      field_validations.merge(type: type_hash.merge(coerce: true))
     end
 
     def apply_inbound_preprocessing!
@@ -479,8 +509,9 @@ module Axn
       raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
       configs = direction == :inbound ? @action_class.send(:internal_field_configs) : @action_class.send(:external_field_configs)
+      coerce_input_types = direction == :inbound && Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
       validations = configs.each_with_object({}) do |config, hash|
-        hash[config.field] = config.validations
+        hash[config.field] = coerce_input_types ? _with_effective_coerce(config.validations) : config.validations
       end
       context = direction == :inbound ? @action.internal_context : @action.result
       exception_klass = direction == :inbound ? InboundValidationError : OutboundValidationError

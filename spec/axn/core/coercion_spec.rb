@@ -198,4 +198,124 @@ RSpec.describe "coerce: DSL" do
       expect(result.exception.message).not_to match(/could not be coerced/)
     end
   end
+
+  # PRO-2884: the coerce_input_types config turns coercion on for every coercible field without
+  # annotating each — the operational "this action is transport-facing" assertion, vs the per-field
+  # `coerce:` contract tool. Global default false; per-class-overridable via the PRO-2856 machinery.
+  describe "coerce_input_types config" do
+    let(:coercing_axn) do
+      build_axn do
+        expects :on, type: Date
+        exposes :klass, allow_blank: true
+        def call = expose(klass: on.class.name)
+      end
+    end
+
+    context "globally" do
+      after { Axn.config.coerce_input_types = false }
+
+      it "coerces a plain type: field when on" do
+        Axn.config.coerce_input_types = true
+        result = coercing_axn.call(on: "2026-07-08")
+        expect(result).to be_ok
+        expect(result.klass).to eq("Date")
+      end
+
+      it "leaves a plain type: field strict when off (default)" do
+        result = coercing_axn.call(on: "2026-07-08")
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/is not a Date/)
+      end
+    end
+
+    context "per-class override" do
+      it "coerces the opted-in action but leaves a sibling strict" do
+        opted_in = build_axn do
+          configure { |c| c.coerce_input_types = true }
+          expects :on, type: Date
+          exposes :klass, allow_blank: true
+          def call = expose(klass: on.class.name)
+        end
+        sibling = build_axn { expects :on, type: Date }
+
+        expect(opted_in.call(on: "2026-07-08").klass).to eq("Date")
+        expect(sibling.call(on: "2026-07-08")).not_to be_ok
+      end
+
+      it "flows to a subclass" do
+        base = build_axn { configure { |c| c.coerce_input_types = true } }
+        child = Class.new(base) do
+          expects :on, type: Date
+          exposes :klass, allow_blank: true
+          def call = expose(klass: on.class.name)
+        end
+        expect(child.call(on: "2026-07-08").klass).to eq("Date")
+      end
+    end
+
+    context "field-level intent wins over the flag" do
+      it "opts a field out via explicit coerce: false" do
+        action = build_axn do
+          configure { |c| c.coerce_input_types = true }
+          expects :on, type: { klass: Date, coerce: false }
+        end
+        result = action.call(on: "2026-07-08")
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/is not a Date/)
+      end
+
+      it "still honors an explicit coerce: with the flag on" do
+        action = build_axn do
+          configure { |c| c.coerce_input_types = true }
+          expects :on, coerce: Date
+          exposes :klass, allow_blank: true
+          def call = expose(klass: on.class.name)
+        end
+        expect(action.call(on: "2026-07-08").klass).to eq("Date")
+      end
+    end
+
+    it "leaves a non-coercible type untouched with the flag on" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :name, type: String
+        exposes :klass, allow_blank: true
+        def call = expose(klass: name.class.name)
+      end
+      expect(action.call(name: "hi").klass).to eq("String")
+    end
+
+    it "emits the coercion-failure message for a flag-coerced field" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :on, type: Date
+      end
+
+      uncoerceable = action.call(on: "nope")
+      expect(uncoerceable.exception.message).to match(/could not be coerced to a Date/)
+
+      wrong_type = action.call(on: 123)
+      expect(wrong_type.exception.message).to match(/is not a Date/)
+      expect(wrong_type.exception.message).not_to match(/could not be coerced/)
+    end
+
+    it "does not reach subfields (current scope; a future ticket extends the flag there)" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :payload, type: Hash
+        expects :starts_on, on: :payload, type: Date
+      end
+      # The subfield's own `type: Date` still rejects the wire string — proof the flag left it uncoerced.
+      expect(action.call(payload: { starts_on: "2026-07-08" })).not_to be_ok
+    end
+
+    it "leaves input_schema identical whether the flag is on or off" do
+      off = build_axn { expects :on, type: Date }
+      on = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :on, type: Date
+      end
+      expect(on.input_schema).to eq(off.input_schema)
+    end
+  end
 end

@@ -208,6 +208,23 @@ RSpec.describe Axn::Configuration do
       expect { config.sidekiq_job_tag_sources = :tag }.to raise_error(ArgumentError)
     end
   end
+
+  describe "#coerce_input_types" do
+    after { config.remove_instance_variable(:@coerce_input_types) if config.instance_variable_defined?(:@coerce_input_types) }
+
+    it "defaults to false" do
+      expect(config.coerce_input_types).to be(false)
+    end
+
+    it "accepts a boolean" do
+      config.coerce_input_types = true
+      expect(config.coerce_input_types).to be(true)
+    end
+
+    it "raises on a non-boolean value" do
+      expect { config.coerce_input_types = :yes }.to raise_error(ArgumentError)
+    end
+  end
 end
 
 RSpec.describe "per-class config overrides on actions" do
