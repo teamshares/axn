@@ -467,6 +467,8 @@ module Axn
           setting.resolve(instance_variable_get(ivar))
         end
 
+        define_method(:"#{name}?") { !!public_send(name) }
+
         define_method(:"#{name}=") do |value|
           setting.validate!(value)
           instance_variable_set(ivar, value)

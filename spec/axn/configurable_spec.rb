@@ -242,6 +242,30 @@ RSpec.describe Axn::Configurable::Settings do
     expect(klass.new.additional_includes).to eq([])
   end
 
+  describe "predicate readers" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :sandbox_mode, default: -> { true }, callable: true
+        setting :emit_metrics
+      end
+    end
+
+    it "returns true for a truthy resolved value (callable default)" do
+      expect(instance.sandbox_mode?).to be(true)
+    end
+
+    it "returns false for an explicitly-assigned false" do
+      instance.sandbox_mode = false
+      expect(instance.sandbox_mode?).to be(false)
+    end
+
+    it "returns false when the setting resolves to nil" do
+      expect(instance.emit_metrics?).to be(false)
+    end
+  end
+
   describe "overridable: settings" do
     # A stand-in for a live config singleton (what Axn.config is for Axn::Configuration).
     let(:singleton) { klass.new }
