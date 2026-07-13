@@ -419,45 +419,25 @@ module Axn
     # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
     # every coercible-typed field that didn't opt out (see #coerce_field_inbound?). Runs first in the
     # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
-    # see the Ruby value. Coerce-or-leave (Axn::Reflection::Coercion): only String values are
-    # transformed, an unparseable string passes through to the normal TypeValidator error, and a
-    # present real object is untouched. Top-level fields only (subfields reject coerce: at declaration,
-    # and coerce_input_types only reaches where coercion is legal); absent keys are not materialized.
+    # see the Ruby value. One depth-generalized pass over both stores (a top-level field is the
+    # depth-0 case of its ResolvedPath). Coerce-or-leave (Axn::Reflection::Coercion): only String
+    # values are transformed, an unparseable string passes through to the normal TypeValidator error,
+    # and a present real object is untouched — so an absent/nil value never writes back and coercion
+    # never materializes anything. Ambient subfields reject `coerce:` at declaration and aren't
+    # indexed, so they never reach the write-back.
     def apply_inbound_coercion!
       coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
 
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless @context.provided_data.key?(config.field)
-
-        type_opt = config.validations[:type]
-        klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
-        next if klasses.empty?
-        next unless coerce_field_inbound?(type_opt, coerce_input_types)
-
-        @context.provided_data[config.field] =
-          Axn::Reflection::Coercion.coerce_value(@context.provided_data[config.field], klasses)
-      end
-
-      apply_inbound_coercion_for_subfields!(coerce_input_types)
-    end
-
-    # Subfields coerce under the same rules as top-level fields (kwarg parity): the field's own
-    # tri-state `coerce` flag wins, otherwise the resolved coerce_input_types setting applies.
-    # Coerce-or-leave semantics are identical (only String values transform), and an absent/nil
-    # subfield is left alone — coercion never materializes anything. Ambient subfields reject
-    # `coerce:` at declaration and aren't indexed, so they never reach the write-back.
-    def apply_inbound_coercion_for_subfields!(coerce_input_types)
-      @action_class.send(:subfield_configs).each do |config|
+      _inbound_configs.each do |config|
         type_opt = config.validations[:type]
         klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
         next if klasses.empty?
         next unless coerce_field_inbound?(type_opt, coerce_input_types)
         next unless (path = _resolved_path_for(config))
 
-        parent_value = @context.provided_data[path.wire_path.first]
-        current = Core::FieldResolvers.resolve(type: :extract, field: _below_root(path), provided_data: parent_value)
+        current = _current_value_at(path)
         coerced = Axn::Reflection::Coercion.coerce_value(current, klasses)
-        update_subfield_value(path, coerced) unless coerced.equal?(current)
+        _write_value_at!(path, coerced) unless coerced.equal?(current)
       end
     end
 
@@ -485,43 +465,26 @@ module Axn
       field_validations.merge(type: type_hash.merge(coerce: true))
     end
 
+    # One depth-generalized pass over both stores. For a subfield, a nil parent has nowhere to write
+    # the result, so _write_value_at! no-ops and the preprocess output is dropped — deliberately: a
+    # nil/absent parent means the subfield is absent (PRO-2857), and a preprocess must NOT synthesize
+    # the parent into existence (unlike a subfield `default:`, which does). Materializing here would
+    # make an absent parent present — masking a required parent, and tripping shape/type validation
+    # the schema then can't mirror. (A top-level field is its own root, so its result always writes.)
     def apply_inbound_preprocessing!
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless config.preprocess
-
-        initial_value = @context.provided_data[config.field]
-        @context.provided_data[config.field] = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::PreprocessingError,
-          message: ->(field, error) { "Error preprocessing field '#{field}': #{error.message}" },
-          field_identifier: config.field,
-        ) do
-          @action.instance_exec(initial_value, &config.preprocess)
-        end
-      end
-
-      apply_inbound_preprocessing_for_subfields!
-    end
-
-    def apply_inbound_preprocessing_for_subfields!
-      @action_class.send(:subfield_configs).each do |config|
+      _inbound_configs.each do |config|
         next unless config.preprocess
         next unless (path = _resolved_path_for(config))
 
-        parent_value = @context.provided_data[path.wire_path.first]
-        current_subfield_value = Core::FieldResolvers.resolve(type: :extract, field: _below_root(path), provided_data: parent_value)
+        current_value = _current_value_at(path)
         preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{error.message}" },
-          field_identifier: "#{config.field} on #{config.on}",
+          message: ->(_field, error) { "Error preprocessing #{_field_descriptor(config)}: #{error.message}" },
+          field_identifier: _field_identifier(config),
         ) do
-          @action.instance_exec(current_subfield_value, &config.preprocess)
+          @action.instance_exec(current_value, &config.preprocess)
         end
-        # A nil parent has nowhere to write the result, so update_subfield_value no-ops and the preprocess
-        # output is dropped — deliberately: a nil/absent parent means the subfield is absent (PRO-2857), and
-        # a preprocess must NOT synthesize the parent into existence (unlike a subfield `default:`, which
-        # does). Materializing here would make an absent parent present — masking a required parent, and
-        # tripping shape/type validation the schema then can't mirror.
-        update_subfield_value(path, preprocessed_value)
+        _write_value_at!(path, preprocessed_value)
       end
     end
 
@@ -748,44 +711,30 @@ module Axn
     def apply_defaults!(direction)
       raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
-      if direction == :outbound
-        @action_class.send(:external_field_configs).each do |config|
-          field = config.field
-          next if @context.exposed_data.key?(field)
+      return apply_inbound_defaults! if direction == :inbound
 
-          @context.exposed_data[field] = @context.provided_data[field] if @context.provided_data.key?(field)
-        end
+      @action_class.send(:external_field_configs).each do |config|
+        field = config.field
+        # Copy an unexposed inbound value forward before considering the default, so a provided
+        # value wins over a declared default.
+        @context.exposed_data[field] = @context.provided_data[field] if !@context.exposed_data.key?(field) && @context.provided_data.key?(field)
+
+        next if config.default.nil?
+        next if @context.exposed_data.key?(field) && !@context.exposed_data[field].nil?
+
+        @context.exposed_data[field] = _resolve_default(config)
       end
-
-      configs = direction == :inbound ? @action_class.send(:internal_field_configs) : @action_class.send(:external_field_configs)
-      defaults_mapping = configs.each_with_object({}) do |config, hash|
-        hash[config.field] = config.default
-      end.compact
-
-      defaults_mapping.each do |field, default_value_getter|
-        data_hash = direction == :inbound ? @context.provided_data : @context.exposed_data
-        next if data_hash.key?(field) && !data_hash[field].nil?
-
-        data_hash[field] = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::DefaultAssignmentError,
-          message: ->(field_name, error) { "Error applying default for field '#{field_name}': #{error.message}" },
-          field_identifier: field,
-        ) do
-          default_value_getter.respond_to?(:call) ? @action.instance_exec(&default_value_getter) : default_value_getter
-        end
-      end
-
-      apply_defaults_for_subfields! if direction == :inbound
     end
 
-    def apply_defaults_for_subfields!
-      @action_class.send(:subfield_configs).each do |config|
+    # One depth-generalized pass over both stores (a top-level field is the depth-0 case: no
+    # ancestors, so the chain gate is vacuous and the default value itself becomes the root value —
+    # no `{}` synthesis). A default applies when the current value is nil/absent, matching key-absence
+    # semantics at every depth.
+    def apply_inbound_defaults!
+      _inbound_configs.each do |config|
         next unless config.applied_default?
         next unless (path = _resolved_path_for(config))
-
-        parent_value = @context.provided_data[path.wire_path.first]
-
-        next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: _below_root(path), provided_data: parent_value).nil?
+        next unless _current_value_at(path).nil?
 
         # A nil non-object ancestor anywhere along the chain can't hold the nested structure —
         # materialization refuses to inject `{}` where it would fail that ancestor's own declared
@@ -793,16 +742,19 @@ module Axn
         # run its side effects for nothing, and the write would synthesize a type-violating value.
         next unless _default_chain_materializable?(path)
 
-        @context.provided_data[path.wire_path.first] = {} if parent_value.nil?
+        @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
-        default_value = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::DefaultAssignmentError,
-          message: ->(_field, error) { "Error applying default for subfield '#{config.field}' on '#{config.on}': #{error.message}" },
-          field_identifier: "#{config.field} on #{config.on}",
-        ) do
-          config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
-        end
-        update_subfield_value(path, default_value)
+        _write_value_at!(path, _resolve_default(config))
+      end
+    end
+
+    def _resolve_default(config)
+      Internal::ContractErrorHandling.with_contract_error_handling(
+        exception_class: ContractViolation::DefaultAssignmentError,
+        message: ->(_field, error) { "Error applying default for #{_field_descriptor(config)}: #{error.message}" },
+        field_identifier: _field_identifier(config),
+      ) do
+        config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
       end
     end
 
@@ -868,18 +820,41 @@ module Axn
     end
 
     # =========================================================================
-    # SUBFIELD HELPERS
+    # RESOLVED-PATH HELPERS
     # =========================================================================
-    # Subfield passes are driven by each config's ResolvedPath from the per-class cached
+    # The inbound passes are driven by each config's ResolvedPath from the per-class cached
     # SubfieldTree: the tree already translated `on:` reader aliases and dotted segments into the
-    # full provided_data wire path once, at build.
+    # full provided_data wire path once, at build. A top-level field is the depth-0 case
+    # (wire_path == [field], no ancestors), so one pass covers both stores.
+
+    # Both stores in declaration order, top-level first — the order the formerly-separate
+    # top-level/subfield passes always ran in.
+    def _inbound_configs
+      @action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs)
+    end
 
     def _resolved_path_for(config)
       @action_class._resolved_subfields.index[config]
     end
 
-    # The wire segments below the top-level root, as an Extract-compatible dotted path.
-    def _below_root(path) = path.wire_path[1..].join(".")
+    # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
+    # Extract dig from the root value (nil-safe: a nil root yields nil).
+    def _current_value_at(path)
+      root_value = @context.provided_data[path.wire_path.first]
+      below = path.wire_path[1..]
+      return root_value if below.empty?
+
+      Core::FieldResolvers.resolve(type: :extract, field: below.join("."), provided_data: root_value)
+    end
+
+    # Human identifiers for contract-error reporting, matching each level's historical wording.
+    def _field_descriptor(config)
+      config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
+    end
+
+    def _field_identifier(config)
+      config.subfield? ? "#{config.field} on #{config.on}" : config.field
+    end
 
     # Whether a subfield default's ancestor chain can be fully materialized: every nil/absent node
     # along the chain (the top-level root included) must tolerate `{}` per its own declared types —
@@ -910,9 +885,13 @@ module Axn
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, on) }
     end
 
-    def update_subfield_value(path, new_value)
+    def _write_value_at!(path, new_value)
       root_key = path.wire_path.first
       below = path.wire_path[1..]
+      # Depth 0: the value IS the root — assign directly (key-materializing, as top-level
+      # preprocess/defaults always did).
+      return @context.provided_data[root_key] = new_value if below.empty?
+
       parent_value = @context.provided_data[root_key]
       # A nil root has nowhere to write into — the value is deliberately dropped (a preprocess never
       # synthesizes its parent; a default materialized the root before reaching here).
