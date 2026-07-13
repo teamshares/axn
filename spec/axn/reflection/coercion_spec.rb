@@ -94,6 +94,20 @@ RSpec.describe Axn::Reflection::Coercion do
         # A String still follows declaration order: Symbol wins before :boolean.
         expect(described_class.coerce_value("true", [Symbol, :boolean])).to eq(:true) # rubocop:disable Lint/BooleanSymbol
       end
+
+      it "leaves a real integer untouched when Integer is also a target (coerce-or-leave)" do
+        # A JSON-native 1/0 is a valid Integer here, so it must NOT be rewritten to true/false.
+        expect(described_class.coerce_value(1, [Integer, :boolean])).to eq(1)
+        expect(described_class.coerce_value(0, [Integer, :boolean])).to eq(0)
+        expect(described_class.coerce_value(5, [Integer, :boolean])).to eq(5)
+        # A real boolean isn't an Integer, so it still coerces (idempotently) to itself.
+        expect(described_class.coerce_value(true, [Integer, :boolean])).to be(true)
+      end
+
+      it "still parses a string through the ordered union (Integer before :boolean)" do
+        expect(described_class.coerce_value("1", [Integer, :boolean])).to eq(1) # Integer wins by order
+        expect(described_class.coerce_value("true", [Integer, :boolean])).to be(true) # Integer parse fails → :boolean
+      end
     end
   end
 

@@ -77,8 +77,10 @@ module Axn
         # A non-String value only ever coerces to `:boolean` (the integers 0/1, or an already-boolean
         # value idempotently). Handle it here so a bare Integer never reaches the String-only parse
         # coercers below; a String — including "0"/"1" — flows through the ordered loop so union
-        # declaration order still decides which target wins.
-        if !value.is_a?(String) && targets.include?(:boolean)
+        # declaration order still decides which target wins. Coerce-or-leave still holds: a value
+        # already valid under another declared target (e.g. a real Integer in a `[Integer, :boolean]`
+        # union) is left untouched rather than rewritten to a boolean.
+        if !value.is_a?(String) && targets.include?(:boolean) && !already_valid_for_target?(value, targets)
           begin
             return coerce_boolean(value)
           rescue ArgumentError, TypeError
@@ -121,6 +123,14 @@ module Axn
         end
 
         raise ArgumentError, "#{value.inspect} is not a recognized boolean form"
+      end
+
+      # Whether a non-String value is already a valid instance of some declared coercion target other
+      # than `:boolean` — in which case boolean coercion must not fire (coerce-or-leave). Only the
+      # class targets are checked; `:boolean` is a Symbol, and a real true/false is handled idempotently
+      # by coerce_boolean itself, so it's fine to leave it out of this "leave it as-is" guard.
+      def already_valid_for_target?(value, targets)
+        targets.any? { |t| t.is_a?(Class) && value.is_a?(t) }
       end
 
       # The coercible subset of a type: option's klass(es) — the single source of truth for "what does
