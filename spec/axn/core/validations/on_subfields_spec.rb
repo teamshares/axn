@@ -1456,7 +1456,9 @@ RSpec.describe Axn do
             if expected_behavior[:missing][:success]
               expect(result).to be_ok
               expect(result.__action__.bio).to eq default_value
-              expect(user_data.dig(:profile, :description)).to eq default_value
+              expect(result.__action__.user_data.dig(:profile, :description)).to eq default_value
+              # Copy-on-write: the caller's own hash is never mutated by the nested default.
+              expect(user_data.dig(:profile, :description)).to be_nil
             else
               expect(result).not_to be_ok
               expect(result.exception).to be_a(Axn::InboundValidationError)
@@ -1476,7 +1478,9 @@ RSpec.describe Axn do
             if expected_behavior[:nil][:success]
               expect(result).to be_ok
               expect(result.__action__.bio).to eq default_value
-              expect(user_data.dig(:profile, :description)).to eq default_value
+              expect(result.__action__.user_data.dig(:profile, :description)).to eq default_value
+              # Copy-on-write: the caller's own hash is never mutated by the nested default.
+              expect(user_data.dig(:profile, :description)).to be_nil
             else
               expect(result).not_to be_ok
               expect(result.exception).to be_a(Axn::InboundValidationError)
@@ -1496,7 +1500,7 @@ RSpec.describe Axn do
             if expected_behavior[:blank][:success]
               expect(result).to be_ok
               expect(result.__action__.bio).to eq ""
-              expect(user_data.dig(:profile, :description)).to eq ""
+              expect(result.__action__.user_data.dig(:profile, :description)).to eq ""
             else
               expect(result).not_to be_ok
               expect(result.exception).to be_a(Axn::InboundValidationError)
@@ -1515,7 +1519,7 @@ RSpec.describe Axn do
             result = action.call(user_data:)
             expect(result).to be_ok
             expect(result.__action__.bio).to eq "Existing bio"
-            expect(user_data.dig(:profile, :description)).to eq "Existing description"
+            expect(result.__action__.user_data.dig(:profile, :description)).to eq "Existing description"
           end
         end
       end

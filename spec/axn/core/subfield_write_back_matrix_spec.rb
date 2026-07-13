@@ -188,5 +188,37 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
       expect(action.call(payload: callers_hash)).to be_ok
       expect(callers_hash).to eq({ note: "hi" })
     end
+
+    it "does not mutate the caller's nested hash either (deep write-back is copy-on-write too)" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :note, on: "payload.meta", optional: true, preprocess: ->(v) { v.to_s.upcase }
+        exposes :got, optional: true
+
+        def call = expose(got: note)
+      end
+
+      callers_hash = { meta: { note: "hi" } }
+      result = action.call(payload: callers_hash)
+      expect(result.got).to eq("HI")
+      expect(callers_hash).to eq({ meta: { note: "hi" } })
+    end
+
+    it "never contaminates a literal top-level default with one call's nested writes" do
+      # `default: { meta: {} }` stores ONE Hash object in the config — a nested write mutating it in
+      # place would bake the first call's subfield default into every later call's starting value.
+      action = build_axn do
+        expects :payload, type: Hash, optional: true, allow_nil: true, default: { meta: {} }
+        expects :stamp, on: "payload.meta", optional: true, default: -> { SecureRandom.hex(4) }
+        exposes :got, optional: true
+
+        def call = expose(got: stamp)
+      end
+
+      first = action.call.got
+      second = action.call.got
+      expect(first).not_to be_nil
+      expect(second).not_to eq(first)
+    end
   end
 end

@@ -889,21 +889,45 @@ module Axn
       # synthesizes its parent; a default materialized the root before reaching here).
       return if parent_value.nil?
 
-      if below.size > 1
+      written = _cow_write(parent_value, below, new_value)
+      @context.provided_data[root_key] = written unless written.nil? || written.equal?(parent_value)
+    end
+
+    # Copy-on-write nested write: the Hash levels along the path are REBUILT (siblings shared
+    # structurally), so neither the caller's own input hash nor a literal default object stored in
+    # a config is ever mutated by axn's write-back — a literal `default: { meta: {} }` must not
+    # accumulate one call's subfield writes into the next call's default. Missing intermediates
+    # materialize as fresh hashes. A non-Hash level falls back to the legacy behavior: a leaf
+    # parent with a setter (e.g. a Struct) is written in place — an object can't be merged — and a
+    # navigable object intermediate is walked in place; a level that can't hold the path drops the
+    # write (nil return; the ancestor's own validation classifies the bad value, mirroring the
+    # UnextractableError handling on the read side).
+    def _cow_write(current, segments, new_value)
+      seg, *rest = segments
+
+      if current.is_a?(Hash)
+        # Preserve the key form the caller used (a string-keyed hash keeps its string key rather
+        # than gaining a duplicate symbol entry); a missing/falsey child synthesizes fresh under
+        # the symbol form, exactly as the legacy navigation did.
+        key = [seg, seg.to_s].find { |k| current.key?(k) } || seg
+        return current.merge(key => new_value) if rest.empty?
+
+        new_child = _cow_write(current[key] || {}, rest, new_value)
+        return nil if new_child.nil?
+
+        current.merge(key => new_child)
+      elsif rest.empty? && current.respond_to?("#{seg}=")
+        Internal::SubfieldPath.update_object(current, seg, new_value)
+        current
+      elsif rest.any?
         begin
-          target = Internal::SubfieldPath.navigate_to_parent(parent_value, below)
-          target[below.last] = new_value
+          target = Internal::SubfieldPath.navigate_to_parent(current, segments)
+          target[segments.last] = new_value
+          current
         rescue TypeError, NoMethodError, FrozenError
-          # A malformed present intermediate (e.g. an Array where an object was declared) can't hold
-          # the nested write — the value is dropped and the ancestor's own validation classifies the
-          # bad input, mirroring the UnextractableError handling on the read side. Tightly scoped:
-          # navigate + the single []= run no user code.
+          # Tightly scoped: navigate + the single []= run no user code.
+          nil
         end
-      elsif parent_value.is_a?(Hash)
-        # Copy-on-write so the caller's own hash is never mutated by axn's write-back.
-        @context.provided_data[root_key] = parent_value.merge(below.last => new_value)
-      elsif parent_value.respond_to?("#{below.last}=")
-        Internal::SubfieldPath.update_object(parent_value, below.last, new_value)
       end
     end
   end
