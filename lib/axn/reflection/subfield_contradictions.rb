@@ -119,16 +119,18 @@ module Axn
         node.configs.any? { |c| !Schema.nil_accepted?(c) }
       end
 
-      # A node whose OWN configs materialize it wholesale from a default the runtime applies (Procs
-      # included — see stranded_by?), rescuing its subtree from omission/nil regardless of its own
-      # nil-tolerance. Only a NON-model node qualifies: a model node's materialized default is a non-record
-      # value ModelValidator rejects (family 3), so it rescues nothing — leaving it un-shielded keeps it
-      # tracked as a nil-tolerant ancestor, so a required descendant of a defaulted nil-tolerant model still
-      # raises (a broken contract) rather than slipping through.
+      # A node whose default (the runtime applies it — Procs included, see stranded_by?) materializes it
+      # wholesale, rescuing its SUBTREE from omission/nil regardless of the node's own nil-tolerance. Judged
+      # across configs collectively (like stranded_by?): a default on ANY config materializes the one SHARED
+      # node value, so a merged wire path where only one route carries the default still shields its
+      # descendants. NO config may be a model, though: a model route reads the shared value as a record and
+      # ModelValidator rejects the materialized non-record (family 3), so the default rescues nothing —
+      # leaving such a node un-shielded keeps it tracked as a nil-tolerant ancestor so a stranded descendant
+      # still raises rather than slipping through.
       def shielded?(node)
         !node.implicit? &&
           node.configs.none? { |c| c.validations[:model] } &&
-          node.configs.all? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
+          node.configs.any? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
       end
 
       def nil_tolerant?(node)

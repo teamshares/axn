@@ -1472,6 +1472,22 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
+      it "does not raise when one merged-path route's default shields a required grandchild" do
+        # Only ONE route onto :baz (the dotted "bar.baz") carries a default; the other (:baz on :bar) is
+        # merely optional. That default materializes the shared :baz hash, so the required :qux grandchild
+        # below it is satisfiable. The shield must fire on ANY co-located default, not require every route
+        # to carry one.
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :bar, on: :payload, type: Hash, optional: true
+            expects "bar.baz", on: :payload, default: { qux: 1 }
+            expects :baz, on: :bar, type: Hash, optional: true
+            expects :qux, on: :baz, type: Integer
+          end
+        end.not_to raise_error
+      end
+
       it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
         # The executor applies ANY truthy subfield default (Procs included) and materializes the parent
         # before validation, so omitting :payload succeeds. The detector counts a Proc default as a rescue
