@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/subfields"
-require "axn/reflection/subfield_contradictions"
 
 module Axn
   module Core
@@ -165,18 +164,9 @@ module Axn
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # Reject contradiction-only contracts (PRO-2877: a non-object shape member colliding with a
-            # nested deep subfield, or a nil-tolerant model: parent with a defaulted subfield) on the
-            # PROSPECTIVE config set (committed configs plus this batch), before any mutation. Built fresh
-            # (not cached) — class-load time, off the runtime hot path. The dotted-name model: rejection is
-            # a local check in _parse_subfield_configs.
-            tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs + configs)
-            if (contradiction = Axn::Reflection::SubfieldContradictions.detect(tree))
-              raise ArgumentError, contradiction.message
-            end
-
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
-            # above — leaves the class untouched.
+            # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
+            # leaves the class untouched.
             _validate_subfield_reader_names!(configs) if readers
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit

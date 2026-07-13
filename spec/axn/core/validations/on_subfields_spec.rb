@@ -1307,38 +1307,38 @@ RSpec.describe Axn do
     end
 
     describe "verify-before-commit" do
-      it "does not commit the rejected subfield when the contradiction error is rescued" do
+      it "does not commit the rejected subfields when the declaration error is rescued" do
         klass = build_axn do
-          expects :company, model: FakeModel, allow_nil: true
+          expects :settings, type: Hash
         end
 
-        # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfield
-        # behind — the contract is validated on the prospective config set BEFORE the configs are committed.
+        # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfields
+        # behind — every declaration check runs BEFORE any config is committed or reader generated.
         expect do
           klass.class_eval do
-            expects :id, on: :company, default: 1
+            expects :company, :company_id, on: :settings, model: FakeModel
           end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+        end.to raise_error(ArgumentError, /names both :company and its own id companion/)
 
-        expect(klass.subfield_configs.map(&:field)).not_to include(:id)
+        expect(klass.subfield_configs.map(&:field)).not_to include(:company, :company_id)
       end
 
-      it "does not leave an orphaned reader when the contradiction error is rescued" do
+      it "does not leave an orphaned reader when the declaration error is rescued" do
         klass = build_axn do
-          expects :company, model: FakeModel, allow_nil: true
+          expects :settings, type: Hash
         end
 
         expect do
           klass.class_eval do
-            expects :thing, on: :company, default: 1
+            expects :company, :company_id, on: :settings, model: FakeModel
           end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+        end.to raise_error(ArgumentError, /names both :company and its own id companion/)
 
-        # Reader generation is deferred until after every declaration check passes, so a rejected subfield
-        # leaves no orphaned reader method or recorded reader name — a corrected retry won't collide with
+        # Reader generation is deferred until after every declaration check passes, so rejected subfields
+        # leave no orphaned reader method or recorded reader name — a corrected retry won't collide with
         # the duplicate-reader guard, and no unvalidated reader is callable.
-        expect(klass.method_defined?(:thing)).to be(false)
-        expect(klass._generated_subfield_reader_names).not_to include(:thing)
+        expect(klass.method_defined?(:company)).to be(false)
+        expect(klass._generated_subfield_reader_names).not_to include(:company, :company_id)
       end
     end
 
@@ -1362,137 +1362,6 @@ RSpec.describe Axn do
             expects :company_id, :company, on: :settings, model: FakeModel
           end
         end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
-      end
-    end
-
-    describe "nil-tolerant model: parent + applied-default descendant" do
-      it "raises when a nil-tolerant model parent has a defaulted subfield" do
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, allow_nil: true
-            expects :name, on: :company, default: "Acme"
-          end
-        end.to raise_error(
-          ArgumentError,
-          "expects :company is a nil-tolerant model: (allow_nil:) but :name (on: company) carries a default " \
-          "— on omission the default materializes a non-record value under :company, which the model validator " \
-          "rejects as not a record, so :company can never be omitted. Drop allow_nil: on :company, or drop the default.",
-        )
-      end
-
-      it "counts a Proc default (materialization fires before the Proc runs)" do
-        # This targets the nil-tolerant-model-plus-default detector's Proc handling: it counts a Proc
-        # default (subfield_default_applies?) because the executor applies it before the model resolves.
-        # `optional: true` is incidental — a Proc default under a nil-tolerant model trips this
-        # contradiction either way.
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, allow_nil: true
-            expects :name, on: :company, default: -> { "x" }, optional: true
-          end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
-      end
-
-      it "does not raise for a required model parent with a defaulted subfield" do
-        expect do
-          build_axn do
-            expects :company, model: FakeModel
-            expects :name, on: :company, default: "Acme"
-          end
-        end.not_to raise_error
-      end
-
-      it "still raises when a defaulted <field>_id sibling accompanies the defaulted subfield" do
-        # A defaulted `company_id` rescues plain omission (the id derives a record), but a defaulted
-        # subfield materializes `{}` under :company's OWN wire key, which FieldResolvers::Model prefers
-        # over deriving from company_id — so the id never gets a chance and ModelValidator rejects the
-        # empty hash. The id-sibling default does not rescue this contradiction.
-        expect do
-          build_axn do
-            expects :company_id, default: 1
-            expects :company, model: FakeModel, allow_nil: true
-            expects :name, on: :company, default: "Acme"
-          end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
-      end
-
-      it "raises when a default is merged onto the model's own node via a same-wire-key sibling" do
-        # `:company` (model:, allow_nil:) resolves to wire path payload.org.company; the dotted-name
-        # `"org.company"` (on: :payload) resolves to the SAME wire node and carries a default. The default
-        # and the model land on one tree node, so on omission the default populates :company itself before
-        # the model resolver — ModelValidator rejects the non-record value. The nil-tolerant model is first
-        # discovered on this very node (no carried ancestor), so the walk must still catch it here.
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :company, on: "payload.org", model: FakeModel, allow_nil: true
-            expects "org.company", on: :payload, default: "x"
-          end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
-      end
-
-      it "raises when a single nil-tolerant model subfield carries its own non-record default" do
-        # One subfield config that is both model: (allow_nil:) and defaulted to a non-record scalar: the
-        # model and its conflicting default live on the SAME node (and same config). On omission the default
-        # becomes the model's value, which ModelValidator rejects. allow_nil: is dead weight.
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :company, on: :payload, model: FakeModel, allow_nil: true, default: "x"
-          end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
-      end
-
-      it "does not raise when the model's own default may supply a record" do
-        # An own default that is itself a record (or an uninspectable Proc that might return one) resolves
-        # :company to a record on omission, so the subfield default writes into that record rather than a
-        # rejected `{}` — the contract is satisfiable and must not be rejected at declaration time.
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, allow_nil: true, default: -> { FakeModel.new }
-            expects :name, on: :company, default: "Acme"
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise when the model's own default is a blank literal (treated as absent at runtime)" do
-        # A blank OWN default writes to the model's OWN wire key, where FieldResolvers::Model resolves via
-        # `provided_value.presence || derive` — so "", {}, and [] are treated as absent and the model still
-        # resolves to nil under allow_nil:. The contract is satisfiable and must not be rejected, even though
-        # a subfield exists to make :company a node in the tree.
-        ["", {}, []].each do |blank|
-          expect do
-            build_axn do
-              expects :company, model: FakeModel, allow_nil: true, default: blank
-              expects :name, on: :company, type: String, optional: true
-            end
-          end.not_to raise_error, "expected default: #{blank.inspect} to be allowed"
-        end
-      end
-
-      it "does not raise when a same-node sibling default is itself a record instance" do
-        # A default merged onto the model's OWN wire node that is a literal instance of the model class is
-        # satisfiable: it writes a record under :company's key, which the model validator accepts on omission.
-        # The record-instance exemption applies to same-node sibling defaults too, not just the model's own.
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :company, on: "payload.org", model: FakeModel, allow_nil: true
-            expects "org.company", on: :payload, default: FakeModel.new
-          end
-        end.not_to raise_error
-      end
-
-      it "still raises when a DESCENDANT subfield carries a blank default (materializes a non-record parent)" do
-        # Below the model the asymmetry flips: a blank subfield default still materializes a non-record parent
-        # under :company's wire key BEFORE the model resolves (apply_defaults_for_subfields! runs regardless of
-        # blankness), which ModelValidator rejects — so a blank descendant default IS a hazard.
-        expect do
-          build_axn do
-            expects :company, model: FakeModel, allow_nil: true
-            expects :name, on: :company, type: String, default: ""
-          end
-        end.to raise_error(ArgumentError, /nil-tolerant model:/)
       end
     end
   end

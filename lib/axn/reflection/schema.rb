@@ -808,7 +808,10 @@ module Axn
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
       # with its own usable default) AND no descendant subfield requires presence (a required subfield at
-      # any depth resolves off the record, so an omitted record strands it). OR an
+      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
+      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
+      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
+      # model instance — so an omitted id fails at runtime). OR an
       # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
       # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
       # required it also can't be null, so any `null` branch is stripped.
@@ -820,7 +823,9 @@ module Axn
       def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
+        model_omittable = optional_for_schema?(config) &&
+                          !children_require_presence?(children, ann) &&
+                          !subtree_has_applied_subfield_default?(children)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
