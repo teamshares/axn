@@ -56,13 +56,13 @@ class MyTool < Axn::MCP::Tool
   mcp_text_content :message     # class-level override (validated like any assignment)
 end
 
-MyTool.resolved_mcp_text_content    # => :message
-PlainTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.config)
+MyTool.mcp_text_content    # => :message
+PlainTool.mcp_text_content # => :structured (falls back to Axn::MCP.config)
 ```
 
 The explicit include keeps the override accessors opt-in — they appear only on actions that descend from a base that included them, not on every Axn action. Overrides are stored per-class and inherited by subclasses, so setting one on a base class establishes a default for all of its actions. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
 
-`resolved_<name>` (or the no-argument `<name>`) is the supported way to read an overridable setting — it always returns the effective value. There is no public accessor for "the raw class-level override without the config fallback", and the internal storage where overrides are kept is private, so don't reach into it: if your action needs the effective value, use `resolved_<name>`.
+The no-argument `<name>` reader is the supported way to read an overridable setting — it always returns the effective value (`<name>?` is the same read as a boolean). When a caller needs to distinguish "no override anywhere in the ancestry" from "resolves to the library default", `<name>_override` returns the stored override with no config fallback, or the `Axn::Configurable::UNSET` sentinel when none is set. The internal storage where overrides are kept is private — don't reach into it.
 
 ::: warning Load order
 `Foo.overrides` only exists once `Foo` has run `extend Axn::Configurable`, and an action captures the override accessors at the moment it runs `include Foo.overrides`. So your namespace's `extend Axn::Configurable` must be evaluated **before** any action that includes its overrides is defined — in practice, declare the module (the `extend` line) above the `require`s that pull in your actions. The order of individual `setting` declarations does not matter: a setting declared after an action includes the overrides is still picked up.
