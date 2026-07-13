@@ -81,6 +81,24 @@ context "with an RSpec double" do
 end
 ```
 
+## Ambient context
+
+To drive `expects :x, on: :ambient_context` inputs from a spec, wrap the call in `with_ambient_context`:
+
+```ruby
+with_ambient_context(user: admin_user) do
+  result = SomeAction.call(...)  # SomeAction AND any nested actions it calls see user
+end
+```
+
+The helper swaps `Axn.config.ambient_context_provider` for the block and restores it afterwards (even if the block raises). Unlike passing `ambient_context:` at a single call site, the provider feeds the whole call chain — so nested `.call!`/`.call`s see the injected values too. It never touches `Current` / any `ActiveSupport::CurrentAttributes`. An explicit `ambient_context:` kwarg on a specific call still wins over the injected values.
+
+::: warning
+Stubbing a `Current` reader — `allow(Current).to receive(:user).and_return(u)` — does **not** feed `on: :ambient_context` inputs. The default source reads each `CurrentAttributes` descendant's attribute *hash* (`instance.attributes`), not its reader methods, so the stub is silently ignored. Use `with_ambient_context` instead.
+:::
+
+`with_ambient_context` swaps a process-global provider, so it is isolated under process-based parallel test runners (e.g. `parallel_tests`) but not under thread-based ones.
+
 ## RSpec configuration
 
 Configuring rspec to treat files in spec/actions as service specs (very optional):

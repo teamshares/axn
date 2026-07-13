@@ -94,6 +94,36 @@ RSpec.describe Axn do
       end
     end
 
+    context "with allow_blank/allow_nil/optional as the only constraint (no other validator)" do
+      # Mirrors top-level `expects :x, allow_blank: true`, which builds an optional, unconstrained
+      # field. The parser leaves an empty validations hash in this case (allow_blank/allow_nil are
+      # merged into existing validators, of which there are none), so the subfield validator must
+      # not call ActiveModel `validates` with zero validators.
+      %i[allow_blank allow_nil optional].each do |opt|
+        context "with #{opt}: true only" do
+          let(:action) do
+            build_axn do
+              expects :foo, type: Hash
+              expects :bar, on: :foo, opt => true
+              exposes :val, allow_nil: true
+              def call = expose(val: bar)
+            end
+          end
+
+          it "builds and runs an optional, unconstrained subfield" do
+            result = action.call(foo: { bar: "hello" })
+            expect(result).to be_ok
+            expect(result.val).to eq("hello")
+          end
+
+          it "accepts a missing subfield value" do
+            # non-blank parent that simply lacks :bar (an empty {} would trip the parent's own presence)
+            expect(action.call(foo: { other: 1 })).to be_ok
+          end
+        end
+      end
+    end
+
     context "with optional: true and type validation on subfields" do
       let(:action) do
         build_axn do
