@@ -29,6 +29,44 @@ RSpec.describe Axn::Configuration do
     it { expect(config.env.test?).to eq(true) }
   end
 
+  describe "#logger" do
+    # Rails boots its logger in an initializer; any code that runs earlier (e.g. `include Axn`
+    # at gem load, under Bundler.require) sees `Rails` defined but `Rails.logger` still nil.
+    # The getter must stay usable in that window rather than returning nil (PRO-2891).
+    context "when Rails is defined but Rails.logger is nil (boot window)" do
+      before { stub_const("Rails", Module.new { def self.logger = nil }) }
+
+      it "returns a usable Logger instead of nil" do
+        expect(config.logger).to be_a(Logger)
+      end
+
+      it "does not raise when a caller logs through it" do
+        expect { config.logger.debug { "boot-time message" } }.not_to raise_error
+      end
+    end
+
+    context "when Rails.logger is initially nil, then set later" do
+      let(:fake_rails) do
+        Class.new do
+          class << self
+            attr_accessor :logger
+          end
+        end
+      end
+
+      before { stub_const("Rails", fake_rails) }
+
+      it "does not memoize the transient fallback (picks up Rails.logger once available)" do
+        fake_rails.logger = nil
+        expect(config.logger).to be_a(Logger)
+
+        real_logger = Logger.new(File::NULL)
+        fake_rails.logger = real_logger
+        expect(config.logger).to be(real_logger)
+      end
+    end
+  end
+
   describe "async configuration" do
     # Tests that use real adapters (:sidekiq, :active_job) are in spec_rails/
     # since they require those gems to be loaded.

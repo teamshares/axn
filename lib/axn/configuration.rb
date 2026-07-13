@@ -143,18 +143,28 @@ module Axn
     end
 
     def logger
-      @logger ||= begin
-        # Use sidekiq logger if in background
-        if Axn::Util::ExecutionContext.background? && defined?(Sidekiq)
-          Sidekiq.logger
-        else
-          Rails.logger
+      return @logger if @logger
+
+      # Use sidekiq logger if in background
+      resolved =
+        begin
+          if Axn::Util::ExecutionContext.background? && defined?(Sidekiq)
+            Sidekiq.logger
+          else
+            Rails.logger
+          end
+        rescue NameError
+          nil
         end
-      rescue NameError
-        Logger.new($stdout).tap do |l|
-          l.level = Logger::INFO
-        end
-      end
+
+      # Memoize a real host logger, but not the stdout fallback below: `Rails.logger` is nil
+      # until Rails runs its initialize_logger initializer, so `include Axn` at gem load (under
+      # Bundler.require) resolves to nil here. Returning the transient fallback without caching it
+      # keeps every `Axn.config.logger.<level>` call site working during boot and still picks up
+      # `Rails.logger` on a later call once it exists (PRO-2891).
+      return @logger = resolved if resolved
+
+      @fallback_logger ||= Logger.new($stdout).tap { |l| l.level = Logger::INFO }
     end
 
     def env
