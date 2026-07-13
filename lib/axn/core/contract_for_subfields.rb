@@ -27,6 +27,9 @@ module Axn
       # `model:` subfield, the resolved record). Shared by the subfield readers and the inbound
       # validation runner so all consumers agree. An ambient config isn't indexed (its parent
       # resolves per-invocation), so it falls back to the reader-plus-digs recipe on its `on:` string.
+      # An unextractable hop (a malformed value that can hold neither key nor method) resolves as nil
+      # — the parent is treated as absent (PRO-2857) so its own validation classifies the bad value,
+      # rather than a raw extraction error pre-empting the contract.
       def self.resolve_parent(action, config)
         path = action.class._resolved_subfields.index[config]
         return _resolve_parent_by_recipe(action, config.on) if path.nil?
@@ -39,6 +42,8 @@ module Axn
           value = Axn::Core::FieldResolvers.resolve(type: :extract, field: hop.last.to_s, provided_data: value)
         end
         value
+      rescue Axn::Core::FieldResolvers::UnextractableError
+        nil
       end
 
       # The node's reader-bearing config, if any: every non-dotted-named config generates a reader

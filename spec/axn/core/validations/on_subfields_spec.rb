@@ -707,6 +707,66 @@ RSpec.describe Axn do
         end
       end
 
+      describe "malformed parents (a value that can hold neither key nor method)" do
+        # A subfield read from a malformed parent (e.g. `payload: []` where a Hash was declared)
+        # resolves as ABSENT rather than raising Extract's UnextractableError — so the parent's own
+        # type validation classifies the bad value cleanly, at every pre-validation pass and in
+        # validation itself.
+        it "classifies via the parent's own validation instead of raising (plain validation)" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :note, on: :payload, type: String
+
+            def call = nil
+          end
+
+          result = action.call(payload: [])
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("Payload is not a Hash")
+          expect(result.exception.message).not_to match(/Unclear how to extract/)
+        end
+
+        it "does not let subfield coercion crash on a malformed parent" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :starts_on, on: :payload, coerce: Date
+
+            def call = nil
+          end
+
+          result = action.call(payload: [])
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("Payload is not a Hash")
+        end
+
+        it "does not let subfield preprocess or defaults crash on a malformed parent" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :note, on: :payload, optional: true, preprocess: :to_s.to_proc
+            expects :flag, on: :payload, optional: true, type: :boolean, default: true
+
+            def call = nil
+          end
+
+          result = action.call(payload: [])
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("Payload is not a Hash")
+        end
+
+        it "settles user-facing when the malformed parent is user_facing (stranded subfield suppressed)" do
+          action = build_axn do
+            expects :payload, type: Hash, user_facing: "Payload must be an object"
+            expects :note, on: :payload, type: String
+
+            def call = nil
+          end
+
+          result = action.call(payload: [])
+          expect(result.outcome).to be_failure
+          expect(result.error).to eq("Payload must be an object")
+        end
+      end
+
       describe "stranded-path diagnostics" do
         it "names the first nil intermediate ancestor in the validation report" do
           action = build_axn do
