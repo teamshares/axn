@@ -1274,4 +1274,95 @@ RSpec.describe Axn do
       end
     end
   end
+
+  describe "contradiction rejections (PRO-2877)" do
+    # A minimal model target; the raise fires at declaration, before any resolution.
+    # rubocop:disable Lint/ConstantDefinitionInBlock
+    class FakeModel; def self.find(_id) = new; end
+    # rubocop:enable Lint/ConstantDefinitionInBlock
+
+    describe "dotted-name model: subfield" do
+      it "raises, pointing at the reader spelling" do
+        expect do
+          build_axn do
+            expects :payload
+            expects "org.company", on: :payload, model: FakeModel
+          end
+        end.to raise_error(
+          ArgumentError,
+          'a dotted-name model: subfield (["org.company"] with on: payload) has no consumable id — ' \
+          "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+          'Use the reader spelling instead: expects :company, on: "payload.org", model: ...',
+        )
+      end
+
+      it "does not raise for the reader spelling (dotted on:, single-level name)" do
+        expect do
+          build_axn do
+            expects :payload
+            expects :company, on: "payload.org", model: FakeModel
+          end
+        end.not_to raise_error
+      end
+    end
+
+    describe "verify-before-commit" do
+      it "does not commit the rejected subfields when the declaration error is rescued" do
+        klass = build_axn do
+          expects :settings, type: Hash
+        end
+
+        # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfields
+        # behind — every declaration check runs BEFORE any config is committed or reader generated.
+        expect do
+          klass.class_eval do
+            expects :company, :company_id, on: :settings, model: FakeModel
+          end
+        end.to raise_error(ArgumentError, /names both :company and its own id companion/)
+
+        expect(klass.subfield_configs.map(&:field)).not_to include(:company, :company_id)
+      end
+
+      it "does not leave an orphaned reader when the declaration error is rescued" do
+        klass = build_axn do
+          expects :settings, type: Hash
+        end
+
+        expect do
+          klass.class_eval do
+            expects :company, :company_id, on: :settings, model: FakeModel
+          end
+        end.to raise_error(ArgumentError, /names both :company and its own id companion/)
+
+        # Reader generation is deferred until after every declaration check passes, so rejected subfields
+        # leave no orphaned reader method or recorded reader name — a corrected retry won't collide with
+        # the duplicate-reader guard, and no unvalidated reader is callable.
+        expect(klass.method_defined?(:company)).to be(false)
+        expect(klass._generated_subfield_reader_names).not_to include(:company, :company_id)
+      end
+    end
+
+    describe "model: subfield batch naming its own <field>_id companion" do
+      it "raises: model: applies to every field, so the explicit :<field>_id is a broken second model, either order" do
+        # `model:` applies to EVERY field in the batch, so `expects :company, :company_id, on:, model:` makes
+        # :company_id a model: subfield too (it would require :company_id_id and reject a raw id), colliding
+        # with the raw-id reader :company already generates. There's no working way to pair an explicit id
+        # with a model: subfield in one batch — the model: subfield already exposes :company_id — so it's
+        # rejected at declaration in either order (declaration options are order-independent).
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :company, :company_id, on: :settings, model: FakeModel
+          end
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
+
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :company_id, :company, on: :settings, model: FakeModel
+          end
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
+      end
+    end
+  end
 end

@@ -67,16 +67,10 @@ module Axn
         Result.new(roots:, dropped: compute_dropped(deep_paths))
       end
 
-      # A deep config is dropped for either of two independent reasons: a node it passes THROUGH (each
-      # hop's parent; never the leaf itself) can't hold JSON object properties, OR it is a dotted-NAME
-      # `model:` config, which has no JSON-consumable representation of its own (Schema.dotted_model_config?
-      # — a dotted subfield name generates no reader, so the id→record lookup never runs at runtime). A
-      # dotted name always yields >1 hop, so such a config is already in deep_paths. Judged on the finished
-      # tree so declaration order doesn't matter.
+      # A deep config is dropped when a node it passes THROUGH (each hop's parent; never the leaf itself)
+      # can't hold JSON object properties. Judged on the finished tree so declaration order doesn't matter.
       def compute_dropped(deep_paths)
-        deep_paths.filter_map do |config, hops|
-          config if Schema.dotted_model_config?(config) || path_blocked?(hops)
-        end
+        deep_paths.filter_map { |config, hops| config if path_blocked?(hops) }
       end
 
       # Walk a deep config's ancestor chain hop by hop, carrying the shape members an implicit hop merged

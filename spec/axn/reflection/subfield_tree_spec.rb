@@ -106,18 +106,6 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.roots[:user].children[:profile].children[:name].config.field).to eq(:name)
     end
 
-    it "drops a dotted-NAME model config (no reader is generated, so its id is not JSON-consumable) but keeps it for requiredness" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash
-        expects "org.company", on: :payload, model: { klass: Struct.new(:id), finder: :find }
-      end
-      tree = tree_for(klass)
-
-      expect(tree.dropped.map(&:field)).to eq([:"org.company"])
-      expect(tree.roots[:payload].children[:org].children[:company].config.field).to eq(:"org.company")
-    end
-
     it "does NOT drop a NON-dotted model name reached via a dotted on: (a reader IS generated)" do
       klass = Class.new do
         include Axn

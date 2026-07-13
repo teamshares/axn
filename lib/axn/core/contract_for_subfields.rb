@@ -159,13 +159,23 @@ module Axn
                   "`default:`/`preprocess:`/`sensitive:` are not supported with a nested `on:` (got on: #{on.inspect})"
           end
 
-          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, **validations).tap do |configs|
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # NOTE: avoid <<, which would update value for parents and children
+            # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
+            # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
+            # leaves the class untouched.
+            _validate_subfield_reader_names!(configs) if readers
+
+            # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
+            # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
+            # reload path, metaprogrammed construction, a test — never leaves the class carrying an orphaned
+            # config or generated reader, so a corrected retry starts clean.
+            # NOTE: avoid <<, which would update value for parents and children.
             self.subfield_configs += configs
+            _define_subfield_readers!(configs) if readers
           end
         end
 
@@ -201,10 +211,9 @@ module Axn
           end
         end
 
-        def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists
+        def _parse_subfield_configs(
           *fields,
           on:,
-          readers:,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -218,6 +227,26 @@ module Axn
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
+          # A model: batch that also names a model field's own `<field>_id` companion (e.g.
+          # `expects :company, :company_id, on:, model:`) can never work: model: applies to EVERY field in
+          # the batch, so the `<field>_id` is itself a model: subfield (it would require `<field>_id_id` and
+          # reject a raw id), and it collides with the raw-id reader the model: field already generates. A
+          # model: subfield exposes its own `<field>_id` reader for the raw id, so the explicit one is both
+          # redundant and broken. (Declaring the id in a separate expects doesn't help either — the generated
+          # `<field>_id` reader already exists, so it trips the duplicate-reader guard.)
+          if validations.key?(:model)
+            batch = fields.map(&:to_sym)
+            if (model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) })
+              id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
+              raise ArgumentError,
+                    "a model: subfield batch (#{fields.map(&:to_s).inspect} with on: #{on}) names both " \
+                    ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
+                    "in the batch, so :#{id_key} becomes a second model: subfield (requiring :#{id_key}_id) " \
+                    "rather than the raw id. The model: subfield :#{model_field} already generates a " \
+                    ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
+            end
+          end
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             if parsed_validations.dig(:type, :coerce)
               raise ArgumentError,
@@ -225,14 +254,59 @@ module Axn
                     "an adapter can coerce deeper by walking the schema)."
             end
 
-            reader = reader_names[field] || field
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader).tap do |config|
-              if readers
-                _define_subfield_reader(reader, field, on:, validations: parsed_validations)
-                _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
-              end
+            # A dotted field NAME (e.g. "org.company") generates no reader (see
+            # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
+            # which is wired onto the generated reader — never runs, and the advertised
+            # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
+            # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
+            # still gets a reader. Point the error at that spelling.
+            if parsed_validations.key?(:model) && field.to_s.include?(".")
+              *parents, leaf = field.to_s.split(".")
+              working_on = ([on] + parents).join(".")
+              raise ArgumentError,
+                    "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{on}) has no consumable id — " \
+                    "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+                    "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
             end
+
+            reader = reader_names[field] || field
+            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader)
           end
+        end
+
+        # Reader-name uniqueness across the prospective batch and everything already defined — a pure
+        # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
+        # the class is mutated. A dotted field name generates no reader, so it can't collide.
+        def _validate_subfield_reader_names!(configs)
+          seen = []
+          configs.each do |config|
+            next if config.field.to_s.include?(".")
+
+            reader = config.reader_as
+            if method_defined?(reader) || seen.include?(reader)
+              raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)"
+            end
+
+            seen << reader
+          end
+        end
+
+        # Generate the readers for an already-validated, already-committed batch of subfield configs.
+        # Called only after every declaration check has passed, so it performs side effects without raising.
+        #
+        # Two passes: all EXPLICIT primary readers first, then all auto-generated COMPANIONS (boolean `?`
+        # predicates, model `<field>_id` readers). A companion defers — with a debug breadcrumb, via
+        # `_reader_name_available?` — to any explicit reader of the same name; deferring the whole companion
+        # pass until every primary exists makes that yielding order-independent, matching top-level `expects`.
+        # Interleaving the two (a companion generated before a later same-named primary) would let the
+        # primary silently clobber the companion.
+        def _define_subfield_readers!(configs)
+          # The two passes must NOT be combined: every primary reader has to exist before any companion is
+          # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
+          # rubocop:disable Style/CombinableLoops
+          configs.each { |c| _define_subfield_reader(c.reader_as, c.field, on: c.on, validations: c.validations) }
+          configs.each { |c| _define_subfield_companion_readers(c) }
+          # rubocop:enable Style/CombinableLoops
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
@@ -241,17 +315,33 @@ module Axn
           # Don't create top-level readers for nested fields
           return if source_field.to_s.include?(".")
 
-          raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)" if method_defined?(reader)
+          # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
+          # reader is generated, so there is no duplicate to guard against here.
 
           # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
           self._generated_subfield_reader_names += [reader]
 
-          Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-            Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
-                                              provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+          if validations.key?(:model)
+            _define_subfield_model_reader(reader, source_field, validations[:model], on:)
+          else
+            Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
+              Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
+                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+            end
           end
+        end
 
-          _define_subfield_model_reader(reader, source_field, validations[:model], on:) if validations.key?(:model)
+        # Auto-generated companion readers for a config: the boolean `?` predicate and the model
+        # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
+        # any explicit same-named reader regardless of declaration order.
+        def _define_subfield_companion_readers(config)
+          return if config.field.to_s.include?(".")
+
+          _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
+          return unless config.validations.key?(:model)
+
+          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
+          _define_subfield_model_id_reader(config.reader_as, config.field, processed_options, on: config.on)
         end
 
         def _define_subfield_model_reader(reader, source_field, options, on:)
@@ -269,8 +359,6 @@ module Axn
               provided_data: subfield_data,
             )
           end
-
-          _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
         end
 
         # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`

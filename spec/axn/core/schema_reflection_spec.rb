@@ -48,16 +48,6 @@ RSpec.describe "Axn class-level schema reflection" do
       3.times { deep_klass.input_schema }
     end
 
-    it "warns for a dotted-NAME model config (its id is not JSON-consumable)" do
-      dotted_model_klass = Class.new do
-        include Axn
-        expects :payload, type: Hash
-        expects "org.company", on: :payload, model: { klass: Struct.new(:id), finder: :find }
-      end
-      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield.*dotted-name model.*org\.company/m)
-      dotted_model_klass.input_schema
-    end
-
     it "does not warn for a representable deep chain (object-shaped parents)" do
       representable = Class.new do
         include Axn
