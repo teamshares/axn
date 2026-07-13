@@ -27,7 +27,7 @@ module Axn
       # implicit ancestor merged into (for a member-of-a-member family-2 collision at depth).
       def walk(node, nil_tolerant_ancestor:, nil_tolerant_model_ancestor:, carried_members:)
         # Family 1: this node must be present, but a nil-tolerant ancestor can strand it.
-        return family_1(nil_tolerant_ancestor, node.config) if nil_tolerant_ancestor && self_required?(node)
+        return family_1(nil_tolerant_ancestor, node.config) if nil_tolerant_ancestor && stranded_by?(node, nil_tolerant_ancestor)
 
         # Family 3 (Task 4 fills this in): applied default under a nil-tolerant model ancestor.
         if nil_tolerant_model_ancestor && (defaulted = applied_default_config(node))
@@ -85,24 +85,35 @@ module Axn
 
       # --- family predicates (leaf; reuse Schema) ---
 
-      # A node whose OWN declared signals force it to be present: some config neither carries a default the
-      # runtime would apply nor tolerates nil. Implicit nodes carry no validators, so they are never
-      # self-required (their obligation lives in their explicit descendants, caught on their own hop).
+      # Whether a nil/omitted `ancestor` (already confirmed nil-tolerant by the caller) strands this node's
+      # own obligation. A config is stranded unless it tolerates nil OR carries a default the runtime would
+      # actually apply here — and a default applies only when the ancestor is object-shaped, because
+      # Executor#_materialize_object_parent! refuses to synthesize `{}` under a non-object parent
+      # (type: Array, a mixed union); under one the default never runs and the leaf is left absent, so the
+      # nil-tolerant ancestor genuinely strands it. Implicit nodes carry no validators, so they are never
+      # stranded themselves (their obligation lives in their explicit descendants, caught on their own hop).
       #
-      # Default handling uses `subfield_default_applies?` (the runtime's own test — any truthy default,
+      # Default detection uses `subfield_default_applies?` (the runtime's own test — any truthy default,
       # Procs INCLUDED), NOT reflection's `usable_default?` (which excludes Procs). The two answer different
       # questions: reflection asks "is this provably omittable?" (a Proc's success is unknowable, so it
       # stays required — the safe, stricter direction), while the DETECTOR asks "is this contract
-      # impossible?" — and a Proc/defaulted node is NOT impossible (the executor applies the default and
-      # materializes the parent before validation), so it must not drive a contradiction rejection.
-      def self_required?(node)
+      # impossible?" — and a Proc/defaulted node under an object-shaped ancestor is NOT impossible (the
+      # executor applies the default and materializes the parent before validation), so it must not drive a
+      # contradiction rejection.
+      def stranded_by?(node, ancestor)
         return false if node.implicit?
 
-        node.configs.any? { |c| !(Axn::Internal::FieldConfig.subfield_default_applies?(c) || Schema.nil_accepted?(c)) }
+        default_can_rescue = Schema.object_shaped?(ancestor)
+        node.configs.any? do |c|
+          next false if Schema.nil_accepted?(c)
+          next false if default_can_rescue && Axn::Internal::FieldConfig.subfield_default_applies?(c)
+
+          true
+        end
       end
 
       # A node whose OWN configs materialize it wholesale from a default the runtime applies (Procs
-      # included — see self_required?), rescuing its subtree from omission/nil regardless of its own
+      # included — see stranded_by?), rescuing its subtree from omission/nil regardless of its own
       # nil-tolerance. Only a NON-model node qualifies: a model node's materialized default is a non-record
       # value ModelValidator rejects (family 3), so it rescues nothing — leaving it un-shielded keeps it
       # tracked as a nil-tolerant ancestor, so a required descendant of a defaulted nil-tolerant model still

@@ -772,7 +772,9 @@ RSpec.describe Axn::Reflection::Schema do
   it "rejects at declaration a non-nestable (Array) allow_nil parent with a required DEEP descendant (PRO-2877 family 1)" do
     # `items` (type: Array, allow_nil:) is non-nestable, but a required DEEP descendant
     # (`items.first_item.sku`) would still strand it on a nil/omitted `items` — the same family-1
-    # contradiction as an object-shaped ancestor (self_required? doesn't care about the ancestor's type).
+    # contradiction as an object-shaped ancestor. The descendant has no default, so it is stranded
+    # whatever the ancestor's type (stranded_by? consults the ancestor's shape only to decide whether a
+    # DEFAULT could be materialized to rescue — irrelevant here).
     expect do
       Class.new do
         include Axn
@@ -1116,7 +1118,7 @@ RSpec.describe Axn::Reflection::Schema do
     it "rejects at declaration a nil-tolerant model field with a required shallow subfield (PRO-2877 family 1)" do
       # `company` accepts nil, but a required `name` subfield still resolves off the record — an omitted
       # company can never satisfy it, the same family-1 contradiction as a plain nil-tolerant ancestor
-      # (a model: route is not exempt from self_required?/nil_accepted?).
+      # (a model: route is not exempt from stranded_by?/nil_accepted?).
       expect do
         Class.new do
           include Axn
@@ -3306,7 +3308,8 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       it "rejects at declaration a required deep leaf below a NON-OBJECT optional: intermediate, under a " \
-         "nil-tolerant top-level parent (PRO-2877 family 1; the non-object shape is irrelevant to self_required?)" do
+         "nil-tolerant top-level parent (PRO-2877 family 1; the required leaf has no default, so the " \
+         "intermediate's shape doesn't change the stranding)" do
         expect do
           Class.new do
             include Axn

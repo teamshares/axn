@@ -1382,18 +1382,19 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
-      it "raises when a defaulted intermediate can't rescue a required descendant under a " \
+      it "raises when a defaulted intermediate can't rescue its subtree under a " \
          "non-object (type: Array) nil-tolerant ancestor" do
         # Executor#_materialize_object_parent! refuses to inject `{}` for a non-object parent (type:
-        # Array, a mixed union) — so a nil :payload never materializes, :meta's default never applies,
-        # and :id is genuinely stranded. The defaulted-node shield must NOT suppress this.
+        # Array, a mixed union) — so a nil :payload never materializes, :meta's default never applies, and
+        # :meta (and :id below it) is genuinely stranded. The defaulted-node shield must NOT suppress this;
+        # :meta, the shallowest stranded node, is named (its own default can't rescue it under :payload).
         expect do
           build_axn do
             expects :payload, type: Array, allow_nil: true
             expects :meta, on: :payload, type: Hash, default: { id: 1 }
             expects :id, on: :meta, type: Integer
           end
-        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:id .* is required/)
+        end.to raise_error(ArgumentError, /:payload is declared nil-tolerant.*:meta \(on: payload\) is required/)
       end
 
       it "does not raise when a defaulted intermediate rescues a required descendant under an " \
@@ -1420,6 +1421,18 @@ RSpec.describe Axn do
             expects :id, on: :meta, type: Integer
           end
         end.not_to raise_error
+      end
+
+      it "raises for a defaulted leaf under a NON-object (type: Array) nil-tolerant parent (default can't materialize)" do
+        # Executor#_materialize_object_parent! skips subfield defaults for a non-object parent, so an
+        # omitted/nil :items never materializes and :count's default never applies — :count is genuinely
+        # stranded. A default only suppresses family 1 when the nil-tolerant ancestor is object-shaped.
+        expect do
+          build_axn do
+            expects :items, type: Array, allow_nil: true
+            expects :count, on: :items, type: Integer, default: 5
+          end
+        end.to raise_error(ArgumentError, /:items is declared nil-tolerant.*:count .* is required/)
       end
 
       it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
@@ -1511,10 +1524,10 @@ RSpec.describe Axn do
       end
 
       it "counts a Proc default (materialization fires before the Proc runs)" do
-        # `optional: true` keeps this isolated to family 3: a bare Proc default (no allow_nil:/optional:)
-        # already trips family 1 first (self_required? treats a Proc as unusable, per usable_default?'s
-        # side-effect-free design — it never calls the Proc to see whether the result would satisfy
-        # presence), which is a genuine, separate contradiction and not what this example targets.
+        # This targets family 3's Proc handling: the detector counts a Proc default (subfield_default_applies?)
+        # because the executor applies it before the model resolves. `optional: true` is incidental — a Proc
+        # default under a nil-tolerant model trips family 3 either way (stranded_by? treats a Proc under an
+        # object-shaped ancestor as rescuable, so family 1 does not fire first).
         expect do
           build_axn do
             expects :company, model: FakeModel, allow_nil: true
