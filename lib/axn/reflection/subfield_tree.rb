@@ -37,7 +37,9 @@ module Axn
         def parent_node = ancestors[parent_index].first
       end
 
-      Result = Data.define(:roots, :dropped, :index)
+      # The finished build: per-root node trees, the dropped-config list, and the per-config
+      # ResolvedPath index. (Named to be unmistakable next to the public Axn::Result.)
+      ResolutionResult = Data.define(:roots, :dropped, :index)
 
       module_function
 
@@ -80,7 +82,7 @@ module Axn
           deep_paths << [config, hops] if hops.size > 1
         end
 
-        Result.new(roots:, dropped: compute_dropped(deep_paths), index:)
+        ResolutionResult.new(roots:, dropped: compute_dropped(deep_paths), index:)
       end
 
       # Walk (creating implicit intermediates as needed) from `anchor` down `segments`, attach the
