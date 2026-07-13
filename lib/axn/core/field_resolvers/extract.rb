@@ -13,31 +13,36 @@ module Axn
         end
 
         def call
-          # Hash-like (named-key) sources: read the key. Checked BEFORE the method branch so a key
-          # whose name collides with a Hash/Enumerable method (e.g. `zip`, `count`, `first`) is read
-          # as a key rather than dispatched as a method call. Arrays respond to #dig too, but only
-          # with integer indices, so they stay on the reader path (e.g. `items.count`).
-          if provided_data.respond_to?(:dig) && !provided_data.is_a?(Array)
-            base = provided_data.respond_to?(:with_indifferent_access) ? provided_data.with_indifferent_access : provided_data
-            begin
-              return base.dig(*field.to_s.split("."))
-            rescue TypeError
-              # A malformed intermediate (e.g. an Array met by a String key) can't hold the path —
-              # the same "unclear how to extract" condition as the terminal raise below, typed so the
-              # subfield machinery can treat it as absent.
-              raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
-            end
-          end
-
-          # Object/Array sources: use the reader method.
-          return provided_data.public_send(field) if provided_data.respond_to?(field)
-
-          raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+          # A dotted path is resolved one segment at a time, re-dispatching on the type reached at
+          # each step, so "items.count" behaves identically to `:count on :items`: the Hash segment
+          # is read by key, the nested Array segment via its reader method. Digging the whole path off
+          # the top-level source instead would push a String key into a nested Array and blow up.
+          field.to_s.split(".").reduce(provided_data) { |current, segment| resolve_segment(current, segment) }
         end
 
         private
 
         attr_reader :field, :options, :provided_data
+
+        def resolve_segment(source, segment)
+          # A nil intermediate means the path fell off a missing/omitted parent: read as absent
+          # rather than raising, matching the top-level nil-source handling (PRO-2857).
+          return nil if source.nil?
+
+          # Hash-like (named-key) sources: read the key. Checked BEFORE the method branch so a key
+          # whose name collides with a Hash/Enumerable method (e.g. `zip`, `count`, `first`) is read
+          # as a key rather than dispatched as a method call. Arrays respond to #dig too, but only
+          # with integer indices, so they stay on the reader path (e.g. `items.count`).
+          if source.respond_to?(:dig) && !source.is_a?(Array)
+            base = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
+            return base[segment]
+          end
+
+          # Object/Array sources: use the reader method.
+          return source.public_send(segment) if source.respond_to?(segment)
+
+          raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+        end
       end
     end
   end

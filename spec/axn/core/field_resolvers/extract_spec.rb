@@ -22,8 +22,39 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
       expect(extract("a.b", { a: { b: 1 } })).to eq(1)
     end
 
+    it "digs dotted paths through symbol-keyed nested hashes indifferently" do
+      expect(extract("a.b.c", { a: { b: { c: 1 } } })).to eq(1)
+    end
+
     it "returns nil for a missing key" do
       expect(extract(:missing, { name: "x" })).to be_nil
+    end
+  end
+
+  describe "dotted paths with mixed segment types" do
+    # A dotted path is resolved segment-by-segment with per-segment type dispatch, so "items.count"
+    # behaves identically to `:count on :items`: the Hash segment is read by key, the Array segment
+    # is reached via the reader method (PRO-2886).
+    it "method-reads an Array segment nested under a Hash (items.count)" do
+      expect(extract("items.count", { items: [10, 20, 30] })).to eq(3)
+    end
+
+    it "chains reader methods across nested Arrays" do
+      expect(extract("rows.first", { rows: [%w[a b], %w[c d]] })).to eq(%w[a b])
+    end
+
+    it "reads a Hash key whose name collides with an Array method (per-segment dispatch)" do
+      # The final `count` segment lands on a Hash, so it reads the key (99), not Array#count.
+      expect(extract("data.count", { data: { count: 99 } })).to eq(99)
+    end
+
+    it "returns nil for a missing intermediate rather than raising" do
+      expect(extract("a.b.c", { a: {} })).to be_nil
+      expect(extract("a.b.c", { a: { b: nil } })).to be_nil
+    end
+
+    it "raises when a non-terminal segment lands on a value that can neither dig nor answer the reader" do
+      expect { extract("a.b", { a: 5 }) }.to raise_error(/Unclear how to extract/)
     end
   end
 
