@@ -38,6 +38,39 @@ end
 - `raw_name` returns only an override (the class's own or an inherited one); it does **not** fall back to `Axn.config`, so a caller can tell "no override" from "resolves to the global default".
 - Overrides are inherited by subclasses and never leak to siblings. Setting one leaves `Axn.config` untouched.
 
+### Setting overrides with `configure`
+
+The flat setter has an equivalent block form. `configure` (no argument) targets Axn's own settings — the same override store the flat setters write to:
+
+```ruby
+class ChargeCompany
+  include Axn
+
+  configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
+end
+```
+
+The block form is what you reach for when configuring **namespaced** settings contributed by an extension (below).
+
+### Namespaced config for extensions
+
+Axn extensions (for example `axn-mcp` or `axn-ruby_llm`) can register their own overridable settings under a namespace, so one action can be configured for several adapters at once — and their settings never collide, even when two adapters happen to use the same setting name:
+
+```ruby
+class QuoteLookup
+  include Axn
+
+  configure(:mcp)      { |c| c.text_content = :structured }
+  configure(:ruby_llm) { |c| c.temperature = 0.2 }
+end
+```
+
+Each namespace's config is stored independently, so composing adapters never clobber one another.
+
+`configure` is **tolerant**: you can set config for a namespace whose extension isn't loaded in the current process — useful for a reusable tool that declares its behavior for several transports in one place. The value sits inert until that extension reads it. Because it isn't validated against the extension's schema until then, a bad value surfaces when the extension first resolves it, not at the `configure` call.
+
+Global (non-per-class) config stays on each module — `Axn.configure` for Axn's own settings, `Axn::MCP.configure` for MCP's, and so on. There is no single combined entry point, though nothing stops you from keeping the calls together in one initializer.
+
 ## `on_exception`
 
 By default any swallowed errors are noted in the logs, but it's _highly recommended_ to wire up an `on_exception` handler so those get reported to your error tracking service.
