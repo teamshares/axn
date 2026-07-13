@@ -23,13 +23,11 @@ module Axn
         if @action && @reader && @validations&.key?(:model) && @action.respond_to?(@reader)
           @action.public_send(@reader)
         else
-          Axn::Core::FieldResolvers.resolve(type: :extract, field: attr, provided_data: @source)
+          # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil):
+          # this field's own validators report against nil while the source's own type validation
+          # classifies the bad value.
+          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source)
         end
-      rescue Axn::ContractViolation::UnextractableError
-        # A malformed source (can hold neither key nor method) reads as absent — this field's own
-        # validators report against nil while the source's own type validation classifies the bad
-        # value, instead of a raw extraction error pre-empting the whole contract.
-        nil
       end
 
       # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if

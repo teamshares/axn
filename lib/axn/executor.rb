@@ -669,17 +669,13 @@ module Axn
     def _model_record_id_mismatch(source:, field:)
       return nil if source.nil?
 
-      record = Core::FieldResolvers.resolve(type: :extract, field:, provided_data: source)
-      raw_id = Core::FieldResolvers.resolve(type: :extract, field: Internal::FieldConfig.model_id_key(field), provided_data: source)
+      record = Core::FieldResolvers.extract_or_nil(field:, provided_data: source)
+      raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(field), provided_data: source)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
       return nil if record.id.to_s == raw_id.to_s
 
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
-    rescue Axn::ContractViolation::UnextractableError
-      # A malformed source can't supply a record/id pair to compare — its own validation classifies
-      # the bad value; there is no mismatch to report.
-      nil
     end
 
     def apply_defaults!(direction)
@@ -818,11 +814,9 @@ module Axn
       below = path.wire_path[1..]
       return root_value if below.empty?
 
-      Core::FieldResolvers.resolve(type: :extract, field: below.join("."), provided_data: root_value)
-    rescue Axn::ContractViolation::UnextractableError
-      # A malformed source reads as absent (PRO-2857): the pre-validation passes skip/no-op and the
-      # source's own validation classifies the bad value.
-      nil
+      # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil): the
+      # pre-validation passes skip/no-op and the source's own validation classifies the bad value.
+      Core::FieldResolvers.extract_or_nil(field: below.join("."), provided_data: root_value)
     end
 
     # Human identifiers for contract-error reporting, matching each level's historical wording.

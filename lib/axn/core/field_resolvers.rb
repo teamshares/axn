@@ -25,6 +25,19 @@ module Axn
 
         resolver_class.new(field:, options:, provided_data:).call
       end
+
+      # THE tolerant read for the subfield contract machinery: a source that can't answer the named
+      # path (a malformed value where an object was declared — Extract's UnextractableError) reads
+      # as ABSENT, the same way a nil source does above. The field's own validators then report
+      # against nil while the malformed ancestor's own type validation classifies the bad value —
+      # one doctrine, applied by every reader, validation source, and pre-validation pass, so
+      # malformed caller input always settles as a contract error rather than a raw exception.
+      # (Consumers that want the loud typed error call .resolve directly.)
+      def self.extract_or_nil(field:, provided_data:)
+        resolve(type: :extract, field:, provided_data:)
+      rescue Axn::ContractViolation::UnextractableError
+        nil
+      end
     end
   end
 end

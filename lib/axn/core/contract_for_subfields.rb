@@ -28,9 +28,8 @@ module Axn
       # `model:` subfield, the resolved record). Shared by the subfield readers and the inbound
       # validation runner so all consumers agree. An ambient config isn't indexed (its parent
       # resolves per-invocation), so it falls back to the reader-plus-digs recipe on its `on:` string.
-      # An unextractable hop (a malformed value that can hold neither key nor method) resolves as nil
-      # — the parent is treated as absent (PRO-2857) so its own validation classifies the bad value,
-      # rather than a raw extraction error pre-empting the contract.
+      # Malformed hops read as absent via FieldResolvers.extract_or_nil (one doctrine: the bad
+      # value's own validation classifies it, PRO-2857).
       def self.resolve_parent(action, config)
         path = action.class._resolved_subfields.index[config]
         return _resolve_parent_by_recipe(action, config.on) if path.nil?
@@ -40,11 +39,9 @@ module Axn
 
         value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
         path.ancestors[reader_index...path.parent_index].each do |hop|
-          value = Axn::Core::FieldResolvers.resolve(type: :extract, field: hop.last.to_s, provided_data: value)
+          value = Axn::Core::FieldResolvers.extract_or_nil(field: hop.last.to_s, provided_data: value)
         end
         value
-      rescue Axn::ContractViolation::UnextractableError
-        nil
       end
 
       # The node's reader-bearing config, if any: every non-dotted-named config generates a reader
@@ -60,7 +57,7 @@ module Axn
         value = source.public_send(root)
         return value if rest.empty?
 
-        Axn::Core::FieldResolvers.resolve(type: :extract, field: rest.join("."), provided_data: value)
+        Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value)
       end
 
       module ClassMethods
@@ -317,8 +314,8 @@ module Axn
             _define_subfield_model_reader(config)
           else
             Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-              Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
-                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
+              Axn::Core::FieldResolvers.extract_or_nil(field: source_field,
+                                                       provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
             end
           end
         end
@@ -361,7 +358,7 @@ module Axn
           by_primary_key = processed_options[:finder] == :find
           _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
             parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
-            Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
+            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent)
           end
         end
       end
