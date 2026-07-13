@@ -15,15 +15,8 @@ module Axn
       module_function
 
       def detect(tree)
-        # Top-level fields carrying a usable default — used to spot a `model:` field rescued by an explicit
-        # defaulted `<field>_id` sibling (the id is applied before the model reader, so the record resolves
-        # even on omission; mirrors apply_model_id_requiredness!'s explicit-id-default path), which is
-        # therefore not a nil-tolerant-model-plus-default hazard.
-        defaulted_id_fields = tree.roots.values.flat_map(&:configs)
-                                  .select { |c| Schema.usable_default?(c, subfield: false) }
-                                  .to_set(&:field)
         tree.roots.each_value do |root|
-          found = walk(root, nil_tolerant_model_ancestor: nil, carried_members: [], defaulted_id_fields:)
+          found = walk(root, nil_tolerant_model_ancestor: nil, carried_members: [])
           return found if found
         end
         nil
@@ -31,7 +24,7 @@ module Axn
 
       # `nil_tolerant_model_ancestor` is the OUTERMOST such ancestor config above this node (nil when none).
       # `carried_members` are the object-shaped shape members an implicit ancestor merged into (for a
-      # member-of-a-member non-object-shape-member collision at depth). `defaulted_id_fields` — see detect.
+      # member-of-a-member non-object-shape-member collision at depth).
       #
       # NOTE: a nil-tolerant ancestor + a required descendant with no rescue is deliberately NOT detected
       # here — pulled from PRO-2877 to PRO-2889, because telling the genuine dead-flag case apart from the
@@ -39,7 +32,7 @@ module Axn
       # canonical SubfieldTree from PRO-2883. Only the structural contradictions (non-object shape member
       # collision, nil-tolerant model + defaulted subfield) live in this walk; the dotted-name model:
       # rejection is a local check in ContractForSubfields.
-      def walk(node, nil_tolerant_model_ancestor:, carried_members:, defaulted_id_fields:)
+      def walk(node, nil_tolerant_model_ancestor:, carried_members:)
         # A nil-tolerant model ancestor with an applied default anywhere in its subtree: the default
         # materializes `{}` under the model's wire key BEFORE the default runs, which ModelValidator rejects
         # — so the model can never be omitted and its allow_nil: is dead weight producing a confusing failure.
@@ -47,7 +40,7 @@ module Axn
           return defaulted_subfield_under_nil_tolerant_model(nil_tolerant_model_ancestor, defaulted)
         end
 
-        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node, defaulted_id_fields)
+        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
         node.children.each do |key, child|
           members = Schema.shape_members_at(node.configs + carried_members, key)
@@ -64,7 +57,7 @@ module Axn
           # Only an implicit node stands in for the object-shaped members it merged into — carry them so a
           # deeper member-of-a-member collision is caught. An explicit child brings its own configs' members.
           child_carried = child.implicit? ? members.select { |m| Schema.nestable_as_object?(m) } : []
-          found = walk(child, nil_tolerant_model_ancestor: child_model, carried_members: child_carried, defaulted_id_fields:)
+          found = walk(child, nil_tolerant_model_ancestor: child_model, carried_members: child_carried)
           return found if found
         end
         nil
@@ -89,25 +82,16 @@ module Axn
       end
 
       # This node's own nil-tolerant MODEL config that is a defaulted-subfield hazard ancestor (nil if
-      # none). A model is a hazard only when NOT rescued: then omission relies on a synthesized `{}`
-      # (rejected by ModelValidator). A rescued model resolves to a record on omission — no `{}` hazard —
-      # so it is not tracked.
-      def outermost_nil_tolerant_model(node, defaulted_id_fields)
+      # none). A model is a hazard unless its OWN default may supply a record: a defaulted subfield
+      # materializes `{}` under the model's wire key, which ModelValidator rejects (not a record) — so the
+      # model can never be omitted. A defaulted `<field>_id` sibling does NOT rescue this: the subfield
+      # default populates `:model`'s wire key directly, and FieldResolvers::Model prefers that non-blank
+      # hash over deriving from the id, so the id never gets a chance. Only an own default that may itself
+      # be a record (model_own_default_may_supply_record?) leaves a satisfiable contract, so it is skipped.
+      def outermost_nil_tolerant_model(node)
         return nil if node.implicit?
 
-        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) && !model_rescued?(c, defaulted_id_fields) }
-      end
-
-      # Whether a nil-tolerant `model:` config still resolves to a record on omission — so it does not hit
-      # the defaulted-subfield `{}` hazard. Two runtime-satisfying paths (mirroring
-      # apply_model_id_requiredness!): its OWN default may supply a record (model_own_default_may_supply_record?),
-      # OR an explicit `<field>_id` sibling carries a usable default (applied before the model reader, so the
-      # record resolves from the id).
-      def model_rescued?(config, defaulted_id_fields)
-        return false unless config.validations[:model]
-
-        model_own_default_may_supply_record?(config) ||
-          defaulted_id_fields.include?(Axn::Internal::FieldConfig.model_id_key(config.field))
+        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) && !model_own_default_may_supply_record?(c) }
       end
 
       def applied_default_config(node)

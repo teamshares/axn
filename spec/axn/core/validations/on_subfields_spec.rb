@@ -1472,6 +1472,32 @@ RSpec.describe Axn do
           end
         end.not_to raise_error
       end
+
+      it "still raises when a defaulted <field>_id sibling accompanies the defaulted subfield" do
+        # A defaulted `company_id` rescues plain omission (the id derives a record), but a defaulted
+        # subfield materializes `{}` under :company's OWN wire key, which FieldResolvers::Model prefers
+        # over deriving from company_id — so the id never gets a chance and ModelValidator rejects the
+        # empty hash. The id-sibling default does not rescue this contradiction.
+        expect do
+          build_axn do
+            expects :company_id, default: 1
+            expects :company, model: FakeModel, allow_nil: true
+            expects :name, on: :company, default: "Acme"
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+      end
+
+      it "does not raise when the model's own default may supply a record" do
+        # An own default that is itself a record (or an uninspectable Proc that might return one) resolves
+        # :company to a record on omission, so the subfield default writes into that record rather than a
+        # rejected `{}` — the contract is satisfiable and must not be rejected at declaration time.
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, allow_nil: true, default: -> { FakeModel.new }
+            expects :name, on: :company, default: "Acme"
+          end
+        end.not_to raise_error
+      end
     end
   end
 end
