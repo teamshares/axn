@@ -1585,6 +1585,27 @@ RSpec.describe Axn do
           "(Hash/:params), or drop the nested subfield.",
         )
       end
+
+      it "raises when an EXPLICIT object subfield collides with a non-object shape member" do
+        # The colliding key :bar is declared both as a scalar shape member (String) and as an explicit
+        # object subfield with its own nested :baz. The merged node is explicit, not implicit — but the
+        # nested structure still has nowhere to live in the String member, so it's the same family-2
+        # contradiction and must raise (no input can satisfy both String and the nested object).
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: String
+            end
+            expects :bar, on: :payload, type: Hash
+            expects :baz, on: :bar
+          end
+        end.to raise_error(
+          ArgumentError,
+          ":bar (on: payload) nests beneath shape member :bar on :payload, which is declared a non-object " \
+          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
+          "(Hash/:params), or drop the nested subfield.",
+        )
+      end
     end
 
     describe "family 3: nil-tolerant model: parent + applied-default descendant" do

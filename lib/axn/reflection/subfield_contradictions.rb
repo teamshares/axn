@@ -38,18 +38,20 @@ module Axn
         child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
         node.children.each do |key, child|
-          child_carried = []
-          if child.implicit?
-            # Family 2 (Task 3 fills this in): collision with a non-object shape member.
-            members = Schema.shape_members_at(node.configs + carried_members, key)
-            if (blocker = members.find { |m| !Schema.nestable_as_object?(m) })
-              carrier = shape_carrier_config(node.configs + carried_members, blocker)
-              return family_2(carrier&.field, blocker, first_leaf_config(child))
-            end
+          members = Schema.shape_members_at(node.configs + carried_members, key)
 
-            child_carried = members.select { |m| Schema.nestable_as_object?(m) }
+          # Family 2: a non-object shape member at `key` can't hold nested structure. Fires for any child
+          # that NESTS (has children) — an implicit dotted intermediate OR an explicit object subfield with
+          # its own subfields (e.g. `field :bar, type: String` + `expects :bar, on:, type: Hash` +
+          # `expects :baz, on: :bar`): either way the deep structure has nowhere to live in the scalar member.
+          if child.children.any? && (blocker = members.find { |m| !Schema.nestable_as_object?(m) })
+            carrier = shape_carrier_config(node.configs + carried_members, blocker)
+            return family_2(carrier&.field, blocker, first_leaf_config(child))
           end
 
+          # Only an implicit node stands in for the object-shaped members it merged into — carry them so a
+          # deeper member-of-a-member collision is caught. An explicit child brings its own configs' members.
+          child_carried = child.implicit? ? members.select { |m| Schema.nestable_as_object?(m) } : []
           found = walk(child, nil_tolerant_ancestor: child_nil_tolerant, nil_tolerant_model_ancestor: child_model, carried_members: child_carried)
           return found if found
         end
