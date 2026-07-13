@@ -113,13 +113,14 @@ module Axn
       def config_namespace(value = UNSET)
         return (@_config_namespace ||= self) if UNSET.equal?(value)
 
-        # Each overridable setting's accessors close over the namespace at declaration time, so
-        # changing it afterward would strand those settings under the old key while `configure(value)`
-        # writes under the new one — silently ignored. Enforce the documented "declare it first" rule.
-        if @_overridable_settings_declared && value != @_config_namespace
+        # The namespace gets baked in the first time it's used — into each overridable setting's
+        # accessor closures (at declaration) and into a class's source registry (at include). Changing
+        # it afterward would strand those under the old key while `configure(value)` writes/validates
+        # under the new one. Lock on first use and enforce the documented "declare it first" rule.
+        if @_config_namespace_locked && value != @_config_namespace
           raise ArgumentError,
-                "config_namespace must be declared before any overridable setting " \
-                "(got #{value.inspect} after settings were defined under #{(@_config_namespace || self).inspect})"
+                "config_namespace must be declared before any overridable setting is defined or its " \
+                "overrides are included (got #{value.inspect} after use under #{(@_config_namespace || self).inspect})"
         end
 
         @_config_namespace = value
@@ -187,6 +188,9 @@ module Axn
                      base.instance_variable_set(:@_axn_config_sources, {})
                    end
         ns = config_namespace
+        # Lock the namespace: it's now baked into this class's registry, so a later change would leave
+        # the registration (and duplicate-owner guard) keyed to the wrong bucket.
+        @_config_namespace_locked = true
         # Check the whole ancestry, not just this class's local registry: a parent action may already
         # own the namespace (a subclass that adds a second source for it hits the same hazard).
         existing = Axn::Configurable.config_source_for(base, ns)
@@ -221,7 +225,7 @@ module Axn
       def _define_override_methods(setting, fallback)
         name = setting.name
         namespace = config_namespace
-        @_overridable_settings_declared = true
+        @_config_namespace_locked = true
         _override_settings[name] = setting
 
         raw_lookup = lambda do |start|

@@ -467,4 +467,12 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
       end
     end.to raise_error(ArgumentError, /config_namespace/)
   end
+
+  it "raises when config_namespace is declared after the overrides were included" do
+    src = Module.new { extend Axn::Configurable }
+    mod = src.overrides
+    Class.new { include mod } # include locks the (default) namespace
+
+    expect { src.config_namespace(:mcp) }.to raise_error(ArgumentError, /config_namespace/)
+  end
 end
