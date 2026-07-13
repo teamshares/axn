@@ -132,7 +132,7 @@ module Axn
     def _define_boolean_predicate_readers
       action.external_field_configs.each do |config|
         next unless declared_fields.include?(config.field)
-        next unless Axn::Internal::FieldConfig.boolean?(config)
+        next unless config.boolean?
 
         _define_boolean_predicate_reader(config.field)
       end

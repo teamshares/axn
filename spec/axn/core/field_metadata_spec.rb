@@ -194,28 +194,20 @@ RSpec.describe "Field metadata" do
     end
   end
 
-  describe "readers: option" do
-    it "raises ArgumentError when readers: false is used without on:" do
-      expect do
-        build_axn do
-          expects :value, readers: false
-        end
-      end.to raise_error(ArgumentError, /readers: false is only valid for subfields/)
-    end
-
-    it "allows readers: true without on: (no-op but valid)" do
-      expect do
-        build_axn do
-          expects :value, readers: true
-        end
-      end.not_to raise_error
-    end
-
-    it "allows readers: false with on: (valid subfield usage)" do
+  describe "readers: option (removed)" do
+    it "raises ArgumentError pointing at as:/prefix: when readers: false is used" do
       expect do
         build_axn do
           expects :parent, type: Hash
           expects :child, on: :parent, readers: false
+        end
+      end.to raise_error(ArgumentError, /`readers: false` has been removed.*as:.*prefix:/)
+    end
+
+    it "allows readers: true (no-op but valid)" do
+      expect do
+        build_axn do
+          expects :value, readers: true
         end
       end.not_to raise_error
     end
@@ -302,15 +294,6 @@ RSpec.describe "Field metadata" do
 
       expect(action.call(settings: { enabled: true }).predicate_value).to be(true)
       expect(action.call(settings: { enabled: false }).predicate_value).to be(false)
-    end
-
-    it "does not define predicate readers for boolean subfields when readers are disabled" do
-      action = build_axn do
-        expects :settings, type: Hash
-        expects :enabled, on: :settings, type: :boolean, readers: false
-      end
-
-      expect(action.method_defined?(:enabled?)).to be(false)
     end
 
     it "does not overwrite explicitly defined predicate methods" do

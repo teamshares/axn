@@ -1,20 +1,13 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/hash/indifferent_access"
+require "axn/core/validation/base"
 
 module Axn
   module Validation
-    class Subfields
-      include ActiveModel::Validations
-
-      # NOTE: defining classes where needed b/c we explicitly register it'll affect ALL the consuming apps' validators as well
-      ModelValidator = Validators::ModelValidator
-      TypeValidator = Validators::TypeValidator
-      ValidateValidator = Validators::ValidateValidator
-      OfValidator = Validators::OfValidator
-      ShapeValidator = Validators::ShapeValidator
-
+    class Subfields < Base
       def initialize(source)
+        super()
         @source = source
       end
 
@@ -49,7 +42,10 @@ module Axn
         Class.new(self) do
           def self.name = "Axn::Validation::Subfields::OneOff"
 
-          validates field, **validations
+          # A field may legitimately carry no validators at all (e.g. `optional: true` with no
+          # type/model), which `validates` rejects — an empty set means nothing to enforce, exactly
+          # like a top-level field with no validators.
+          validates field, **validations unless validations.empty?
         end
       end
 
@@ -65,6 +61,10 @@ module Axn
         validator.valid?
         validator.errors
       end
+
+      private
+
+      def _action_for_validation = @action
     end
   end
 end

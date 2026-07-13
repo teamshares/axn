@@ -28,7 +28,6 @@ RSpec.describe Axn do
       it_behaves_like "raises when improperly configured", on: :qux
     end
 
-    let(:readers) { true }
     let(:action) do
       build_axn do
         expects :foo
@@ -39,7 +38,7 @@ RSpec.describe Axn do
           expose output: qux
         end
       end.tap do |action|
-        action.expects :qux, on: :bar, readers:
+        action.expects :qux, on: :bar
       end
     end
 
@@ -388,72 +387,67 @@ RSpec.describe Axn do
         expect(result.output).to eq(3)
       end
 
-      context "can be disabled" do
-        let(:readers) { false }
+      context "with no validators beyond presence-tolerance (optional: true only)" do
+        # `optional:` alone leaves the parsed validations empty; `validates` with an empty set would
+        # raise "You need to supply at least one validation" on EVERY call. An empty set means
+        # nothing to enforce — matching a top-level field declared the same way.
+        let(:action) do
+          build_axn do
+            expects :user, type: Hash
+            expects :nickname, on: :user, optional: true
+            exposes :got, optional: true
 
-        it do
-          expect(result).not_to be_ok
-          expect(result.exception).to be_a(NameError)
+            def call = expose(got: nickname)
+          end
+        end
+
+        it "runs and reads the subfield when present" do
+          result = action.call(user: { nickname: "kd" })
+          expect(result).to be_ok
+          expect(result.got).to eq("kd")
+        end
+
+        it "runs when the subfield is absent" do
+          expect(action.call(user: { other: 1 })).to be_ok
         end
       end
 
-      # `resolve_parent` reads a subfield parent via `public_send`, which a `readers: false` parent has
-      # no method to answer — so naming one as an `on:` target crashed every call with NoMethodError while
-      # reflection still advertised the nested path. Reject the unusable combination at declaration.
-      context "when on: names a readers: false subfield (no reader to resolve the parent)" do
-        it "raises at declaration naming the readers: false cause" do
+      context "with a symbol-referenced validation argument" do
+        # Symbol arguments (e.g. `inclusion: { in: :allowed_sizes }`) resolve against the action
+        # instance for subfields exactly as they do for top-level fields (shared Validation::Base
+        # delegation).
+        let(:action) do
+          build_axn do
+            expects :order, type: Hash
+            expects :size, on: :order, type: String, inclusion: { in: :allowed_sizes }
+
+            def allowed_sizes = %w[s m l]
+            def call = nil
+          end
+        end
+
+        it "accepts a value the action method allows" do
+          expect(action.call(order: { size: "m" })).to be_ok
+        end
+
+        it "rejects a value outside the action method's set" do
+          expect(action.call(order: { size: "xl" })).not_to be_ok
+        end
+      end
+
+      context "readers: false (removed)" do
+        it "raises at declaration pointing at the as:/prefix: rename escape hatch" do
           expect do
             build_axn do
               expects :payload
               expects :bar, on: :payload, readers: false
-              expects :baz, on: :bar
             end
-          end.to raise_error(
-            ArgumentError,
-            "expects called with `on: bar`, but :bar was declared with `readers: false` — " \
-            "a subfield parent must have a reader for the runtime to resolve " \
-            "(drop `readers: false` on :bar, or name a readable parent)",
-          )
+          end.to raise_error(ArgumentError, /`readers: false` has been removed.*as:.*prefix:/)
         end
 
-        # `readers: false` skips reader generation and therefore the duplicate-sub-keys collision check,
-        # so a subfield whose name shadows an inherited public method (e.g. :class, :hash) leaves
-        # `method_defined?(name)` true even though axn generated no reader. The guard must consult the
-        # set of readers axn actually generated, not `method_defined?` — otherwise `public_send(:class)`
-        # reads the action class (not `payload[:class]`) at runtime while reflection advertises the path.
-        it "raises when the readers: false parent's name shadows an inherited method (:class)" do
-          expect do
-            build_axn do
-              expects :payload
-              expects :class, on: :payload, readers: false
-              expects :name, on: :class
-            end
-          end.to raise_error(
-            ArgumentError,
-            "expects called with `on: class`, but :class was declared with `readers: false` — " \
-            "a subfield parent must have a reader for the runtime to resolve " \
-            "(drop `readers: false` on :class, or name a readable parent)",
-          )
-        end
-
-        it "raises for another inherited-method name (:hash), proving it is not :class-specific" do
-          expect do
-            build_axn do
-              expects :payload
-              expects :hash, on: :payload, readers: false
-              expects :name, on: :hash
-            end
-          end.to raise_error(
-            ArgumentError,
-            "expects called with `on: hash`, but :hash was declared with `readers: false` — " \
-            "a subfield parent must have a reader for the runtime to resolve " \
-            "(drop `readers: false` on :hash, or name a readable parent)",
-          )
-        end
-
-        # `readers: true` (the default) DOES generate the reader, so the collision check still fires
-        # first for an inherited-method name — unchanged by the readerless-parent guard.
-        it "still raises the duplicate-sub-keys error for a readers: true subfield named :class" do
+        # Every subfield generates a reader now, so the duplicate-sub-keys collision check fires
+        # for an inherited-method name — nothing can slip past it readerless.
+        it "raises the duplicate-sub-keys error for a subfield named :class" do
           expect do
             build_axn do
               expects :payload
@@ -507,37 +501,24 @@ RSpec.describe Axn do
       end
 
       context "with duplicate sub-keys" do
-        let(:action) do
-          build_axn do
+        it "raises (the reader name is already claimed)" do
+          expect do
+            build_axn do
+              expects :foo
+              expects :bar, on: :foo
+            end.expects :foo, on: :bar
+          end.to raise_error(ArgumentError, "expects does not support duplicate sub-keys (i.e. `foo` is already defined)")
+        end
+
+        it "resolves via as: (rename instead of the removed readers: false suppression)" do
+          action = build_axn do
             expects :foo
             expects :bar, on: :foo
-          end.tap do |a|
-            a.expects :foo, on: :bar, readers:
+            expects :foo, on: :bar, as: :inner_foo
           end
-        end
 
-        context "when readers are enabled" do
-          let(:readers) { true }
-
-          it "raises if readers are enabled" do
-            expect { action }.to raise_error(ArgumentError, "expects does not support duplicate sub-keys (i.e. `foo` is already defined)")
-          end
-        end
-
-        context "when readers are disabled" do
-          let(:readers) { false }
-
-          it "does not create reader methods but still validates correctly" do
-            expect { action }.not_to raise_error
-
-            # Should not create a reader method for the nested field when readers: false
-            expect(action).not_to respond_to(:foo)
-
-            # But validation should still work correctly - with improved validation system,
-            # validation works regardless of whether reader methods are created
-            expect(action.call(foo: { bar: { foo: 3 } })).to be_ok
-            expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok # Still fails validation as expected
-          end
+          expect(action.call(foo: { bar: { foo: 3 } })).to be_ok
+          expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok
         end
       end
     end
@@ -1335,10 +1316,10 @@ RSpec.describe Axn do
         end.to raise_error(ArgumentError, /names both :company and its own id companion/)
 
         # Reader generation is deferred until after every declaration check passes, so rejected subfields
-        # leave no orphaned reader method or recorded reader name — a corrected retry won't collide with
-        # the duplicate-reader guard, and no unvalidated reader is callable.
+        # leave no orphaned reader method — a corrected retry won't collide with the duplicate-reader
+        # guard, and no unvalidated reader is callable.
         expect(klass.method_defined?(:company)).to be(false)
-        expect(klass._generated_subfield_reader_names).not_to include(:company, :company_id)
+        expect(klass.method_defined?(:company_id)).to be(false)
       end
     end
 

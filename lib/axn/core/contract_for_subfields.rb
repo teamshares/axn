@@ -5,21 +5,9 @@ require "axn/core/validation/subfields"
 module Axn
   module Core
     module ContractForSubfields
-      # `reader_as` is the generated accessor's name; it defaults to `field` (the subfield key) but
-      # `as:`/`prefix:` decouple them — the reader is renamed while the value is still extracted by
-      # the wire-key `field` from the `on:` parent.
-      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess, :default, :metadata, :reader_as) do
-        def description = metadata[:description]
-      end
-
       def self.included(base)
         base.class_eval do
           class_attribute :subfield_configs, default: []
-          # Reader names axn actually generated for subfields (via `_define_subfield_reader`). Consulted
-          # by the readerless-parent guard, which must distinguish an axn-generated reader from any
-          # inherited public method of the same name (e.g. :class, :hash). Copy-on-write like
-          # `subfield_configs` so subclasses inherit the superclass's generated names.
-          class_attribute :_generated_subfield_reader_names, default: []
 
           extend ClassMethods
         end
@@ -38,10 +26,9 @@ module Axn
       end
 
       module ClassMethods
-        def _expects_subfields( # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
+        def _expects_subfields( # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
           *fields,
           on:,
-          readers: true,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -61,28 +48,6 @@ module Axn
             raise ArgumentError,
                   "expects called with `on: #{on}`, but no such reader exists " \
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
-          end
-
-          # `resolve_parent` reads the root via `public_send(root)`, so the root must have a reader that
-          # axn actually generated. A top-level field always has one (contract.rb forbids readerless
-          # top-level `expects`); a subfield parent has one only when declared with the default
-          # `readers: true`. A `readers: false` subfield matches the `reader_as` list above (its config
-          # exists) but defined no method, so `public_send` either raises NoMethodError or — when the
-          # name shadows an inherited method like :class/:hash — silently invokes that method and reads
-          # the wrong object, all while reflection still advertises the nested path. Consult the record
-          # of readers axn generated rather than `method_defined?`, which can't tell an axn reader from
-          # an inherited public method. (A dotted parent name also defines no reader, but its `reader_as`
-          # never matches a root segment, so it's already caught by the no-such-reader check above and
-          # never reaches here. Ambient roots resolve per-invocation, not via a generated reader, so
-          # they're exempt.) The parent is always declared before the subfield, so its reader — when
-          # requested — is already recorded by now.
-          root_has_reader = internal_field_configs.map(&:reader_as).include?(root) ||
-                            _generated_subfield_reader_names.include?(root)
-          if root != Axn::Core::AmbientContext::PARENT && !root_has_reader
-            raise ArgumentError,
-                  "expects called with `on: #{on}`, but :#{root} was declared with `readers: false` — " \
-                  "a subfield parent must have a reader for the runtime to resolve " \
-                  "(drop `readers: false` on :#{root}, or name a readable parent)"
           end
 
           # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
@@ -167,7 +132,7 @@ module Axn
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
             # leaves the class untouched.
-            _validate_subfield_reader_names!(configs) if readers
+            _validate_subfield_reader_names!(configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -175,7 +140,7 @@ module Axn
             # config or generated reader, so a corrected retry starts clean.
             # NOTE: avoid <<, which would update value for parents and children.
             self.subfield_configs += configs
-            _define_subfield_readers!(configs) if readers
+            _define_subfield_readers!(configs)
           end
         end
 
@@ -270,7 +235,8 @@ module Axn
             end
 
             reader = reader_names[field] || field
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader)
+            Contract::FieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:,
+                                      reader_as: reader)
           end
         end
 
@@ -318,9 +284,6 @@ module Axn
           # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
           # reader is generated, so there is no duplicate to guard against here.
 
-          # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
-          self._generated_subfield_reader_names += [reader]
-
           if validations.key?(:model)
             _define_subfield_model_reader(reader, source_field, validations[:model], on:)
           else
@@ -337,7 +300,7 @@ module Axn
         def _define_subfield_companion_readers(config)
           return if config.field.to_s.include?(".")
 
-          _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
+          _define_boolean_predicate_reader(config.reader_as) if config.boolean?
           return unless config.validations.key?(:model)
 
           processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])

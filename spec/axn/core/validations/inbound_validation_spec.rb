@@ -383,5 +383,23 @@ RSpec.describe Axn do
         end.to raise_error(Axn::DuplicateFieldError, /foo/)
       end
     end
+
+    context "verify-before-commit (top-level expects)" do
+      it "does not commit configs or leave an orphaned reader when a declaration error is rescued" do
+        klass = build_axn do
+          expects :existing
+        end
+
+        # Every declaration check runs BEFORE the class is mutated (matching _expects_subfields), so a
+        # rescued declaration error — a Rails reload path, metaprogrammed construction, a test — never
+        # leaves an orphaned config or generated reader behind.
+        expect do
+          klass.class_eval { expects :fresh, :existing }
+        end.to raise_error(Axn::DuplicateFieldError, /existing/)
+
+        expect(klass.internal_field_configs.map(&:field)).not_to include(:fresh)
+        expect(klass.method_defined?(:fresh)).to be(false)
+      end
+    end
   end
 end

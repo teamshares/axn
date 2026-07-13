@@ -302,7 +302,7 @@ module Axn
       # then rejects that `{}` (not a model instance) — so the model id can't be omitted. What strands the
       # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
       # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
-      # before the default's value matters — so this uses subfield_default_applies? (side-effect-free:
+      # before the default's value matters — so this uses FieldConfig#applied_default? (side-effect-free:
       # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
       # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
       # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
@@ -310,7 +310,7 @@ module Axn
       # rescue walk does not.
       def subtree_has_applied_subfield_default?(children)
         children.values.any? do |node|
-          node.configs.any? { |c| Internal::FieldConfig.subfield_default_applies?(c) } ||
+          node.configs.any?(&:applied_default?) ||
             subtree_has_applied_subfield_default?(node.children)
         end
       end
@@ -382,7 +382,7 @@ module Axn
         return false if value.nil? || value.is_a?(Proc)
         return false if presence_blank?(value) && presence_rejects_blank?(config)
 
-        subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
+        subfield ? config.applied_default? : true
       end
 
       # Whether an active presence validator would reject a blank value, so a blank default can't relax
@@ -653,7 +653,7 @@ module Axn
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
           # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
-          emit_default = subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
+          emit_default = subfield ? config.applied_default? : true
           prop[:default] = normalize_schema_literal(config.default) if emit_default
         end
 

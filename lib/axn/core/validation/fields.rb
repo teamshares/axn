@@ -1,18 +1,12 @@
 # frozen_string_literal: true
 
+require "axn/core/validation/base"
+
 module Axn
   module Validation
-    class Fields
-      include ActiveModel::Validations
-
-      # NOTE: defining classes where needed b/c we explicitly register it'll affect ALL the consuming apps' validators as well
-      ModelValidator = Validators::ModelValidator
-      TypeValidator = Validators::TypeValidator
-      ValidateValidator = Validators::ValidateValidator
-      OfValidator = Validators::OfValidator
-      ShapeValidator = Validators::ShapeValidator
-
+    class Fields < Base
       def initialize(context)
+        super()
         @context = context
       end
 
@@ -20,22 +14,6 @@ module Axn
         # The context here is actually a facade (InternalContext or Result)
         # which already handles reading from the correct data source
         @context.public_send(attr)
-      end
-
-      def method_missing(method_name, ...)
-        # Delegate method calls to the action instance to support symbol-based validations
-        # like inclusion: { in: :valid_channels_for_number }
-        action = _action_for_validation
-        return super unless action && action.respond_to?(method_name, true) # rubocop:disable Style/SafeNavigation
-
-        action.send(method_name, ...)
-      end
-
-      def respond_to_missing?(method_name, include_private = false)
-        action = _action_for_validation
-        return super unless action
-
-        action.respond_to?(method_name, include_private) || super
       end
 
       def self.validate!(validations:, context:, exception_klass:)
