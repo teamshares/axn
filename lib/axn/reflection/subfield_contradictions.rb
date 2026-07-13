@@ -44,7 +44,7 @@ module Axn
         # any applied default (blank or present, Proc included) first materializes a non-record parent under
         # the model's key before it resolves, so all of them count.
         if model
-          defaulted = nil_tolerant_model_ancestor ? applied_default_config(node) : present_own_default_config(node)
+          defaulted = nil_tolerant_model_ancestor ? applied_default_config(node) : present_own_default_config(node, model)
           return defaulted_under_nil_tolerant_model(model, defaulted) if defaulted
         end
 
@@ -58,17 +58,24 @@ module Axn
       # --- contradiction predicates (leaf; reuse Schema) ---
 
       # Whether a `model:` config's OWN default may resolve to a record (so omission is genuinely rescued):
-      # a Proc (uninspectable — the detector must not reject a contract it might satisfy) or a literal
-      # instance of the model class. A Hash/id/scalar literal is NOT a record (ModelValidator rejects it),
-      # so it does not rescue. Side-effect-free (never calls the Proc; `is_a?` only).
+      # a value that may itself be a record for the config's model class. Side-effect-free.
       def model_own_default_may_supply_record?(config)
         return false unless config.respond_to?(:default)
 
-        default = config.default
+        default_may_be_record?(config.default, config)
+      end
+
+      # Whether `default` written under a `model:` field's wire key may itself be a record the model
+      # validator accepts — a Proc (uninspectable, so the detector must not reject a contract it might
+      # satisfy) or a literal instance of `model_config`'s class. A Hash/id/scalar literal is NOT a record
+      # (ModelValidator rejects it). Side-effect-free (never calls the Proc; `is_a?` only). `model_config`
+      # supplies the class even when `default` lives on a same-node sibling config that has no `model:` of
+      # its own (both write to the model's shared wire key).
+      def default_may_be_record?(default, model_config)
         return false if default.nil?
         return true if default.is_a?(Proc)
 
-        model_opts = config.validations[:model]
+        model_opts = model_config.validations[:model]
         klass = model_opts.is_a?(Hash) ? model_opts[:klass] : model_opts
         klass.is_a?(Class) && default.is_a?(klass)
       end
@@ -94,19 +101,21 @@ module Axn
         node.configs.find { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
       end
 
-      # A config at this node with a PRESENT literal default — the hazard test ON the model's own node,
+      # A config at this node with a PRESENT non-record default — the hazard test ON the model's own node,
       # where the default writes to the model's own wire key and goes through `presence || derive`. A blank
-      # literal ("", {}, [], false) is treated as absent and is NOT a hazard; a Proc is uninspectable (it may
-      # return a record), so it is not rejected here (outermost_nil_tolerant_model already exempts a model
-      # whose own default may supply a record).
-      def present_own_default_config(node)
+      # literal ("", {}, [], false) is treated as absent and is NOT a hazard. A default that may itself be a
+      # record for `model`'s class (a Proc, or a literal instance) is accepted by the model validator, so it
+      # is not a hazard either — including a same-node SIBLING default, which writes to the same wire key.
+      def present_own_default_config(node, model)
         return nil if node.implicit?
 
         node.configs.find do |c|
           next false unless c.respond_to?(:default)
 
           default = c.default
-          !default.nil? && !default.is_a?(Proc) && !Schema.presence_blank?(default)
+          next false if default.nil? || Schema.presence_blank?(default)
+
+          !default_may_be_record?(default, model)
         end
       end
 

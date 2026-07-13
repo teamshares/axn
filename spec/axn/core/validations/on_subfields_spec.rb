@@ -1470,6 +1470,19 @@ RSpec.describe Axn do
         end
       end
 
+      it "does not raise when a same-node sibling default is itself a record instance" do
+        # A default merged onto the model's OWN wire node that is a literal instance of the model class is
+        # satisfiable: it writes a record under :company's key, which the model validator accepts on omission.
+        # The record-instance exemption applies to same-node sibling defaults too, not just the model's own.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :company, on: "payload.org", model: FakeModel, allow_nil: true
+            expects "org.company", on: :payload, default: FakeModel.new
+          end
+        end.not_to raise_error
+      end
+
       it "still raises when a DESCENDANT subfield carries a blank default (materializes a non-record parent)" do
         # Below the model the asymmetry flips: a blank subfield default still materializes a non-record parent
         # under :company's wire key BEFORE the model resolves (apply_defaults_for_subfields! runs regardless of
