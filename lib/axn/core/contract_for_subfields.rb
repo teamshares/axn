@@ -190,9 +190,6 @@ module Axn
           user_facing: false,
           **validations
         )
-          # Handle optional: true by setting allow_blank: true
-          allow_blank ||= optional
-
           # A model: batch that also names a model field's own `<field>_id` companion (e.g.
           # `expects :company, :company_id, on:, model:`) can never work: model: applies to EVERY field in
           # the batch, so the `<field>_id` is itself a model: subfield (it would require `<field>_id_id` and
@@ -213,35 +210,42 @@ module Axn
             end
           end
 
-          _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            # An ambient subfield's value is resolved per-invocation, never read from provided_data —
-            # which is the only place coercion writes — so a `coerce:` there would silently never
-            # apply. Reject it like ambient default:/preprocess:.
-            if parsed_validations.dig(:type, :coerce) && on.to_s.split(".").first.to_sym == Axn::Core::AmbientContext::PARENT
-              raise ArgumentError,
-                    "`coerce:` is not supported for an `on: :ambient_context` subfield " \
-                    "(the ambient parent is resolved per-invocation, not read from provided_data)"
-            end
-
-            # A dotted field NAME (e.g. "org.company") generates no reader (see
-            # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
-            # which is wired onto the generated reader — never runs, and the advertised
-            # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
-            # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
-            # still gets a reader. Point the error at that spelling.
-            if parsed_validations.key?(:model) && field.to_s.include?(".")
-              *parents, leaf = field.to_s.split(".")
-              working_on = ([on] + parents).join(".")
-              raise ArgumentError,
-                    "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{on}) has no consumable id — " \
-                    "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-                    "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
-            end
-
-            reader = reader_names[field] || field
-            Contract::FieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:,
-                                      reader_as: reader, user_facing:)
+          # The config-building itself is the shared top-level path (a subfield is the on:-carrying
+          # case); the checks below are pure reads of the built configs, raised before anything commits.
+          _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+                                        metadata:, reader_names:, user_facing:, **validations).each do |config|
+            _reject_ambient_coerce!(config)
+            _reject_dotted_model_name!(config, fields:)
           end
+        end
+
+        # An ambient subfield's value is resolved per-invocation, never read from provided_data —
+        # which is the only place coercion writes — so a `coerce:` there would silently never
+        # apply. Reject it like ambient default:/preprocess:.
+        def _reject_ambient_coerce!(config)
+          return unless config.validations.dig(:type, :coerce)
+          return unless config.on.to_s.split(".").first.to_sym == Axn::Core::AmbientContext::PARENT
+
+          raise ArgumentError,
+                "`coerce:` is not supported for an `on: :ambient_context` subfield " \
+                "(the ambient parent is resolved per-invocation, not read from provided_data)"
+        end
+
+        # A dotted field NAME (e.g. "org.company") generates no reader (see
+        # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
+        # which is wired onto the generated reader — never runs, and the advertised
+        # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
+        # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
+        # still gets a reader. Point the error at that spelling.
+        def _reject_dotted_model_name!(config, fields:)
+          return unless config.validations.key?(:model) && config.field.to_s.include?(".")
+
+          *parents, leaf = config.field.to_s.split(".")
+          working_on = ([config.on] + parents).join(".")
+          raise ArgumentError,
+                "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{config.on}) has no consumable id — " \
+                "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+                "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure

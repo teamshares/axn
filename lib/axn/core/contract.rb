@@ -454,8 +454,9 @@ module Axn
 
         # Pure parse: builds the configs without touching the class (no readers defined), so callers
         # can run every declaration check before committing anything.
-        def _parse_field_configs(
+        def _parse_field_configs( # rubocop:disable Metrics/ParameterLists
           *fields,
+          on: nil,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -472,8 +473,8 @@ module Axn
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader,
-                            user_facing:)
+            FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
+                            reader_as: reader, user_facing:)
           end
         end
 

@@ -25,12 +25,8 @@ module Axn
         end
       end
 
-      def self.validate!(field:, validations:, source:, exception_klass:, action: nil, reader: nil)
-        errors = collect_errors(field:, validations:, source:, action:, reader:)
-        raise exception_klass, errors if errors.any?
-      end
-
-      # Non-raising variant: returns the ActiveModel::Errors (empty if valid).
+      # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if
+      # valid) — raising/settling is the caller's concern (see Executor#_validate_subfields_settling!).
       def self.collect_errors(field:, validations:, source:, action: nil, reader: nil)
         errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:)
       end
