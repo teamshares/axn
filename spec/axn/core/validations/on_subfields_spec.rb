@@ -1339,6 +1339,28 @@ RSpec.describe Axn do
       end
     end
 
+    describe "generated companion readers vs. explicit same-named subfields" do
+      it "declares cleanly when an explicit :<field>_id collides with a model's generated id reader, either order" do
+        # `:company` (model:) generates a `company_id` companion reader; an explicit `:company_id` in the
+        # same batch is authoritative. Companions are generated in a SECOND pass (after every primary
+        # reader), so the generated `company_id` defers to the explicit one (with a debug breadcrumb)
+        # rather than a silent, declaration-order-dependent clobber — either order declares cleanly.
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :company, :company_id, on: :settings, model: FakeModel
+          end
+        end.not_to raise_error
+
+        expect do
+          build_axn do
+            expects :settings, type: Hash
+            expects :company_id, :company, on: :settings, model: FakeModel
+          end
+        end.not_to raise_error
+      end
+    end
+
     describe "family 1: nil-tolerant ancestor + required descendant" do
       it "raises when a nil-tolerant top-level parent has a required deep subfield" do
         expect do

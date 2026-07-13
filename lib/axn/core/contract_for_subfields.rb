@@ -281,11 +281,21 @@ module Axn
 
         # Generate the readers for an already-validated, already-committed batch of subfield configs.
         # Called only after every declaration check has passed, so it performs side effects without raising.
+        #
+        # Two passes: all EXPLICIT primary readers first, then all auto-generated COMPANIONS (boolean `?`
+        # predicates, model `<field>_id` readers). A companion defers — with a debug breadcrumb, via
+        # `_reader_name_available?` — to any explicit reader of the same name; deferring the whole companion
+        # pass until every primary exists makes that yielding order-independent (e.g. `expects :company,
+        # :company_id, on:, model:` keeps the explicit `:company_id` and skips the generated one whichever
+        # order they're declared), matching top-level `expects`. Interleaving the two (a companion generated
+        # before a later same-named primary) would let the primary silently clobber the companion.
         def _define_subfield_readers!(configs)
-          configs.each do |config|
-            _define_subfield_reader(config.reader_as, config.field, on: config.on, validations: config.validations)
-            _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
-          end
+          # The two passes must NOT be combined: every primary reader has to exist before any companion is
+          # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
+          # rubocop:disable Style/CombinableLoops
+          configs.each { |c| _define_subfield_reader(c.reader_as, c.field, on: c.on, validations: c.validations) }
+          configs.each { |c| _define_subfield_companion_readers(c) }
+          # rubocop:enable Style/CombinableLoops
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
@@ -300,12 +310,27 @@ module Axn
           # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
           self._generated_subfield_reader_names += [reader]
 
-          Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-            Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
-                                              provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+          if validations.key?(:model)
+            _define_subfield_model_reader(reader, source_field, validations[:model], on:)
+          else
+            Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
+              Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
+                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+            end
           end
+        end
 
-          _define_subfield_model_reader(reader, source_field, validations[:model], on:) if validations.key?(:model)
+        # Auto-generated companion readers for a config: the boolean `?` predicate and the model
+        # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
+        # any explicit same-named reader regardless of declaration order.
+        def _define_subfield_companion_readers(config)
+          return if config.field.to_s.include?(".")
+
+          _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
+          return unless config.validations.key?(:model)
+
+          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
+          _define_subfield_model_id_reader(config.reader_as, config.field, processed_options, on: config.on)
         end
 
         def _define_subfield_model_reader(reader, source_field, options, on:)
@@ -323,8 +348,6 @@ module Axn
               provided_data: subfield_data,
             )
           end
-
-          _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
         end
 
         # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
