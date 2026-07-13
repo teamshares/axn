@@ -129,7 +129,7 @@ module Axn
       # Resolves `name` for `klass` through the same override store + fallback the
       # generated accessors use, WITHOUT dispatching to a class method on `klass`.
       # For framework code that consumes an override: the generated `<name>` /
-      # `resolved_<name>` readers are all shadowable by a same-named class method
+      # `<name>?` readers are all shadowable by a same-named class method
       # on the action (or a subclass), which would silently bypass the override
       # store — so the framework resolves through this registry instead. Raises
       # KeyError if `name` isn't an overridable setting (a declaration-time bug).
@@ -161,12 +161,14 @@ module Axn
         return unless defined?(Axn::Core::MethodShadowing) && defined?(Axn.config)
 
         _override_resolvers.each_key do |name|
-          next unless Axn::Core::MethodShadowing.externally_defined?(base, name)
+          [name, :"#{name}?", :"#{name}_override"].each do |accessor|
+            next unless Axn::Core::MethodShadowing.externally_defined?(base, accessor)
 
-          Axn.config.logger.debug do
-            "[Axn] #{base.name || 'Action'}: per-class override accessor `#{name}` collides with a same-named " \
-              "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
-              "resolve_override_for). See PRO-2856."
+            Axn.config.logger.debug do
+              "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
+                "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
+                "resolve_override_for). See PRO-2856."
+            end
           end
         end
       end
@@ -241,22 +243,22 @@ module Axn
         @_override_resolvers ||= {}
       end
 
-      # Generates `<name>(value = UNSET)` / `raw_<name>` / `resolved_<name>` on the
+      # Generates `<name>(value = UNSET)` / `<name>?` / `<name>_override` on the
       # shared methods module. `fallback` is a zero-arg lambda returning the current
       # library-level value for this setting (its own `config` bag for the
       # module-singleton flavor; the live singleton instance for the class flavor).
       #
       # Closure-captured helpers so the generated accessors reference each other
       # through these lambdas rather than public method dispatch — a consumer class
-      # that happens to define its own `raw_<name>`/`resolved_<name>` class method
-      # can't shadow the internals the other accessors rely on.
+      # that happens to define its own same-named class method can't shadow the
+      # internals the other accessors rely on.
       def _define_override_methods(setting, fallback)
         name = setting.name
         namespace = config_namespace
         @_config_namespace_locked = true
         _override_settings[name] = setting
 
-        raw_lookup = lambda do |start|
+        override_lookup = lambda do |start|
           klass = start
           while klass.is_a?(Module)
             if klass.instance_variable_defined?(:@_axn_config_overrides)
@@ -271,7 +273,7 @@ module Axn
         end
 
         resolve_override = lambda do |start|
-          found = raw_lookup.call(start)
+          found = override_lookup.call(start)
           return fallback.call if UNSET.equal?(found)
 
           # Values written through the tolerant `configure(namespace)` bag are stored
@@ -297,9 +299,9 @@ module Axn
             end
           end
 
-          define_method(:"raw_#{name}") { raw_lookup.call(self) }
+          define_method(:"#{name}?") { !!resolve_override.call(self) }
 
-          define_method(:"resolved_#{name}") { resolve_override.call(self) }
+          define_method(:"#{name}_override") { override_lookup.call(self) }
         end
       end
     end
@@ -466,6 +468,8 @@ module Axn
           instance_variable_set(ivar, setting.dup_default) unless instance_variable_defined?(ivar)
           setting.resolve(instance_variable_get(ivar))
         end
+
+        define_method(:"#{name}?") { !!public_send(name) }
 
         define_method(:"#{name}=") do |value|
           setting.validate!(value)

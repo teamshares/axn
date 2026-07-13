@@ -29,13 +29,13 @@ class ChargeCompany
   sidekiq_job_tag_sources %i[dimension]   # set this class's override
 
   # sidekiq_job_tag_sources               # → resolved value (override → Axn.config fallback)
-  # resolved_sidekiq_job_tag_sources      # → same resolved value, explicit name
-  # raw_sidekiq_job_tag_sources           # → this class's override, or unset (no fallback)
+  # sidekiq_job_tag_sources?              # → same resolved value, as a boolean
+  # sidekiq_job_tag_sources_override      # → this class's override, or unset (no fallback)
 end
 ```
 
-- The bare `name`/`resolved_name` read the **resolved** value: the nearest override up the class ancestry, or `Axn.config`'s value if none is set.
-- `raw_name` returns only an override (the class's own or an inherited one); it does **not** fall back to `Axn.config`, so a caller can tell "no override" from "resolves to the global default".
+- The bare `name` reads the **resolved** value: the nearest override up the class ancestry, or `Axn.config`'s value if none is set. `name?` is the same read, coerced to a boolean.
+- `name_override` returns only an override (the class's own or an inherited one); it does **not** fall back to `Axn.config`, so a caller can tell "no override" from "resolves to the global default".
 - Overrides are inherited by subclasses and never leak to siblings. Setting one leaves `Axn.config` untouched.
 
 ### Setting overrides with `configure`
@@ -359,7 +359,7 @@ class ChargeCompany
 end
 ```
 
-The Sidekiq adapter reads `resolved_sidekiq_job_tag_sources` at enqueue, so the per-class value wins with the global as fallback. See [Per-Class Overrides](#per-class-overrides).
+The Sidekiq adapter reads the resolved `sidekiq_job_tag_sources` at enqueue, so the per-class value wins with the global as fallback. See [Per-Class Overrides](#per-class-overrides).
 
 Because Sidekiq tags are ephemeral job-payload strings (gone when the job finishes) with no per-value metrics cost, both `tag` and `dimension` surface here by default — unlike the metrics sink. Set `%i[dimension]` for bounded-only, or `[]` to disable the sink entirely.
 

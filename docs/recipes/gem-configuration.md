@@ -28,8 +28,8 @@ Axn::MCP.reset_config!                            # discard assigned values — 
 | ------ | ------ |
 | `default:` | Value returned until one is assigned. Mutable defaults (e.g. `[]`) are copied per config, so they're safe to assign-then-mutate. |
 | `one_of:` | Whitelist of permitted values; assigning anything else raises `ArgumentError`. |
-| `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. |
-| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. |
+| `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. The callable may instead raise its own `ArgumentError` for a custom message. |
+| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. A callable **default** is re-evaluated on every read, so "unset ⇒ derive from the environment now" is expressible: `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }, callable: true`. |
 | `overridable:` | When `true`, individual actions can override the value per-class (see below). |
 
 When migrating an existing config onto `one_of:` or `validate:`, note that the `ArgumentError` raised on an invalid assignment uses the DSL's own wording (e.g. `mode must be one of :a, :b; got :z`) rather than any message your hand-written setter used before — so any tests asserting on the old message text will need updating.
@@ -56,13 +56,13 @@ class MyTool < Axn::MCP::Tool
   mcp_text_content :message     # class-level override (validated like any assignment)
 end
 
-MyTool.resolved_mcp_text_content    # => :message
-PlainTool.resolved_mcp_text_content # => :structured (falls back to Axn::MCP.config)
+MyTool.mcp_text_content    # => :message
+PlainTool.mcp_text_content # => :structured (falls back to Axn::MCP.config)
 ```
 
 The explicit include keeps the override accessors opt-in — they appear only on actions that descend from a base that included them, not on every Axn action. Overrides are stored per-class and inherited by subclasses, so setting one on a base class establishes a default for all of its actions. Resolution walks from the action class up its ancestry to the nearest override, then falls back to the library config value.
 
-`resolved_<name>` (or the no-argument `<name>`) is the supported way to read an overridable setting — it always returns the effective value. There is no public accessor for "the raw class-level override without the config fallback", and the internal storage where overrides are kept is private, so don't reach into it: if your action needs the effective value, use `resolved_<name>`.
+The no-argument `<name>` reader is the supported way to read an overridable setting — it always returns the effective value (`<name>?` is the same read as a boolean). When a caller needs to distinguish "no override anywhere in the ancestry" from "resolves to the library default", `<name>_override` returns the stored override with no config fallback, or the `Axn::Configurable::UNSET` sentinel when none is set. The internal storage where overrides are kept is private — don't reach into it.
 
 ::: warning Load order
 `Foo.overrides` only exists once `Foo` has run `extend Axn::Configurable`, and an action captures the override accessors at the moment it runs `include Foo.overrides`. So your namespace's `extend Axn::Configurable` must be evaluated **before** any action that includes its overrides is defined — in practice, declare the module (the `extend` line) above the `require`s that pull in your actions. The order of individual `setting` declarations does not matter: a setting declared after an action includes the overrides is still picked up.

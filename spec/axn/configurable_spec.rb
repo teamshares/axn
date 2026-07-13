@@ -85,17 +85,17 @@ RSpec.describe Axn::Configurable do
     end
 
     it "resolves to the library default when no override is set" do
-      expect(action_class.resolved_mcp_text_content).to eq(:structured)
+      expect(action_class.mcp_text_content).to eq(:structured)
     end
 
     it "reflects a change to the library default" do
       overridable.config.mcp_text_content = :message
-      expect(action_class.resolved_mcp_text_content).to eq(:message)
+      expect(action_class.mcp_text_content).to eq(:message)
     end
 
     it "resolves to the class-level override when set" do
       action_class.mcp_text_content :message
-      expect(action_class.resolved_mcp_text_content).to eq(:message)
+      expect(action_class.mcp_text_content).to eq(:message)
     end
 
     it "validates the override value" do
@@ -105,14 +105,14 @@ RSpec.describe Axn::Configurable do
     it "inherits an override from a parent class" do
       action_class.mcp_text_content :message
       child = Class.new(action_class)
-      expect(child.resolved_mcp_text_content).to eq(:message)
+      expect(child.mcp_text_content).to eq(:message)
     end
 
     it "does not leak an override to a sibling class" do
       action_class.mcp_text_content :message
       mod = overridable.overrides
       sibling = Class.new { include mod }
-      expect(sibling.resolved_mcp_text_content).to eq(:structured)
+      expect(sibling.mcp_text_content).to eq(:structured)
     end
 
     it "does not generate override accessors for non-overridable settings" do
@@ -121,7 +121,7 @@ RSpec.describe Axn::Configurable do
         setting :default_model, default: "x"
       end
       klass = Class.new { include plain.overrides }
-      expect(klass).not_to respond_to(:resolved_default_model)
+      expect(klass).not_to respond_to(:default_model)
     end
 
     it "resolves a callable override value through Setting#resolve" do
@@ -134,7 +134,7 @@ RSpec.describe Axn::Configurable do
 
       klass.enabled(-> { false })
 
-      expect(klass.resolved_enabled).to eq(false)
+      expect(klass.enabled).to eq(false)
     end
 
     it "picks up overridable settings declared after the action includes overrides" do
@@ -144,28 +144,70 @@ RSpec.describe Axn::Configurable do
 
       mod.setting :late, default: :x, overridable: true
 
-      expect(klass.resolved_late).to eq(:x)
+      expect(klass.late).to eq(:x)
       klass.late :y
-      expect(klass.resolved_late).to eq(:y)
+      expect(klass.late).to eq(:y)
     end
 
-    describe "raw_<name>: the override with no config fallback" do
+    describe "<name>?: boolean read of the resolved value" do
+      let(:boolean_mod) do
+        Module.new do
+          extend Axn::Configurable
+          setting :enabled, default: true, callable: true, overridable: true
+        end
+      end
+
+      let(:boolean_class) do
+        mod = boolean_mod.overrides
+        Class.new { include mod }
+      end
+
+      it "reflects the library default when no override is set" do
+        expect(boolean_class.enabled?).to be(true)
+      end
+
+      it "reflects a falsey per-class override" do
+        boolean_class.enabled(false)
+        expect(boolean_class.enabled?).to be(false)
+      end
+
+      it "resolves a callable default at read time" do
+        boolean_mod.config.enabled = -> { false }
+        expect(boolean_class.enabled?).to be(false)
+      end
+
+      it "inherits a parent's override" do
+        boolean_class.enabled(false)
+        expect(Class.new(boolean_class).enabled?).to be(false)
+      end
+
+      it "is not generated for non-overridable settings" do
+        plain = Module.new do
+          extend Axn::Configurable
+          setting :default_model, default: "x"
+        end
+        klass = Class.new { include plain.overrides }
+        expect(klass).not_to respond_to(:default_model?)
+      end
+    end
+
+    describe "<name>_override: the override with no config fallback" do
       it "returns UNSET when no override is set anywhere in the ancestry" do
-        expect(action_class.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+        expect(action_class.mcp_text_content_override).to equal(Axn::Configurable::UNSET)
       end
 
       it "returns the stored override, unresolved, without falling back to config" do
         overridable.config.mcp_text_content = :message
         action_class.mcp_text_content :message
 
-        expect(action_class.raw_mcp_text_content).to eq(:message)
+        expect(action_class.mcp_text_content_override).to eq(:message)
       end
 
       it "inherits a parent's override without falling back to config" do
         action_class.mcp_text_content :message
         child = Class.new(action_class)
 
-        expect(child.raw_mcp_text_content).to eq(:message)
+        expect(child.mcp_text_content_override).to eq(:message)
       end
 
       it "does not leak a sibling's override" do
@@ -173,34 +215,34 @@ RSpec.describe Axn::Configurable do
         mod = overridable.overrides
         sibling = Class.new { include mod }
 
-        expect(sibling.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+        expect(sibling.mcp_text_content_override).to equal(Axn::Configurable::UNSET)
       end
 
-      it "does not generate raw_<name> for non-overridable settings" do
+      it "does not generate <name>_override for non-overridable settings" do
         plain = Module.new do
           extend Axn::Configurable
           setting :default_model, default: "x"
         end
         klass = Class.new { include plain.overrides }
 
-        expect(klass).not_to respond_to(:raw_default_model)
+        expect(klass).not_to respond_to(:default_model_override)
+      end
+
+      it "does not define a raw_<name> alias (renamed to <name>_override)" do
+        expect(action_class).not_to respond_to(:raw_mcp_text_content)
       end
     end
 
     describe "consumer-defined accessor collisions" do
-      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+      it "resolves via Axn's override store even when the class shadows <name>_override" do
         action_class.mcp_text_content :message
-        action_class.define_singleton_method(:raw_mcp_text_content) { :hijacked }
+        action_class.define_singleton_method(:mcp_text_content_override) { :hijacked }
 
-        expect(action_class.resolved_mcp_text_content).to eq(:message)
         expect(action_class.mcp_text_content).to eq(:message)
       end
 
-      it "reads via Axn's resolution even when the class shadows resolved_<name>" do
-        action_class.mcp_text_content :message
-        action_class.define_singleton_method(:resolved_mcp_text_content) { :hijacked }
-
-        expect(action_class.mcp_text_content).to eq(:message)
+      it "does not define a resolved_<name> alias (removed; use the bare reader)" do
+        expect(action_class).not_to respond_to(:resolved_mcp_text_content)
       end
     end
   end
@@ -242,6 +284,30 @@ RSpec.describe Axn::Configurable::Settings do
     expect(klass.new.additional_includes).to eq([])
   end
 
+  describe "predicate readers" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :sandbox_mode, default: -> { true }, callable: true
+        setting :emit_metrics
+      end
+    end
+
+    it "returns true for a truthy resolved value (callable default)" do
+      expect(instance.sandbox_mode?).to be(true)
+    end
+
+    it "returns false for an explicitly-assigned false" do
+      instance.sandbox_mode = false
+      expect(instance.sandbox_mode?).to be(false)
+    end
+
+    it "returns false when the setting resolves to nil" do
+      expect(instance.emit_metrics?).to be(false)
+    end
+  end
+
   describe "overridable: settings" do
     # A stand-in for a live config singleton (what Axn.config is for Axn::Configuration).
     let(:singleton) { klass.new }
@@ -262,18 +328,18 @@ RSpec.describe Axn::Configurable::Settings do
 
     it "resolves to the live singleton value when no override is set" do
       singleton.mode = :b
-      expect(action_class.resolved_mode).to eq(:b)
+      expect(action_class.mode).to eq(:b)
     end
 
     it "reads the singleton value at resolution time, not at declaration (late-bound)" do
-      expect(action_class.resolved_mode).to eq(:a) # singleton's default
+      expect(action_class.mode).to eq(:a) # singleton's default
       singleton.mode = :b
-      expect(action_class.resolved_mode).to eq(:b) # picked up without redefining accessors
+      expect(action_class.mode).to eq(:b) # picked up without redefining accessors
     end
 
     it "resolves to the class-level override when set" do
       action_class.mode :b
-      expect(action_class.resolved_mode).to eq(:b)
+      expect(action_class.mode).to eq(:b)
     end
 
     it "validates the override value at set time" do
@@ -282,13 +348,17 @@ RSpec.describe Axn::Configurable::Settings do
 
     it "inherits an override from a parent class" do
       action_class.mode :b
-      expect(Class.new(action_class).resolved_mode).to eq(:b)
+      expect(Class.new(action_class).mode).to eq(:b)
     end
 
-    it "exposes raw_<name> as the override with no singleton fallback" do
-      expect(action_class.raw_mode).to equal(Axn::Configurable::UNSET)
+    it "exposes <name>? resolving override then live singleton" do
+      expect(action_class.mode?).to be(true) # :a is truthy
+    end
+
+    it "exposes <name>_override as the override with no singleton fallback" do
+      expect(action_class.mode_override).to equal(Axn::Configurable::UNSET)
       action_class.mode :b
-      expect(action_class.raw_mode).to eq(:b)
+      expect(action_class.mode_override).to eq(:b)
     end
 
     it "raises at declaration when overridable: true without a registered source" do
@@ -301,11 +371,10 @@ RSpec.describe Axn::Configurable::Settings do
     end
 
     describe "consumer-defined accessor collisions" do
-      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+      it "resolves via Axn's override store even when the class shadows <name>_override" do
         action_class.mode :b
-        action_class.define_singleton_method(:raw_mode) { :hijacked }
+        action_class.define_singleton_method(:mode_override) { :hijacked }
 
-        expect(action_class.resolved_mode).to eq(:b)
         expect(action_class.mode).to eq(:b)
       end
     end
@@ -314,8 +383,8 @@ RSpec.describe Axn::Configurable::Settings do
       it "resolves the override even when the class shadows every generated accessor" do
         action_class.mode :b
         action_class.define_singleton_method(:mode) { |*| :hijacked }
-        action_class.define_singleton_method(:resolved_mode) { :hijacked }
-        action_class.define_singleton_method(:raw_mode) { :hijacked }
+        action_class.define_singleton_method(:mode?) { :hijacked }
+        action_class.define_singleton_method(:mode_override) { :hijacked }
 
         expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
       end
@@ -414,7 +483,7 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     mod = mcp.overrides
     single = Class.new { include mod }
     single.configure(:mcp) { |c| c.shared = :m }
-    expect(single.resolved_shared).to eq(:m)
+    expect(single.shared).to eq(:m)
   end
 
   it "defers to a base class's own `configure`, exposing axn's config as axn_configure" do
@@ -436,7 +505,7 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     mod = mcp.overrides
     single = Class.new { include mod }
     single.axn_configure(:mcp) { |c| c.shared = :m }
-    expect(single.resolved_shared).to eq(:m)
+    expect(single.shared).to eq(:m)
   end
 
   it "raises when two different sources claim the same config_namespace on one class" do

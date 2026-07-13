@@ -410,11 +410,11 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
     end
 
-    it "honors the override even when the action shadows the resolved_ reader" do
+    it "honors the override even when the action shadows the generated reader" do
       # The adapter resolves through Axn's override store (Configuration.resolve_override_for), not
       # the shadowable generated reader. Here the shadow claims both sources, but the real per-class
       # override is bounded-only — so honoring the override (not the shadow) yields just the dimension tag.
-      action = stub_const("ShadowedResolvedTagSources", Class.new do
+      action = stub_const("ShadowedTagSourcesReader", Class.new do
         include Axn
         async :sidekiq
         expects :company_id
@@ -422,7 +422,7 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
         tag(:company_id) { company_id }
         dimension(:plan) { plan }
         sidekiq_job_tag_sources %i[dimension]
-        def self.resolved_sidekiq_job_tag_sources = %i[tag dimension]
+        def self.sidekiq_job_tag_sources(*) = %i[tag dimension]
         def call; end
       end)
 

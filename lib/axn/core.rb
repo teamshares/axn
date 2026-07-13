@@ -82,7 +82,7 @@ module Axn
         include Core::SchemaReflection
 
         # Per-class config overrides: gives the action class-level accessors
-        # (`<name>` setter, `resolved_<name>`, `raw_<name>`) for every
+        # (`<name>` setter/reader, `<name>?`, `<name>_override`) for every
         # `overridable: true` setting on Axn.config. See Axn::Configurable.
         include Axn::Configuration.overrides
 
