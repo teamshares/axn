@@ -1303,6 +1303,24 @@ RSpec.describe Axn do
       end
     end
 
+    describe "verify-before-commit" do
+      it "does not commit the rejected subfield when the contradiction error is rescued" do
+        klass = build_axn do
+          expects :payload, type: Hash, allow_nil: true
+        end
+
+        # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfield
+        # behind — the contract is validated on the prospective config set BEFORE the configs are committed.
+        expect do
+          klass.class_eval do
+            expects :id, on: "payload.meta", type: Integer
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant/)
+
+        expect(klass.subfield_configs.map(&:field)).not_to include(:id)
+      end
+    end
+
     describe "family 1: nil-tolerant ancestor + required descendant" do
       it "raises when a nil-tolerant top-level parent has a required deep subfield" do
         expect do

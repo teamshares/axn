@@ -165,16 +165,19 @@ module Axn
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # NOTE: avoid <<, which would update value for parents and children
-            self.subfield_configs += configs
-
-            # Reject contradiction-only contracts (families 1–3) once the new configs are in the tree. Built
-            # fresh (not cached) — this is class-load time, off the runtime hot path. Family 4 is a local
-            # check in _parse_subfield_configs.
-            tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs)
+            # Reject contradiction-only contracts (families 1–3) BEFORE committing the new configs, so a
+            # rescued ArgumentError (a Rails reload path, metaprogrammed class construction, a test) can't
+            # leave the class carrying — and validating/reflecting — a subfield it just rejected. The tree
+            # is built from the PROSPECTIVE set (committed configs plus the new batch); only after `detect`
+            # is clean do we commit. Built fresh (not cached) — class-load time, off the runtime hot path.
+            # Family 4 is a local check in _parse_subfield_configs.
+            tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs + configs)
             if (contradiction = Axn::Reflection::SubfieldContradictions.detect(tree))
               raise ArgumentError, contradiction.message
             end
+
+            # NOTE: avoid <<, which would update value for parents and children
+            self.subfield_configs += configs
           end
         end
 
