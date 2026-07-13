@@ -50,7 +50,9 @@ class ChargeCompany
 end
 ```
 
-The block form is what you reach for when configuring **namespaced** settings contributed by an extension (below).
+The block form is what you reach for when configuring **namespaced** settings contributed by an extension (below). For the `:core` namespace the schema is always known, so a typo'd setter (`c.sidekiq_job_tag_sorces = …`) fails at class definition just as the flat setter would.
+
+If a base class you inherit from already defines its own class-level `configure`, Axn leaves it untouched and exposes its own writer as `axn_configure` instead — always available regardless of the base.
 
 ### Namespaced config for extensions
 
@@ -67,7 +69,7 @@ end
 
 Each namespace's config is stored independently, so composing adapters never clobber one another.
 
-`configure` is **tolerant**: you can set config for a namespace whose extension isn't loaded in the current process — useful for a reusable tool that declares its behavior for several transports in one place. The value sits inert until that extension reads it. Because it isn't validated against the extension's schema until then, a bad value surfaces when the extension first resolves it, not at the `configure` call.
+When an extension is loaded and its overrides are in play, its setters are validated eagerly. When they aren't, `configure` is **tolerant**: you can set config for a namespace whose extension isn't loaded in the current process — useful for a reusable tool that declares its behavior for several transports in one place. The value sits inert until that extension reads it, and is validated against the extension's schema then, so a bad value surfaces when the extension first resolves it rather than at the `configure` call.
 
 Global (non-per-class) config stays on each module — `Axn.configure` for Axn's own settings, `Axn::MCP.configure` for MCP's, and so on. There is no single combined entry point, though nothing stops you from keeping the calls together in one initializer.
 

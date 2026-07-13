@@ -61,16 +61,26 @@ module Axn
               # Breadcrumb before extending, while `base`'s own lookup still reflects only its
               # ancestors (not yet axn's accessors), so the check sees a genuine external definition.
               config_source.send(:_warn_on_shadowed_overrides, base)
-              # `configure` is a generic name a non-axn base class may already own as its own
-              # class-level DSL. Ruby places an extended module above the superclass chain, so an
-              # unconditional extend would shadow that base hook and reroute its `configure(...)`
-              # calls into axn's namespace writer. Defer instead — the same PRO-2875 discipline the
-              # Naming/SchemaReflection generic names use. The flat override accessors and the
-              # collision-proof `resolve_override_for` path still work; only the block form is
-              # unavailable on such a base.
+
+              # Record which config source owns each namespace on this class, so the tolerant
+              # `configure` writer can validate a setter eagerly when the namespace is registered
+              # (schema known) and stay tolerant only when it isn't (adapter not loaded / not included).
+              config_source.send(:_register_overrides_on, base)
+
+              # `axn_configure` is the always-available, collision-proof writer. Bare `configure` is a
+              # generic name a non-axn base class may already own; Ruby places an extended module above
+              # the superclass chain, so installing it unconditionally would shadow that base hook and
+              # reroute its `configure(...)` calls into axn's writer. Install the ergonomic bare alias
+              # only when the name is free — same PRO-2875 discipline the Naming/SchemaReflection generic
+              # names use — and always leave `axn_configure` as the guaranteed way to reach axn's config.
+              base.extend(ClassConfigWriter)
               shadowed = defined?(Axn::Core::MethodShadowing) &&
                          Axn::Core::MethodShadowing.externally_defined?(base, :configure)
-              base.extend(ClassConfigWriter) unless shadowed
+              unless shadowed
+                base.define_singleton_method(:configure) do |namespace = :core, &block|
+                  axn_configure(namespace, &block)
+                end
+              end
               base.extend(methods_module)
             end
           end
@@ -110,6 +120,16 @@ module Axn
         _override_resolvers.fetch(name.to_sym).call(klass)
       end
 
+      # Eager validation for the `configure` writer when this source owns the namespace being
+      # written: rejects a setter name that isn't an overridable setting (a typo that would
+      # otherwise store silently and never resolve), then validates the value against the setting.
+      def _validate_override_setter!(name, value)
+        setting = _override_settings[name.to_sym]
+        raise ArgumentError, "unknown overridable setting #{name.inspect} for namespace #{config_namespace.inspect}" unless setting
+
+        setting.validate!(value)
+      end
+
       private
 
       # Discoverability breadcrumb for the PRO-2875 shadowing class, applied to override accessors.
@@ -137,6 +157,22 @@ module Axn
         @_override_methods_module ||= Module.new
       end
 
+      # Overridable Setting objects by name — the schema `_validate_override_setter!` checks against.
+      def _override_settings
+        @_override_settings ||= {}
+      end
+
+      # Records this source as the owner of its namespace on `base`, so `NamespaceWriter` can find
+      # the schema (and validate eagerly) for a namespace whose overrides the class actually included.
+      def _register_overrides_on(base)
+        registry = if base.instance_variable_defined?(:@_axn_config_sources)
+                     base.instance_variable_get(:@_axn_config_sources)
+                   else
+                     base.instance_variable_set(:@_axn_config_sources, {})
+                   end
+        registry[config_namespace] = self
+      end
+
       # Per-setting resolver lambdas, keyed by name — the collision-proof path
       # `resolve_override_for` dispatches through.
       def _override_resolvers
@@ -156,6 +192,7 @@ module Axn
         name = setting.name
         namespace = config_namespace
         @_overridable_settings_declared = true
+        _override_settings[name] = setting
 
         raw_lookup = lambda do |start|
           klass = start
@@ -213,22 +250,26 @@ module Axn
     # source-agnostic: one method serves every namespace, so extending it twice (a tool
     # composing several adapters) is idempotent.
     module ClassConfigWriter
-      # Sets per-class config for `namespace` via the yielded writer. No namespace ⇒
-      # `:core` (axn's own overridable settings). The writer is a tolerant bag: it stores
-      # any `<setting>=` blindly, whether or not an adapter for `namespace` is loaded, so
-      # a library can pre-declare `configure(:mcp) { … }` for an adapter absent from this
-      # process; the value sits inert until that adapter resolves it. Yielded-receiver +
-      # assignment mirrors `Axn.configure { |c| … }`.
-      def configure(namespace = :core)
+      # Sets per-class config for `namespace` via the yielded writer. No namespace ⇒ `:core` (axn's
+      # own overridable settings). Always available as `axn_configure`; `configure` is the ergonomic
+      # alias installed unless a base class already owns that name (see the `overrides` include hook).
+      #
+      # When the namespace's source is registered on this class (its `.overrides` were included, so
+      # the schema is known — always true for `:core`), setter names and values are validated eagerly,
+      # so a typo fails at class definition like the flat setter would. Otherwise the writer is
+      # tolerant: it stores any `<setting>=` blindly, so a library can pre-declare `configure(:mcp) { … }`
+      # for an adapter absent from this process — the value sits inert until that adapter resolves it
+      # (and is validated then). Yielded-receiver + assignment mirrors `Axn.configure { |c| … }`.
+      def axn_configure(namespace = :core)
         writer = NamespaceWriter.new(self, namespace)
         yield(writer) if block_given?
         writer
       end
     end
 
-    # The tolerant bag `configure` yields. Each `<setting>=` writes straight into the
-    # class's `[namespace][setting]` override slot with no validation — the owning config
-    # source validates its slice at read (see `_define_override_methods`).
+    # The bag `axn_configure`/`configure` yields. Each `<setting>=` writes into the class's
+    # `[namespace][setting]` override slot, validating first through the namespace's registered
+    # source when there is one (else storing tolerantly for a later validate-on-read).
     class NamespaceWriter
       def initialize(klass, namespace)
         @klass = klass
@@ -244,9 +285,30 @@ module Axn
         return super unless str.end_with?("=")
 
         key = str.delete_suffix("=").to_sym
+        value = args.first
+        _registered_source&._validate_override_setter!(key, value)
+
         store = @klass.instance_variable_get(:@_axn_config_overrides) ||
                 @klass.instance_variable_set(:@_axn_config_overrides, {})
-        (store[@namespace] ||= {})[key] = args.first
+        (store[@namespace] ||= {})[key] = value
+      end
+
+      private
+
+      # The config source that owns `@namespace` on `@klass` (or an ancestor), if its overrides were
+      # included — nil when the namespace is unregistered (adapter not loaded), which keeps the write tolerant.
+      def _registered_source
+        klass = @klass
+        while klass.is_a?(Module)
+          if klass.instance_variable_defined?(:@_axn_config_sources)
+            registry = klass.instance_variable_get(:@_axn_config_sources)
+            return registry[@namespace] if registry.key?(@namespace)
+          end
+          break unless klass.is_a?(Class) && klass.superclass
+
+          klass = klass.superclass
+        end
+        nil
       end
     end
 

@@ -368,14 +368,25 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     expect(ruby_llm.resolve_override_for(tool, :shared)).to eq(:r)
   end
 
-  it "stores config for an unloaded namespace inertly, leaving loaded ones untouched" do
+  it "stores config for an unregistered namespace inertly, leaving loaded ones untouched" do
     expect { tool.configure(:not_loaded) { |c| c.anything = :x } }.not_to raise_error
     expect(mcp.resolve_override_for(tool, :shared)).to eq(:mcp_default)
   end
 
-  it "defers validation of a configure-written value until it is resolved" do
-    expect { tool.configure(:mcp) { |c| c.shared = :bogus } }.not_to raise_error
-    expect { mcp.resolve_override_for(tool, :shared) }.to raise_error(ArgumentError, /shared/)
+  it "validates eagerly when the namespace's source is registered on the class" do
+    expect { tool.configure(:mcp) { |c| c.shared = :bogus } }.to raise_error(ArgumentError, /shared/)
+  end
+
+  it "rejects an unknown setter name for a registered namespace" do
+    expect { tool.configure(:mcp) { |c| c.no_such_setting = :x } }.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "stores an unregistered namespace tolerantly, validating only when the adapter resolves it" do
+    mod = ruby_llm.overrides # gives the class `configure`, but does NOT register :mcp
+    plain = Class.new { include mod }
+
+    expect { plain.configure(:mcp) { |c| c.shared = :bogus } }.not_to raise_error
+    expect { mcp.resolve_override_for(plain, :shared) }.to raise_error(ArgumentError, /shared/)
   end
 
   it "agrees with the flat accessor on the same namespace slot" do
@@ -385,14 +396,26 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     expect(single.resolved_shared).to eq(:m)
   end
 
-  it "defers to a base class's own `configure` instead of shadowing it" do
+  it "defers to a base class's own `configure`, exposing axn's config as axn_configure" do
     base = Class.new do
       def self.configure(*args) = "base:#{args.inspect}"
     end
     mod = mcp.overrides
     sub = Class.new(base) { include mod }
 
+    # Bare `configure` still reaches the base's own hook, untouched.
     expect(sub.configure(:anything)).to eq("base:[:anything]")
+
+    # axn_configure is always available as the collision-proof form.
+    sub.axn_configure(:mcp) { |c| c.shared = :m }
+    expect(mcp.resolve_override_for(sub, :shared)).to eq(:m)
+  end
+
+  it "exposes axn_configure alongside configure on an unshadowed action" do
+    mod = mcp.overrides
+    single = Class.new { include mod }
+    single.axn_configure(:mcp) { |c| c.shared = :m }
+    expect(single.resolved_shared).to eq(:m)
   end
 
   it "raises when config_namespace is declared after an overridable setting" do
