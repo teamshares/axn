@@ -1,10 +1,16 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/subfields"
+require "axn/reflection/resolved_subfields"
 
 module Axn
   module Core
     module ContractForSubfields
+      # The per-class cache slot for the resolved-subfield artifact: the config arrays it was built
+      # from plus the built value. Validity is decided by comparing the arrays' IDENTITY, never the
+      # value — see ClassMethods#_resolved_subfields.
+      ResolvedSubfieldsCacheEntry = Data.define(:fields, :subfields, :value)
+
       def self.included(base)
         base.class_eval do
           class_attribute :subfield_configs, default: []
@@ -26,6 +32,26 @@ module Axn
       end
 
       module ClassMethods
+        # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
+        # the class. Cache validity is decided by IDENTITY of the two config arrays: both are
+        # copy-on-write class_attributes mutated exclusively via `+=`, so any declaration — on this
+        # class or a subclass — mints new arrays and the stale entry misses on `equal?`. That gives
+        # invalidation with no explicit hooks (a future mutation site is auto-covered), no
+        # nil-memoization footgun (validity never consults the value), and free copy-on-write
+        # subclass inheritance (an undeclaring subclass reads the superclass's arrays and builds an
+        # identical artifact once). The artifact is deep-frozen and published in a single ivar
+        # write, so a first-call race between threads is benign.
+        def _resolved_subfields
+          fields = internal_field_configs
+          subfields = subfield_configs
+          cached = @_axn_resolved_subfields
+          return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
+
+          value = Axn::Reflection::ResolvedSubfields.build(fields, subfields)
+          @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
+          value
+        end
+
         def _expects_subfields( # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
           *fields,
           on:,

@@ -64,9 +64,13 @@ module Axn
       # a non-object parent (`type: Array`, a mixed union) has no JSON-object representation, so it's
       # omitted — surfaced via dropped_deep_subfields / the input_schema warning. A depth-1 subfield
       # under such a parent is silently omitted (the parent keeps its declared type), as ever.
-      def build_input(field_configs, subfield_configs = [])
-        tree = SubfieldTree.build(field_configs, Array(subfield_configs))
-        ann = derive_annotations(tree.roots)
+      #
+      # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
+      # a repeated path skip the tree build + annotation derivation; it must have been built from the
+      # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
+      def build_input(field_configs, subfield_configs = [], resolved: nil)
+        tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
+        ann = resolved&.annotations || derive_annotations(tree.roots)
         properties = {}
         required = []
 
@@ -109,8 +113,8 @@ module Axn
       # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
       # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
       # inspects declared configs only).
-      def dropped_deep_subfields(field_configs, subfield_configs)
-        SubfieldTree.build(field_configs, Array(subfield_configs)).dropped
+      def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
+        (resolved || SubfieldTree.build(field_configs, Array(subfield_configs))).dropped
       end
 
       # Whether a field's declared type can be represented as a JSON object (so its subfields can nest

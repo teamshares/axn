@@ -30,7 +30,7 @@ module Axn
 
       module InputSchemaMethod
         def input_schema
-          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs).tap do
+          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields).tap do
             _warn_dropped_deep_subfields
           end
         end
@@ -43,7 +43,7 @@ module Axn
         def _warn_dropped_deep_subfields
           return if @_axn_deep_subfield_warning_emitted
 
-          dropped = Axn::Reflection::Schema.dropped_deep_subfields(internal_field_configs, subfield_configs)
+          dropped = _resolved_subfields.dropped
           return if dropped.empty?
 
           @_axn_deep_subfield_warning_emitted = true
