@@ -483,12 +483,10 @@ module Axn
     def apply_inbound_preprocessing_for_subfields!
       @action_class.send(:subfield_configs).each do |config|
         next unless config.preprocess
+        next unless (path = _resolved_path_for(config))
 
-        parent_field = _wire_parent_key(config.on)
-        subfield = config.field
-        parent_value = @context.provided_data[parent_field]
-
-        current_subfield_value = Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
+        parent_value = @context.provided_data[path.wire_path.first]
+        current_subfield_value = Core::FieldResolvers.resolve(type: :extract, field: _below_root(path), provided_data: parent_value)
         preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::PreprocessingError,
           message: ->(_field, error) { "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{error.message}" },
@@ -501,7 +499,7 @@ module Axn
         # a preprocess must NOT synthesize the parent into existence (unlike a subfield `default:`, which
         # does). Materializing here would make an absent parent present — masking a required parent, and
         # tripping shape/type validation the schema then can't mirror.
-        update_subfield_value(parent_field, subfield, preprocessed_value)
+        update_subfield_value(path, preprocessed_value)
       end
     end
 
@@ -633,8 +631,7 @@ module Axn
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
 
-        parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
-        msg = _model_record_id_mismatch(source: parent, field: config.field)
+        msg = _model_record_id_mismatch(source: _resolved_parent_value(config.on), field: config.field)
         mismatches << msg if msg
       end
 
@@ -668,13 +665,10 @@ module Axn
 
     def validate_subfields_contract!
       @action_class.send(:subfield_configs).each do |config|
-        parent_field = config.on
-        subfield = config.field
-
         Axn::Validation::Subfields.validate!(
-          field: subfield,
+          field: config.field,
           validations: config.validations,
-          source: Axn::Core::ContractForSubfields.resolve_parent(@action, parent_field),
+          source: _resolved_parent_value(config.on),
           exception_klass: InboundValidationError,
           action: @action,
           reader: config.reader_as,
@@ -718,18 +712,17 @@ module Axn
     def apply_defaults_for_subfields!
       @action_class.send(:subfield_configs).each do |config|
         next unless config.applied_default?
+        next unless (path = _resolved_path_for(config))
 
-        parent_field = _wire_parent_key(config.on)
-        subfield = config.field
-        parent_value = @context.provided_data[parent_field]
+        parent_value = @context.provided_data[path.wire_path.first]
 
-        next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
+        next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: _below_root(path), provided_data: parent_value).nil?
 
-        # A nil non-object parent can't hold a named subfield — materialization refuses to inject `{}` (it
-        # would fail the parent's type), so the subfield is absent. Skip evaluating/writing its default: a
+        # A nil non-object root can't hold a named subfield — materialization refuses to inject `{}` (it
+        # would fail the root's type), so the subfield is absent. Skip evaluating/writing its default: a
         # Proc default would run its side effects for nothing, and a dotted default would write into nil and
-        # raise. (A present parent isn't re-materialized — the `&&` short-circuits before the call.)
-        next if parent_value.nil? && !_materialize_object_parent!(parent_field)
+        # raise. (A present root isn't re-materialized — the `&&` short-circuits before the call.)
+        next if parent_value.nil? && !_materialize_object_root!(path)
 
         default_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::DefaultAssignmentError,
@@ -738,7 +731,7 @@ module Axn
         ) do
           config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
         end
-        update_subfield_value(parent_field, subfield, default_value)
+        update_subfield_value(path, default_value)
       end
     end
 
@@ -806,62 +799,55 @@ module Axn
     # =========================================================================
     # SUBFIELD HELPERS
     # =========================================================================
+    # Subfield passes are driven by each config's ResolvedPath from the per-class cached
+    # SubfieldTree: the tree already translated `on:` reader aliases and dotted segments into the
+    # full provided_data wire path once, at build.
 
-    # Translate an aliased top-level `on:` parent back to its wire key (see
-    # Contract::ClassMethods#_wire_parent_key) so the default/preprocess mutation paths land on the
-    # caller-supplied provided_data key.
-    def _wire_parent_key(on) = @action_class._wire_parent_key(on)
-
-    # A subfield's default-able parent is always a top-level field (nested/dotted/ambient parents reject
-    # default:), so its config is found by wire key among internal_field_configs.
-    def _parent_config(parent_field)
-      @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+    def _resolved_path_for(config)
+      @action_class._resolved_subfields.index[config]
     end
 
-    # Materialize a nil parent as `{}` so a subfield default has somewhere to land — but only when `{}`
-    # satisfies the parent's declared type. An untyped parent qualifies; a type that admits a Hash
-    # (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g. `type: Array`) does NOT —
-    # injecting `{}` there would fail the parent's own type validator and turn an optional-absent parent
-    # into a validation error. Returns whether the parent was materialized (false = left nil, non-object).
-    def _materialize_object_parent!(parent_field)
-      return false unless _parent_object_shaped?(parent_field)
+    # The wire segments below the top-level root, as an Extract-compatible dotted path.
+    def _below_root(path) = path.wire_path[1..].join(".")
 
-      @context.provided_data[parent_field] = {}
+    # Materialize a nil top-level root as `{}` so a subfield default has somewhere to land — but only
+    # when `{}` satisfies the root's declared type (Schema.object_shaped?: untyped, Hash/`:params`, or
+    # a union including one). A non-object type (e.g. `type: Array`) does NOT qualify — injecting `{}`
+    # there would fail the root's own type validator and turn an optional-absent root into a
+    # validation error. Returns whether the root was materialized (false = left nil, non-object).
+    def _materialize_object_root!(path)
+      root_config = path.ancestors.first.first.config
+      return false unless Axn::Reflection::Schema.object_shaped?(root_config)
+
+      @context.provided_data[path.wire_path.first] = {}
       true
     end
 
-    # Whether the parent's declared type admits a Hash (so `{}` is a valid value to synthesize into). An
-    # untyped parent qualifies; Hash/`:params` (or a union including one) qualifies; anything else does not.
-    def _parent_object_shaped?(parent_field)
-      type_opt = _parent_config(parent_field)&.validations&.dig(:type)
-      type_opt.nil? ||
-        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
+    # The parent value a subfield validates against, resolved once per distinct `on:` recipe per
+    # call — two configs with the same `on:` share the identical resolution by definition (root
+    # reader public_send + raw Extract digs; see ContractForSubfields.resolve_parent), so the memo
+    # is a pure dedup of repeated digs. Only populated during the inbound-validation phase, after
+    # every provided_data mutation (coercion/preprocess/defaults) has already run.
+    def _resolved_parent_value(on)
+      memo = (@_resolved_parent_values ||= {})
+      key = on.to_s
+      memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, on) }
     end
 
-    def update_subfield_value(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field]
+    def update_subfield_value(path, new_value)
+      root_key = path.wire_path.first
+      below = path.wire_path[1..]
+      parent_value = @context.provided_data[root_key]
 
-      if Internal::SubfieldPath.nested?(subfield)
-        update_nested_subfield_value(parent_field, subfield, new_value)
+      if below.size > 1
+        target = Internal::SubfieldPath.navigate_to_parent(parent_value, below)
+        target[below.last] = new_value
       elsif parent_value.is_a?(Hash)
-        update_simple_hash_subfield(parent_field, subfield, new_value)
-      elsif parent_value.respond_to?("#{subfield}=")
-        Internal::SubfieldPath.update_object(parent_value, subfield, new_value)
+        # Copy-on-write so the caller's own hash is never mutated by axn's write-back.
+        @context.provided_data[root_key] = parent_value.merge(below.last => new_value)
+      elsif parent_value.respond_to?("#{below.last}=")
+        Internal::SubfieldPath.update_object(parent_value, below.last, new_value)
       end
-    end
-
-    def update_simple_hash_subfield(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field].dup
-      parent_value[subfield] = new_value
-      @context.provided_data[parent_field] = parent_value
-    end
-
-    def update_nested_subfield_value(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field]
-      path_parts = Internal::SubfieldPath.parse(subfield)
-
-      target_parent = Internal::SubfieldPath.navigate_to_parent(parent_value, path_parts)
-      target_parent[path_parts.last.to_sym] = new_value
     end
   end
 end
