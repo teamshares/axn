@@ -676,6 +676,10 @@ module Axn
       return nil if record.id.to_s == raw_id.to_s
 
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
+    rescue Axn::ContractViolation::UnextractableError
+      # A malformed source can't supply a record/id pair to compare — its own validation classifies
+      # the bad value; there is no mismatch to report.
+      nil
     end
 
     def apply_defaults!(direction)

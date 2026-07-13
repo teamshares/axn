@@ -859,6 +859,24 @@ RSpec.describe Axn do
           expect(result.parent).to eq({ meta: [] })
         end
 
+        it "classifies a malformed parent under a model: subfield (the model reader reads it as absent)" do
+          model = Struct.new(:id) do
+            def self.find(id) = new(id)
+            def self.name = "FakeMalformedModel"
+          end
+
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :company, on: :payload, model: { klass: model }
+
+            def call = nil
+          end
+
+          result = action.call(payload: "bad")
+          expect(result.exception).to be_a(Axn::InboundValidationError)
+          expect(result.exception.message).to include("Payload is not a Hash")
+        end
+
         it "settles user-facing when the malformed parent is user_facing (stranded subfield suppressed)" do
           action = build_axn do
             expects :payload, type: Hash, user_facing: "Payload must be an object"

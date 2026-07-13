@@ -19,7 +19,7 @@ module Axn
         attr_reader :field, :options, :provided_data
 
         def provided_value
-          @provided_value ||= provided_data[field]
+          @provided_value ||= _read(field)
         end
 
         def derive_value
@@ -55,7 +55,16 @@ module Axn
         end
 
         def id_value
-          @id_value ||= provided_data[id_field]
+          @id_value ||= _read(id_field)
+        end
+
+        # A source that can't answer named keys (e.g. a String where a Hash was declared) reads as
+        # absent — the source's own type validation classifies the malformed value (PRO-2857
+        # spirit), rather than a raw TypeError from the model lookup pre-empting the contract.
+        def _read(key)
+          provided_data[key]
+        rescue TypeError, NoMethodError
+          nil
         end
       end
     end
