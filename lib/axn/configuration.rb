@@ -43,6 +43,18 @@ module Axn
             overridable: true,
             validate: ->(v) { v.is_a?(Array) && v.all? { |s| SIDEKIQ_JOB_TAG_SOURCES.include?(s) } }
 
+    # Declares an action (or, set globally, a whole app) as transport-facing: every top-level field
+    # with a coercible declared type behaves as if it opted into `coerce:` (wire string → Ruby object
+    # before validation), without annotating each field. The operational counterpart to the per-field
+    # `coerce:` contract tool — for the common case of a controller/adapter handing an action a hash of
+    # wire strings (see PRO-2884). Default false (strict): a global default-on would silently weaken
+    # type strictness for in-process Ruby callers, for whom a String where a Date is declared is a bug.
+    # A field's own `coerce:` always wins over this flag (explicit `coerce: false` opts back out).
+    setting :coerce_input_types,
+            default: false,
+            overridable: true,
+            validate: ->(v) { [true, false].include?(v) }
+
     attr_writer :logger, :env, :on_exception, :rails
 
     # Optional callable returning a Hash of ambient context data (e.g. from request-local state).

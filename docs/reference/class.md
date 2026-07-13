@@ -280,6 +280,37 @@ The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, and `Fl
 
 Date/time coercion accepts any **ISO-8601-shaped** wire string — a `YYYY-MM-DD` date optionally followed by a time (`T` or space separator, optional seconds/fraction, optional `Z`/`±HH:MM` offset). That covers JSON/RFC3339 timestamps, a Rails `date_field` (`2026-07-08`), a `datetime-local` (`2026-07-08T14:30`, no offset — read in the local zone), and Rails' `Time#to_s` (`2026-07-08 14:30:00 +0000`). Ambiguous or partial input that Ruby's `Date.parse`/`Time.parse` would otherwise guess against today's date (`"12"`, `"01/02/2026"`, a bare `14:30` time) is left uncoerced and fails validation rather than becoming a silently-wrong value.
 
+##### Coercing a whole action: `coerce_input_types`
+
+Per-field `coerce:` is the right tool for a single wire-shaped field. For an action that is _entirely_ transport-facing — a controller handing it a params hash of strings, an adapter decoding JSON — annotating every field is noise. The `coerce_input_types` config setting declares "treat all inbound values here as wire data": when on, every field with a coercible declared type behaves as if it set `coerce: true`.
+
+```ruby
+# Whole app (a consumer's informed choice — e.g. a pure-API service):
+Axn.config.coerce_input_types = true
+
+# One action (or a base class its controller-facing actions inherit):
+class CreateThing
+  include Axn
+  configure { |c| c.coerce_input_types = true }
+  expects :starts_on, type: Date   # "2026-07-08" is now coerced, no per-field coerce:
+end
+```
+
+The default is **off** (`false`), and deliberately so: `type: Date` is a contract assertion, and a string where a `Date` is declared is usually a bug for an in-process Ruby caller — coercing it globally by default would mask that. You opt in where you know the input crossed a wire.
+
+A field's own `coerce:` always wins over the flag, so a mixed action can opt one field back out with the explicit form:
+
+```ruby
+class ImportRow
+  include Axn
+  configure { |c| c.coerce_input_types = true }
+  expects :on, type: Date                          # coerced
+  expects :raw, type: { klass: Date, coerce: false }  # left strict despite the flag
+end
+```
+
+Scope matches `coerce:` itself — **top-level `expects` fields only** today (non-coercible types like `String`/`Hash` are untouched; subfields are not reached). When subfield coercion is added in a future release, `coerce_input_types` will extend to subfields automatically.
+
 ## `.success` and `.error`
 
 The `success` and `error` declarations allow you to customize the `error` and `success` messages on the returned result.
