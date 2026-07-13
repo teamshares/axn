@@ -33,14 +33,17 @@ module Axn
       # collision, nil-tolerant model + defaulted subfield) live in this walk; the dotted-name model:
       # rejection is a local check in ContractForSubfields.
       def walk(node, nil_tolerant_model_ancestor:, carried_members:)
-        # A nil-tolerant model ancestor with an applied default anywhere in its subtree: the default
-        # materializes `{}` under the model's wire key BEFORE the default runs, which ModelValidator rejects
-        # — so the model can never be omitted and its allow_nil: is dead weight producing a confusing failure.
-        if nil_tolerant_model_ancestor && (defaulted = applied_default_config(node))
-          return defaulted_subfield_under_nil_tolerant_model(nil_tolerant_model_ancestor, defaulted)
-        end
+        # The outermost nil-tolerant model at or above this node — an ancestor if one is carried, else one
+        # declared on THIS node (a same-wire-key sibling can merge a `model:` config and a defaulted config
+        # onto one node, so the model may first appear here alongside the default it conflicts with).
+        model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
-        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
+        # A nil-tolerant model with an applied default at or below it: on omission the default materializes a
+        # non-record value under the model's wire key BEFORE the model resolves, which ModelValidator rejects
+        # — so the model can never be omitted and its allow_nil: is dead weight producing a confusing failure.
+        if model && (defaulted = applied_default_config(node))
+          return defaulted_under_nil_tolerant_model(model, defaulted)
+        end
 
         node.children.each do |key, child|
           members = Schema.shape_members_at(node.configs + carried_members, key)
@@ -57,7 +60,7 @@ module Axn
           # Only an implicit node stands in for the object-shaped members it merged into — carry them so a
           # deeper member-of-a-member collision is caught. An explicit child brings its own configs' members.
           child_carried = child.implicit? ? members.select { |m| Schema.nestable_as_object?(m) } : []
-          found = walk(child, nil_tolerant_model_ancestor: child_model, carried_members: child_carried)
+          found = walk(child, nil_tolerant_model_ancestor: model, carried_members: child_carried)
           return found if found
         end
         nil
@@ -138,13 +141,13 @@ module Axn
         )
       end
 
-      def defaulted_subfield_under_nil_tolerant_model(model_ancestor, defaulted)
+      def defaulted_under_nil_tolerant_model(model, defaulted)
         Contradiction.new(
-          message: "expects :#{model_ancestor.field} is a nil-tolerant model: (allow_nil:) but " \
-                   "#{label(defaulted)} carries a default — the default materializes an empty object under " \
-                   ":#{model_ancestor.field}, which the model validator rejects as not a record, so " \
-                   ":#{model_ancestor.field} can never be omitted. Drop allow_nil: on :#{model_ancestor.field}, " \
-                   "or drop the subfield default.",
+          message: "expects :#{model.field} is a nil-tolerant model: (allow_nil:) but " \
+                   "#{label(defaulted)} carries a default — on omission the default materializes a non-record " \
+                   "value under :#{model.field}, which the model validator rejects as not a record, so " \
+                   ":#{model.field} can never be omitted. Drop allow_nil: on :#{model.field}, " \
+                   "or drop the default.",
         )
       end
 

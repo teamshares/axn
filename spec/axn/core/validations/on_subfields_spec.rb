@@ -1446,8 +1446,8 @@ RSpec.describe Axn do
         end.to raise_error(
           ArgumentError,
           "expects :company is a nil-tolerant model: (allow_nil:) but :name (on: company) carries a default " \
-          "— the default materializes an empty object under :company, which the model validator rejects as " \
-          "not a record, so :company can never be omitted. Drop allow_nil: on :company, or drop the subfield default.",
+          "— on omission the default materializes a non-record value under :company, which the model validator " \
+          "rejects as not a record, so :company can never be omitted. Drop allow_nil: on :company, or drop the default.",
         )
       end
 
@@ -1483,6 +1483,33 @@ RSpec.describe Axn do
             expects :company_id, default: 1
             expects :company, model: FakeModel, allow_nil: true
             expects :name, on: :company, default: "Acme"
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+      end
+
+      it "raises when a default is merged onto the model's own node via a same-wire-key sibling" do
+        # `:company` (model:, allow_nil:) resolves to wire path payload.org.company; the dotted-name
+        # `"org.company"` (on: :payload) resolves to the SAME wire node and carries a default. The default
+        # and the model land on one tree node, so on omission the default populates :company itself before
+        # the model resolver — ModelValidator rejects the non-record value. The nil-tolerant model is first
+        # discovered on this very node (no carried ancestor), so the walk must still catch it here.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :company, on: "payload.org", model: FakeModel, allow_nil: true
+            expects "org.company", on: :payload, default: "x"
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+      end
+
+      it "raises when a single nil-tolerant model subfield carries its own non-record default" do
+        # One subfield config that is both model: (allow_nil:) and defaulted to a non-record scalar: the
+        # model and its conflicting default live on the SAME node (and same config). On omission the default
+        # becomes the model's value, which ModelValidator rejects. allow_nil: is dead weight.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :company, on: :payload, model: FakeModel, allow_nil: true, default: "x"
           end
         end.to raise_error(ArgumentError, /nil-tolerant model:/)
       end
