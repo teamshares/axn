@@ -3538,47 +3538,155 @@ RSpec.describe Axn::Reflection::Schema do
         expect(bar[:required]).to include("baz")
       end
 
-      # A non-object/mixed-union shape member colliding with an implicit deep intermediate is no longer
-      # dropped+warned: it now raises ArgumentError at declaration (PRO-2877's non-object shape member
-      # collision). The canonical scalar and mixed-union cases are covered by subfield_tree_spec.rb's
-      # "raises at declaration when an implicit intermediate collides with a[n] ... shape member" examples
-      # and on_subfields_spec.rb's "non-object shape member" examples — no drop+warn behavior survives to
-      # characterize here.
-
-      # Reached via a dotted `on:` chain ("payload.bar") rather than a dotted field name — a distinct
-      # route to the same implicit-intermediate collision, so still worth its own coverage.
-      it "raises at declaration when a dotted on: chain collides with a mixed-union shape member, regardless of the deep subfield's own optionality" do
-        expect do
-          Class.new do
-            include Axn
-            expects :payload, type: Hash do
-              field :bar, type: [Hash, Array], optional: true
-            end
-            expects :baz, on: "payload.bar", type: String
+      it "leaves a NON-object shape member untouched and drops the colliding deep config (warned via dropped_deep_subfields)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: String
           end
-        end.to raise_error(ArgumentError, /:baz \(on: payload\.bar\) nests beneath shape member :bar on :payload/)
+          expects "bar.baz", on: :payload, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        expect do
-          Class.new do
-            include Axn
-            expects :payload, type: Hash do
-              field :bar, type: [Hash, Array], optional: true
-            end
-            expects :baz, on: "payload.bar", type: String, optional: true
-          end
-        end.to raise_error(ArgumentError, /:baz \(on: payload\.bar\) nests beneath shape member :bar on :payload/)
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(bar).to include(type: "string")
+        expect(bar).not_to have_key(:properties)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz"])
       end
 
-      # The scalar-member variant of the dotted `on:` chain collision (same coverage as the mixed-union
-      # case above, distinct member type) is covered by subfield_tree_spec.rb / on_subfields_spec.rb's
-      # "non-object shape member" examples; the drop+warn / forced-required-property behavior these used to
-      # characterize no longer exists (declaration raises first).
+      it "leaves a mixed-union shape member untouched and drops the colliding deep config (emission and drop pass agree)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array]
+          end
+          expects "bar.baz", on: :payload, type: String
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      # A member-of-a-member collision (an implicit intermediate colliding with a nested member of an
-      # already-carried member) is covered by subfield_tree_spec.rb's "raises at declaration when an
-      # implicit intermediate collides with a[n] ... member of a member" examples (PRO-2877's non-object
-      # shape member collision) — the scalar and mixed-union variants here characterized drop+warn behavior
-      # that no longer exists.
+        bar = schema[:properties][:payload][:properties][:bar]
+        expect(bar).to have_key(:anyOf)
+        expect(bar).not_to have_key(:properties)
+        expect(Array(bar[:type])).not_to include("object")
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz"])
+      end
+
+      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: the colliding member's own
+      # entry still inherits requiredness/non-nullability from the dropped subtree, because runtime
+      # validates the dropped subfields regardless of representability. Here the deep `baz` is required
+      # and resolves off `payload.bar`, so a nil/absent `bar` strands it (PRO-2857) — `bar` is
+      # effectively required and non-nullable within `payload` even though its shape stays dropped.
+      it "forces a blocked mixed-union member required + non-nullable when the dropped subtree requires presence" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array], optional: true
+          end
+          expects :baz, on: "payload.bar", type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(payload[:required]).to include("bar")
+        expect(bar).to have_key(:anyOf)
+        expect(bar).not_to have_key(:properties) # still blocked — no nested shape
+        expect(bar[:anyOf]).not_to include(hash_including(type: "null")) # null admission stripped
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:baz])
+
+        # Runtime agreement: the deep required baz can only resolve off a present, object-valued bar.
+        expect(klass.call(payload: {})).not_to be_ok
+        expect(klass.call(payload: { bar: nil })).not_to be_ok
+        expect(klass.call(payload: { bar: { baz: "x" } })).to be_ok
+      end
+
+      it "leaves the blocked member's declared flags intact when the dropped subtree is all-optional (negative control)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: [Hash, Array], optional: true
+          end
+          expects :baz, on: "payload.bar", type: String, optional: true
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(Array(payload[:required])).not_to include("bar")
+        expect(bar[:anyOf]).to include(hash_including(type: "null")) # null branch preserved
+        expect(bar).not_to have_key(:properties)
+        expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
+      end
+
+      # Scalar member variant: same required/non-nullable treatment. (No satisfying call exists — a String
+      # bar can't yield the deep baz — so only the failure modes are asserted; the schema still forbids the
+      # nil/omitted member that runtime also rejects.)
+      it "forces a blocked SCALAR member required + non-nullable when the dropped subtree requires presence" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: String, optional: true
+          end
+          expects :baz, on: "payload.bar", type: String
+          def call = nil
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        payload = schema[:properties][:payload]
+        bar = payload[:properties][:bar]
+        expect(payload[:required]).to include("bar")
+        expect(bar[:type]).to eq("string") # null branch stripped from ["string", "null"]
+        expect(bar).not_to have_key(:properties)
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:baz])
+
+        expect(klass.call(payload: {})).not_to be_ok
+        expect(klass.call(payload: { bar: nil })).not_to be_ok
+      end
+
+      it "leaves a SCALAR member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: String
+            end
+          end
+          expects "bar.baz.qux", on: :payload
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
+        expect(baz).to include(type: "string") # scalar member kept as-is
+        expect(baz).not_to have_key(:properties) # no forced object / qux under it
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end
+
+      it "leaves a mixed-union member-of-a-member untouched and drops the deeper colliding config" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash do
+            field :bar, type: Hash do
+              field :baz, type: [Hash, Array]
+            end
+          end
+          expects "bar.baz.qux", on: :payload
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
+        expect(baz).to have_key(:anyOf)
+        expect(baz).not_to have_key(:properties)
+        expect(Array(baz[:type])).not_to include("object")
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      end
 
       it "merges into an OBJECT member-of-a-member at depth 2 and does NOT drop the config (positive control)" do
         klass = Class.new do
@@ -3652,11 +3760,55 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).not_to be_ok # schema agrees: nil member rejected
       end
 
-      # A scalar shape member colliding at a merged node's SECOND config, and disagreeing carried members
-      # at a deeper implicit hop, both now raise at declaration (PRO-2877's non-object shape member
-      # collision) instead of dropping+warning — covered by subfield_tree_spec.rb's "raises at declaration
-      # when a non-object shape member declared on a merged node's SECOND config collides" and "... when
-      # merged colliding members carry DISAGREEING nested members" examples.
+      # A scalar shape member declared on the SECOND config at a merged node blocks the deep structure the
+      # SAME as one on the first: emission consults every config's shape members, mirroring SubfieldTree,
+      # so the config the tree dropped isn't quietly re-nested by the property (built from the first
+      # config, which has no shape). (A subfield can't take a `do…end` block, so the shape rides a raw
+      # `shape:` kwarg — the same structure the block DSL builds.)
+      it "drops a deep config colliding with a SCALAR shape member declared on the node's SECOND config" do
+        x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
+        klass = Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash                                                  # baz config #1 (no shape)
+          expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (scalar member x)
+          expects "baz.x.y", on: :bar                                                              # implicit x under baz + grandchild y
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema[:properties][:foo][:properties][:bar][:properties][:baz]
+        expect(baz[:properties]).not_to have_key(:y)                        # not force-nested under a blocking member
+        expect(baz.dig(:properties, :x, :properties, :y)).to be_nil         # the deep x.y structure is dropped, matching the tree
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"baz.x.y"])
+      end
+
+      # Two routes to a merged node each carry a nestable Hash member `x`, but their NESTED members at
+      # `y` disagree: route 1's `y` is a nestable Hash, route 2's `y` is a scalar String. Emission carries
+      # ALL colliding members through the implicit hop, so at `y` it sees the scalar and drops `x.y.z`. The
+      # drop pass must carry them ALL too (not just the first nestable `x`), or `x.y.z` validates at runtime
+      # yet is absent from BOTH the schema and dropped_deep_subfields — a silent, unwarned gap.
+      it "drops a deep config when merged colliding shape members carry disagreeing nested members" do
+        y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
+        x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
+        y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
+        x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
+        klass = Class.new do
+          include Axn
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash } # route 1: x -> y (Hash)
+          expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }      # route 2: x -> y (String)
+          expects "x.y.z", on: :baz                                                          # implicit x, implicit y, leaf z
+        end
+        schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+        baz = schema.dig(:properties, :foo, :properties, :bar, :properties, :baz)
+        expect(baz.dig(:properties, :x, :properties, :y, :properties, :z)).to be_nil # scalar y blocks the deep z
+        dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
+        expect(dropped.map(&:field)).to eq([:"x.y.z"]) # and it is warned, not silently gone
+      end
     end
 
     describe "the same wire path declared via two routes" do

@@ -16,23 +16,21 @@ module Axn
 
       def detect(tree)
         tree.roots.each_value do |root|
-          found = walk(root, nil_tolerant_model_ancestor: nil, carried_members: [])
+          found = walk(root, nil_tolerant_model_ancestor: nil)
           return found if found
         end
         nil
       end
 
-      # `nil_tolerant_model_ancestor` is the OUTERMOST such ancestor config above this node (nil when none).
-      # `carried_members` are the object-shaped shape members an implicit ancestor merged into (for a
-      # member-of-a-member non-object-shape-member collision at depth).
+      # `nil_tolerant_model_ancestor` is the OUTERMOST such model config at or above this node (nil when none).
       #
-      # NOTE: a nil-tolerant ancestor + a required descendant with no rescue is deliberately NOT detected
-      # here — pulled from PRO-2877 to PRO-2889, because telling the genuine dead-flag case apart from the
-      # many rescued look-alikes needs the full omittability analysis reflection already does, on the
-      # canonical SubfieldTree from PRO-2883. Only the structural contradictions (non-object shape member
-      # collision, nil-tolerant model + defaulted subfield) live in this walk; the dotted-name model:
-      # rejection is a local check in ContractForSubfields.
-      def walk(node, nil_tolerant_model_ancestor:, carried_members:)
+      # This walk detects only the nil-tolerant model + applied-default contradiction. Two sibling families
+      # live elsewhere or were deferred: the dotted-name model: rejection is a local check in
+      # ContractForSubfields; a nil-tolerant ancestor + required descendant (PRO-2889) and the non-object
+      # shape-member collision (also PRO-2889) were pulled because both re-derive runtime resolution
+      # semantics the current SubfieldTree can't reproduce without false positives — they need the canonical
+      # tree's omittability derivation and per-edge provenance (PRO-2883).
+      def walk(node, nil_tolerant_model_ancestor:)
         # The outermost nil-tolerant model at or above this node — an ancestor if one is carried, else one
         # declared on THIS node (a same-wire-key sibling can merge a `model:` config and a defaulted config
         # onto one node, so the model may first appear here alongside the default it conflicts with).
@@ -45,22 +43,8 @@ module Axn
           return defaulted_under_nil_tolerant_model(model, defaulted)
         end
 
-        node.children.each do |key, child|
-          members = Schema.shape_members_at(node.configs + carried_members, key)
-
-          # A non-object shape member at `key` can't hold nested structure. Fires for any child that NESTS
-          # (has children) — an implicit dotted intermediate OR an explicit object subfield with its own
-          # subfields (e.g. `field :bar, type: String` + `expects :bar, on:, type: Hash` +
-          # `expects :baz, on: :bar`): either way the deep structure has nowhere to live in the scalar member.
-          if child.children.any? && (blocker = members.find { |m| !Schema.nestable_as_object?(m) })
-            carrier = shape_carrier_config(node.configs + carried_members, blocker)
-            return nonobject_shape_member_collision(carrier&.field, blocker, first_leaf_config(child))
-          end
-
-          # Only an implicit node stands in for the object-shaped members it merged into — carry them so a
-          # deeper member-of-a-member collision is caught. An explicit child brings its own configs' members.
-          child_carried = child.implicit? ? members.select { |m| Schema.nestable_as_object?(m) } : []
-          found = walk(child, nil_tolerant_model_ancestor: model, carried_members: child_carried)
+        node.children.each_value do |child|
+          found = walk(child, nil_tolerant_model_ancestor: model)
           return found if found
         end
         nil
@@ -103,23 +87,6 @@ module Axn
         node.configs.find { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
       end
 
-      def first_leaf_config(node)
-        return node.config unless node.implicit?
-
-        node.children.each_value do |child|
-          found = first_leaf_config(child)
-          return found if found
-        end
-        nil
-      end
-
-      # The config (among `configs`) whose declared shape members include `blocker`, by identity — the
-      # true immediate carrier of the colliding shape member, unambiguous even when a shape member name
-      # repeats at two nesting depths.
-      def shape_carrier_config(configs, blocker)
-        configs.find { |c| Array(c.validations.dig(:shape, :members)).any? { |m| m.equal?(blocker) } }
-      end
-
       # A top-level field config has no `on:`; a subfield config does. Render each as declared.
       def label(config)
         on = config.respond_to?(:on) ? config.on : nil
@@ -127,19 +94,6 @@ module Axn
       end
 
       # --- messages ---
-
-      # `parent_field` is the `.field` of whichever config in `(node.configs + carried_members)` declared
-      # `member`'s shape — resolved by identity at the collision site in `walk`, so it is unambiguous even
-      # when a shape member name repeats at two nesting depths (the true immediate carrier, not merely the
-      # first chain segment matching `member.field`).
-      def nonobject_shape_member_collision(parent_field, member, deep_config)
-        Contradiction.new(
-          message: "#{label(deep_config)} nests beneath shape member :#{member.field} on :#{parent_field}, " \
-                   "which is declared a non-object type (#{member_type_desc(member)}) — a nested subfield has " \
-                   "nowhere to live. Make :#{member.field} an object-shaped member (Hash/:params), " \
-                   "or drop the nested subfield.",
-        )
-      end
 
       def defaulted_under_nil_tolerant_model(model, defaulted)
         Contradiction.new(
@@ -149,12 +103,6 @@ module Axn
                    ":#{model.field} can never be omitted. Drop allow_nil: on :#{model.field}, " \
                    "or drop the default.",
         )
-      end
-
-      # A short human name for the shape member's declared type, for the error message.
-      def member_type_desc(member)
-        klass = member.validations.dig(:type, :klass) || member.validations[:type]
-        Array(klass).map { |k| k.is_a?(Class) ? k.name : k.to_s }.join(" | ")
       end
     end
   end

@@ -36,24 +36,4 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       expect(described_class.label(tree.roots[:payload].children[:name].config)).to eq(":name (on: payload)")
     end
   end
-
-  describe ".first_leaf_config" do
-    it "returns the node's own config for an explicit (non-implicit) node" do
-      tree = tree_for { expects :payload, type: Hash }
-      node = tree.roots[:payload]
-
-      expect(described_class.first_leaf_config(node)).to eq(node.config)
-    end
-
-    it "descends through an implicit intermediate to the first explicit descendant's config" do
-      tree = tree_for do
-        expects :payload, type: Hash
-        expects :id, on: "payload.meta", type: Integer, optional: true
-      end
-      implicit_meta = tree.roots[:payload].children[:meta]
-
-      expect(implicit_meta).to be_implicit
-      expect(described_class.first_leaf_config(implicit_meta).field).to eq(:id)
-    end
-  end
 end

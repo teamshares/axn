@@ -522,11 +522,32 @@ module Axn
 
       # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
       # property whose only content is its children. When a `shape:` member of any `parent_configs`
-      # claims the key, it merges into that member's property instead: every colliding member is
-      # guaranteed `nestable_as_object?` (a non-object member colliding with a nested subfield is rejected
-      # at declaration, PRO-2877), so the merge is unconditional.
+      # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
+      # predicate on the SAME member configs that SubfieldTree.blocking_ancestor? uses (it scans ALL of
+      # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
+      # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
+      # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
+      # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
+      # is built from the first non-model config, so a scalar member declared on a LATER config seeds
+      # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
+      #
+      # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
+      # subfields regardless of representability, so when the dropped subtree requires presence
+      # (subtree_requires_presence? — the same predicate used everywhere) the colliding member's own
+      # property still inherits that obligation. The member is forced required and its `null` admission
+      # stripped (reject_null! handles both `type:` arrays and `anyOf` unions) — because a nil/absent
+      # member strands the required descendant (PRO-2857). Nothing else about the member is touched (no
+      # forced object type, no properties — its shape stays dropped). An all-optional dropped subtree
+      # strands nothing, so the member keeps its declared flags (runtime accepts omission/nil there).
       def apply_implicit_node!(prop, key, node, parent_configs, ann)
         members = shape_members_at(parent_configs, key)
+        if members.any? { |member| !nestable_as_object?(member) }
+          if subtree_requires_presence?(node, ann)
+            prop[:required] << key.to_s
+            reject_null!(prop[:properties][key]) if prop[:properties][key]
+          end
+          return
+        end
 
         # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
         # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members

@@ -1309,34 +1309,30 @@ RSpec.describe Axn do
     describe "verify-before-commit" do
       it "does not commit the rejected subfield when the contradiction error is rescued" do
         klass = build_axn do
-          expects :payload, type: Hash do
-            field :bar, type: String
-          end
+          expects :company, model: FakeModel, allow_nil: true
         end
 
         # A rescued declaration (Rails reload, metaprogramming) must not leave the rejected subfield
         # behind — the contract is validated on the prospective config set BEFORE the configs are committed.
         expect do
           klass.class_eval do
-            expects :id, on: "payload.bar", type: Integer
+            expects :id, on: :company, default: 1
           end
-        end.to raise_error(ArgumentError, /nests beneath shape member/)
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
 
         expect(klass.subfield_configs.map(&:field)).not_to include(:id)
       end
 
       it "does not leave an orphaned reader when the contradiction error is rescued" do
         klass = build_axn do
-          expects :payload, type: Hash do
-            field :bar, type: String
-          end
+          expects :company, model: FakeModel, allow_nil: true
         end
 
         expect do
           klass.class_eval do
-            expects :thing, on: "payload.bar", type: Integer
+            expects :thing, on: :company, default: 1
           end
-        end.to raise_error(ArgumentError, /nests beneath shape member/)
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
 
         # Reader generation is deferred until after every declaration check passes, so a rejected subfield
         # leaves no orphaned reader method or recorded reader name — a corrected retry won't collide with
@@ -1365,74 +1361,6 @@ RSpec.describe Axn do
             expects :company_id, :company, on: :settings, model: FakeModel
           end
         end.not_to raise_error
-      end
-    end
-
-    describe "non-object shape member + colliding deep subfield" do
-      it "raises when a deep subfield nests under a non-object (String) shape member" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: String
-            end
-            expects "bar.baz", on: :payload, type: String
-          end
-        end.to raise_error(
-          ArgumentError,
-          ":bar.baz (on: payload) nests beneath shape member :bar on :payload, which is declared a non-object " \
-          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
-          "(Hash/:params), or drop the nested subfield.",
-        )
-      end
-
-      it "does not raise when the colliding shape member is object-shaped" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: Hash
-            end
-            expects "bar.baz", on: :payload, type: String
-          end
-        end.not_to raise_error
-      end
-
-      it "names the true (inner) immediate carrier when a shape member name repeats at two depths" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: Hash do
-                field :bar, type: String
-              end
-            end
-            expects "bar.bar.baz", on: :payload
-          end
-        end.to raise_error(
-          ArgumentError,
-          ":bar.bar.baz (on: payload) nests beneath shape member :bar on :bar, which is declared a non-object " \
-          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
-          "(Hash/:params), or drop the nested subfield.",
-        )
-      end
-
-      it "raises when an EXPLICIT object subfield collides with a non-object shape member" do
-        # The colliding key :bar is declared both as a scalar shape member (String) and as an explicit
-        # object subfield with its own nested :baz. The merged node is explicit, not implicit — but the
-        # nested structure still has nowhere to live in the String member, so it's the same non-object
-        # shape member collision and must raise (no input can satisfy both String and the nested object).
-        expect do
-          build_axn do
-            expects :payload, type: Hash do
-              field :bar, type: String
-            end
-            expects :bar, on: :payload, type: Hash
-            expects :baz, on: :bar
-          end
-        end.to raise_error(
-          ArgumentError,
-          ":bar (on: payload) nests beneath shape member :bar on :payload, which is declared a non-object " \
-          "type (String) — a nested subfield has nowhere to live. Make :bar an object-shaped member " \
-          "(Hash/:params), or drop the nested subfield.",
-        )
       end
     end
 
