@@ -1457,6 +1457,21 @@ RSpec.describe Axn do
         end.to raise_error(ArgumentError, /:items is declared nil-tolerant.*:count .* is required/)
       end
 
+      it "does not raise when a default on one merged-path config rescues a required sibling config" do
+        # The wire path payload.bar.baz is declared via two routes onto the SAME node: a dotted-name config
+        # carrying default: "x", and a required :baz. At runtime the default materializes the one shared
+        # baz value before validation, satisfying the required route — so the merged node is not stranded
+        # even under a nil-tolerant :payload. Configs are judged collectively, not in isolation.
+        expect do
+          build_axn do
+            expects :payload, type: Hash, allow_nil: true
+            expects :bar, on: :payload, type: Hash, optional: true
+            expects "bar.baz", on: :payload, default: "x"
+            expects :baz, on: :bar, type: String
+          end
+        end.not_to raise_error
+      end
+
       it "does not raise for a Proc-defaulted subfield under an object-shaped nil-tolerant parent" do
         # The executor applies ANY truthy subfield default (Procs included) and materializes the parent
         # before validation, so omitting :payload succeeds. The detector counts a Proc default as a rescue

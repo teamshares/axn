@@ -86,12 +86,15 @@ module Axn
       # --- family predicates (leaf; reuse Schema) ---
 
       # Whether a nil/omitted `ancestor` (already confirmed nil-tolerant by the caller) strands this node's
-      # own obligation. A config is stranded unless it tolerates nil OR carries a default the runtime would
-      # actually apply here — and a default applies only when the ancestor is object-shaped, because
+      # obligation. The node is rescued (NOT stranded) when a default the runtime would apply exists on ANY
+      # of its configs — that default materializes the one SHARED node value every co-located config then
+      # validates against — but a default applies only when the ancestor is object-shaped, because
       # Executor#_materialize_object_parent! refuses to synthesize `{}` under a non-object parent
-      # (type: Array, a mixed union); under one the default never runs and the leaf is left absent, so the
-      # nil-tolerant ancestor genuinely strands it. Implicit nodes carry no validators, so they are never
-      # stranded themselves (their obligation lives in their explicit descendants, caught on their own hop).
+      # (type: Array, a mixed union); under one the default never runs and the node is left absent. With no
+      # such default, the node is stranded if ANY config requires presence (rejects nil). Judged across all
+      # configs collectively, so a required config sharing a wire path with a defaulted one isn't falsely
+      # flagged. Implicit nodes carry no validators, so they are never stranded themselves (their obligation
+      # lives in their explicit descendants, caught on their own hop).
       #
       # Default detection uses `subfield_default_applies?` (the runtime's own test — any truthy default,
       # Procs INCLUDED), NOT reflection's `usable_default?` (which excludes Procs). The two answer different
@@ -103,13 +106,17 @@ module Axn
       def stranded_by?(node, ancestor)
         return false if node.implicit?
 
-        default_can_rescue = Schema.object_shaped?(ancestor)
-        node.configs.any? do |c|
-          next false if Schema.nil_accepted?(c)
-          next false if default_can_rescue && Axn::Internal::FieldConfig.subfield_default_applies?(c)
+        # A default on ANY config at this node materializes the SHARED node value at runtime, satisfying
+        # every co-located config (a merged wire path declared via two routes — e.g. `expects "bar.baz",
+        # on: :payload, default: "x"` plus `expects :baz, on: :bar, type: String` — is validated against
+        # one materialized value). So a materializable default rescues the whole node, not just its own
+        # config; it applies only when the ancestor is object-shaped (see below). Judged across all configs
+        # rather than per-config, so a required sibling isn't falsely flagged.
+        return false if Schema.object_shaped?(ancestor) && node.configs.any? { |c| Axn::Internal::FieldConfig.subfield_default_applies?(c) }
 
-          true
-        end
+        # No materializable default: the node is stranded if any config requires presence (rejects nil) —
+        # a nil/omitted ancestor leaves the node absent (PRO-2857) and that config can't be satisfied.
+        node.configs.any? { |c| !Schema.nil_accepted?(c) }
       end
 
       # A node whose OWN configs materialize it wholesale from a default the runtime applies (Procs
