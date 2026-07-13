@@ -134,6 +134,7 @@ module Axn
       # store — so the framework resolves through this registry instead. Raises
       # KeyError if `name` isn't an overridable setting (a declaration-time bug).
       def resolve_override_for(klass, name)
+        _validate_slot_keys!(klass)
         _override_resolvers.fetch(name.to_sym).call(klass)
       end
 
@@ -205,6 +206,33 @@ module Axn
         end
 
         registry[ns] = self
+
+        # A tolerant `configure(ns)` write may have landed keys on `base` before this source was
+        # registered (schema unknown then). Now that it's known, reject any that aren't real settings —
+        # otherwise a typo'd key would sit orphaned in the slot and never surface.
+        _validate_slot_keys!(base)
+      end
+
+      # Raises if `klass` (or an ancestor) has a value stored under this namespace whose key isn't an
+      # overridable setting — the typo a tolerant `configure(ns)` write couldn't catch when the schema
+      # was still unknown. Called from the schema-aware read/registration paths (a no-op once eager
+      # write validation applies, since those reject unknown keys up front).
+      def _validate_slot_keys!(klass)
+        ns = config_namespace
+        known = _override_settings
+        while klass.is_a?(Module)
+          if klass.instance_variable_defined?(:@_axn_config_overrides)
+            slot = klass.instance_variable_get(:@_axn_config_overrides)[ns]
+            slot&.each_key do |key|
+              next if known.key?(key)
+
+              raise ArgumentError, "unknown overridable setting #{key.inspect} for namespace #{ns.inspect}"
+            end
+          end
+          break unless klass.is_a?(Class) && klass.superclass
+
+          klass = klass.superclass
+        end
       end
 
       # Per-setting resolver lambdas, keyed by name — the collision-proof path

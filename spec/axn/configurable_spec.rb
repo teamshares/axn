@@ -389,6 +389,27 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     expect { mcp.resolve_override_for(plain, :shared) }.to raise_error(ArgumentError, /shared/)
   end
 
+  it "surfaces a typo'd tolerant key when the source resolves the namespace" do
+    mod = ruby_llm.overrides
+    plain = Class.new { include mod }
+    plain.configure(:mcp) { |c| c.shraed = :m } # typo: real setting is :shared
+
+    expect { mcp.resolve_override_for(plain, :shared) }.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "surfaces a typo'd tolerant key when the source's overrides are later included" do
+    rmod = ruby_llm.overrides
+    mmod = mcp.overrides
+
+    expect do
+      Class.new do
+        include rmod                          # `configure` available, :mcp still unregistered
+        configure(:mcp) { |c| c.shraed = :m } # tolerant, typo'd
+        include mmod                          # registers :mcp → validates the existing slot
+      end
+    end.to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
   it "agrees with the flat accessor on the same namespace slot" do
     mod = mcp.overrides
     single = Class.new { include mod }
