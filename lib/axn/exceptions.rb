@@ -65,6 +65,13 @@ module Axn
     class PreprocessingError < ContractViolation; end
     class DefaultAssignmentError < ContractViolation; end
 
+    # Raised by FieldResolvers::Extract when a source can hold neither the named key nor answer it
+    # as a method. Inside the subfield contract machinery this is rescued and treated as "value
+    # absent" (PRO-2857), so the malformed value's own validation classifies it; it surfaces
+    # publicly only when a reader meets malformed data outside validation (e.g. an untyped parent
+    # read in the action body).
+    class UnextractableError < ContractViolation; end
+
     class UnknownExposure < ContractViolation
       def initialize(key)
         @key = key

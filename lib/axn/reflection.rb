@@ -2,6 +2,7 @@
 
 require "axn/reflection/coercion"
 require "axn/reflection/schema"
+require "axn/reflection/resolved_subfields"
 require "axn/reflection/values"
 
 module Axn

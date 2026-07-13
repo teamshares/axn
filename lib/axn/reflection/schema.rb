@@ -64,9 +64,13 @@ module Axn
       # a non-object parent (`type: Array`, a mixed union) has no JSON-object representation, so it's
       # omitted — surfaced via dropped_deep_subfields / the input_schema warning. A depth-1 subfield
       # under such a parent is silently omitted (the parent keeps its declared type), as ever.
-      def build_input(field_configs, subfield_configs = [])
-        tree = SubfieldTree.build(field_configs, Array(subfield_configs))
-        ann = derive_annotations(tree.roots)
+      #
+      # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
+      # a repeated path skip the tree build + annotation derivation; it must have been built from the
+      # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
+      def build_input(field_configs, subfield_configs = [], resolved: nil)
+        tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
+        ann = resolved&.annotations || derive_annotations(tree.roots)
         properties = {}
         required = []
 
@@ -93,7 +97,7 @@ module Axn
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
         field_configs.select { |config| config.validations[:model] }.each do |config|
           children = tree.roots[config.reader_as].children
-          apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
+          apply_model_id_requiredness!(config, children, field_configs, properties, required)
         end
 
         schema = { type: "object", properties: }
@@ -109,8 +113,8 @@ module Axn
       # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
       # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
       # inspects declared configs only).
-      def dropped_deep_subfields(field_configs, subfield_configs)
-        SubfieldTree.build(field_configs, Array(subfield_configs)).dropped
+      def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
+        (resolved || SubfieldTree.build(field_configs, Array(subfield_configs))).dropped
       end
 
       # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
@@ -120,6 +124,24 @@ module Axn
       # subfield defaults can satisfy the parent type (`{}` is a Hash, matching an object branch).
       def object_shaped?(config)
         object_type_branches(config).any? { |k| [Hash, :params].include?(k) }
+      end
+
+      # Whether the runtime may synthesize `{}` for this config's ABSENT value (the Executor's
+      # write-chain gate consults this per node): its declared type must admit an object AND it must
+      # not be a `model:` route — a synthesized `{}` would be preferred by the model resolver over a
+      # caller-supplied `<field>_id` (clobbering a valid id-based call) and is rejected by
+      # ModelValidator regardless.
+      def synthesizable?(config)
+        object_shaped?(config) && !config.validations[:model]
+      end
+
+      # Presence analysis IGNORING default-rescue, for subtrees whose ancestor can never be
+      # synthesized (a `model:` parent — the write-chain gate refuses, so NO default anywhere in the
+      # subtree ever applies): a node is omittable only through nil/blank-tolerance, at every depth
+      # (a nil ancestor yields every descendant absent, PRO-2857).
+      def node_omittable_without_synthesis?(node)
+        (node.implicit? || node.configs.all? { |c| nil_accepted?(c) }) &&
+          node.children.values.all? { |child| node_omittable_without_synthesis?(child) }
       end
 
       # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
@@ -244,7 +266,7 @@ module Axn
         # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!). Walks the WHOLE
         # subtree: a dotted-NAME default lands on a deeper node and still materializes the parent, firing
         # the shape-member hazard.
-        synthesizer = object_shaped?(config) && subtree_has_applied_subfield_default?(children)
+        synthesizer = synthesizable?(config) && subtree_has_applied_subfield_default?(children)
         synthesizer && required_shape_member?(config)
       end
 
@@ -302,7 +324,7 @@ module Axn
       # then rejects that `{}` (not a model instance) — so the model id can't be omitted. What strands the
       # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
       # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
-      # before the default's value matters — so this uses subfield_default_applies? (side-effect-free:
+      # before the default's value matters — so this uses FieldConfig#applied_default? (side-effect-free:
       # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
       # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
       # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
@@ -310,7 +332,7 @@ module Axn
       # rescue walk does not.
       def subtree_has_applied_subfield_default?(children)
         children.values.any? do |node|
-          node.configs.any? { |c| Internal::FieldConfig.subfield_default_applies?(c) } ||
+          node.configs.any?(&:applied_default?) ||
             subtree_has_applied_subfield_default?(node.children)
         end
       end
@@ -382,7 +404,7 @@ module Axn
         return false if value.nil? || value.is_a?(Proc)
         return false if presence_blank?(value) && presence_rejects_blank?(config)
 
-        subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
+        subfield ? config.applied_default? : true
       end
 
       # Whether an active presence validator would reject a blank value, so a blank default can't relax
@@ -653,7 +675,7 @@ module Axn
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
           # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
-          emit_default = subfield ? Internal::FieldConfig.subfield_default_applies?(config) : true
+          emit_default = subfield ? config.applied_default? : true
           prop[:default] = normalize_schema_literal(config.default) if emit_default
         end
 
@@ -820,12 +842,15 @@ module Axn
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
+      def apply_model_id_requiredness!(config, children, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
+        # No default anywhere in a model's subtree can ever apply (the runtime write-chain gate
+        # refuses to synthesize a model node — see Schema.synthesizable?), so omittability is pure
+        # nil-tolerance analysis at every depth: defaults neither rescue a child's own presence nor
+        # poison the model with a synthesized `{}`.
         model_omittable = optional_for_schema?(config) &&
-                          !children_require_presence?(children, ann) &&
-                          !subtree_has_applied_subfield_default?(children)
+                          children.values.all? { |child| node_omittable_without_synthesis?(child) }
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s

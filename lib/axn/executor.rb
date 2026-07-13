@@ -419,23 +419,25 @@ module Axn
     # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
     # every coercible-typed field that didn't opt out (see #coerce_field_inbound?). Runs first in the
     # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
-    # see the Ruby value. Coerce-or-leave (Axn::Reflection::Coercion): only String values are
-    # transformed, an unparseable string passes through to the normal TypeValidator error, and a
-    # present real object is untouched. Top-level fields only (subfields reject coerce: at declaration,
-    # and coerce_input_types only reaches where coercion is legal); absent keys are not materialized.
+    # see the Ruby value. One depth-generalized pass over both stores (a top-level field is the
+    # depth-0 case of its ResolvedPath). Coerce-or-leave (Axn::Reflection::Coercion): only String
+    # values are transformed, an unparseable string passes through to the normal TypeValidator error,
+    # and a present real object is untouched — so an absent/nil value never writes back and coercion
+    # never materializes anything. Ambient subfields reject `coerce:` at declaration and aren't
+    # indexed, so they never reach the write-back.
     def apply_inbound_coercion!
       coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
 
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless @context.provided_data.key?(config.field)
-
+      _inbound_configs.each do |config|
         type_opt = config.validations[:type]
         klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
         next if klasses.empty?
         next unless coerce_field_inbound?(type_opt, coerce_input_types)
+        next unless (path = _resolved_path_for(config))
 
-        @context.provided_data[config.field] =
-          Axn::Reflection::Coercion.coerce_value(@context.provided_data[config.field], klasses)
+        current = _current_value_at(path)
+        coerced = Axn::Reflection::Coercion.coerce_value(current, klasses)
+        _write_value_at!(path, coerced) unless coerced.equal?(current)
       end
     end
 
@@ -463,164 +465,182 @@ module Axn
       field_validations.merge(type: type_hash.merge(coerce: true))
     end
 
+    # One depth-generalized pass over both stores. For a subfield, a nil parent has nowhere to write
+    # the result, so _write_value_at! no-ops and the preprocess output is dropped — deliberately: a
+    # nil/absent parent means the subfield is absent (PRO-2857), and a preprocess must NOT synthesize
+    # the parent into existence (unlike a subfield `default:`, which does). Materializing here would
+    # make an absent parent present — masking a required parent, and tripping shape/type validation
+    # the schema then can't mirror. (A top-level field is its own root, so its result always writes.)
     def apply_inbound_preprocessing!
-      @action_class.send(:internal_field_configs).each do |config|
+      _inbound_configs.each do |config|
         next unless config.preprocess
+        next unless (path = _resolved_path_for(config))
 
-        initial_value = @context.provided_data[config.field]
-        @context.provided_data[config.field] = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::PreprocessingError,
-          message: ->(field, error) { "Error preprocessing field '#{field}': #{error.message}" },
-          field_identifier: config.field,
-        ) do
-          @action.instance_exec(initial_value, &config.preprocess)
-        end
-      end
-
-      apply_inbound_preprocessing_for_subfields!
-    end
-
-    def apply_inbound_preprocessing_for_subfields!
-      @action_class.send(:subfield_configs).each do |config|
-        next unless config.preprocess
-
-        parent_field = _wire_parent_key(config.on)
-        subfield = config.field
-        parent_value = @context.provided_data[parent_field]
-
-        current_subfield_value = Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value)
+        current_value = _current_value_at(path)
         preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing subfield '#{config.field}' on '#{config.on}': #{error.message}" },
-          field_identifier: "#{config.field} on #{config.on}",
+          message: ->(_field, error) { "Error preprocessing #{_field_descriptor(config)}: #{error.message}" },
+          field_identifier: _field_identifier(config),
         ) do
-          @action.instance_exec(current_subfield_value, &config.preprocess)
+          @action.instance_exec(current_value, &config.preprocess)
         end
-        # A nil parent has nowhere to write the result, so update_subfield_value no-ops and the preprocess
-        # output is dropped — deliberately: a nil/absent parent means the subfield is absent (PRO-2857), and
-        # a preprocess must NOT synthesize the parent into existence (unlike a subfield `default:`, which
-        # does). Materializing here would make an absent parent present — masking a required parent, and
-        # tripping shape/type validation the schema then can't mirror.
-        update_subfield_value(parent_field, subfield, preprocessed_value)
+        # The write may synthesize missing IMPLICIT intermediates (never the root — a nil root
+        # drops the value, see _write_value_at!), so it obeys the same synthesis gate as defaults:
+        # an intermediate whose declared types/shape members can't hold an object is not created,
+        # and the preprocess result is dropped (nowhere to land).
+        _write_value_at!(path, preprocessed_value) if _write_chain_materializable?(path)
       end
     end
 
     def validate_contract!(direction)
       raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
-      configs = direction == :inbound ? @action_class.send(:internal_field_configs) : @action_class.send(:external_field_configs)
-      coerce_input_types = direction == :inbound && Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
-      validations = configs.each_with_object({}) do |config, hash|
-        hash[config.field] = coerce_input_types ? _with_effective_coerce(config.validations) : config.validations
-      end
-      context = direction == :inbound ? @action.internal_context : @action.result
-      exception_klass = direction == :inbound ? InboundValidationError : OutboundValidationError
+      return _validate_inbound! if direction == :inbound
 
-      if direction == :inbound
-        _validate_inbound!(validations:, context:, configs:)
-      else
-        Axn::Validation::Fields.validate!(validations:, context:, exception_klass:)
+      failures = @action_class.send(:external_field_configs).filter_map do |config|
+        errors = Axn::Validation::Fields.collect_errors(field: config.field, validations: config.validations,
+                                                        source: @action.result, action: @action)
+        ContractFailure.new(config:, path: nil, errors:, stranded_at: nil) if errors.any?
       end
+      raise OutboundValidationError, _aggregate_errors(failures, []) if failures.any?
     end
 
-    # Inbound validation has three sources — top-level fields, subfields, and model consistency.
-    # Only top-level fields can opt into `user_facing:`; subfields and model consistency are always
-    # dev-facing. To keep "dev-facing dominates a mixed failure" honest, we must not reclassify the
-    # top-level failure until we know the later checks pass — otherwise a blank user-facing field
-    # would short-circuit and mask a co-occurring dev-facing subfield/model violation.
-    def _validate_inbound!(validations:, context:, configs:)
-      fields_error = _capture_inbound_validation_error do
-        Axn::Validation::Fields.validate!(validations:, context:, exception_klass: InboundValidationError)
-      end
+    # Inbound validation has three sources — declared fields at every depth, plus model consistency —
+    # and runs collect-then-settle: EVERY config's errors are collected first (one uniform per-config
+    # pass over both stores, then model-consistency mismatches), stranded checks are pruned with
+    # complete failure knowledge, and the survivors settle once. Classification follows each failing
+    # config's own `user_facing:` at any depth; model-consistency mismatches are structurally
+    # dev-facing. The settling rule: any dev-facing violation dominates and the whole (unsuppressed)
+    # violation set raises unreclassified — a real contract bug always pages, with every co-occurring
+    # violation in one report; only when EVERY violation lands on a user-facing config does the
+    # failure compose into one user-facing message.
+    def _validate_inbound!
+      failures = _collect_contract_failures
+      failed_nodes = {}.compare_by_identity
+      failures.each { |failure| failed_nodes[failure.path.node] = true if failure.path }
 
-      unless fields_error
-        validate_subfields_contract!
-        validate_model_consistency!
-        return
-      end
+      # Causal suppression, post-hoc with COMPLETE failure knowledge (declaration order can't hide an
+      # ancestor that failed after a descendant validated): a nil/invalid ancestor strands every
+      # descendant (PRO-2857), so a stranded check's noise is attributed to the ancestor — it must
+      # never page over a user-facing ancestor's message, nor pad a dev-facing report. A failed
+      # top-level config marks its root node, so its whole subtree suppresses through the same rule.
+      failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
+      mismatches = _model_consistency_mismatches(failed_nodes)
 
-      user_facing = _user_facing_configs(configs)
-      failing = fields_error.errors.map { |err| err.attribute.to_sym }.uniq
-      # A dev-facing top-level field failed → it dominates; raise immediately (original behavior,
-      # later checks not consulted).
-      raise fields_error unless failing.any? && failing.all? { |field| user_facing.key?(field) }
+      return if failures.empty? && mismatches.empty?
 
-      # Top-level failures are all user-facing — but an *independent* dev-facing subfield/model
-      # violation still wins, so run those checks and let any such error propagate unreclassified
-      # (a real contract bug always pages). They're guaranteed independent here: `user_facing:` is
-      # rejected on any field that has subfields (see ContractForSubfields), so no subfield/model
-      # check hangs off one of these failed parents — each one's own parent validated cleanly.
-      validate_subfields_contract!
-      validate_model_consistency!
+      raise InboundValidationError, _aggregate_errors(failures, mismatches) unless mismatches.empty? && failures.all? { |f| f.config.user_facing }
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
-      # this is the exception we actually raise (the dominance checks above didn't pre-empt it), so a
+      # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
       # discarded reclassification never fires an expensive/side-effecting handler for nothing.
-      raise InboundValidationError.new(fields_error.errors, user_facing: true,
-                                                            user_facing_message: _user_facing_message(fields_error, failing, user_facing))
+      raise _composed_user_facing_error(failures)
     end
 
-    def _capture_inbound_validation_error
-      yield
-      nil
-    rescue InboundValidationError => e
-      e
-    end
+    ContractFailure = Data.define(:config, :path, :errors, :stranded_at)
 
-    def _user_facing_configs(configs)
-      # config.field is symbol-keyed at declaration (PRO-2790), so it matches `failing` (built from
-      # `err.attribute.to_sym`) directly — no normalization needed.
-      configs.each_with_object({}) do |config, hash|
-        hash[config.field] = config.user_facing if config.user_facing
+    # Every inbound config's errors — top-level fields and subfields through the one collector —
+    # gathered in declaration order with no early exit: settling needs the complete set (both to
+    # aggregate the report and to suppress stranded descendants accurately). A top-level field
+    # validates against the inbound facade (which resolves model records and reads by wire key); a
+    # subfield against its canonically-resolved parent, with its reader supplied for model resolution.
+    def _collect_contract_failures
+      coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
+
+      _inbound_configs.filter_map do |config|
+        errors = Axn::Validation::Fields.collect_errors(
+          field: config.field,
+          validations: coerce_input_types ? _with_effective_coerce(config.validations) : config.validations,
+          source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
+          action: @action,
+          reader: config.subfield? ? config.reader_as : nil,
+        )
+        next if errors.empty?
+
+        path = _resolved_path_for(config)
+        ContractFailure.new(config:, path:, errors:, stranded_at: path && _stranded_ancestor_path(path))
       end
     end
 
-    # One message part per failing user-facing field, in failure order, joined like
-    # `ValidationError#message`: `true` → the field's own validation message(s); a String → verbatim;
-    # a Symbol/callable → its return, invoked with an error **scoped to that field** (so a shared
-    # `->(e) { e.message }` sees only its own field, not the aggregate). A String/Symbol/callable
-    # that resolves blank falls back to the field's own validation message, so a user-facing failure
-    # never surfaces as the dev-facing generic message. The composed reason is then headlined by any
-    # declared base `error` in Result (attached by default, like a `fail!` reason).
-    def _user_facing_message(error, failing, user_facing)
-      failing.flat_map do |field|
-        own = _field_validation_messages(error, field)
-        override = case user_facing[field]
-                   when true then own
-                   when String then user_facing[field]
-                   else Core::Flow::Handlers::Invoker.call(action: @action, handler: user_facing[field],
-                                                           exception: _field_scoped_error(error, field),
-                                                           operation: "resolving user_facing: message")
-                   end
-        # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
-        # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
-        # back to the field's own validation message.
-        Array(override).filter_map { |m| m.presence&.to_s }.presence || own
-      end.to_sentence
+    # The dotted wire path of the first nil INTERMEDIATE ancestor along a failing subfield's chain
+    # (nil when the chain is intact, or when the nil is the top-level root itself — a nil root is
+    # self-evident in the report: its own presence error co-reports, or its absence is the classic
+    # PRO-2857 semantics). Purely diagnostic: names which nested hop stranded the failing check, so
+    # a "Note can't be blank" three levels deep doesn't send the caller hunting.
+    def _stranded_ancestor_path(path)
+      value = @context.provided_data[path.wire_path.first]
+      return nil if value.nil?
+
+      path.wire_path[1..-2].each_with_index do |seg, i|
+        value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+        return path.wire_path[0..i + 1].join(".") if value.nil?
+      end
+      nil
+    rescue Axn::ContractViolation::UnextractableError
+      # A malformed intermediate isn't a nil strand — its own validation reports it; no diagnostic.
+      nil
     end
 
-    # The InboundValidationError handed to a per-field Symbol/Proc handler, carrying only that
-    # field's validation errors — `user_facing:` is configured per field, so its handler must see a
-    # field-scoped error (otherwise `e.message` leaks every failing field into each field's part).
-    def _field_scoped_error(error, field)
-      scoped = ActiveModel::Errors.new(error.errors.first.base)
-      _field_errors(error, field).each { |err| scoped.import(err) }
-      InboundValidationError.new(scoped)
+    def _suppressed_by_failed_ancestor?(path, failed_nodes)
+      path.ancestors.any? { |node, _seg| failed_nodes.key?(node) }
     end
 
-    def _field_validation_messages(error, field)
-      _field_errors(error, field).map(&:full_message)
+    # The one dev-facing exception: every unsuppressed violation in a single errors object, in
+    # declaration order (top-level fields then subfields), with model-consistency mismatches and
+    # stranded-path diagnostics on :base.
+    def _aggregate_errors(failures, mismatches)
+      errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+      failures.each do |failure|
+        failure.errors.each { |err| errors.import(err) }
+      end
+      mismatches.each { |msg| errors.add(:base, msg) }
+      failures.filter_map(&:stranded_at).uniq.each do |strand|
+        errors.add(:base, "'#{strand}' is nil, so nested expectations beneath it cannot be satisfied")
+      end
+      errors
     end
 
-    def _field_errors(error, field)
-      error.errors.group_by_attribute[field] || []
+    # The one exception raised when every violation is user-facing: all errors aggregated (so
+    # dev-facing introspection still sees the full picture), with the composed message drawn from
+    # each failing config's own `user_facing:` setting — one uniform path for every depth.
+    def _composed_user_facing_error(failures)
+      parts = failures.flat_map do |failure|
+        _resolve_user_facing_override(failure.config.user_facing, own: failure.errors.map(&:full_message),
+                                                                  scoped_error: InboundValidationError.new(failure.errors))
+      end
+
+      InboundValidationError.new(_aggregate_errors(failures, []),
+                                 user_facing: true, user_facing_message: parts.to_sentence)
+    end
+
+    # Resolve one config's `user_facing:` setting into its message part(s): `true` → the field's own
+    # validation message(s); a String → verbatim; a Symbol/callable → its return, invoked with an
+    # error **scoped to that field** (so a shared `->(e) { e.message }` sees only its own field, not
+    # the aggregate). A String/Symbol/callable that resolves blank falls back to the field's own
+    # validation message, so a user-facing failure never surfaces as the dev-facing generic message.
+    def _resolve_user_facing_override(setting, own:, scoped_error:)
+      override = case setting
+                 when true then own
+                 when String then setting
+                 else Core::Flow::Handlers::Invoker.call(action: @action, handler: setting,
+                                                         exception: scoped_error,
+                                                         operation: "resolving user_facing: message")
+                 end
+      # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
+      # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
+      # back to the field's own validation message.
+      Array(override).filter_map { |m| m.presence&.to_s }.presence || own
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
     # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
-    # a primary key and a record-vs-id comparison would be meaningless.
-    def validate_model_consistency!
+    # a primary key and a record-vs-id comparison would be meaningless. Mismatches are structurally
+    # dev-facing, aggregated into the settled exception's errors on :base (base messages render
+    # verbatim — each mismatch carries its own field prefix). Subfield checks are causally suppressed
+    # like subfield validation: a failed ancestor means this chain's data is already known-bad, so a
+    # consistency mismatch under it is stranding noise.
+    def _model_consistency_mismatches(failed_nodes)
       mismatches = []
 
       @action_class.send(:internal_field_configs).each do |config|
@@ -632,21 +652,13 @@ module Axn
 
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
+        next if (path = _resolved_path_for(config)) && _suppressed_by_failed_ancestor?(path, failed_nodes)
 
-        parent = Axn::Core::ContractForSubfields.resolve_parent(@action, config.on)
-        msg = _model_record_id_mismatch(source: parent, field: config.field)
+        msg = _model_record_id_mismatch(source: _resolved_parent_value(config), field: config.field)
         mismatches << msg if msg
       end
 
-      return if mismatches.empty?
-
-      # InboundValidationError (a ValidationError) renders its message via errors.full_messages, so
-      # it must be raised with an ActiveModel::Errors object — a plain String would NoMethodError the
-      # moment anything reads result.error/message. Mismatches carry their own field prefix, so add
-      # them on :base (full_messages returns base messages verbatim, no attribute prefix).
-      errors = ActiveModel::Errors.new(@action)
-      mismatches.each { |msg| errors.add(:base, msg) }
-      raise InboundValidationError, errors
+      mismatches
     end
 
     def _id_based_model?(config)
@@ -657,8 +669,8 @@ module Axn
     def _model_record_id_mismatch(source:, field:)
       return nil if source.nil?
 
-      record = Core::FieldResolvers.resolve(type: :extract, field:, provided_data: source)
-      raw_id = Core::FieldResolvers.resolve(type: :extract, field: Internal::FieldConfig.model_id_key(field), provided_data: source)
+      record = Core::FieldResolvers.extract_or_nil(field:, provided_data: source)
+      raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(field), provided_data: source)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
       return nil if record.id.to_s == raw_id.to_s
@@ -666,79 +678,53 @@ module Axn
       "#{field}: provided record (id=#{record.id.inspect}) conflicts with #{field}_id=#{raw_id.inspect} — pass one, or matching values"
     end
 
-    def validate_subfields_contract!
-      @action_class.send(:subfield_configs).each do |config|
-        parent_field = config.on
-        subfield = config.field
-
-        Axn::Validation::Subfields.validate!(
-          field: subfield,
-          validations: config.validations,
-          source: Axn::Core::ContractForSubfields.resolve_parent(@action, parent_field),
-          exception_klass: InboundValidationError,
-          action: @action,
-          reader: config.reader_as,
-        )
-      end
-    end
-
     def apply_defaults!(direction)
       raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
-      if direction == :outbound
-        @action_class.send(:external_field_configs).each do |config|
-          field = config.field
-          next if @context.exposed_data.key?(field)
+      return apply_inbound_defaults! if direction == :inbound
 
-          @context.exposed_data[field] = @context.provided_data[field] if @context.provided_data.key?(field)
-        end
+      @action_class.send(:external_field_configs).each do |config|
+        field = config.field
+        # Copy an unexposed inbound value forward before considering the default, so a provided
+        # value wins over a declared default.
+        @context.exposed_data[field] = @context.provided_data[field] if !@context.exposed_data.key?(field) && @context.provided_data.key?(field)
+
+        next if config.default.nil?
+        next if @context.exposed_data.key?(field) && !@context.exposed_data[field].nil?
+
+        @context.exposed_data[field] = _resolve_default(config)
       end
-
-      configs = direction == :inbound ? @action_class.send(:internal_field_configs) : @action_class.send(:external_field_configs)
-      defaults_mapping = configs.each_with_object({}) do |config, hash|
-        hash[config.field] = config.default
-      end.compact
-
-      defaults_mapping.each do |field, default_value_getter|
-        data_hash = direction == :inbound ? @context.provided_data : @context.exposed_data
-        next if data_hash.key?(field) && !data_hash[field].nil?
-
-        data_hash[field] = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::DefaultAssignmentError,
-          message: ->(field_name, error) { "Error applying default for field '#{field_name}': #{error.message}" },
-          field_identifier: field,
-        ) do
-          default_value_getter.respond_to?(:call) ? @action.instance_exec(&default_value_getter) : default_value_getter
-        end
-      end
-
-      apply_defaults_for_subfields! if direction == :inbound
     end
 
-    def apply_defaults_for_subfields!
-      @action_class.send(:subfield_configs).each do |config|
-        next unless Internal::FieldConfig.subfield_default_applies?(config)
+    # One depth-generalized pass over both stores (a top-level field is the depth-0 case: no
+    # ancestors, so the chain gate is vacuous and the default value itself becomes the root value —
+    # no `{}` synthesis). A default applies when the current value is nil/absent, matching key-absence
+    # semantics at every depth.
+    def apply_inbound_defaults!
+      _inbound_configs.each do |config|
+        next unless config.applied_default?
+        next unless (path = _resolved_path_for(config))
+        next unless _current_value_at(path).nil?
 
-        parent_field = _wire_parent_key(config.on)
-        subfield = config.field
-        parent_value = @context.provided_data[parent_field]
+        # A nil non-object ancestor anywhere along the chain can't hold the nested structure —
+        # materialization refuses to inject `{}` where it would fail that ancestor's own declared
+        # type — so the subfield is absent. Skip evaluating/writing its default: a Proc default would
+        # run its side effects for nothing, and the write would synthesize a type-violating value.
+        next unless _write_chain_materializable?(path)
 
-        next if parent_value && !Core::FieldResolvers.resolve(type: :extract, field: subfield, provided_data: parent_value).nil?
+        @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
-        # A nil non-object parent can't hold a named subfield — materialization refuses to inject `{}` (it
-        # would fail the parent's type), so the subfield is absent. Skip evaluating/writing its default: a
-        # Proc default would run its side effects for nothing, and a dotted default would write into nil and
-        # raise. (A present parent isn't re-materialized — the `&&` short-circuits before the call.)
-        next if parent_value.nil? && !_materialize_object_parent!(parent_field)
+        _write_value_at!(path, _resolve_default(config))
+      end
+    end
 
-        default_value = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::DefaultAssignmentError,
-          message: ->(_field, error) { "Error applying default for subfield '#{config.field}' on '#{config.on}': #{error.message}" },
-          field_identifier: "#{config.field} on #{config.on}",
-        ) do
-          config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
-        end
-        update_subfield_value(parent_field, subfield, default_value)
+    def _resolve_default(config)
+      Internal::ContractErrorHandling.with_contract_error_handling(
+        exception_class: ContractViolation::DefaultAssignmentError,
+        message: ->(_field, error) { "Error applying default for #{_field_descriptor(config)}: #{error.message}" },
+        field_identifier: _field_identifier(config),
+      ) do
+        config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
       end
     end
 
@@ -804,64 +790,152 @@ module Axn
     end
 
     # =========================================================================
-    # SUBFIELD HELPERS
+    # RESOLVED-PATH HELPERS
     # =========================================================================
+    # The inbound passes are driven by each config's ResolvedPath from the per-class cached
+    # SubfieldTree: the tree already translated `on:` reader aliases and dotted segments into the
+    # full provided_data wire path once, at build. A top-level field is the depth-0 case
+    # (wire_path == [field], no ancestors), so one pass covers both stores.
 
-    # Translate an aliased top-level `on:` parent back to its wire key (see
-    # Contract::ClassMethods#_wire_parent_key) so the default/preprocess mutation paths land on the
-    # caller-supplied provided_data key.
-    def _wire_parent_key(on) = @action_class._wire_parent_key(on)
-
-    # A subfield's default-able parent is always a top-level field (nested/dotted/ambient parents reject
-    # default:), so its config is found by wire key among internal_field_configs.
-    def _parent_config(parent_field)
-      @action_class.send(:internal_field_configs).find { |c| c.field == parent_field }
+    # Both stores in declaration order, top-level first — the order the formerly-separate
+    # top-level/subfield passes always ran in.
+    def _inbound_configs
+      @action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs)
     end
 
-    # Materialize a nil parent as `{}` so a subfield default has somewhere to land — but only when `{}`
-    # satisfies the parent's declared type. An untyped parent qualifies; a type that admits a Hash
-    # (Hash/`:params`, or a union including one) qualifies; a non-object type (e.g. `type: Array`) does NOT —
-    # injecting `{}` there would fail the parent's own type validator and turn an optional-absent parent
-    # into a validation error. Returns whether the parent was materialized (false = left nil, non-object).
-    def _materialize_object_parent!(parent_field)
-      return false unless _parent_object_shaped?(parent_field)
-
-      @context.provided_data[parent_field] = {}
-      true
+    def _resolved_path_for(config)
+      @action_class._resolved_subfields.index[config]
     end
 
-    # Whether the parent's declared type admits a Hash (so `{}` is a valid value to synthesize into). An
-    # untyped parent qualifies; Hash/`:params` (or a union including one) qualifies; anything else does not.
-    def _parent_object_shaped?(parent_field)
-      type_opt = _parent_config(parent_field)&.validations&.dig(:type)
-      type_opt.nil? ||
-        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt).any? { |k| [Hash, :params].include?(k) }
+    # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
+    # Extract dig from the root value (nil-safe: a nil root yields nil).
+    def _current_value_at(path)
+      root_value = @context.provided_data[path.wire_path.first]
+      below = path.wire_path[1..]
+      return root_value if below.empty?
+
+      # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil): the
+      # pre-validation passes skip/no-op and the source's own validation classifies the bad value.
+      Core::FieldResolvers.extract_or_nil(field: below.join("."), provided_data: root_value)
     end
 
-    def update_subfield_value(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field]
+    # Human identifiers for contract-error reporting, matching each level's historical wording.
+    def _field_descriptor(config)
+      config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
+    end
 
-      if Internal::SubfieldPath.nested?(subfield)
-        update_nested_subfield_value(parent_field, subfield, new_value)
-      elsif parent_value.is_a?(Hash)
-        update_simple_hash_subfield(parent_field, subfield, new_value)
-      elsif parent_value.respond_to?("#{subfield}=")
-        Internal::SubfieldPath.update_object(parent_value, subfield, new_value)
+    def _field_identifier(config)
+      config.subfield? ? "#{config.field} on #{config.on}" : config.field
+    end
+
+    # Whether a subfield default's ancestor chain can be fully materialized: every nil/absent node
+    # along the chain (the top-level root included) must tolerate `{}` per its declared types.
+    # An EXPLICIT node is judged by its own configs (Schema.object_shaped?, the same gate
+    # reflection's requiredness derivation uses — a `type: Array` node refuses). An IMPLICIT node
+    # (a dotted intermediate with no declaration of its own) is judged by any `shape:` member its
+    # key collides with — synthesizing `{}` where the parent's shape declares a scalar member would
+    # turn an optional-absent member into a shape violation — via the SAME member locator and
+    # nestability predicate the tree's drop pass uses (Schema.shape_members_at /
+    # nestable_as_object?, carrying merged members so a member-of-a-member is tested at depth).
+    # Present values are not judged here (the write path digs through whatever the caller supplied).
+    def _write_chain_materializable?(path)
+      # Depth 0: the default value IS the root — nothing is synthesized, so there is nothing to gate.
+      return true if path.ancestors.empty?
+
+      value = @context.provided_data[path.wire_path.first]
+      return false if value.nil? && !_synthesizable_node?(path.ancestors.first.first)
+
+      carried = []
+      path.ancestors.each_cons(2) do |(parent, seg), (child, _next_seg)|
+        value = value.nil? ? nil : Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+
+        members = child.implicit? ? Axn::Reflection::Schema.shape_members_at(parent.configs + carried, seg) : []
+        if value.nil?
+          return false unless _synthesizable_node?(child)
+          return false if members.any? { |m| !Axn::Reflection::Schema.nestable_as_object?(m) }
+        end
+        carried = members.select { |m| Axn::Reflection::Schema.nestable_as_object?(m) }
       end
+      true
+    rescue Axn::ContractViolation::UnextractableError
+      # A malformed (present but key-less) intermediate can't be written into — the default is
+      # skipped and the intermediate's own validation classifies the bad value.
+      false
     end
 
-    def update_simple_hash_subfield(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field].dup
-      parent_value[subfield] = new_value
-      @context.provided_data[parent_field] = parent_value
+    # Whether an ABSENT node may be synthesized as `{}`: every config's declared type must admit an
+    # object (Schema.object_shaped?, any-branch — `{}` satisfies a union that includes Hash), and no
+    # config may be a `model:` route — a synthesized `{}` would be preferred by the model resolver
+    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and per PRO-2877's
+    # family-3 analysis it rescues nothing: ModelValidator rejects it anyway). Mirrors the model
+    # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
+    def _synthesizable_node?(node)
+      node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
     end
 
-    def update_nested_subfield_value(parent_field, subfield, new_value)
-      parent_value = @context.provided_data[parent_field]
-      path_parts = Internal::SubfieldPath.parse(subfield)
+    # The parent value a subfield validates against, resolved once per distinct `on:` target per
+    # call — canonically, through the deepest reader-bearing ancestor (see
+    # ContractForSubfields.resolve_parent), so both spellings of the same wire path share one
+    # resolution. Only populated during the inbound-validation phase, after every provided_data
+    # mutation (coercion/preprocess/defaults) has already run.
+    def _resolved_parent_value(config)
+      memo = (@_resolved_parent_values ||= {})
+      key = config.on.to_s
+      memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
+    end
 
-      target_parent = Internal::SubfieldPath.navigate_to_parent(parent_value, path_parts)
-      target_parent[path_parts.last.to_sym] = new_value
+    def _write_value_at!(path, new_value)
+      root_key = path.wire_path.first
+      below = path.wire_path[1..]
+      # Depth 0: the value IS the root — assign directly (key-materializing, as top-level
+      # preprocess/defaults always did).
+      return @context.provided_data[root_key] = new_value if below.empty?
+
+      parent_value = @context.provided_data[root_key]
+      # A nil root has nowhere to write into — the value is deliberately dropped (a preprocess never
+      # synthesizes its parent; a default materialized the root before reaching here).
+      return if parent_value.nil?
+
+      written = _cow_write(parent_value, below, new_value)
+      @context.provided_data[root_key] = written unless written.nil? || written.equal?(parent_value)
+    end
+
+    # Copy-on-write nested write: the Hash levels along the path are REBUILT (siblings shared
+    # structurally), so neither the caller's own input hash nor a literal default object stored in
+    # a config is ever mutated by axn's write-back — a literal `default: { meta: {} }` must not
+    # accumulate one call's subfield writes into the next call's default. Missing intermediates
+    # materialize as fresh hashes. A non-Hash level falls back to the legacy behavior: a leaf
+    # parent with a setter (e.g. a Struct) is written in place — an object can't be merged — and a
+    # navigable object intermediate is walked in place; a level that can't hold the path drops the
+    # write (nil return; the ancestor's own validation classifies the bad value, mirroring the
+    # UnextractableError handling on the read side).
+    def _cow_write(current, segments, new_value)
+      seg, *rest = segments
+
+      if current.is_a?(Hash)
+        # Preserve the key form the caller used (a string-keyed hash keeps its string key rather
+        # than gaining a duplicate symbol entry); a missing/falsey child synthesizes fresh under
+        # the symbol form, exactly as the legacy navigation did.
+        key = [seg, seg.to_s].find { |k| current.key?(k) } || seg
+        return current.merge(key => new_value) if rest.empty?
+
+        new_child = _cow_write(current[key] || {}, rest, new_value)
+        return nil if new_child.nil?
+
+        current.merge(key => new_child)
+      elsif rest.empty? && current.respond_to?("#{seg}=")
+        Internal::SubfieldPath.update_object(current, seg, new_value)
+        current
+      elsif rest.any?
+        begin
+          target = Internal::SubfieldPath.navigate_to_parent(current, segments)
+          target[segments.last] = new_value
+          current
+        rescue TypeError, NoMethodError, FrozenError
+          # Tightly scoped: navigate + the single []= run no user code.
+          nil
+        end
+      end
     end
   end
 end

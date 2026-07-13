@@ -60,24 +60,29 @@ RSpec.describe "coerce: DSL" do
     end
   end
 
-  describe "boundary (top-level expects only)" do
+  describe "boundary" do
     it "rejects coerce: on exposes" do
       expect { build_axn { exposes :date, coerce: Date } }
         .to raise_error(ArgumentError, /coerce: is not supported on exposes/)
     end
 
-    it "rejects coerce: on a subfield" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :when, on: :payload, coerce: Date
-        end
-      end.to raise_error(ArgumentError, /coerce: is not supported on subfields/)
+    it "accepts coerce: on a subfield (kwarg parity) and coerces the wire string" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :starts_on, on: :payload, coerce: Date
+        exposes :got, optional: true
+
+        def call = expose(got: starts_on)
+      end
+
+      result = action.call(payload: { starts_on: "2026-07-08" })
+      expect(result).to be_ok
+      expect(result.got).to eq(Date.new(2026, 7, 8))
     end
 
-    it "rejects coerce: on an ambient_context subfield" do
+    it "rejects coerce: on an ambient_context subfield (never read from provided_data)" do
       expect { build_axn { expects :when, on: :ambient_context, coerce: Date } }
-        .to raise_error(ArgumentError, /coerce: is not supported on subfields/)
+        .to raise_error(ArgumentError, /`coerce:` is not supported for an `on: :ambient_context` subfield/)
     end
 
     it "rejects coerce: on a shape member" do
@@ -357,14 +362,41 @@ RSpec.describe "coerce: DSL" do
       expect(wrong_type.exception.message).not_to match(/could not be coerced/)
     end
 
-    it "does not reach subfields (current scope; a future ticket extends the flag there)" do
+    it "reaches subfields (kwarg parity): the flag coerces a coercible-typed subfield" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :payload, type: Hash
+        expects :starts_on, on: :payload, type: Date
+        exposes :got, optional: true
+
+        def call = expose(got: starts_on)
+      end
+
+      result = action.call(payload: { starts_on: "2026-07-08" })
+      expect(result).to be_ok
+      expect(result.got).to eq(Date.new(2026, 7, 8))
+    end
+
+    it "lets a subfield's explicit coerce: false opt out of the action-wide flag" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :payload, type: Hash
+        expects :starts_on, on: :payload, type: { klass: Date, coerce: false }
+      end
+
+      expect(action.call(payload: { starts_on: "2026-07-08" })).not_to be_ok
+    end
+
+    it "surfaces the could-not-be-coerced message for an unparseable subfield wire string" do
       action = build_axn do
         configure { |c| c.coerce_input_types = true }
         expects :payload, type: Hash
         expects :starts_on, on: :payload, type: Date
       end
-      # The subfield's own `type: Date` still rejects the wire string — proof the flag left it uncoerced.
-      expect(action.call(payload: { starts_on: "2026-07-08" })).not_to be_ok
+
+      result = action.call(payload: { starts_on: "nope" })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/could not be coerced to a Date/)
     end
 
     it "leaves input_schema identical whether the flag is on or off" do

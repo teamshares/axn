@@ -1,47 +1,89 @@
 # frozen_string_literal: true
 
-require "axn/core/validation/subfields"
+require "axn/core/validation/fields"
+require "axn/reflection/resolved_subfields"
 
 module Axn
   module Core
     module ContractForSubfields
-      # `reader_as` is the generated accessor's name; it defaults to `field` (the subfield key) but
-      # `as:`/`prefix:` decouple them — the reader is renamed while the value is still extracted by
-      # the wire-key `field` from the `on:` parent.
-      SubfieldConfig = Data.define(:field, :validations, :on, :sensitive, :preprocess, :default, :metadata, :reader_as) do
-        def description = metadata[:description]
-      end
+      # The per-class cache slot for the resolved-subfield artifact: the config arrays it was built
+      # from plus the built value. Validity is decided by comparing the arrays' IDENTITY, never the
+      # value — see ClassMethods#_resolved_subfields.
+      ResolvedSubfieldsCacheEntry = Data.define(:fields, :subfields, :value)
 
       def self.included(base)
         base.class_eval do
-          class_attribute :subfield_configs, default: []
-          # Reader names axn actually generated for subfields (via `_define_subfield_reader`). Consulted
-          # by the readerless-parent guard, which must distinguish an axn-generated reader from any
-          # inherited public method of the same name (e.g. :class, :hash). Copy-on-write like
-          # `subfield_configs` so subclasses inherit the superclass's generated names.
-          class_attribute :_generated_subfield_reader_names, default: []
+          # Copy-on-write, frozen at every assignment (see Contract's stores).
+          class_attribute :subfield_configs, default: [].freeze
 
           extend ClassMethods
         end
       end
 
-      # Resolves the parent value an `on:` points at. `on:` may be a single field/subfield
-      # (e.g. :address) or a dotted path (e.g. "address.billing") — the root segment is read via
-      # its reader and any remaining segments are dug out via the Extract resolver. Shared by the
-      # subfield reader and the inbound validation runner so both treat paths identically.
-      def self.resolve_parent(source, on)
+      # Resolves the parent value a subfield config is read from — CANONICALLY: through the DEEPEST
+      # reader-bearing ancestor on the chain up to the `on:` target (`public_send` of that reader —
+      # memoized, model-resolving, alias-aware), then raw Extract digs for any remaining implicit
+      # segments. Both spellings of the same wire path (`on: :b` and `on: "a.b"`) therefore resolve
+      # identically: if `:b` is a declared subfield, its reader supplies the value either way (for a
+      # `model:` subfield, the resolved record). Shared by the subfield readers and the inbound
+      # validation runner so all consumers agree. An ambient config isn't indexed (its parent
+      # resolves per-invocation), so it falls back to the reader-plus-digs recipe on its `on:` string.
+      # Malformed hops read as absent via FieldResolvers.extract_or_nil (one doctrine: the bad
+      # value's own validation classifies it, PRO-2857).
+      def self.resolve_parent(action, config)
+        path = action.class._resolved_subfields.index[config]
+        return _resolve_parent_by_recipe(action, config.on) if path.nil?
+
+        reader_index = (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
+        return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
+
+        value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
+        path.ancestors[reader_index...path.parent_index].each do |hop|
+          value = Axn::Core::FieldResolvers.extract_or_nil(field: hop.last.to_s, provided_data: value)
+        end
+        value
+      end
+
+      # The node's reader-bearing config, if any: every non-dotted-named config generates a reader
+      # (a dotted NAME gets none; an implicit node has no configs at all).
+      def self._reader_config(node)
+        node.configs.find { |c| !c.field.to_s.include?(".") }
+      end
+
+      # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
+      # rest raw.
+      def self._resolve_parent_by_recipe(source, on)
         root, *rest = on.to_s.split(".")
         value = source.public_send(root)
         return value if rest.empty?
 
-        Axn::Core::FieldResolvers.resolve(type: :extract, field: rest.join("."), provided_data: value)
+        Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value)
       end
 
       module ClassMethods
-        def _expects_subfields( # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize
+        # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
+        # the class. Cache validity is decided by IDENTITY of the two config arrays: both are
+        # copy-on-write class_attributes mutated exclusively via `+=`, so any declaration — on this
+        # class or a subclass — mints new arrays and the stale entry misses on `equal?`. That gives
+        # invalidation with no explicit hooks (a future mutation site is auto-covered), no
+        # nil-memoization footgun (validity never consults the value), and free copy-on-write
+        # subclass inheritance (an undeclaring subclass reads the superclass's arrays and builds an
+        # identical artifact once). The artifact is deep-frozen and published in a single ivar
+        # write, so a first-call race between threads is benign.
+        def _resolved_subfields
+          fields = internal_field_configs
+          subfields = subfield_configs
+          cached = @_axn_resolved_subfields
+          return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
+
+          value = Axn::Reflection::ResolvedSubfields.build(fields, subfields)
+          @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
+          value
+        end
+
+        def _expects_subfields( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
-          readers: true,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -50,6 +92,7 @@ module Axn
           sensitive: false,
           metadata: {},
           reader_names: {},
+          user_facing: false,
           **validations
         )
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
@@ -63,37 +106,13 @@ module Axn
                   "(are you sure you've declared a field — or alias — named :#{root}?)"
           end
 
-          # `resolve_parent` reads the root via `public_send(root)`, so the root must have a reader that
-          # axn actually generated. A top-level field always has one (contract.rb forbids readerless
-          # top-level `expects`); a subfield parent has one only when declared with the default
-          # `readers: true`. A `readers: false` subfield matches the `reader_as` list above (its config
-          # exists) but defined no method, so `public_send` either raises NoMethodError or — when the
-          # name shadows an inherited method like :class/:hash — silently invokes that method and reads
-          # the wrong object, all while reflection still advertises the nested path. Consult the record
-          # of readers axn generated rather than `method_defined?`, which can't tell an axn reader from
-          # an inherited public method. (A dotted parent name also defines no reader, but its `reader_as`
-          # never matches a root segment, so it's already caught by the no-such-reader check above and
-          # never reaches here. Ambient roots resolve per-invocation, not via a generated reader, so
-          # they're exempt.) The parent is always declared before the subfield, so its reader — when
-          # requested — is already recorded by now.
-          root_has_reader = internal_field_configs.map(&:reader_as).include?(root) ||
-                            _generated_subfield_reader_names.include?(root)
-          if root != Axn::Core::AmbientContext::PARENT && !root_has_reader
+          # An ambient subfield's value is framework-supplied (the ambient provider /
+          # CurrentAttributes), not caller input — there is no user to face, so reclassifying its
+          # violation as user-facing is a category error.
+          if user_facing && _on_roots_at_ambient?(on)
             raise ArgumentError,
-                  "expects called with `on: #{on}`, but :#{root} was declared with `readers: false` — " \
-                  "a subfield parent must have a reader for the runtime to resolve " \
-                  "(drop `readers: false` on :#{root}, or name a readable parent)"
-          end
-
-          # `user_facing:` is a top-level-only contract: it reclassifies a violation of *that field*
-          # into a user-facing failure, but subfields are always dev-facing. Declaring a subfield on a
-          # user-facing parent mixes the two — a violation of the parent and an independent subfield
-          # violation can't both settle as one outcome cleanly — so reject it. (A subfield must be
-          # declared after its parent, so checking here catches the combination in either order.)
-          if _on_roots_at_user_facing_field?(on)
-            raise ArgumentError,
-                  "expects called with `on: #{on}`, but :#{root} (or its root) is declared `user_facing:` — " \
-                  "user_facing: is for top-level fields without nested subfield expectations"
+                  "`user_facing:` is not supported for an ambient_context subfield " \
+                  "(ambient values are framework-supplied, not caller input)"
           end
 
           # Deep/dotted ambient nesting (`on: "ambient_context.request"`) passes the root check above
@@ -147,52 +166,28 @@ module Axn
                   "compute defaults/preprocessing in your ambient_context_provider or a before hook. `sensitive:` is supported."
           end
 
-          # default:/preprocess: write into the parent, and sensitive: relies on the log filter
-          # matching config.on to a top-level field — none of which support an arbitrary nested
-          # path yet. A parent is nested whether reached via a dotted path ("address.billing") or by
-          # pointing `on:` at another subfield (whose value lives inside its own parent, not at the
-          # top level). Reject the combination explicitly rather than silently ignoring it (use .nil?
-          # for default/preprocess so an explicit `default: false`/`nil` is still caught).
-          nested_parent = on.to_s.include?(".") || subfield_configs.map(&:reader_as).include?(root)
-          if nested_parent && (!default.nil? || !preprocess.nil? || sensitive)
-            raise ArgumentError,
-                  "`default:`/`preprocess:`/`sensitive:` are not supported with a nested `on:` (got on: #{on.inspect})"
-          end
-
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                           metadata:, reader_names:, **validations).tap do |configs|
+                                           metadata:, reader_names:, user_facing:, **validations).tap do |configs|
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
             # leaves the class untouched.
-            _validate_subfield_reader_names!(configs) if readers
+            _validate_subfield_reader_names!(configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
             # reload path, metaprogrammed construction, a test — never leaves the class carrying an orphaned
             # config or generated reader, so a corrected retry starts clean.
-            # NOTE: avoid <<, which would update value for parents and children.
-            self.subfield_configs += configs
-            _define_subfield_readers!(configs) if readers
+            # Copy-on-write + freeze: `<<` would mutate the superclass's contract, and
+            # identity-keyed caching relies on replacement.
+            self.subfield_configs = (subfield_configs + configs).freeze
+            _define_subfield_readers!(configs)
           end
         end
 
         private
-
-        # Walk an `on:` reader path back to its ultimate top-level field and report whether that field
-        # is declared `user_facing:`. `on:` names a reader, which may be dotted ("payload.meta") or
-        # rooted at another subfield; only top-level fields can carry `user_facing:`, so recurse
-        # through any intervening subfield to the top-level config.
-        def _on_roots_at_user_facing_field?(on)
-          root = on.to_s.split(".").first
-          top = internal_field_configs.find { |c| c.reader_as.to_s == root }
-          return !!top.user_facing if top
-
-          sub = subfield_configs.find { |c| c.reader_as.to_s == root }
-          sub ? _on_roots_at_user_facing_field?(sub.on) : false
-        end
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.
@@ -211,7 +206,7 @@ module Axn
           end
         end
 
-        def _parse_subfield_configs(
+        def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
           allow_blank: false,
@@ -222,61 +217,53 @@ module Axn
           default: nil,
           metadata: {},
           reader_names: {},
+          user_facing: false,
           **validations
         )
-          # Handle optional: true by setting allow_blank: true
-          allow_blank ||= optional
-
-          # A model: batch that also names a model field's own `<field>_id` companion (e.g.
-          # `expects :company, :company_id, on:, model:`) can never work: model: applies to EVERY field in
-          # the batch, so the `<field>_id` is itself a model: subfield (it would require `<field>_id_id` and
-          # reject a raw id), and it collides with the raw-id reader the model: field already generates. A
-          # model: subfield exposes its own `<field>_id` reader for the raw id, so the explicit one is both
-          # redundant and broken. (Declaring the id in a separate expects doesn't help either — the generated
-          # `<field>_id` reader already exists, so it trips the duplicate-reader guard.)
-          if validations.key?(:model)
-            batch = fields.map(&:to_sym)
-            if (model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) })
-              id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
-              raise ArgumentError,
-                    "a model: subfield batch (#{fields.map(&:to_s).inspect} with on: #{on}) names both " \
-                    ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
-                    "in the batch, so :#{id_key} becomes a second model: subfield (requiring :#{id_key}_id) " \
-                    "rather than the raw id. The model: subfield :#{model_field} already generates a " \
-                    ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
-            end
+          # The config-building itself is the shared top-level path (a subfield is the on:-carrying
+          # case); the checks below are pure reads of the built configs, raised before anything commits.
+          _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+                                        metadata:, reader_names:, user_facing:, **validations).each do |config|
+            _reject_ambient_coerce!(config)
+            _reject_dotted_model_name!(config, fields:)
           end
+        end
 
-          _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
-            if parsed_validations.dig(:type, :coerce)
-              raise ArgumentError,
-                    "coerce: is not supported on subfields (top-level `expects` fields only; " \
-                    "an adapter can coerce deeper by walking the schema)."
-            end
+        # An ambient subfield's value is resolved per-invocation, never read from provided_data —
+        # which is the only place coercion writes — so a `coerce:` there would silently never
+        # apply. Reject it like ambient default:/preprocess:.
+        def _reject_ambient_coerce!(config)
+          return unless config.validations.dig(:type, :coerce)
+          return unless config.on.to_s.split(".").first.to_sym == Axn::Core::AmbientContext::PARENT
 
-            # A dotted field NAME (e.g. "org.company") generates no reader (see
-            # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
-            # which is wired onto the generated reader — never runs, and the advertised
-            # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
-            # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
-            # still gets a reader. Point the error at that spelling.
-            if parsed_validations.key?(:model) && field.to_s.include?(".")
-              *parents, leaf = field.to_s.split(".")
-              working_on = ([on] + parents).join(".")
-              raise ArgumentError,
-                    "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{on}) has no consumable id — " \
-                    "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-                    "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
-            end
+          raise ArgumentError,
+                "`coerce:` is not supported for an `on: :ambient_context` subfield " \
+                "(the ambient parent is resolved per-invocation, not read from provided_data)"
+        end
 
-            reader = reader_names[field] || field
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader)
-          end
+        # A dotted field NAME (e.g. "org.company") generates no reader (see
+        # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
+        # which is wired onto the generated reader — never runs, and the advertised
+        # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
+        # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
+        # still gets a reader. Point the error at that spelling.
+        def _reject_dotted_model_name!(config, fields:)
+          return unless config.validations.key?(:model) && config.field.to_s.include?(".")
+
+          *parents, leaf = config.field.to_s.split(".")
+          working_on = ([config.on] + parents).join(".")
+          raise ArgumentError,
+                "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{config.on}) has no consumable id — " \
+                "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
+                "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
         # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
-        # the class is mutated. A dotted field name generates no reader, so it can't collide.
+        # the class is mutated. A dotted field name generates no reader, so it can't collide. Every
+        # declared subfield MUST get a reader (canonical `on:` resolution public_sends the deepest
+        # reader-bearing ancestor, so a silently-skipped reader would resolve the wrong value), so a
+        # collision is always a declaration error — resolved by renaming, never by suppression.
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
@@ -284,7 +271,10 @@ module Axn
 
             reader = config.reader_as
             if method_defined?(reader) || seen.include?(reader)
-              raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)"
+              raise ArgumentError,
+                    "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
+                    "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
+                    "as: :#{config.on.to_s.tr('.', '_')}_#{config.field}` (or use prefix: for several at once)"
             end
 
             seen << reader
@@ -304,29 +294,28 @@ module Axn
           # The two passes must NOT be combined: every primary reader has to exist before any companion is
           # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
           # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_subfield_reader(c.reader_as, c.field, on: c.on, validations: c.validations) }
+          configs.each { |c| _define_subfield_reader(c) }
           configs.each { |c| _define_subfield_companion_readers(c) }
           # rubocop:enable Style/CombinableLoops
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
         # wire key extracted from the `on:` parent.
-        def _define_subfield_reader(reader, source_field, on:, validations:)
+        def _define_subfield_reader(config)
+          reader = config.reader_as
+          source_field = config.field
           # Don't create top-level readers for nested fields
           return if source_field.to_s.include?(".")
 
           # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
           # reader is generated, so there is no duplicate to guard against here.
 
-          # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
-          self._generated_subfield_reader_names += [reader]
-
-          if validations.key?(:model)
-            _define_subfield_model_reader(reader, source_field, validations[:model], on:)
+          if config.validations.key?(:model)
+            _define_subfield_model_reader(config)
           else
             Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-              Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
-                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+              Axn::Core::FieldResolvers.extract_or_nil(field: source_field,
+                                                       provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
             end
           end
         end
@@ -337,20 +326,22 @@ module Axn
         def _define_subfield_companion_readers(config)
           return if config.field.to_s.include?(".")
 
-          _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
+          _define_boolean_predicate_reader(config.reader_as) if config.boolean?
           return unless config.validations.key?(:model)
 
           processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
-          _define_subfield_model_id_reader(config.reader_as, config.field, processed_options, on: config.on)
+          _define_subfield_model_id_reader(config, processed_options)
         end
 
-        def _define_subfield_model_reader(reader, source_field, options, on:)
+        def _define_subfield_model_reader(config)
+          reader = config.reader_as
+          source_field = config.field
           # Apply the same syntactic sugar processing as the main contract system
-          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(options, [source_field])
+          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [source_field])
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
             # Create a data source that contains the subfield data for the resolver
-            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, on)
+            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, config)
 
             Axn::Core::FieldResolvers.resolve(
               type: :model,
@@ -363,11 +354,11 @@ module Axn
 
         # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
         # parent and otherwise shares the top-level reader's semantics via `_define_model_id_reader_from`.
-        def _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
+        def _define_subfield_model_id_reader(config, processed_options)
           by_primary_key = processed_options[:finder] == :find
-          _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
-            parent = Axn::Core::ContractForSubfields.resolve_parent(self, on)
-            Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
+          _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
+            parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
+            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent)
           end
         end
       end

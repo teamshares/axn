@@ -15,24 +15,66 @@ module Axn
     module Contract
       def self.included(base)
         base.class_eval do
-          class_attribute :internal_field_configs, :external_field_configs, default: []
+          # Copy-on-write stores, frozen at every assignment: declaration replaces the array (`+`,
+          # never `<<` — which would now raise FrozenError rather than silently mutating the
+          # superclass's contract), so the per-class resolved-subfield cache can key on array
+          # identity and concurrent readers always see an immutable snapshot.
+          class_attribute :internal_field_configs, :external_field_configs, default: [].freeze
 
           extend ClassMethods
           include InstanceMethods
         end
       end
 
-      # `reader_as` is the name of the generated accessor method. It defaults to `field` (the wire
-      # key), but `expects ..., as:`/`prefix:` decouple them so the caller-facing contract stays
-      # `field` while the in-action reader gets its own name.
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing) do
+      # Optionality is shared by FieldConfig and ShapeConfig (axn-mcp derives `required` from BOTH —
+      # field configs and nested shape members — through the same predicate).
+      module FieldOptionality
+        # A field is optional when it carries no `presence: true` validation, or any validator
+        # tolerates blank.
+        def optional?
+          return true unless validations.key?(:presence) && validations[:presence] == true
+
+          validations.values.any? { |v| v.is_a?(Hash) && v[:allow_blank] == true }
+        end
+      end
+
+      # The one config type for every declared inbound/outbound field, top-level or subfield — a
+      # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
+      # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
+      # `prefix:` decouple them so the caller-facing contract stays `field` while the in-action
+      # reader gets its own name. `on:` names the parent reader a subfield is extracted from;
+      # `user_facing:` reclassifies a violation of the field into a user-facing failure.
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on) do
+        def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil)
+          super
+        end
+
         def description = metadata[:description]
+
+        def subfield? = !on.nil?
+
+        include FieldOptionality
+
+        # Whether the field is declared `type: :boolean` (drives the generated `?` predicate reader).
+        def boolean?
+          Array(validations.dig(:type, :klass)) == [:boolean]
+        end
+
+        # Whether the declared default is applied at runtime: any non-nil default counts (`default:
+        # false` on a boolean is meaningful), matching top-level defaults' key-absence semantics.
+        # Schema reflection keys off the same rule, so a declared falsey default is emitted and
+        # relaxes requiredness exactly when the runtime would apply it.
+        def applied_default?
+          !default.nil?
+        end
       end
 
       # One member declared inside a structured field's block (`field :name, ...`).
       # Nested members live in validations[:shape][:members], so the tree is uniform
       # at every depth and walked by both ShapeValidator (runtime) and axn-mcp (schema).
       ShapeConfig = Data.define(:field, :validations, :metadata) do
+        include FieldOptionality
+
         def description = metadata[:description]
       end
 
@@ -77,45 +119,46 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          raise ArgumentError, "readers: false is only valid for subfields (use with on:)" if readers == false && on.nil?
-
-          _validate_user_facing!(user_facing)
-          raise ArgumentError, "user_facing: is not supported with on: (subfields are always dev-facing)" if user_facing && on.present?
-
-          reader_names = _resolve_reader_names(fields, as:, prefix:, readers:)
-          # `readers: false` generates no reader, so it can neither be reserved-shadowing nor collide
-          # with an existing reader — skip validation entirely so the escape hatch holds regardless of
-          # declaration order (e.g. `expects :raw_id, as: :id` then `expects :id, on:, readers: false`).
-          _validate_reader_names!(reader_names) if readers
-
-          validations, metadata = _partition_field_options(fields, **)
-
-          if on.present?
-            raise ArgumentError, "a shape block is not supported with `on:`" if block
-
-            return _expects_subfields(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                               reader_names:, **validations)
+          if readers == false
+            raise ArgumentError,
+                  "`readers: false` has been removed — every declared field generates a reader; " \
+                  "use `as:`/`prefix:` to rename a colliding subfield reader (see PRO-2883)"
           end
 
+          _validate_user_facing!(user_facing)
+
+          reader_names = _resolve_reader_names(fields, as:, prefix:)
+          _validate_reader_names!(reader_names)
+
+          validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
           # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
-          # validates nested members, which `ShapeValidator` reports under this same top-level
-          # attribute — so reclassifying the field user-facing would wrongly turn a malformed-member
-          # (structural) failure into a user-facing one. Nested checks stay dev-facing, exactly like
-          # subfields, so reject the combination (top-level fields only). Keyed on the resolved
-          # `validations[:shape]`, not the block, so a direct `shape:` kwarg is caught too.
+          # validates nested members, which `ShapeValidator` reports under this same attribute — so
+          # reclassifying the field user-facing would wrongly turn a malformed-member (structural)
+          # failure into a user-facing one. Nested member checks stay dev-facing at every level, so
+          # reject the combination. Keyed on the resolved `validations[:shape]`, not the block, so a
+          # direct `shape:` kwarg is caught too.
           if user_facing && validations[:shape]
             raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
           end
 
+          if on.present?
+            return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                               reader_names:, user_facing:, **validations)
+          end
+
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        reader_names:, define_readers: true, user_facing:, **validations).tap do |configs|
+                                        reader_names:, user_facing:, **validations).tap do |configs|
             duplicated = _duplicate_fields(internal_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # NOTE: avoid <<, which would update value for parents and children
-            self.internal_field_configs += configs
+            # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
+            # validate-before-commit ordering), so a rescued declaration error never leaves the class
+            # carrying an orphaned config or generated reader. Copy-on-write + freeze: `<<` would
+            # mutate the superclass's contract, and identity-keyed caching relies on replacement.
+            self.internal_field_configs = (internal_field_configs + configs).freeze
+            _define_field_readers!(configs)
           end
         end
         # rubocop:enable Metrics/ParameterLists
@@ -149,8 +192,8 @@ module Axn
             duplicated = _duplicate_fields(external_field_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # NOTE: avoid <<, which would update value for parents and children
-            self.external_field_configs += configs
+            # Copy-on-write + freeze (see internal_field_configs above).
+            self.external_field_configs = (external_field_configs + configs).freeze
           end
         end
 
@@ -207,19 +250,6 @@ module Axn
           ActiveSupport::ParameterFilter.new(_resolve_sensitive_fields(action_instance))
         end
 
-        # `on:` references a parent by its *reader* name, which may be an `as:`/`prefix:` alias — but
-        # provided_data and the inspector's subfield filtering are keyed by the caller-facing *wire*
-        # key. Translate an aliased top-level parent back to its wire key. Identity for non-aliased
-        # parents (reader_as == field) and for names that match no top-level reader. Only top-level
-        # parents are consulted: a nested/subfield parent can't be written through the single-level
-        # mutation machinery and is rejected at declaration when combined with
-        # default:/preprocess:/sensitive: (see ContractForSubfields#_expects_subfields), so it never
-        # reaches the mutation or sensitive-filtering paths.
-        def _wire_parent_key(on)
-          config = internal_field_configs.find { |c| c.reader_as.to_s == on.to_s }
-          config ? config.field : on.to_sym
-        end
-
         def _declared_fields(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
 
@@ -266,11 +296,10 @@ module Axn
         # reader is named for the wire key (identity). `as:` renames a single field's reader;
         # `prefix:` is sugar that prepends to every field's reader (literal concatenation, so the
         # caller supplies the separator). The wire key (`field`) stays canonical regardless.
-        def _resolve_reader_names(fields, as:, prefix:, readers:)
+        def _resolve_reader_names(fields, as:, prefix:)
           return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
 
           raise ArgumentError, "`as:` and `prefix:` cannot be combined" if as && prefix
-          raise ArgumentError, "`as:`/`prefix:` require a reader (incompatible with readers: false)" unless readers
           if fields.any? { |f| f.to_s.include?(".") }
             raise ArgumentError, "`as:`/`prefix:` are not supported for a dotted subfield key (it generates no reader)"
           end
@@ -298,10 +327,9 @@ module Axn
           # aliases) catches alias-vs-plain clashes in either declaration order — e.g.
           # `expects :bar, as: :foo` then `expects :foo`, which would otherwise silently clobber the
           # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
-          # Only configs that actually generated a reader can be collided with. A subfield declared
-          # `readers: false` (the documented escape hatch) — or a dotted-key subfield — defines no
-          # method, so its name stays free; consult the method table rather than every config so
-          # those readerless declarations don't manufacture phantom collisions.
+          # Only configs that actually generated a reader can be collided with. A dotted-key subfield
+          # defines no method, so its name stays free; consult the method table rather than every
+          # config so those readerless declarations don't manufacture phantom collisions.
           existing = (internal_field_configs + subfield_configs)
                      .select { |c| method_defined?(c.reader_as) }
                      .to_h { |c| [c.reader_as, c.field] }
@@ -437,9 +465,11 @@ module Axn
           [validations, metadata]
         end
 
-        # rubocop:disable Metrics/ParameterLists
-        def _parse_field_configs(
+        # Pure parse: builds the configs without touching the class (no readers defined), so callers
+        # can run every declaration check before committing anything.
+        def _parse_field_configs( # rubocop:disable Metrics/ParameterLists
           *fields,
+          on: nil,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -448,26 +478,57 @@ module Axn
           sensitive: false,
           metadata: {},
           reader_names: {},
-          define_readers: false,
           user_facing: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
+          _validate_model_batch!(fields, on:) if validations.key?(:model)
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
-            FieldConfig.new(field:, validations: parsed_validations, default:, preprocess:, sensitive:, metadata:, reader_as: reader,
-                            user_facing:).tap do |config|
-              if define_readers
-                _define_field_reader(reader, field)
-                _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
-                _define_model_id_reader(reader, field, parsed_validations[:model]) if parsed_validations.key?(:model)
-              end
-            end
+            FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
+                            reader_as: reader, user_facing:)
           end
         end
-        # rubocop:enable Metrics/ParameterLists
+
+        # A model: batch that also names a model field's own `<field>_id` companion (e.g.
+        # `expects :company, :company_id, model:`) can never work at any level: model: applies to
+        # EVERY field in the batch, so the `<field>_id` is itself a model: field (it would require
+        # `<field>_id_id` and reject a raw id), and it collides with the raw-id reader the model:
+        # field already generates. A model: field exposes its own `<field>_id` reader for the raw id,
+        # so the explicit one is both redundant and broken. (Declaring the id in a separate expects
+        # doesn't help either — the generated `<field>_id` reader already exists, so it trips the
+        # duplicate-reader guard.)
+        def _validate_model_batch!(fields, on: nil)
+          batch = fields.map(&:to_sym)
+          model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) }
+          return unless model_field
+
+          id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
+          where = on ? "#{fields.map(&:to_s).inspect} with on: #{on}" : fields.map(&:to_s).inspect
+          raise ArgumentError,
+                "a model: batch (#{where}) names both " \
+                ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
+                "in the batch, so :#{id_key} becomes a second model: field (requiring :#{id_key}_id) " \
+                "rather than the raw id. The model: field :#{model_field} already generates a " \
+                ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
+        end
+
+        # Generate the readers for an already-validated, already-committed batch of top-level inbound
+        # configs. Two passes, matching _define_subfield_readers!: all explicit primary readers first,
+        # then the auto-generated companions (boolean `?` predicates, model `<field>_id` readers), so a
+        # companion defers to an explicit same-named reader regardless of declaration order.
+        def _define_field_readers!(configs)
+          # rubocop:disable Style/CombinableLoops
+          configs.each { |c| _define_field_reader(c.reader_as, c.field) }
+          configs.each do |c|
+            _define_boolean_predicate_reader(c.reader_as) if c.boolean?
+            _define_model_id_reader(c.reader_as, c.field, c.validations[:model]) if c.validations.key?(:model)
+          end
+          # rubocop:enable Style/CombinableLoops
+        end
 
         # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
         # pre-existing method of the same name rather than clobbering it — but, unlike a silent skip,

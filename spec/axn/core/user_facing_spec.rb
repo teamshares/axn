@@ -328,14 +328,185 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
-  describe "user_facing: is rejected on a field that has subfields (top-level only)" do
-    it "rejects a subfield declared on a user_facing parent" do
-      expect do
+  describe "user_facing: on subfields and on parents with subfields (kwarg parity)" do
+    describe "a user_facing subfield failing under a valid parent" do
+      let(:action) do
         build_axn do
-          expects :payload, type: Hash, user_facing: true
-          expects :id, on: :payload
+          expects :payload, type: Hash
+          expects :note, on: :payload, user_facing: true
+          def call = nil
         end
-      end.to raise_error(ArgumentError, /user_facing: is for top-level fields without nested subfield expectations/)
+      end
+
+      it "settles as a user-facing failure with the subfield's own message" do
+        result = action.call(payload: { other: 1 })
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Note can't be blank")
+      end
+
+      it "succeeds when the subfield is present" do
+        expect(action.call(payload: { note: "hi" }).outcome).to be_success
+      end
+    end
+
+    it "supports the String/Proc override forms on a subfield" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :note, on: :payload, type: String, user_facing: "Please add a note"
+        expects :size, on: :payload, type: String, optional: true,
+                       inclusion: { in: %w[s m l] }, user_facing: ->(e) { "Bad size: #{e.message}" }
+        def call = nil
+      end
+
+      expect(action.call(payload: { size: "m" }).error).to eq("Please add a note")
+      expect(action.call(payload: { note: "n", size: "xl" }).error).to eq("Bad size: Size is not included in the list")
+    end
+
+    it "composes top-level and subfield user-facing failures into one message" do
+      action = build_axn do
+        expects :title, user_facing: true
+        expects :payload, type: Hash
+        expects :note, on: :payload, user_facing: true
+        def call = nil
+      end
+
+      result = action.call(payload: { other: 1 })
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Title can't be blank and Note can't be blank")
+    end
+
+    it "lets a dev-facing subfield violation dominate a user-facing subfield violation (exception, not failure)" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :note, on: :payload, type: String, user_facing: true
+        expects :id, on: :payload, type: Integer
+        def call = nil
+      end
+
+      expect(action.call(payload: { other: 1 }).outcome).to be_exception
+    end
+
+    describe "aggregate reporting (collect-then-settle)" do
+      it "co-reports multiple dev-facing subfield violations in one exception" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          expects :count, on: :payload, type: Integer
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x", count: "y" })
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:id, :count)
+      end
+
+      it "co-reports a dev-facing top-level violation with an independent subfield violation" do
+        action = build_axn do
+          expects :title
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x" })
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:title, :id)
+      end
+
+      it "co-reports a model-consistency mismatch alongside a subfield violation" do
+        model = Class.new do
+          def self.find(id) = Struct.new(:id).new(id)
+          def self.name = "FakeAggModel"
+        end
+
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :id, on: :payload, type: Integer
+          expects :company, model: { klass: model }, optional: true
+          def call = nil
+        end
+
+        result = action.call(payload: { id: "x" }, company: Struct.new(:id).new(1), company_id: 2)
+        expect(result.outcome).to be_exception
+        expect(result.exception.errors.map(&:attribute)).to include(:id, :base)
+        expect(result.exception.message).to include("conflicts with")
+      end
+
+      it "prunes a stranded descendant even when it was declared (and validated) before its failing ancestor" do
+        # The dotted-path config attaches to an implicit node that a LATER explicit declaration then
+        # claims — post-hoc suppression with complete failure knowledge still attributes the stranded
+        # deep check to the ancestor, regardless of declaration order.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :city, on: "payload.address", type: String
+          expects :address, on: :payload, type: Hash, user_facing: "Please provide your address"
+          def call = nil
+        end
+
+        result = action.call(payload: { other: 1 })
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Please provide your address")
+      end
+    end
+
+    describe "a user_facing parent with subfields (causal suppression)" do
+      let(:action) do
+        build_axn do
+          expects :payload, type: Hash, user_facing: "Payload is missing"
+          expects :id, on: :payload, type: Integer
+          def call = nil
+        end
+      end
+
+      it "suppresses the stranded dev-facing subfield check when the parent itself fails (user-facing wins)" do
+        result = action.call
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Payload is missing")
+      end
+
+      it "still pages on a genuine subfield violation when the parent is present" do
+        expect(action.call(payload: { id: "not-an-int" }).outcome).to be_exception
+      end
+
+      it "succeeds when both levels are satisfied" do
+        expect(action.call(payload: { id: 1 }).outcome).to be_success
+      end
+    end
+
+    it "suppresses a nested subfield's check when its user_facing SUBFIELD ancestor fails" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :settings, on: :payload, type: Hash, user_facing: "Settings are required"
+        expects :volume, on: :settings, type: Integer
+        def call = nil
+      end
+
+      result = action.call(payload: { other: 1 })
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Settings are required")
+    end
+
+    it "suppresses a subfield model-consistency check under a failed user-facing parent" do
+      model = Class.new do
+        def self.find(id) = Struct.new(:id).new(id)
+        def self.name = "FakeConsistencyModel"
+      end
+
+      action = build_axn do
+        expects :payload, type: Hash, user_facing: "Payload is missing"
+        expects :company, on: :payload, model: { klass: model }, optional: true
+        def call = nil
+      end
+
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Payload is missing")
+    end
+
+    it "rejects user_facing: on an ambient_context subfield (framework-supplied, no user to face)" do
+      expect do
+        build_axn { expects :request_id, on: :ambient_context, user_facing: true }
+      end.to raise_error(ArgumentError, /not supported for an ambient_context subfield/)
     end
 
     it "rejects a shape block on a user_facing field" do
@@ -362,32 +533,28 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
     end
 
-    it "rejects a subfield declared on a user_facing parent's alias" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash, as: :raw_payload, user_facing: true
-          expects :id, on: :raw_payload
-        end
-      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
+    it "suppresses through an aliased user_facing parent (wire-key identification)" do
+      action = build_axn do
+        expects :payload, type: Hash, as: :raw_payload, user_facing: "Payload is missing"
+        expects :id, on: :raw_payload, type: Integer
+        def call = nil
+      end
+
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Payload is missing")
     end
 
-    it "rejects a dotted on: path rooted at a user_facing parent" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true
-          expects :id, on: "payload.meta", type: Integer
-        end
-      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
-    end
+    it "suppresses a dotted on: path rooted at a failed user_facing parent" do
+      action = build_axn do
+        expects :payload, type: Hash, user_facing: "Payload is missing"
+        expects :id, on: "payload.meta", type: Integer
+        def call = nil
+      end
 
-    it "rejects a subfield rooted at another subfield of a user_facing parent" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true
-          expects :meta, on: :payload, type: Hash
-          expects :id, on: :meta
-        end
-      end.to raise_error(ArgumentError, /user_facing: is for top-level fields/)
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Payload is missing")
     end
 
     it "still allows subfields on a non-user-facing parent alongside a user_facing top-level field" do
@@ -425,10 +592,13 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
-    it "rejects user_facing: combined with on: (subfields are dev-facing)" do
+    it "still validates the user_facing: value form for a subfield declaration" do
       expect do
-        build_axn { expects(:id, on: :event_params, user_facing: true) }
-      end.to raise_error(ArgumentError, /user_facing: is not supported with on:/)
+        build_axn do
+          expects :payload, type: Hash
+          expects(:id, on: :payload, user_facing: 5)
+        end
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
   end
 end

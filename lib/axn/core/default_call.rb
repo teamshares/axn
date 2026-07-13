@@ -16,7 +16,7 @@ module Axn
         self.class.external_field_configs.each do |config|
           field = config.field
           # Check if field is optional (allow_blank or no presence validation)
-          is_optional = Axn::Internal::FieldConfig.optional?(config)
+          is_optional = config.optional?
 
           # If method exists, call it (user-defined methods override auto-generated ones)
           # The auto-generated method for exposed-only fields returns nil (field not in provided_data)

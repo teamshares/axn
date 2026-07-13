@@ -23,12 +23,32 @@ module Axn
         def implicit? = configs.empty?
       end
 
-      Result = Data.define(:roots, :dropped)
+      # A config's resolved position in the tree, recorded once at build so runtime consumers never
+      # re-split `on:` strings or re-resolve reader aliases. `node` is the config's leaf Node;
+      # `wire_path` is the full provided_data write path ([top-level wire key, *wire segments]);
+      # `ancestors` is the hop chain ([Node, wire segment] pairs, outermost first — each hop's node is
+      # the parent the segment is read from), so chain-aware write-backs can gate materialization on
+      # every intermediate node's own declared type. `parent_index` is the chain index of the `on:`
+      # TARGET node (the value the config's own `field` — possibly dotted — is extracted from), which
+      # canonical parent resolution resolves through the deepest reader-bearing ancestor. A top-level
+      # config is the depth-0 case: wire_path is just [field], ancestors are empty, parent_index 0.
+      ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
+        # The `on:`-target Node (the config's immediate parent in contract terms).
+        def parent_node = ancestors[parent_index].first
+      end
+
+      # The finished build: per-root node trees, the dropped-config list, and the per-config
+      # ResolvedPath index. (Named to be unmistakable next to the public Axn::Result.)
+      ResolutionResult = Data.define(:roots, :dropped, :index)
 
       module_function
 
       def build(field_configs, subfield_configs)
         roots = field_configs.to_h { |c| [c.reader_as, Node.new(configs: [c], children: {})] }
+        # config => ResolvedPath, identity-keyed: distinct declarations are distinct entries even if
+        # they compare equal as Data values.
+        index = {}.compare_by_identity
+        field_configs.each { |c| index[c] = ResolvedPath.new(node: roots[c.reader_as], wire_path: [c.field], ancestors: [], parent_index: 0) }
         by_reader = {} # subfield reader_as => {node:, hops:} — anchor targets for a subfield-of-a-subfield
         deep_paths = [] # [config, hops] judged only once the tree is COMPLETE (an ancestor's type may be declared after the deep config)
 
@@ -45,16 +65,14 @@ module Axn
           next if anchor.nil?
 
           segments = on_rest + config.field.to_s.split(".").map(&:to_sym)
-          hops = anchor_hops.dup
-          node = anchor
-          segments[0..-2].each do |seg|
-            hops << [node, seg]
-            node = (node.children[seg] ||= Node.new(configs: [], children: {}))
-          end
-          leaf_key = segments.last
-          hops << [node, leaf_key]
-          leaf = (node.children[leaf_key] ||= Node.new(configs: [], children: {}))
-          leaf.configs << config
+          leaf, hops = attach_config!(config, anchor, anchor_hops, segments)
+
+          # The chain always starts at a top-level root (an anchored subfield's hops were themselves
+          # rooted there), so the first hop's node carries the root's wire key. The `on:` target sits
+          # after the anchor chain plus any dotted-`on:` segments (the config's own field segments
+          # descend BELOW it).
+          index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
+                                           ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
 
           # Only a non-dotted field name gets a real reader method, so only it can anchor a later
           # `on:` (see ContractForSubfields#_define_subfield_reader).
@@ -64,7 +82,23 @@ module Axn
           deep_paths << [config, hops] if hops.size > 1
         end
 
-        Result.new(roots:, dropped: compute_dropped(deep_paths))
+        ResolutionResult.new(roots:, dropped: compute_dropped(deep_paths), index:)
+      end
+
+      # Walk (creating implicit intermediates as needed) from `anchor` down `segments`, attach the
+      # config at the leaf, and return [leaf, hops].
+      def attach_config!(config, anchor, anchor_hops, segments)
+        hops = anchor_hops.dup
+        node = anchor
+        segments[0..-2].each do |seg|
+          hops << [node, seg]
+          node = (node.children[seg] ||= Node.new(configs: [], children: {}))
+        end
+        leaf_key = segments.last
+        hops << [node, leaf_key]
+        leaf = (node.children[leaf_key] ||= Node.new(configs: [], children: {}))
+        leaf.configs << config
+        [leaf, hops]
       end
 
       # A deep config is dropped when a node it passes THROUGH (each hop's parent; never the leaf itself)

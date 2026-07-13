@@ -1,66 +1,70 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/hash/indifferent_access"
+require "axn/core/validation/base"
+
 module Axn
   module Validation
-    class Fields
-      include ActiveModel::Validations
-
-      # NOTE: defining classes where needed b/c we explicitly register it'll affect ALL the consuming apps' validators as well
-      ModelValidator = Validators::ModelValidator
-      TypeValidator = Validators::TypeValidator
-      ValidateValidator = Validators::ValidateValidator
-      OfValidator = Validators::OfValidator
-      ShapeValidator = Validators::ShapeValidator
-
-      def initialize(context)
-        @context = context
+    # THE one-off validator collector, for every declared config at every level: a top-level field
+    # validates against the context facade (which resolves model records and reads by wire key), a
+    # subfield against its canonically-resolved parent value. One (field, validations) pair per
+    # one-off class; raising/settling is the caller's concern (see Executor#_validate_inbound!).
+    class Fields < Base
+      def initialize(source)
+        super()
+        @source = source
       end
 
       def read_attribute_for_validation(attr)
-        # The context here is actually a facade (InternalContext or Result)
-        # which already handles reading from the correct data source
-        @context.public_send(attr)
+        # A subfield `model:` config resolves through the action's generated reader (which digs the
+        # wire key and its `_id` out of the parent) — `@reader` is only supplied for subfields, so a
+        # top-level model field (inbound facade or outbound result) reads through its facade, which
+        # already resolves the record.
+        if @action && @reader && @validations&.key?(:model) && @action.respond_to?(@reader)
+          @action.public_send(@reader)
+        else
+          # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil):
+          # this field's own validators report against nil while the source's own type validation
+          # classifies the bad value.
+          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source)
+        end
       end
 
-      def method_missing(method_name, ...)
-        # Delegate method calls to the action instance to support symbol-based validations
-        # like inclusion: { in: :valid_channels_for_number }
-        action = _action_for_validation
-        return super unless action && action.respond_to?(method_name, true) # rubocop:disable Style/SafeNavigation
-
-        action.send(method_name, ...)
+      # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if
+      # valid).
+      def self.collect_errors(field:, validations:, source:, action: nil, reader: nil)
+        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:)
       end
 
-      def respond_to_missing?(method_name, include_private = false)
-        action = _action_for_validation
-        return super unless action
-
-        action.respond_to?(method_name, include_private) || super
-      end
-
-      def self.validate!(validations:, context:, exception_klass:)
-        validator = Class.new(self) do
+      # Builds the one-off validator class for a (field, validations) pair. Callers that validate
+      # the same contract repeatedly (e.g. ShapeValidator over array elements) can build this once
+      # and reuse it across sources via .errors_for, avoiding per-call class compilation.
+      def self.validator_class_for(field:, validations:)
+        Class.new(self) do
           def self.name = "Axn::Validation::Fields::OneOff"
 
-          validations.each do |field, field_validations|
-            field_validations.each do |key, value|
-              validates field, key => value
-            end
-          end
-        end.new(context)
+          # A field may legitimately carry no validators at all (e.g. `optional: true` with no
+          # type/model), which `validates` rejects — an empty set means nothing to enforce.
+          validates field, **validations unless validations.empty?
+        end
+      end
 
-        return if validator.valid?
+      # Runs a validator class against a source and returns its ActiveModel::Errors (empty if valid).
+      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil)
+        validator = validator_class.new(source)
 
-        raise exception_klass, validator.errors
+        # Set the action context for model field resolution + symbol-argument delegation
+        validator.instance_variable_set(:@action, action)
+        validator.instance_variable_set(:@validations, validations)
+        validator.instance_variable_set(:@reader, reader)
+
+        validator.valid?
+        validator.errors
       end
 
       private
 
-      def _action_for_validation
-        return unless @context.respond_to?(:action, true)
-
-        @context.send(:action)
-      end
+      def _action_for_validation = @action
     end
   end
 end

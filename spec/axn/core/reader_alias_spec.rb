@@ -193,16 +193,19 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(payload: { settings: { enabled: true } }).got).to be(true)
     end
 
-    it "rejects a default on a subfield declared `on:` an aliased subfield parent (nested write)" do
-      # The parent (`raw_settings`) is itself a subfield, so its value lives nested inside `payload`
-      # — the single-level mutation machinery can't write there, same as a dotted `on:` path.
-      expect do
-        build_axn do
-          expects :payload
-          expects :settings, on: :payload, as: :raw_settings
-          expects :enabled, on: :raw_settings, default: true
-        end
-      end.to raise_error(ArgumentError, /not supported with a nested/)
+    it "applies a default on a subfield declared `on:` an aliased subfield parent (chain-aware write)" do
+      # The parent (`raw_settings`) is itself a subfield reached through an alias; the resolved wire
+      # path (payload → settings → enabled) drives the nested write.
+      action = build_axn do
+        expects :payload
+        expects :settings, on: :payload, as: :raw_settings, optional: true
+        expects :enabled, on: :raw_settings, optional: true, default: true
+        exposes :parent, optional: true
+
+        def call = expose(parent: payload)
+      end
+
+      expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1, settings: { enabled: true } })
     end
   end
 
@@ -228,13 +231,13 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /dotted/)
     end
 
-    it "rejects an alias when readers: false" do
+    it "rejects readers: false (removed) with a pointer at as:/prefix:" do
       expect do
         build_axn do
           expects :foo
-          expects :id, on: :foo, as: :x, readers: false
+          expects :id, on: :foo, readers: false
         end
-      end.to raise_error(ArgumentError, /readers: false/)
+      end.to raise_error(ArgumentError, /`readers: false` has been removed/)
     end
 
     it "rejects a reserved reader name" do
@@ -263,35 +266,34 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /collision/i)
     end
 
-    it "lets a later alias claim a readerless subfield's name (escape hatch)" do
-      # `readers: false` intentionally generates no `:id` reader, so the name stays free for a
-      # later alias to claim — it must not register a phantom collision.
+    it "lets a later alias claim a dotted subfield's leaf name (no reader generated)" do
+      # A dotted subfield key generates no reader, so its leaf name stays free for a later alias
+      # to claim — it must not register a phantom collision.
       action = build_axn do
         expects :payload
-        expects :id, on: :payload, readers: false
+        expects "meta.id", on: :payload, optional: true, type: Integer
         expects :raw_id, as: :id
         exposes :got
 
         def call = expose(got: id)
       end
 
-      expect(action.call(payload: { id: 1 }, raw_id: 99).got).to eq(99)
+      expect(action.call(payload: { meta: { id: 1 } }, raw_id: 99).got).to eq(99)
     end
 
-    it "lets a readerless subfield reuse an existing alias name (reverse order)" do
-      # Reverse of the above: the alias claims `:id` first, then a readerless subfield names the
-      # same wire key. `readers: false` defines no reader, so this is not a collision in either
-      # order — the escape hatch must not be declaration-order dependent.
+    it "resolves a subfield whose wire key collides with a top-level reader via as: (the rename escape hatch)" do
+      # A top-level `id` claims the reader; a subfield with the same wire key renames its reader
+      # instead of suppressing it (readers: false is removed), so both values stay accessible.
       action = build_axn do
-        expects :payload
-        expects :raw_id, as: :id
-        expects :id, on: :payload, readers: false
+        expects :id, type: Integer
+        expects :org, type: Hash
+        expects :id, on: :org, as: :org_id, type: Integer
         exposes :got
 
-        def call = expose(got: id)
+        def call = expose(got: [id, org_id])
       end
 
-      expect(action.call(payload: { id: 1 }, raw_id: 99).got).to eq(99)
+      expect(action.call(id: 1, org: { id: 2 }).got).to eq([1, 2])
     end
   end
 end
