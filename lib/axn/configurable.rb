@@ -18,6 +18,22 @@ module Axn
     # generated class-level override accessors.
     UNSET = Object.new.freeze
 
+    # The config source that owns `namespace` on `klass` or any ancestor, or nil. Walks the same
+    # superclass chain the override store uses, so the duplicate-owner guard and the `configure`
+    # writer agree on which source (if any) governs a namespace for a given class.
+    def self.config_source_for(klass, namespace)
+      while klass.is_a?(Module)
+        if klass.instance_variable_defined?(:@_axn_config_sources)
+          registry = klass.instance_variable_get(:@_axn_config_sources)
+          return registry[namespace] if registry.key?(namespace)
+        end
+        break unless klass.is_a?(Class) && klass.superclass
+
+        klass = klass.superclass
+      end
+      nil
+    end
+
     Setting = Struct.new(:name, :default, :one_of, :validate, :callable, :overridable, keyword_init: true) do
       # Raises ArgumentError if the assigned value is not permitted.
       def validate!(value)
@@ -171,7 +187,9 @@ module Axn
                      base.instance_variable_set(:@_axn_config_sources, {})
                    end
         ns = config_namespace
-        existing = registry[ns]
+        # Check the whole ancestry, not just this class's local registry: a parent action may already
+        # own the namespace (a subclass that adds a second source for it hits the same hazard).
+        existing = Axn::Configurable.config_source_for(base, ns)
         # Two different sources under one namespace share the same `[ns][name]` bucket but have
         # different schemas, so `configure(ns)` could only validate against one of them — settings
         # from the other would spuriously raise `unknown` or check against the wrong schema. That's a
@@ -310,17 +328,7 @@ module Axn
       # The config source that owns `@namespace` on `@klass` (or an ancestor), if its overrides were
       # included — nil when the namespace is unregistered (adapter not loaded), which keeps the write tolerant.
       def _registered_source
-        klass = @klass
-        while klass.is_a?(Module)
-          if klass.instance_variable_defined?(:@_axn_config_sources)
-            registry = klass.instance_variable_get(:@_axn_config_sources)
-            return registry[@namespace] if registry.key?(@namespace)
-          end
-          break unless klass.is_a?(Class) && klass.superclass
-
-          klass = klass.superclass
-        end
-        nil
+        Axn::Configurable.config_source_for(@klass, @namespace)
       end
     end
 

@@ -440,6 +440,24 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     end.to raise_error(ArgumentError, /namespace :dup is already owned/)
   end
 
+  it "raises when a subclass adds a second source for a namespace its parent already owns" do
+    a = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup2
+      setting :foo, default: 1, overridable: true
+    end
+    b = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup2
+      setting :bar, default: 2, overridable: true
+    end
+    am = a.overrides
+    bm = b.overrides
+    parent = Class.new { include am }
+
+    expect { Class.new(parent) { include bm } }.to raise_error(ArgumentError, /namespace :dup2 is already owned/)
+  end
+
   it "raises when config_namespace is declared after an overridable setting" do
     expect do
       Module.new do
