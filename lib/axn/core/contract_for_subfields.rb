@@ -256,7 +256,10 @@ module Axn
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
         # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
-        # the class is mutated. A dotted field name generates no reader, so it can't collide.
+        # the class is mutated. A dotted field name generates no reader, so it can't collide. Every
+        # declared subfield MUST get a reader (canonical `on:` resolution public_sends the deepest
+        # reader-bearing ancestor, so a silently-skipped reader would resolve the wrong value), so a
+        # collision is always a declaration error — resolved by renaming, never by suppression.
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
@@ -264,7 +267,10 @@ module Axn
 
             reader = config.reader_as
             if method_defined?(reader) || seen.include?(reader)
-              raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)"
+              raise ArgumentError,
+                    "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
+                    "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
+                    "as: :#{config.on.to_s.tr('.', '_')}_#{config.field}` (or use prefix: for several at once)"
             end
 
             seen << reader

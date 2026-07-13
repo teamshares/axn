@@ -453,10 +453,7 @@ RSpec.describe Axn do
               expects :payload
               expects :class, on: :payload
             end
-          end.to raise_error(
-            ArgumentError,
-            "expects does not support duplicate sub-keys (i.e. `class` is already defined)",
-          )
+          end.to raise_error(ArgumentError, /expects does not support duplicate sub-keys \(i\.e\. `class` is already defined\).*as:/)
         end
       end
 
@@ -507,7 +504,7 @@ RSpec.describe Axn do
               expects :foo
               expects :bar, on: :foo
             end.expects :foo, on: :bar
-          end.to raise_error(ArgumentError, "expects does not support duplicate sub-keys (i.e. `foo` is already defined)")
+          end.to raise_error(ArgumentError, /expects does not support duplicate sub-keys \(i\.e\. `foo` is already defined\).*as: :bar_foo/)
         end
 
         it "resolves via as: (rename instead of the removed readers: false suppression)" do
