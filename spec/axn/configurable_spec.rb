@@ -191,23 +191,23 @@ RSpec.describe Axn::Configurable do
       end
     end
 
-    describe "raw_<name>: the override with no config fallback" do
+    describe "<name>_override: the override with no config fallback" do
       it "returns UNSET when no override is set anywhere in the ancestry" do
-        expect(action_class.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+        expect(action_class.mcp_text_content_override).to equal(Axn::Configurable::UNSET)
       end
 
       it "returns the stored override, unresolved, without falling back to config" do
         overridable.config.mcp_text_content = :message
         action_class.mcp_text_content :message
 
-        expect(action_class.raw_mcp_text_content).to eq(:message)
+        expect(action_class.mcp_text_content_override).to eq(:message)
       end
 
       it "inherits a parent's override without falling back to config" do
         action_class.mcp_text_content :message
         child = Class.new(action_class)
 
-        expect(child.raw_mcp_text_content).to eq(:message)
+        expect(child.mcp_text_content_override).to eq(:message)
       end
 
       it "does not leak a sibling's override" do
@@ -215,24 +215,28 @@ RSpec.describe Axn::Configurable do
         mod = overridable.overrides
         sibling = Class.new { include mod }
 
-        expect(sibling.raw_mcp_text_content).to equal(Axn::Configurable::UNSET)
+        expect(sibling.mcp_text_content_override).to equal(Axn::Configurable::UNSET)
       end
 
-      it "does not generate raw_<name> for non-overridable settings" do
+      it "does not generate <name>_override for non-overridable settings" do
         plain = Module.new do
           extend Axn::Configurable
           setting :default_model, default: "x"
         end
         klass = Class.new { include plain.overrides }
 
-        expect(klass).not_to respond_to(:raw_default_model)
+        expect(klass).not_to respond_to(:default_model_override)
+      end
+
+      it "does not define a raw_<name> alias (renamed to <name>_override)" do
+        expect(action_class).not_to respond_to(:raw_mcp_text_content)
       end
     end
 
     describe "consumer-defined accessor collisions" do
-      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+      it "resolves via Axn's override store even when the class shadows <name>_override" do
         action_class.mcp_text_content :message
-        action_class.define_singleton_method(:raw_mcp_text_content) { :hijacked }
+        action_class.define_singleton_method(:mcp_text_content_override) { :hijacked }
 
         expect(action_class.mcp_text_content).to eq(:message)
       end
@@ -351,10 +355,10 @@ RSpec.describe Axn::Configurable::Settings do
       expect(action_class.mode?).to be(true) # :a is truthy
     end
 
-    it "exposes raw_<name> as the override with no singleton fallback" do
-      expect(action_class.raw_mode).to equal(Axn::Configurable::UNSET)
+    it "exposes <name>_override as the override with no singleton fallback" do
+      expect(action_class.mode_override).to equal(Axn::Configurable::UNSET)
       action_class.mode :b
-      expect(action_class.raw_mode).to eq(:b)
+      expect(action_class.mode_override).to eq(:b)
     end
 
     it "raises at declaration when overridable: true without a registered source" do
@@ -367,9 +371,9 @@ RSpec.describe Axn::Configurable::Settings do
     end
 
     describe "consumer-defined accessor collisions" do
-      it "resolves via Axn's override store even when the class shadows raw_<name>" do
+      it "resolves via Axn's override store even when the class shadows <name>_override" do
         action_class.mode :b
-        action_class.define_singleton_method(:raw_mode) { :hijacked }
+        action_class.define_singleton_method(:mode_override) { :hijacked }
 
         expect(action_class.mode).to eq(:b)
       end
@@ -380,7 +384,7 @@ RSpec.describe Axn::Configurable::Settings do
         action_class.mode :b
         action_class.define_singleton_method(:mode) { |*| :hijacked }
         action_class.define_singleton_method(:mode?) { :hijacked }
-        action_class.define_singleton_method(:raw_mode) { :hijacked }
+        action_class.define_singleton_method(:mode_override) { :hijacked }
 
         expect(klass.resolve_override_for(action_class, :mode)).to eq(:b)
       end

@@ -161,7 +161,7 @@ module Axn
         return unless defined?(Axn::Core::MethodShadowing) && defined?(Axn.config)
 
         _override_resolvers.each_key do |name|
-          [name, :"#{name}?"].each do |accessor|
+          [name, :"#{name}?", :"#{name}_override"].each do |accessor|
             next unless Axn::Core::MethodShadowing.externally_defined?(base, accessor)
 
             Axn.config.logger.debug do
@@ -243,7 +243,7 @@ module Axn
         @_override_resolvers ||= {}
       end
 
-      # Generates `<name>(value = UNSET)` / `<name>?` / `raw_<name>` on the
+      # Generates `<name>(value = UNSET)` / `<name>?` / `<name>_override` on the
       # shared methods module. `fallback` is a zero-arg lambda returning the current
       # library-level value for this setting (its own `config` bag for the
       # module-singleton flavor; the live singleton instance for the class flavor).
@@ -258,7 +258,7 @@ module Axn
         @_config_namespace_locked = true
         _override_settings[name] = setting
 
-        raw_lookup = lambda do |start|
+        override_lookup = lambda do |start|
           klass = start
           while klass.is_a?(Module)
             if klass.instance_variable_defined?(:@_axn_config_overrides)
@@ -273,7 +273,7 @@ module Axn
         end
 
         resolve_override = lambda do |start|
-          found = raw_lookup.call(start)
+          found = override_lookup.call(start)
           return fallback.call if UNSET.equal?(found)
 
           # Values written through the tolerant `configure(namespace)` bag are stored
@@ -301,7 +301,7 @@ module Axn
 
           define_method(:"#{name}?") { !!resolve_override.call(self) }
 
-          define_method(:"raw_#{name}") { raw_lookup.call(self) }
+          define_method(:"#{name}_override") { override_lookup.call(self) }
         end
       end
     end

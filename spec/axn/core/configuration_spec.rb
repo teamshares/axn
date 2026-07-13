@@ -245,13 +245,13 @@ RSpec.describe "per-class config overrides on actions" do
   it "gives every action the override accessors for sidekiq_job_tag_sources" do
     expect(action).to respond_to(:sidekiq_job_tag_sources)
     expect(action).to respond_to(:sidekiq_job_tag_sources?)
-    expect(action).to respond_to(:raw_sidekiq_job_tag_sources)
+    expect(action).to respond_to(:sidekiq_job_tag_sources_override)
     expect(action).not_to respond_to(:resolved_sidekiq_job_tag_sources)
   end
 
   it "resolves to Axn.config by default (no per-class override)" do
     expect(action.sidekiq_job_tag_sources).to eq(%i[tag dimension])
-    expect(action.raw_sidekiq_job_tag_sources).to equal(Axn::Configurable::UNSET)
+    expect(action.sidekiq_job_tag_sources_override).to equal(Axn::Configurable::UNSET)
   end
 
   it "tracks a change to the library-level value" do
