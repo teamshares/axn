@@ -129,7 +129,7 @@ module Axn
       # Resolves `name` for `klass` through the same override store + fallback the
       # generated accessors use, WITHOUT dispatching to a class method on `klass`.
       # For framework code that consumes an override: the generated `<name>` /
-      # `resolved_<name>` readers are all shadowable by a same-named class method
+      # `<name>?` readers are all shadowable by a same-named class method
       # on the action (or a subclass), which would silently bypass the override
       # store — so the framework resolves through this registry instead. Raises
       # KeyError if `name` isn't an overridable setting (a declaration-time bug).
@@ -243,15 +243,15 @@ module Axn
         @_override_resolvers ||= {}
       end
 
-      # Generates `<name>(value = UNSET)` / `raw_<name>` / `resolved_<name>` on the
+      # Generates `<name>(value = UNSET)` / `<name>?` / `raw_<name>` on the
       # shared methods module. `fallback` is a zero-arg lambda returning the current
       # library-level value for this setting (its own `config` bag for the
       # module-singleton flavor; the live singleton instance for the class flavor).
       #
       # Closure-captured helpers so the generated accessors reference each other
       # through these lambdas rather than public method dispatch — a consumer class
-      # that happens to define its own `raw_<name>`/`resolved_<name>` class method
-      # can't shadow the internals the other accessors rely on.
+      # that happens to define its own same-named class method can't shadow the
+      # internals the other accessors rely on.
       def _define_override_methods(setting, fallback)
         name = setting.name
         namespace = config_namespace
@@ -302,8 +302,6 @@ module Axn
           define_method(:"#{name}?") { !!resolve_override.call(self) }
 
           define_method(:"raw_#{name}") { raw_lookup.call(self) }
-
-          define_method(:"resolved_#{name}") { resolve_override.call(self) }
         end
       end
     end

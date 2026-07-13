@@ -139,9 +139,9 @@ module Axn
           # facets from the raw inputs (no preprocess/defaults — see Executor#resolve_inbound_facets),
           # for the sources enabled by the action's resolved `sidekiq_job_tag_sources` (per-class
           # override → Axn.config fallback). Resolved via `Axn::Configuration.resolve_override_for`
-          # rather than the action's generated `sidekiq_job_tag_sources`/`resolved_…` reader: those
-          # are class methods a consumer could shadow, which would silently bypass the override store;
-          # the registry path reads the store directly. Best-effort — never breaks the enqueue. Skips
+          # rather than the action's generated `sidekiq_job_tag_sources` reader: that is a class method
+          # a consumer could shadow, which would silently bypass the override store; the registry path
+          # reads the store directly. Best-effort — never breaks the enqueue. Skips
           # all work (no instance built) when the sink is disabled or the action declares no facets
           # for the enabled sources. See PRO-2855.
           def _resolve_sidekiq_job_tags(kwargs)

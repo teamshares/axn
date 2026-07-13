@@ -244,23 +244,24 @@ RSpec.describe "per-class config overrides on actions" do
 
   it "gives every action the override accessors for sidekiq_job_tag_sources" do
     expect(action).to respond_to(:sidekiq_job_tag_sources)
-    expect(action).to respond_to(:resolved_sidekiq_job_tag_sources)
+    expect(action).to respond_to(:sidekiq_job_tag_sources?)
     expect(action).to respond_to(:raw_sidekiq_job_tag_sources)
+    expect(action).not_to respond_to(:resolved_sidekiq_job_tag_sources)
   end
 
   it "resolves to Axn.config by default (no per-class override)" do
-    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    expect(action.sidekiq_job_tag_sources).to eq(%i[tag dimension])
     expect(action.raw_sidekiq_job_tag_sources).to equal(Axn::Configurable::UNSET)
   end
 
   it "tracks a change to the library-level value" do
     Axn.config.sidekiq_job_tag_sources = %i[dimension]
-    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(action.sidekiq_job_tag_sources).to eq(%i[dimension])
   end
 
   it "resolves to the per-class override when set, leaving Axn.config untouched" do
     action.sidekiq_job_tag_sources %i[dimension]
-    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(action.sidekiq_job_tag_sources).to eq(%i[dimension])
     expect(Axn.config.sidekiq_job_tag_sources).to eq(%i[tag dimension])
   end
 
@@ -270,7 +271,7 @@ RSpec.describe "per-class config overrides on actions" do
 
   it "reads a value written through the no-arg configure bag (core namespace)" do
     action.configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
-    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(action.sidekiq_job_tag_sources).to eq(%i[dimension])
   end
 
   it "rejects a typo'd setter in the no-arg configure bag (core schema is always known)" do
@@ -284,18 +285,18 @@ RSpec.describe "per-class config overrides on actions" do
 
   it "always exposes axn_configure as the collision-proof form" do
     action.axn_configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
-    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(action.sidekiq_job_tag_sources).to eq(%i[dimension])
   end
 
   it "inherits a per-class override into subclasses" do
     action.sidekiq_job_tag_sources %i[dimension]
-    expect(Class.new(action).resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+    expect(Class.new(action).sidekiq_job_tag_sources).to eq(%i[dimension])
   end
 
   it "does not leak a per-class override to a sibling action" do
     action.sidekiq_job_tag_sources %i[dimension]
     sibling = Class.new { include Axn }
-    expect(sibling.resolved_sidekiq_job_tag_sources).to eq(%i[tag dimension])
+    expect(sibling.sidekiq_job_tag_sources).to eq(%i[tag dimension])
   end
 
   # PRO-2875 makes the generic Naming/SchemaReflection DSLs DEFER to a base's same-named class
@@ -314,7 +315,7 @@ RSpec.describe "per-class config overrides on actions" do
     it "still installs the opt-in accessor (does not defer)" do
       action = Class.new(base) { include Axn }
       action.sidekiq_job_tag_sources %i[dimension]
-      expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+      expect(action.sidekiq_job_tag_sources).to eq(%i[dimension])
     end
 
     it "leaves a breadcrumb when the predicate name collides" do
