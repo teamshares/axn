@@ -1319,6 +1319,24 @@ RSpec.describe Axn do
 
         expect(klass.subfield_configs.map(&:field)).not_to include(:id)
       end
+
+      it "does not leave an orphaned reader when the contradiction error is rescued" do
+        klass = build_axn do
+          expects :payload, type: Hash, allow_nil: true
+        end
+
+        expect do
+          klass.class_eval do
+            expects :thing, on: "payload.meta", type: Integer
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant/)
+
+        # Reader generation is deferred until after every declaration check passes, so a rejected subfield
+        # leaves no orphaned reader method or recorded reader name — a corrected retry won't collide with
+        # the duplicate-reader guard, and no unvalidated reader is callable.
+        expect(klass.method_defined?(:thing)).to be(false)
+        expect(klass._generated_subfield_reader_names).not_to include(:thing)
+      end
     end
 
     describe "family 1: nil-tolerant ancestor + required descendant" do
@@ -1389,6 +1407,31 @@ RSpec.describe Axn do
             expects :id, on: :meta, type: Integer
           end
         end.not_to raise_error
+      end
+
+      it "does not raise when a nil-tolerant intermediate with its OWN usable default rescues its subtree" do
+        # :meta is BOTH nil-tolerant (optional:) AND defaulted — its own default materializes it, so a
+        # required :id below is never stranded even though the parent :payload is not itself nil-tolerant.
+        # A shielded node must not register its OWN nil-tolerance as a stranding ancestor for its children.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, optional: true, default: { id: 1 }
+            expects :id, on: :meta, type: Integer
+          end
+        end.not_to raise_error
+      end
+
+      it "still raises for a nil-tolerant model parent with its own default (a model default does not rescue)" do
+        # A model node's materialized default is a non-record value ModelValidator rejects, so — unlike a
+        # plain object default — it rescues nothing: the model node stays a nil-tolerant ancestor and a
+        # required subfield under it is genuinely stranded on omission.
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, optional: true, default: { id: 1 }
+            expects :name, on: :company, type: String
+          end
+        end.to raise_error(ArgumentError, /:company is declared nil-tolerant.*:name .* is required/)
       end
     end
 

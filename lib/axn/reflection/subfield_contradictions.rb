@@ -47,9 +47,21 @@ module Axn
         # a default under a nil-tolerant model ancestor doesn't rescue anything either (materialized `{}`
         # is rejected by ModelValidator), but that is family 3, caught at the defaulted node itself, so
         # there is nothing for this shield to suppress.
-        shielded = !node.implicit? && node.configs.all? { |c| Schema.usable_default?(c, subfield: true) }
+        shielded = shielded?(node)
+        # An OUTER nil-tolerant ancestor is rescued by this node's default only if it can be materialized
+        # while nil — i.e. it is object-shaped (Executor#_materialize_object_parent!'s gate). A non-object
+        # ancestor (type: Array) can't be, so it still strands and must keep being tracked.
         shield_ancestor = shielded && nil_tolerant_ancestor && Schema.object_shaped?(nil_tolerant_ancestor)
-        child_nil_tolerant = shield_ancestor ? nil : (nil_tolerant_ancestor || outermost_nil_tolerant(node))
+        # A shielded node's default materializes its whole subtree, so it neither strands its own children
+        # (it does NOT register itself as a nil-tolerant ancestor below) nor lets an object-shaped outer
+        # ancestor strand them. When it is NOT shielded, it tracks the outer ancestor and — if itself
+        # nil-tolerant — registers itself.
+        child_nil_tolerant =
+          if shielded
+            shield_ancestor ? nil : nil_tolerant_ancestor
+          else
+            nil_tolerant_ancestor || outermost_nil_tolerant(node)
+          end
         child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
 
         node.children.each do |key, child|
@@ -80,6 +92,17 @@ module Axn
         return false if node.implicit?
 
         node.configs.any? { |c| !(Schema.usable_default?(c, subfield: true) || Schema.nil_accepted?(c)) }
+      end
+
+      # A node whose OWN configs materialize it wholesale from a usable default, rescuing its subtree from
+      # omission/nil regardless of its own nil-tolerance. Only a NON-model node qualifies: a model node's
+      # materialized default is a non-record value ModelValidator rejects (family 3), so it rescues nothing
+      # — leaving it un-shielded keeps it tracked as a nil-tolerant ancestor, so a required descendant of a
+      # defaulted nil-tolerant model still raises (a broken contract) rather than slipping through.
+      def shielded?(node)
+        !node.implicit? &&
+          node.configs.none? { |c| c.validations[:model] } &&
+          node.configs.all? { |c| Schema.usable_default?(c, subfield: true) }
       end
 
       def nil_tolerant?(node)

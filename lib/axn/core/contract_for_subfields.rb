@@ -160,24 +160,30 @@ module Axn
                   "`default:`/`preprocess:`/`sensitive:` are not supported with a nested `on:` (got on: #{on.inspect})"
           end
 
-          _parse_subfield_configs(*fields, on:, readers:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, **validations).tap do |configs|
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
-            # Reject contradiction-only contracts (families 1–3) BEFORE committing the new configs, so a
-            # rescued ArgumentError (a Rails reload path, metaprogrammed class construction, a test) can't
-            # leave the class carrying — and validating/reflecting — a subfield it just rejected. The tree
-            # is built from the PROSPECTIVE set (committed configs plus the new batch); only after `detect`
-            # is clean do we commit. Built fresh (not cached) — class-load time, off the runtime hot path.
-            # Family 4 is a local check in _parse_subfield_configs.
+            # Reject contradiction-only contracts (families 1–3) on the PROSPECTIVE config set (committed
+            # configs plus this batch), before any mutation. Built fresh (not cached) — class-load time,
+            # off the runtime hot path. Family 4 is a local check in _parse_subfield_configs.
             tree = Axn::Reflection::SubfieldTree.build(internal_field_configs, subfield_configs + configs)
             if (contradiction = Axn::Reflection::SubfieldContradictions.detect(tree))
               raise ArgumentError, contradiction.message
             end
 
-            # NOTE: avoid <<, which would update value for parents and children
+            # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
+            # above — leaves the class untouched.
+            _validate_subfield_reader_names!(configs) if readers
+
+            # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
+            # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
+            # reload path, metaprogrammed construction, a test — never leaves the class carrying an orphaned
+            # config or generated reader, so a corrected retry starts clean.
+            # NOTE: avoid <<, which would update value for parents and children.
             self.subfield_configs += configs
+            _define_subfield_readers!(configs) if readers
           end
         end
 
@@ -213,10 +219,9 @@ module Axn
           end
         end
 
-        def _parse_subfield_configs( # rubocop:disable Metrics/ParameterLists
+        def _parse_subfield_configs(
           *fields,
           on:,
-          readers:,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -253,12 +258,33 @@ module Axn
             end
 
             reader = reader_names[field] || field
-            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader).tap do |config|
-              if readers
-                _define_subfield_reader(reader, field, on:, validations: parsed_validations)
-                _define_boolean_predicate_reader(reader) if Axn::Internal::FieldConfig.boolean?(config)
-              end
+            SubfieldConfig.new(field:, validations: parsed_validations, on:, sensitive:, preprocess:, default:, metadata:, reader_as: reader)
+          end
+        end
+
+        # Reader-name uniqueness across the prospective batch and everything already defined — a pure
+        # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
+        # the class is mutated. A dotted field name generates no reader, so it can't collide.
+        def _validate_subfield_reader_names!(configs)
+          seen = []
+          configs.each do |config|
+            next if config.field.to_s.include?(".")
+
+            reader = config.reader_as
+            if method_defined?(reader) || seen.include?(reader)
+              raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)"
             end
+
+            seen << reader
+          end
+        end
+
+        # Generate the readers for an already-validated, already-committed batch of subfield configs.
+        # Called only after every declaration check has passed, so it performs side effects without raising.
+        def _define_subfield_readers!(configs)
+          configs.each do |config|
+            _define_subfield_reader(config.reader_as, config.field, on: config.on, validations: config.validations)
+            _define_boolean_predicate_reader(config.reader_as) if Axn::Internal::FieldConfig.boolean?(config)
           end
         end
 
@@ -268,7 +294,8 @@ module Axn
           # Don't create top-level readers for nested fields
           return if source_field.to_s.include?(".")
 
-          raise ArgumentError, "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined)" if method_defined?(reader)
+          # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
+          # reader is generated, so there is no duplicate to guard against here.
 
           # Record the generated name (copy-on-write so subclasses inherit) for the readerless-parent guard.
           self._generated_subfield_reader_names += [reader]
