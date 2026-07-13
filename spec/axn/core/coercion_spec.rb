@@ -44,9 +44,14 @@ RSpec.describe "coerce: DSL" do
 
     it "raises a not-yet-supported error for an unsupported coerce target" do
       expect { build_axn { expects :amount, coerce: BigDecimal } }
-        .to raise_error(ArgumentError, /coerce: does not yet support.*BigDecimal.*supported: Date, DateTime, Time, Symbol, Integer, Float/m)
-      expect { build_axn { expects :flag, coerce: :boolean } }
-        .to raise_error(ArgumentError, /coerce: does not yet support.*boolean/m)
+        .to raise_error(ArgumentError, /coerce: does not yet support.*BigDecimal.*supported: Date, DateTime, Time, Symbol, Integer, Float, boolean/m)
+    end
+
+    it "accepts :boolean as a coerce target" do
+      action = build_axn { expects :flag, coerce: :boolean }
+      type = action.internal_field_configs.first.validations[:type]
+      expect(type[:klass]).to eq(:boolean)
+      expect(type[:coerce]).to be(true)
     end
 
     it "raises when a union has no coercible member" do
@@ -154,12 +159,54 @@ RSpec.describe "coerce: DSL" do
       expect(excluded.exception.message).to match(/is not included in the list/)
       expect(excluded.exception.message).not_to match(/could not be coerced/)
     end
+
+    describe "coerce: :boolean" do
+      let(:action) do
+        build_axn do
+          expects :flag, coerce: :boolean
+          exposes :flag, allow_blank: true
+          def call = expose(flag:)
+        end
+      end
+
+      it "coerces a wire string into a real boolean" do
+        expect(action.call(flag: "true").flag).to be(true)
+        expect(action.call(flag: "0").flag).to be(false)
+        expect(action.call(flag: "on").flag).to be(true)
+      end
+
+      it "coerces the integers 1 and 0" do
+        expect(action.call(flag: 1).flag).to be(true)
+        expect(action.call(flag: 0).flag).to be(false)
+      end
+
+      it "leaves an already-boolean value untouched" do
+        expect(action.call(flag: true).flag).to be(true)
+        expect(action.call(flag: false).flag).to be(false)
+      end
+
+      it "reports an uncoerceable string or integer as could-not-be-coerced" do
+        bad_string = action.call(flag: "maybe")
+        expect(bad_string).not_to be_ok
+        expect(bad_string.exception.message).to match(/could not be coerced to a boolean/)
+
+        bad_int = action.call(flag: 2)
+        expect(bad_int).not_to be_ok
+        expect(bad_int.exception.message).to match(/could not be coerced to a boolean/)
+      end
+    end
   end
 
   describe "schema" do
     it "reflects a coerce: field identically to a plain type: field" do
       coerced = build_axn { expects :on, coerce: Date }
       plain   = build_axn { expects :on, type: Date }
+      expect(coerced.input_schema).to eq(plain.input_schema)
+    end
+
+    it "reflects a coerce: :boolean field identically to a plain type: :boolean field" do
+      coerced = build_axn { expects :flag, coerce: :boolean }
+      plain   = build_axn { expects :flag, type: :boolean }
       expect(coerced.input_schema).to eq(plain.input_schema)
     end
   end
@@ -273,6 +320,17 @@ RSpec.describe "coerce: DSL" do
         end
         expect(action.call(on: "2026-07-08").klass).to eq("Date")
       end
+    end
+
+    it "coerces a plain type: :boolean field when on" do
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :flag, type: :boolean
+        exposes :flag, allow_blank: true
+        def call = expose(flag:)
+      end
+      expect(action.call(flag: "true").flag).to be(true)
+      expect(action.call(flag: 0).flag).to be(false)
     end
 
     it "leaves a non-coercible type untouched with the flag on" do

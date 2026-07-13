@@ -113,7 +113,7 @@ Non-Rails (`spec/`) is the primary home — coercion touches no AR/Rails constan
 
 ## Deferred / open
 
-- **`:boolean`-from-string** — genuinely lenient/ambiguous (`"true"/"1"/"yes"/"on"`), no single canonical mapping, and the obvious `ActiveModel::Type::Boolean` is Rails-coupled. Its own ticket; raises not-yet-supported until then.
+- **`:boolean`-from-string** — shipped as a PRO-2873 follow-up (see CHANGELOG). Resolved the "no single canonical mapping / `ActiveModel::Type::Boolean` is Rails-coupled" concern with an explicit two-sided truthy/falsy allowlist (so an unrecognized value is left uncoerced rather than silently `true`), plus the integers `0`/`1` — the one coercer that accepts a non-string wire form.
 - **`BigDecimal`-from-string** — only matters if someone declares `type: BigDecimal` AND sends a string. Its own ticket; raises not-yet-supported until then.
 - **Bulk adapter walk** (`coerce_params(data, field_configs)` or similar) — the primitives (`coerce_value` / `coercible_klasses`) ship here so adapters don't reinvent the mapping, but the bulk walk and its gating (coerce-by-declared-type on a known-JSON boundary vs only `coerce:`-flagged fields) are decided with a real consumer in hand, in PRO-2844 / PRO-2845.
 - **`klass` vs `class`** naming inside the type hash — orthogonal to coercion; kept `klass` here (consistent with `model:`/`of:`), tracked separately.

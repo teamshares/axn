@@ -58,13 +58,22 @@ module Axn
       def types = Array(options[:klass])
       def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(', ')}"
 
-      # A field that opted into coercion but is still holding a String means the string couldn't be
-      # parsed into any target type -- distinguish that from a plain wrong-type value (a non-String
-      # that was never a coercion candidate). Value-free, like `msg`, so no sensitive input leaks.
+      # A field that opted into coercion but is still holding a coercion-candidate value means the
+      # value couldn't be parsed into any target type -- distinguish that from a plain wrong-type
+      # value that was never a candidate. Value-free, like `msg`, so no sensitive input leaks.
       def failure_message(value)
-        return coercion_msg if options[:coerce] && value.is_a?(String)
+        return coercion_msg if options[:coerce] && coercion_candidate?(value)
 
         msg
+      end
+
+      # What coerce_value would have attempted: a String for any target, plus an Integer for a
+      # `:boolean` target (the one coercer that accepts a non-String wire form). A leftover value of
+      # either kind is uncoerceable data; anything else is a genuine wrong-type value.
+      def coercion_candidate?(value)
+        return true if value.is_a?(String)
+
+        value.is_a?(Integer) && types.include?(:boolean)
       end
 
       def coercion_msg
