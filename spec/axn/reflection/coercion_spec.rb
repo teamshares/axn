@@ -60,6 +60,41 @@ RSpec.describe Axn::Reflection::Coercion do
       expect(described_class.coerce_value("2026-07-08", [Date, String])).to eq(Date.new(2026, 7, 8))
       expect(described_class.coerce_value("hello", [String])).to eq("hello")
     end
+
+    describe ":boolean" do
+      it "coerces the canonical truthy/falsy strings (case-insensitively)" do
+        %w[1 true t yes y on TRUE On YES].each { |s| expect(described_class.coerce_value(s, :boolean)).to be(true) }
+        %w[0 false f no n off FALSE Off NO].each { |s| expect(described_class.coerce_value(s, :boolean)).to be(false) }
+      end
+
+      it "coerces the integers 1 and 0" do
+        expect(described_class.coerce_value(1, :boolean)).to be(true)
+        expect(described_class.coerce_value(0, :boolean)).to be(false)
+      end
+
+      it "leaves an already-boolean value untouched" do
+        expect(described_class.coerce_value(true, :boolean)).to be(true)
+        expect(described_class.coerce_value(false, :boolean)).to be(false)
+      end
+
+      it "leaves an unrecognized string or integer uncoerced (never silently true)" do
+        expect(described_class.coerce_value("maybe", :boolean)).to eq("maybe")
+        expect(described_class.coerce_value(2, :boolean)).to eq(2)
+        expect(described_class.coerce_value("2", :boolean)).to eq("2")
+      end
+
+      it "leaves a blank string uncoerced so presence still applies" do
+        expect(described_class.coerce_value("", :boolean)).to eq("")
+        expect(described_class.coerce_value("   ", :boolean)).to eq("   ")
+      end
+
+      it "does not route a non-String value to a non-boolean coercer in a union" do
+        # Integer 1 must reach only :boolean; the Symbol coercer's to_sym would NoMethodError on it.
+        expect(described_class.coerce_value(1, [Symbol, :boolean])).to be(true)
+        # A String still follows declaration order: Symbol wins before :boolean.
+        expect(described_class.coerce_value("true", [Symbol, :boolean])).to eq(:true) # rubocop:disable Lint/BooleanSymbol
+      end
+    end
   end
 
   describe ".coercible_klasses" do
@@ -68,7 +103,7 @@ RSpec.describe Axn::Reflection::Coercion do
       expect(described_class.coercible_klasses([Date, String])).to eq([Date])
       expect(described_class.coercible_klasses({ klass: [Symbol, Integer] })).to eq([Symbol, Integer])
       expect(described_class.coercible_klasses({ klass: String })).to eq([])
-      expect(described_class.coercible_klasses(:boolean)).to eq([])
+      expect(described_class.coercible_klasses(:boolean)).to eq([:boolean])
     end
   end
 

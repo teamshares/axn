@@ -12,10 +12,21 @@ module Axn
     module Coercion
       module_function
 
-      # The types with a strict, unambiguous `String → T` parse. `:boolean` (lenient/ambiguous) and
-      # BigDecimal (String→decimal) are deferred to their own tickets — a coerce: target outside this
-      # set raises not-yet-supported at declaration (see Contract#_validate_coercion!).
-      SUPPORTED = [Date, DateTime, Time, Symbol, Integer, Float].freeze
+      # The coercible target set. Date/DateTime/Time/Symbol/Integer/Float each have a strict,
+      # unambiguous `String → T` parse and are the inverse of a Values.serialize_value branch.
+      # `:boolean` is the one member with no encoder counterpart (a boolean serializes as itself,
+      # not a string) — it's a purely inbound tolerance for the string/integer forms a JSON client
+      # or Rails form sends. BigDecimal (String→decimal) is still deferred to its own ticket; a
+      # coerce: target outside this set raises not-yet-supported at declaration (see
+      # Contract#_validate_coercion!).
+      SUPPORTED = [Date, DateTime, Time, Symbol, Integer, Float, :boolean].freeze
+
+      # The canonical string forms `:boolean` accepts, matched case-insensitively after stripping.
+      # Both sides are explicit (unlike Rails' "everything not falsy is true"), so an unrecognized
+      # string is left uncoerced and fails validation rather than silently becoming `true`.
+      TRUTHY_STRINGS = %w[1 true t yes y on].freeze
+      FALSY_STRINGS = %w[0 false f no n off].freeze
+      private_constant :TRUTHY_STRINGS, :FALSY_STRINGS
 
       # A coercible date/time wire string must be ISO-8601-SHAPED: a `YYYY-MM-DD` date, optionally
       # followed by a time (`T` or space separator, optional `:seconds`, optional `.fraction`, optional
@@ -30,10 +41,12 @@ module Axn
       ISO_DATE_TIME = /\A\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?\s?(Z|[+-]\d{2}:?\d{2})?)?\z/
       private_constant :ISO_DATE_TIME
 
-      # Each coercer is the inverse of the corresponding Values.serialize_value branch (iso8601 for
-      # Date/Time/DateTime, to_s for Symbol). The date/time coercers gate `.parse` behind ISO_DATE_TIME
-      # (raising on a mismatch, which coerce_value treats as "leave it"). Integer uses base 10
-      # explicitly — bare `Integer("08")` raises on the octal ambiguity a zero-padded form field trips.
+      # Each coercer parses a wire string into the target type; a parse that raises means "leave it"
+      # (coerce_value returns the original). The date/time coercers are the inverse of iso8601, gated
+      # behind ISO_DATE_TIME so ambiguous input isn't guessed against today; Symbol is the inverse of
+      # to_s; Integer uses base 10 explicitly (bare `Integer("08")` raises on the octal ambiguity a
+      # zero-padded form field trips). `:boolean` is the one coercer that also accepts a non-String
+      # form (an Integer 0/1, or an already-boolean value) — see #coerce_boolean.
       COERCERS = {
         Date => ->(s) { ISO_DATE_TIME.match?(s) ? Date.parse(s) : raise(ArgumentError, "not an ISO-8601 date") },
         DateTime => ->(s) { ISO_DATE_TIME.match?(s) ? DateTime.parse(s) : raise(ArgumentError, "not an ISO-8601 date-time") },
@@ -41,14 +54,17 @@ module Axn
         Symbol => lambda(&:to_sym),
         Integer => ->(s) { Integer(s, 10) },
         Float => ->(s) { Float(s) },
+        :boolean => ->(v) { coerce_boolean(v) },
       }.freeze
       private_constant :COERCERS
 
-      # Coerce-or-leave: only a String is a coercion candidate (a direct Ruby caller passing a real
-      # Date, or a JSON-native number, is returned untouched). Union targets are tried in declaration
-      # order; the first that parses wins; a parse that raises falls through to the next, and if none
-      # parse the ORIGINAL value is returned so it hits the normal TypeValidator error. A non-coercible
-      # target (e.g. String) is skipped — it never coerces, it's only a validation branch.
+      # Coerce-or-leave: a String is a coercion candidate for every target (a direct Ruby caller
+      # passing a real Date, or a JSON-native number, is returned untouched); an Integer or an
+      # already-boolean value is additionally a candidate for a `:boolean` target only. Union targets
+      # are tried in declaration order; the first that parses wins; a parse that raises falls through
+      # to the next, and if none parse the ORIGINAL value is returned so it hits the normal
+      # TypeValidator error. A non-coercible target (e.g. String) is skipped — it never coerces, it's
+      # only a validation branch.
       #
       # A blank string is never coerced: coercion must not change validation strictness, and Symbol's
       # `to_sym` would otherwise turn a blank required input ("" / "  ") into a non-blank Symbol that
@@ -56,10 +72,24 @@ module Axn
       # it exactly as it would an uncoerced field. (The parse-based coercers already leave blanks —
       # `Date.parse("")` raises — so this only changes the Symbol path, and unifies all of them.)
       def coerce_value(value, klass_or_klasses)
+        targets = Array(klass_or_klasses)
+
+        # A non-String value only ever coerces to `:boolean` (the integers 0/1, or an already-boolean
+        # value idempotently). Handle it here so a bare Integer never reaches the String-only parse
+        # coercers below; a String — including "0"/"1" — flows through the ordered loop so union
+        # declaration order still decides which target wins.
+        if !value.is_a?(String) && targets.include?(:boolean)
+          begin
+            return coerce_boolean(value)
+          rescue ArgumentError, TypeError
+            return value
+          end
+        end
+
         return value unless value.is_a?(String)
         return value if value.strip.empty?
 
-        Array(klass_or_klasses).each do |klass|
+        targets.each do |klass|
           coercer = COERCERS[klass]
           next unless coercer
 
@@ -71,6 +101,26 @@ module Axn
         end
 
         value
+      end
+
+      # Coerce a wire boolean into `true`/`false`, or raise ArgumentError (meaning "leave it") for any
+      # value that isn't a recognized boolean form. Accepts an already-boolean value (idempotent), the
+      # integers 0/1 (a JSON/loosely-typed client sending a flag as a number), and the canonical string
+      # forms. Everything else — Integer 2, a Float, a blank/unrecognized string — is declined, so it
+      # flows to TypeValidator exactly as an uncoerced value would (never silently becoming `true`).
+      def coerce_boolean(value)
+        return value if [true, false].include?(value)
+
+        if value.is_a?(Integer)
+          return true if value == 1
+          return false if value.zero?
+        elsif value.is_a?(String)
+          normalized = value.strip.downcase
+          return true if TRUTHY_STRINGS.include?(normalized)
+          return false if FALSY_STRINGS.include?(normalized)
+        end
+
+        raise ArgumentError, "#{value.inspect} is not a recognized boolean form"
       end
 
       # The coercible subset of a type: option's klass(es) — the single source of truth for "what does

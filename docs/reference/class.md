@@ -272,11 +272,14 @@ expects :id, on: :raw_channel    # ✅ reader name;  on: :channel would raise (n
 expects :on, coerce: Date                          # "2026-07-08"  → Date
 expects :mode, coerce: Symbol, inclusion: { in: %i[a b] }  # "a" → :a, then validated
 expects :count, coerce: Integer                    # "123" → 123 (base 10)
+expects :active, coerce: :boolean                  # "true"/"on"/"1"/1 → true; "false"/"0"/0 → false
 expects :on, type: { klass: Date, coerce: true }   # explicit form (use with sibling type options like message:)
 expects :on, coerce: [Date, String]                # union: parse a date if possible, else keep the string
 ```
 
-The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, and `Float` — those with a strict, unambiguous string parse. Coercion is **coerce-or-leave**: only strings are transformed (a value already of the right type, or a JSON-native number, is untouched; a blank string is left as-is so presence validation still applies), and an unparseable string passes through to a normal validation error (reported as "could not be coerced to a Date", distinct from a wrong-type "is not a Date"). `coerce:` is opt-in per field, so a direct Ruby caller's strictness is unchanged, and it is valid on top-level `expects` fields only.
+The supported types are `Date`, `DateTime`, `Time`, `Symbol`, `Integer`, `Float`, and `:boolean`. Coercion is **coerce-or-leave**: only strings are transformed (a value already of the right type, or a JSON-native number, is untouched; a blank string is left as-is so presence validation still applies), and an unparseable string passes through to a normal validation error (reported as "could not be coerced to a Date", distinct from a wrong-type "is not a Date"). `coerce:` is opt-in per field, so a direct Ruby caller's strictness is unchanged, and it is valid on top-level `expects` fields only.
+
+`:boolean` accepts the case-insensitive strings `1/true/t/yes/y/on` and `0/false/f/no/n/off`, plus the integers `1`/`0` (the one type that also coerces a non-string wire form). Both sides are an explicit allowlist — an unrecognized value (`"maybe"`, `2`) is left uncoerced and fails validation rather than silently becoming `true`.
 
 Date/time coercion accepts any **ISO-8601-shaped** wire string — a `YYYY-MM-DD` date optionally followed by a time (`T` or space separator, optional seconds/fraction, optional `Z`/`±HH:MM` offset). That covers JSON/RFC3339 timestamps, a Rails `date_field` (`2026-07-08`), a `datetime-local` (`2026-07-08T14:30`, no offset — read in the local zone), and Rails' `Time#to_s` (`2026-07-08 14:30:00 +0000`). Ambiguous or partial input that Ruby's `Date.parse`/`Time.parse` would otherwise guess against today's date (`"12"`, `"01/02/2026"`, a bare `14:30` time) is left uncoerced and fails validation rather than becoming a silently-wrong value.
 
