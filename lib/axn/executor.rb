@@ -827,19 +827,33 @@ module Axn
     end
 
     # Whether a subfield default's ancestor chain can be fully materialized: every nil/absent node
-    # along the chain (the top-level root included) must tolerate `{}` per its own declared types —
-    # Schema.object_shaped? on each of the node's configs (an implicit dotted intermediate has no
-    # configs and trivially qualifies), the same gate reflection's requiredness derivation uses. A
-    # non-object type (e.g. `type: Array`) does NOT qualify — injecting `{}` there would fail that
-    # node's own type validator and turn an optional-absent value into a validation error. Present
-    # values are not judged here (the write path digs through whatever the caller supplied, as ever).
+    # along the chain (the top-level root included) must tolerate `{}` per its declared types.
+    # An EXPLICIT node is judged by its own configs (Schema.object_shaped?, the same gate
+    # reflection's requiredness derivation uses — a `type: Array` node refuses). An IMPLICIT node
+    # (a dotted intermediate with no declaration of its own) is judged by any `shape:` member its
+    # key collides with — synthesizing `{}` where the parent's shape declares a scalar member would
+    # turn an optional-absent member into a shape violation — via the SAME member locator and
+    # nestability predicate the tree's drop pass uses (Schema.shape_members_at /
+    # nestable_as_object?, carrying merged members so a member-of-a-member is tested at depth).
+    # Present values are not judged here (the write path digs through whatever the caller supplied).
     def _default_chain_materializable?(path)
-      value = @context.provided_data[path.wire_path.first]
-      path.ancestors.each_with_index do |(node, seg), i|
-        return false if value.nil? && !node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) }
-        break if i == path.ancestors.size - 1
+      # Depth 0: the default value IS the root — nothing is synthesized, so there is nothing to gate.
+      return true if path.ancestors.empty?
 
+      value = @context.provided_data[path.wire_path.first]
+      root = path.ancestors.first.first
+      return false if value.nil? && !root.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) }
+
+      carried = []
+      path.ancestors.each_cons(2) do |(parent, seg), (child, _next_seg)|
         value = value.nil? ? nil : Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+
+        members = child.implicit? ? Axn::Reflection::Schema.shape_members_at(parent.configs + carried, seg) : []
+        if value.nil?
+          return false unless child.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) }
+          return false if members.any? { |m| !Axn::Reflection::Schema.nestable_as_object?(m) }
+        end
+        carried = members.select { |m| Axn::Reflection::Schema.nestable_as_object?(m) }
       end
       true
     rescue Axn::ContractViolation::UnextractableError

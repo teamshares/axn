@@ -626,6 +626,41 @@ RSpec.describe Axn do
           expect(result.parent).to eq({ other: 1 })
         end
 
+        it "skips a nested default when the implicit intermediate collides with a non-object shape member" do
+          # `settings` is declared in payload's SHAPE as a String — synthesizing `{ enabled: true }`
+          # there would turn a validly-absent optional member into a shape violation, so the default
+          # is skipped (the same member-nestability rule the schema's drop pass applies).
+          action = build_axn do
+            expects :payload, type: Hash do
+              field :settings, type: String, optional: true
+            end
+            expects :enabled, on: "payload.settings", optional: true, type: :boolean, default: true
+            exposes :parent, optional: true
+
+            def call = expose(parent: payload)
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result).to be_ok
+          expect(result.parent).to eq({ other: 1 })
+        end
+
+        it "still applies a nested default through an implicit intermediate matching an OBJECT shape member" do
+          action = build_axn do
+            expects :payload, type: Hash do
+              field :settings, type: Hash, optional: true
+            end
+            expects :enabled, on: "payload.settings", optional: true, type: :boolean, default: true
+            exposes :parent, optional: true
+
+            def call = expose(parent: payload)
+          end
+
+          result = action.call(payload: { other: 1 })
+          expect(result).to be_ok
+          expect(result.parent).to eq({ other: 1, settings: { enabled: true } })
+        end
+
         it "shares one materialized intermediate across two nested defaults (no re-materialization race)" do
           action = build_axn do
             expects :payload, type: Hash, optional: true, allow_nil: true
