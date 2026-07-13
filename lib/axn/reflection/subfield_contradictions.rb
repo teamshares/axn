@@ -15,8 +15,14 @@ module Axn
       module_function
 
       def detect(tree)
+        # Top-level fields carrying a usable default — used to spot a `model:` field rescued by an explicit
+        # defaulted `<field>_id` sibling (the id is applied before the model reader, so the record resolves
+        # even on omission; mirrors apply_model_id_requiredness!'s explicit-id-default path).
+        defaulted_id_fields = tree.roots.values.flat_map(&:configs)
+                                  .select { |c| Schema.usable_default?(c, subfield: false) }
+                                  .to_set(&:field)
         tree.roots.each_value do |root|
-          found = walk(root, nil_tolerant_ancestor: nil, nil_tolerant_model_ancestor: nil, carried_members: [])
+          found = walk(root, nil_tolerant_ancestor: nil, nil_tolerant_model_ancestor: nil, carried_members: [], defaulted_id_fields:)
           return found if found
         end
         nil
@@ -25,7 +31,8 @@ module Axn
       # `nil_tolerant_ancestor` / `nil_tolerant_model_ancestor` are the OUTERMOST such ancestor configs
       # above this node (nil when none). `carried_members` are the object-shaped shape members an
       # implicit ancestor merged into (for a member-of-a-member family-2 collision at depth).
-      def walk(node, nil_tolerant_ancestor:, nil_tolerant_model_ancestor:, carried_members:)
+      # `defaulted_id_fields` is the set of top-level field names carrying a usable default (see detect).
+      def walk(node, nil_tolerant_ancestor:, nil_tolerant_model_ancestor:, carried_members:, defaulted_id_fields:)
         # Family 1: this node must be present, but a nil-tolerant ancestor can strand it.
         return family_1(nil_tolerant_ancestor, node.config) if nil_tolerant_ancestor && stranded_by?(node, nil_tolerant_ancestor)
 
@@ -34,8 +41,8 @@ module Axn
           return family_3(nil_tolerant_model_ancestor, defaulted)
         end
 
-        child_nil_tolerant = child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members)
-        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node)
+        child_nil_tolerant = child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members, defaulted_id_fields)
+        child_model = nil_tolerant_model_ancestor || outermost_nil_tolerant_model(node, defaulted_id_fields)
 
         node.children.each do |key, child|
           members = Schema.shape_members_at(node.configs + carried_members, key)
@@ -52,7 +59,8 @@ module Axn
           # Only an implicit node stands in for the object-shaped members it merged into — carry them so a
           # deeper member-of-a-member collision is caught. An explicit child brings its own configs' members.
           child_carried = child.implicit? ? members.select { |m| Schema.nestable_as_object?(m) } : []
-          found = walk(child, nil_tolerant_ancestor: child_nil_tolerant, nil_tolerant_model_ancestor: child_model, carried_members: child_carried)
+          found = walk(child, nil_tolerant_ancestor: child_nil_tolerant, nil_tolerant_model_ancestor: child_model,
+                              carried_members: child_carried, defaulted_id_fields:)
           return found if found
         end
         nil
@@ -72,9 +80,9 @@ module Axn
       # own config (outermost_nil_tolerant), or a nil-tolerant object-shaped `shape:` member it stands in
       # for (an implicit node's carried_members; e.g. `field :bar, type: Hash, allow_nil: true` with a
       # required deep subfield nesting into `bar`).
-      def child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members)
+      def child_nil_tolerant_ancestor(node, nil_tolerant_ancestor, carried_members, defaulted_id_fields)
         unless shielded?(node)
-          own_nil_tolerance = outermost_nil_tolerant(node) || carried_members.find { |m| Schema.nil_accepted?(m) }
+          own_nil_tolerance = outermost_nil_tolerant(node, defaulted_id_fields) || carried_members.find { |m| Schema.nil_accepted?(m) }
           return nil_tolerant_ancestor || own_nil_tolerance
         end
 
@@ -162,35 +170,35 @@ module Axn
           (config.respond_to?(:default) && config.default.is_a?(Proc))
       end
 
-      def nil_tolerant?(node)
-        !node.implicit? && node.configs.any? { |c| Schema.nil_accepted?(c) }
+      # This node's own nil-tolerant config that would strand descendants (nil if none) — the new outermost
+      # nil-tolerant ancestor for its children. EXCLUDES a model that still resolves to a record on omission
+      # (model_rescued?), which therefore strands nothing.
+      def outermost_nil_tolerant(node, defaulted_id_fields)
+        return nil if node.implicit?
+
+        node.configs.find { |c| Schema.nil_accepted?(c) && !model_rescued?(c, defaulted_id_fields) }
       end
 
-      def nil_tolerant_config(node)
-        node.configs.find { |c| Schema.nil_accepted?(c) }
+      # This node's own nil-tolerant MODEL config that is a family-3 hazard ancestor (nil if none). A model
+      # is a hazard only when NOT rescued: then omission relies on a synthesized `{}` (rejected by
+      # ModelValidator). A rescued model resolves to a record on omission — no `{}` hazard — so it is not
+      # tracked (and, for an own record-default, is also shielded — see shielded?).
+      def outermost_nil_tolerant_model(node, defaulted_id_fields)
+        return nil if node.implicit?
+
+        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) && !model_rescued?(c, defaulted_id_fields) }
       end
 
-      # A nil-tolerant model is a family-3 hazard ancestor only when its OWN default can't supply a record:
-      # then omission relies on a synthesized `{}` (rejected by ModelValidator). A model whose own default
-      # may supply a record (Proc / model-instance literal) resolves to that record on omission — no `{}`
-      # hazard — so it is not tracked (and is shielded, see shielded?).
-      def nil_tolerant_model?(node)
-        !node.implicit? && !nil_tolerant_model_config(node).nil?
-      end
+      # Whether a nil-tolerant `model:` config still resolves to a record on omission — so it neither strands
+      # descendants (family 1) nor hits the `{}` hazard (family 3). Two runtime-satisfying paths (mirroring
+      # apply_model_id_requiredness!): its OWN default may supply a record (model_own_default_may_supply_record?),
+      # OR an explicit `<field>_id` sibling carries a usable default (applied before the model reader, so the
+      # record resolves from the id).
+      def model_rescued?(config, defaulted_id_fields)
+        return false unless config.validations[:model]
 
-      def nil_tolerant_model_config(node)
-        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) && !model_own_default_may_supply_record?(c) }
-      end
-
-      # This node's own nil-tolerant config, when it is itself nil-tolerant — nil otherwise (no ancestor
-      # concern originates here). Named for what `walk` uses it for: becoming the new outermost
-      # nil-tolerant ancestor for this node's children when none was already carried from above.
-      def outermost_nil_tolerant(node)
-        nil_tolerant?(node) ? nil_tolerant_config(node) : nil
-      end
-
-      def outermost_nil_tolerant_model(node)
-        nil_tolerant_model?(node) ? nil_tolerant_model_config(node) : nil
+        model_own_default_may_supply_record?(config) ||
+          defaulted_id_fields.include?(Axn::Internal::FieldConfig.model_id_key(config.field))
       end
 
       def applied_default_config(node)

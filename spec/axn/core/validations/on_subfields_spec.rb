@@ -1562,6 +1562,19 @@ RSpec.describe Axn do
           end
         end.not_to raise_error
       end
+
+      it "does not raise for a nil-tolerant model parent rescued by an explicit defaulted <field>_id sibling" do
+        # An explicit `company_id` with a usable default is applied before the model reader, so `company`
+        # resolves from the defaulted id even on omission and `name` validates — the nil-tolerance is not a
+        # dead flag. (Mirrors the explicit-id-default path apply_model_id_requiredness! already honors.)
+        expect do
+          build_axn do
+            expects :company_id, default: 1
+            expects :company, model: FakeModel, allow_nil: true
+            expects :name, on: :company, type: String
+          end
+        end.not_to raise_error
+      end
     end
 
     describe "family 2: non-object shape member + colliding deep subfield" do
