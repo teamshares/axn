@@ -237,6 +237,26 @@ module Axn
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
+          # A model: batch that also names a model field's own `<field>_id` companion (e.g.
+          # `expects :company, :company_id, on:, model:`) can never work: model: applies to EVERY field in
+          # the batch, so the `<field>_id` is itself a model: subfield (it would require `<field>_id_id` and
+          # reject a raw id), and it collides with the raw-id reader the model: field already generates. A
+          # model: subfield exposes its own `<field>_id` reader for the raw id, so the explicit one is both
+          # redundant and broken. (Declaring the id in a separate expects doesn't help either — the generated
+          # `<field>_id` reader already exists, so it trips the duplicate-reader guard.)
+          if validations.key?(:model)
+            batch = fields.map(&:to_sym)
+            if (model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) })
+              id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
+              raise ArgumentError,
+                    "a model: subfield batch (#{fields.map(&:to_s).inspect} with on: #{on}) names both " \
+                    ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
+                    "in the batch, so :#{id_key} becomes a second model: subfield (requiring :#{id_key}_id) " \
+                    "rather than the raw id. The model: subfield :#{model_field} already generates a " \
+                    ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
+            end
+          end
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             if parsed_validations.dig(:type, :coerce)
               raise ArgumentError,
@@ -287,10 +307,9 @@ module Axn
         # Two passes: all EXPLICIT primary readers first, then all auto-generated COMPANIONS (boolean `?`
         # predicates, model `<field>_id` readers). A companion defers — with a debug breadcrumb, via
         # `_reader_name_available?` — to any explicit reader of the same name; deferring the whole companion
-        # pass until every primary exists makes that yielding order-independent (e.g. `expects :company,
-        # :company_id, on:, model:` keeps the explicit `:company_id` and skips the generated one whichever
-        # order they're declared), matching top-level `expects`. Interleaving the two (a companion generated
-        # before a later same-named primary) would let the primary silently clobber the companion.
+        # pass until every primary exists makes that yielding order-independent, matching top-level `expects`.
+        # Interleaving the two (a companion generated before a later same-named primary) would let the
+        # primary silently clobber the companion.
         def _define_subfield_readers!(configs)
           # The two passes must NOT be combined: every primary reader has to exist before any companion is
           # generated, so a companion defers to an explicit same-named reader regardless of order (see above).

@@ -1342,25 +1342,26 @@ RSpec.describe Axn do
       end
     end
 
-    describe "generated companion readers vs. explicit same-named subfields" do
-      it "declares cleanly when an explicit :<field>_id collides with a model's generated id reader, either order" do
-        # `:company` (model:) generates a `company_id` companion reader; an explicit `:company_id` in the
-        # same batch is authoritative. Companions are generated in a SECOND pass (after every primary
-        # reader), so the generated `company_id` defers to the explicit one (with a debug breadcrumb)
-        # rather than a silent, declaration-order-dependent clobber — either order declares cleanly.
+    describe "model: subfield batch naming its own <field>_id companion" do
+      it "raises: model: applies to every field, so the explicit :<field>_id is a broken second model, either order" do
+        # `model:` applies to EVERY field in the batch, so `expects :company, :company_id, on:, model:` makes
+        # :company_id a model: subfield too (it would require :company_id_id and reject a raw id), colliding
+        # with the raw-id reader :company already generates. There's no working way to pair an explicit id
+        # with a model: subfield in one batch — the model: subfield already exposes :company_id — so it's
+        # rejected at declaration in either order (declaration options are order-independent).
         expect do
           build_axn do
             expects :settings, type: Hash
             expects :company, :company_id, on: :settings, model: FakeModel
           end
-        end.not_to raise_error
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
 
         expect do
           build_axn do
             expects :settings, type: Hash
             expects :company_id, :company, on: :settings, model: FakeModel
           end
-        end.not_to raise_error
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
       end
     end
 
