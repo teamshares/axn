@@ -72,6 +72,15 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
       def obj.boom = raise(ArgumentError, "reader is broken")
       expect { extract(:boom, obj) }.to raise_error(ArgumentError, "reader is broken")
     end
+
+    it "treats a required-argument reader as unextractable (positional or keyword)" do
+      # A reader that can't be called bare (required positional/keyword arg) can't answer the path.
+      obj = Object.new
+      def obj.needs_positional(arg) = arg
+      def obj.lookup(id:) = id
+      expect { extract("nested.needs_positional", { nested: obj }) }.to raise_error(Axn::ContractViolation::UnextractableError)
+      expect { extract("nested.lookup", { nested: obj }) }.to raise_error(Axn::ContractViolation::UnextractableError)
+    end
   end
 
   describe "Array sources" do

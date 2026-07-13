@@ -38,23 +38,38 @@ module Axn
             return base[segment]
           end
 
-          # Object/Array sources: use the reader method. A reader that can't be invoked bare — it
-          # needs arguments (e.g. `Array#fetch`, `#at`, `#dig`) — can't answer the path, so surface
-          # the typed UnextractableError (read as absent) rather than leaking a raw ArgumentError
-          # past the malformed-input doctrine. Arity/params can't distinguish these up front (both
-          # `count` and `fetch` reflect as `[[:rest]]`), so we dispatch and classify only the
-          # wrong-arity failure by its message (a stable, non-localized Ruby core string); any other
+          # Object/Array sources: use the reader method. A reader that needs arguments can't answer
+          # the path as a bare read — that's "unclear how to extract" (typed UnextractableError, read
+          # as absent), not a raw ArgumentError leaking past the malformed-input doctrine. Ruby-defined
+          # readers advertise their required params (`:req`/`:keyreq`), so gate on that before
+          # dispatching (covers e.g. a `lookup(id:)` required-keyword reader). Core (C) readers can
+          # misreport — `Array#fetch` shows `[[:rest]]` yet still needs an index — so also classify the
+          # arity ArgumentError they raise, keyed off its stable, non-localized core message. Any OTHER
           # ArgumentError is the reader's own and re-raises untouched so a broken reader isn't hidden.
           if source.respond_to?(segment)
+            raise_unextractable if reader_requires_arguments?(source, segment)
+
             begin
               return source.public_send(segment)
             rescue ArgumentError => e
-              raise unless e.message.start_with?("wrong number of arguments")
+              raise unless arity_error?(e)
 
-              raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+              raise_unextractable
             end
           end
 
+          raise_unextractable
+        end
+
+        def reader_requires_arguments?(source, segment)
+          source.method(segment).parameters.any? { |type, _| %i[req keyreq].include?(type) }
+        end
+
+        def arity_error?(error)
+          error.message.start_with?("wrong number of arguments", "missing keyword")
+        end
+
+        def raise_unextractable
           raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
         end
       end
