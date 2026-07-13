@@ -673,6 +673,43 @@ RSpec.describe Axn do
         end
       end
 
+      describe "canonical parent resolution (on:-spelling equivalence)" do
+        # `on: :company` and `on: "payload.company"` name the same wire path; both resolve the parent
+        # through the deepest reader-bearing ancestor — for a model: subfield, the resolved RECORD —
+        # so the two spellings validate identically.
+        let(:model) do
+          Struct.new(:id, :name) do
+            def self.find(id) = new(id, "Acme #{id}")
+            def self.name = "FakeCanonicalModel"
+          end
+        end
+
+        let(:action_with) do
+          lambda do |on_spelling, model_klass|
+            build_axn do
+              expects :payload, type: Hash
+              expects :company, on: :payload, model: { klass: model_klass }
+              expects :name, on: on_spelling, type: String, optional: true
+              exposes :got, optional: true
+
+              def call = expose(got: name)
+            end
+          end
+        end
+
+        it "resolves the reader spelling through the record" do
+          result = action_with.call(:company, model).call(payload: { company_id: 7 })
+          expect(result).to be_ok
+          expect(result.got).to eq("Acme 7")
+        end
+
+        it "resolves the dotted spelling through the SAME record (previously the raw hash)" do
+          result = action_with.call("payload.company", model).call(payload: { company_id: 7 })
+          expect(result).to be_ok
+          expect(result.got).to eq("Acme 7")
+        end
+      end
+
       describe "stranded-path diagnostics" do
         it "names the first nil intermediate ancestor in the validation report" do
           action = build_axn do
@@ -1439,6 +1476,18 @@ RSpec.describe Axn do
         # guard, and no unvalidated reader is callable.
         expect(klass.method_defined?(:company)).to be(false)
         expect(klass.method_defined?(:company_id)).to be(false)
+      end
+    end
+
+    describe "model: TOP-LEVEL batch naming its own <field>_id companion (parity with the subfield guard)" do
+      it "raises at declaration, either order" do
+        expect do
+          build_axn { expects :company, :company_id, model: FakeModel }
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
+
+        expect do
+          build_axn { expects :company_id, :company, model: FakeModel }
+        end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
       end
     end
 

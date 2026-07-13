@@ -218,7 +218,7 @@ expects :address, type: Hash
 expects :zip, on: "address.billing", type: String  # validates address[:billing][:zip]; defines a `zip` reader
 ```
 
-The **root** segment (`address`) must be a declared field (or subfield); intermediate segments are assumed to be hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
+The **root** segment (`address`) must be a declared field (or subfield). Resolution is canonical: the chain resolves through the deepest *declared* ancestor's reader (so `on: "payload.company"` where `:company` is a `model:` subfield sees the resolved record, exactly like `on: :company`), and only undeclared intermediate segments are dug as plain hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots.
 
 ::: warning
 `default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the default is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments.

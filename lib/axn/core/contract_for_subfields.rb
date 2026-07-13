@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/core/validation/subfields"
+require "axn/core/validation/fields"
 require "axn/reflection/resolved_subfields"
 
 module Axn
@@ -19,11 +19,37 @@ module Axn
         end
       end
 
-      # Resolves the parent value an `on:` points at. `on:` may be a single field/subfield
-      # (e.g. :address) or a dotted path (e.g. "address.billing") — the root segment is read via
-      # its reader and any remaining segments are dug out via the Extract resolver. Shared by the
-      # subfield reader and the inbound validation runner so both treat paths identically.
-      def self.resolve_parent(source, on)
+      # Resolves the parent value a subfield config is read from — CANONICALLY: through the DEEPEST
+      # reader-bearing ancestor on the chain up to the `on:` target (`public_send` of that reader —
+      # memoized, model-resolving, alias-aware), then raw Extract digs for any remaining implicit
+      # segments. Both spellings of the same wire path (`on: :b` and `on: "a.b"`) therefore resolve
+      # identically: if `:b` is a declared subfield, its reader supplies the value either way (for a
+      # `model:` subfield, the resolved record). Shared by the subfield readers and the inbound
+      # validation runner so all consumers agree. An ambient config isn't indexed (its parent
+      # resolves per-invocation), so it falls back to the reader-plus-digs recipe on its `on:` string.
+      def self.resolve_parent(action, config)
+        path = action.class._resolved_subfields.index[config]
+        return _resolve_parent_by_recipe(action, config.on) if path.nil?
+
+        reader_index = (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
+        return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
+
+        value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
+        path.ancestors[reader_index...path.parent_index].each do |hop|
+          value = Axn::Core::FieldResolvers.resolve(type: :extract, field: hop.last.to_s, provided_data: value)
+        end
+        value
+      end
+
+      # The node's reader-bearing config, if any: every non-dotted-named config generates a reader
+      # (a dotted NAME gets none; an implicit node has no configs at all).
+      def self._reader_config(node)
+        node.configs.find { |c| !c.field.to_s.include?(".") }
+      end
+
+      # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
+      # rest raw.
+      def self._resolve_parent_by_recipe(source, on)
         root, *rest = on.to_s.split(".")
         value = source.public_send(root)
         return value if rest.empty?
@@ -190,26 +216,6 @@ module Axn
           user_facing: false,
           **validations
         )
-          # A model: batch that also names a model field's own `<field>_id` companion (e.g.
-          # `expects :company, :company_id, on:, model:`) can never work: model: applies to EVERY field in
-          # the batch, so the `<field>_id` is itself a model: subfield (it would require `<field>_id_id` and
-          # reject a raw id), and it collides with the raw-id reader the model: field already generates. A
-          # model: subfield exposes its own `<field>_id` reader for the raw id, so the explicit one is both
-          # redundant and broken. (Declaring the id in a separate expects doesn't help either — the generated
-          # `<field>_id` reader already exists, so it trips the duplicate-reader guard.)
-          if validations.key?(:model)
-            batch = fields.map(&:to_sym)
-            if (model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) })
-              id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
-              raise ArgumentError,
-                    "a model: subfield batch (#{fields.map(&:to_s).inspect} with on: #{on}) names both " \
-                    ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
-                    "in the batch, so :#{id_key} becomes a second model: subfield (requiring :#{id_key}_id) " \
-                    "rather than the raw id. The model: subfield :#{model_field} already generates a " \
-                    ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
-            end
-          end
-
           # The config-building itself is the shared top-level path (a subfield is the on:-carrying
           # case); the checks below are pure reads of the built configs, raised before anything commits.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
@@ -278,26 +284,28 @@ module Axn
           # The two passes must NOT be combined: every primary reader has to exist before any companion is
           # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
           # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_subfield_reader(c.reader_as, c.field, on: c.on, validations: c.validations) }
+          configs.each { |c| _define_subfield_reader(c) }
           configs.each { |c| _define_subfield_companion_readers(c) }
           # rubocop:enable Style/CombinableLoops
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
         # wire key extracted from the `on:` parent.
-        def _define_subfield_reader(reader, source_field, on:, validations:)
+        def _define_subfield_reader(config)
+          reader = config.reader_as
+          source_field = config.field
           # Don't create top-level readers for nested fields
           return if source_field.to_s.include?(".")
 
           # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
           # reader is generated, so there is no duplicate to guard against here.
 
-          if validations.key?(:model)
-            _define_subfield_model_reader(reader, source_field, validations[:model], on:)
+          if config.validations.key?(:model)
+            _define_subfield_model_reader(config)
           else
             Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
               Axn::Core::FieldResolvers.resolve(type: :extract, field: source_field,
-                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, on))
+                                                provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
             end
           end
         end
@@ -312,16 +320,18 @@ module Axn
           return unless config.validations.key?(:model)
 
           processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
-          _define_subfield_model_id_reader(config.reader_as, config.field, processed_options, on: config.on)
+          _define_subfield_model_id_reader(config, processed_options)
         end
 
-        def _define_subfield_model_reader(reader, source_field, options, on:)
+        def _define_subfield_model_reader(config)
+          reader = config.reader_as
+          source_field = config.field
           # Apply the same syntactic sugar processing as the main contract system
-          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(options, [source_field])
+          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [source_field])
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
             # Create a data source that contains the subfield data for the resolver
-            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, on)
+            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, config)
 
             Axn::Core::FieldResolvers.resolve(
               type: :model,
@@ -334,10 +344,10 @@ module Axn
 
         # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
         # parent and otherwise shares the top-level reader's semantics via `_define_model_id_reader_from`.
-        def _define_subfield_model_id_reader(reader, source_field, processed_options, on:)
+        def _define_subfield_model_id_reader(config, processed_options)
           by_primary_key = processed_options[:finder] == :find
-          _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
-            parent = Axn::Core::ContractForSubfields.resolve_parent(self, on)
+          _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
+            parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
             Axn::Core::FieldResolvers.resolve(type: :extract, field: id_key, provided_data: parent)
           end
         end

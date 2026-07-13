@@ -167,7 +167,6 @@ PRO-2844/2845 (deep ambient) remains its own track, newly feasible on top of thi
 
 ## Out of scope
 
-- Unifying the `on: :sub` vs `on: "parent.sub"` resolution-semantics divergence (flagged above; deserves its own decision).
 - Outbound subfields: `exposes` has no `on:` at all (no subfield concept on the output side), so kwarg parity here is inbound-only. Shape blocks remain the outbound nesting mechanism.
 - Deep ambient nesting (PRO-2844/2845).
 - Moving reader generation onto the tree (readers stay per-config; they're declaration-time and order-sensitive).

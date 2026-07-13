@@ -47,7 +47,7 @@ module Axn
             next
           end
 
-          errors = Axn::Validation::Subfields.errors_for(member_validator_classes[member.field], source:, validations: member.validations)
+          errors = Axn::Validation::Fields.errors_for(member_validator_classes[member.field], source:, validations: member.validations)
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
         end
       end
@@ -68,7 +68,7 @@ module Axn
       # One validator class per member, built once and reused across every element/value.
       def member_validator_classes
         @member_validator_classes ||= members.to_h do |member|
-          [member.field, Axn::Validation::Subfields.validator_class_for(field: member.field, validations: member.validations)]
+          [member.field, Axn::Validation::Fields.validator_class_for(field: member.field, validations: member.validations)]
         end
       end
     end

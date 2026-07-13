@@ -480,11 +480,36 @@ module Axn
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
+          _validate_model_batch!(fields, on:) if validations.key?(:model)
+
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
             FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
                             reader_as: reader, user_facing:)
           end
+        end
+
+        # A model: batch that also names a model field's own `<field>_id` companion (e.g.
+        # `expects :company, :company_id, model:`) can never work at any level: model: applies to
+        # EVERY field in the batch, so the `<field>_id` is itself a model: field (it would require
+        # `<field>_id_id` and reject a raw id), and it collides with the raw-id reader the model:
+        # field already generates. A model: field exposes its own `<field>_id` reader for the raw id,
+        # so the explicit one is both redundant and broken. (Declaring the id in a separate expects
+        # doesn't help either — the generated `<field>_id` reader already exists, so it trips the
+        # duplicate-reader guard.)
+        def _validate_model_batch!(fields, on: nil)
+          batch = fields.map(&:to_sym)
+          model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) }
+          return unless model_field
+
+          id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
+          where = on ? "#{fields.map(&:to_s).inspect} with on: #{on}" : fields.map(&:to_s).inspect
+          raise ArgumentError,
+                "a model: batch (#{where}) names both " \
+                ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
+                "in the batch, so :#{id_key} becomes a second model: field (requiring :#{id_key}_id) " \
+                "rather than the raw id. The model: field :#{model_field} already generates a " \
+                ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
         end
 
         # Generate the readers for an already-validated, already-committed batch of top-level inbound

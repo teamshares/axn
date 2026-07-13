@@ -28,9 +28,14 @@ module Axn
       # `wire_path` is the full provided_data write path ([top-level wire key, *wire segments]);
       # `ancestors` is the hop chain ([Node, wire segment] pairs, outermost first — each hop's node is
       # the parent the segment is read from), so chain-aware write-backs can gate materialization on
-      # every intermediate node's own declared type. A top-level config is the depth-0 case: its
-      # wire_path is just [field] and its ancestors are empty.
-      ResolvedPath = Data.define(:node, :wire_path, :ancestors)
+      # every intermediate node's own declared type. `parent_index` is the chain index of the `on:`
+      # TARGET node (the value the config's own `field` — possibly dotted — is extracted from), which
+      # canonical parent resolution resolves through the deepest reader-bearing ancestor. A top-level
+      # config is the depth-0 case: wire_path is just [field], ancestors are empty, parent_index 0.
+      ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
+        # The `on:`-target Node (the config's immediate parent in contract terms).
+        def parent_node = ancestors[parent_index].first
+      end
 
       Result = Data.define(:roots, :dropped, :index)
 
@@ -41,7 +46,7 @@ module Axn
         # config => ResolvedPath, identity-keyed: distinct declarations are distinct entries even if
         # they compare equal as Data values.
         index = {}.compare_by_identity
-        field_configs.each { |c| index[c] = ResolvedPath.new(node: roots[c.reader_as], wire_path: [c.field], ancestors: []) }
+        field_configs.each { |c| index[c] = ResolvedPath.new(node: roots[c.reader_as], wire_path: [c.field], ancestors: [], parent_index: 0) }
         by_reader = {} # subfield reader_as => {node:, hops:} — anchor targets for a subfield-of-a-subfield
         deep_paths = [] # [config, hops] judged only once the tree is COMPLETE (an ancestor's type may be declared after the deep config)
 
@@ -61,8 +66,11 @@ module Axn
           leaf, hops = attach_config!(config, anchor, anchor_hops, segments)
 
           # The chain always starts at a top-level root (an anchored subfield's hops were themselves
-          # rooted there), so the first hop's node carries the root's wire key.
-          index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)], ancestors: hops)
+          # rooted there), so the first hop's node carries the root's wire key. The `on:` target sits
+          # after the anchor chain plus any dotted-`on:` segments (the config's own field segments
+          # descend BELOW it).
+          index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
+                                           ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
 
           # Only a non-dotted field name gets a real reader method, so only it can anchor a later
           # `on:` (see ContractForSubfields#_define_subfield_reader).
