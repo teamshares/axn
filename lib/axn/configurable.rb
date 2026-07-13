@@ -170,7 +170,19 @@ module Axn
                    else
                      base.instance_variable_set(:@_axn_config_sources, {})
                    end
-        registry[config_namespace] = self
+        ns = config_namespace
+        existing = registry[ns]
+        # Two different sources under one namespace share the same `[ns][name]` bucket but have
+        # different schemas, so `configure(ns)` could only validate against one of them — settings
+        # from the other would spuriously raise `unknown` or check against the wrong schema. That's a
+        # DSL collision, not a merge; fail fast (re-registering the same source is a no-op).
+        if existing && !existing.equal?(self)
+          raise ArgumentError,
+                "config_namespace #{ns.inspect} is already owned by #{existing} on " \
+                "#{base.name || base}; two config sources cannot share a namespace"
+        end
+
+        registry[ns] = self
       end
 
       # Per-setting resolver lambdas, keyed by name — the collision-proof path

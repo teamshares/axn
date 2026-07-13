@@ -418,6 +418,28 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     expect(single.resolved_shared).to eq(:m)
   end
 
+  it "raises when two different sources claim the same config_namespace on one class" do
+    a = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup
+      setting :foo, default: 1, overridable: true
+    end
+    b = Module.new do
+      extend Axn::Configurable
+      config_namespace :dup
+      setting :bar, default: 2, overridable: true
+    end
+    am = a.overrides
+    bm = b.overrides
+
+    expect do
+      Class.new do
+        include am
+        include bm
+      end
+    end.to raise_error(ArgumentError, /namespace :dup is already owned/)
+  end
+
   it "raises when config_namespace is declared after an overridable setting" do
     expect do
       Module.new do
