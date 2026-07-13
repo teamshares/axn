@@ -1454,6 +1454,33 @@ RSpec.describe Axn do
           end
         end.not_to raise_error
       end
+
+      it "does not raise when the model's own default is a blank literal (treated as absent at runtime)" do
+        # A blank OWN default writes to the model's OWN wire key, where FieldResolvers::Model resolves via
+        # `provided_value.presence || derive` — so "", {}, and [] are treated as absent and the model still
+        # resolves to nil under allow_nil:. The contract is satisfiable and must not be rejected, even though
+        # a subfield exists to make :company a node in the tree.
+        ["", {}, []].each do |blank|
+          expect do
+            build_axn do
+              expects :company, model: FakeModel, allow_nil: true, default: blank
+              expects :name, on: :company, type: String, optional: true
+            end
+          end.not_to raise_error, "expected default: #{blank.inspect} to be allowed"
+        end
+      end
+
+      it "still raises when a DESCENDANT subfield carries a blank default (materializes a non-record parent)" do
+        # Below the model the asymmetry flips: a blank subfield default still materializes a non-record parent
+        # under :company's wire key BEFORE the model resolves (apply_defaults_for_subfields! runs regardless of
+        # blankness), which ModelValidator rejects — so a blank descendant default IS a hazard.
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, allow_nil: true
+            expects :name, on: :company, type: String, default: ""
+          end
+        end.to raise_error(ArgumentError, /nil-tolerant model:/)
+      end
     end
   end
 end
