@@ -580,7 +580,7 @@ expects :note, user_facing: true
 If a single call fails validation on both a `user_facing:` field **and** a plain one, the violation stays **dev-facing** (exception bucket) — a real contract bug always pages, and is never masked behind a friendly message. The user-facing path is taken only when *every* failing field is `user_facing:`.
 :::
 
-::: tip Top-level fields only
+::: info Works at any depth (subfields and parents alike)
 `user_facing:` works at any depth: declare it on a [subfield](/reference/class#nested-subfield-expectations) and that subfield's violation settles user-facing by its own declaration, or on a parent that has subfields — when the parent itself fails, its stranded descendants' checks are attributed to the parent (they could never pass with a nil/invalid parent) instead of paging over its user-facing message. The settling rule is unchanged: any dev-facing violation anywhere dominates a mixed failure and the call still pages. Shape-block member checks stay structural/dev-facing (`user_facing:` + `do … end` is rejected at every level), as do model-consistency checks and ambient_context subfields (framework-supplied — there is no user to face).
 :::
 
