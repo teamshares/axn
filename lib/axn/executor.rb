@@ -872,8 +872,15 @@ module Axn
       return if parent_value.nil?
 
       if below.size > 1
-        target = Internal::SubfieldPath.navigate_to_parent(parent_value, below)
-        target[below.last] = new_value
+        begin
+          target = Internal::SubfieldPath.navigate_to_parent(parent_value, below)
+          target[below.last] = new_value
+        rescue TypeError, NoMethodError, FrozenError
+          # A malformed present intermediate (e.g. an Array where an object was declared) can't hold
+          # the nested write — the value is dropped and the ancestor's own validation classifies the
+          # bad input, mirroring the UnextractableError handling on the read side. Tightly scoped:
+          # navigate + the single []= run no user code.
+        end
       elsif parent_value.is_a?(Hash)
         # Copy-on-write so the caller's own hash is never mutated by axn's write-back.
         @context.provided_data[root_key] = parent_value.merge(below.last => new_value)

@@ -25,7 +25,14 @@ module Axn
           # with integer indices, so they stay on the reader path (e.g. `items.count`).
           if provided_data.respond_to?(:dig) && !provided_data.is_a?(Array)
             base = provided_data.respond_to?(:with_indifferent_access) ? provided_data.with_indifferent_access : provided_data
-            return base.dig(*field.to_s.split("."))
+            begin
+              return base.dig(*field.to_s.split("."))
+            rescue TypeError
+              # A malformed intermediate (e.g. an Array met by a String key) can't hold the path —
+              # the same "unclear how to extract" condition as the terminal raise below, typed so the
+              # subfield machinery can treat it as absent.
+              raise UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
+            end
           end
 
           # Object/Array sources: use the reader method.

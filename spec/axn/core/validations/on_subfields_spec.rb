@@ -753,6 +753,38 @@ RSpec.describe Axn do
           expect(result.exception.message).to include("Payload is not a Hash")
         end
 
+        it "does not let a nested preprocess write-back crash on a malformed root or intermediate" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :note, on: "payload.meta", optional: true, preprocess: :to_s.to_proc
+
+            def call = nil
+          end
+
+          malformed_root = action.call(payload: [])
+          expect(malformed_root.exception).to be_a(Axn::InboundValidationError)
+          expect(malformed_root.exception.message).to include("Payload is not a Hash")
+
+          # The root validates (it IS a Hash) but the intermediate is malformed: the write is dropped
+          # and the call settles on its declared contract instead of a TypeError.
+          malformed_intermediate = action.call(payload: { meta: [] })
+          expect(malformed_intermediate).to be_ok
+        end
+
+        it "does not let a nested default write-back crash on a malformed intermediate" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :note, on: "payload.meta", optional: true, default: "d"
+            exposes :parent, optional: true
+
+            def call = expose(parent: payload)
+          end
+
+          result = action.call(payload: { meta: [] })
+          expect(result).to be_ok
+          expect(result.parent).to eq({ meta: [] })
+        end
+
         it "settles user-facing when the malformed parent is user_facing (stranded subfield suppressed)" do
           action = build_axn do
             expects :payload, type: Hash, user_facing: "Payload must be an object"
