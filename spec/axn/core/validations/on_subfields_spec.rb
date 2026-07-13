@@ -1539,16 +1539,28 @@ RSpec.describe Axn do
         end.not_to raise_error
       end
 
-      it "still raises for a nil-tolerant model parent with its own default (a model default does not rescue)" do
-        # A model node's materialized default is a non-record value ModelValidator rejects, so — unlike a
-        # plain object default — it rescues nothing: the model node stays a nil-tolerant ancestor and a
-        # required subfield under it is genuinely stranded on omission.
+      it "still raises for a nil-tolerant model parent whose own default is a NON-record (a Hash can't supply a record)" do
+        # A Hash/id/scalar model default is not a record — ModelValidator rejects the materialized value —
+        # so it rescues nothing: the model node stays a nil-tolerant ancestor and a required subfield under
+        # it is genuinely stranded on omission.
         expect do
           build_axn do
             expects :company, model: FakeModel, optional: true, default: { id: 1 }
             expects :name, on: :company, type: String
           end
         end.to raise_error(ArgumentError, /:company is declared nil-tolerant.*:name .* is required/)
+      end
+
+      it "does not raise for a nil-tolerant model parent whose OWN default may supply a record (a Proc)" do
+        # A model field's own default that may resolve to a record rescues omission — the resolver uses the
+        # defaulted record before subfield validation, so the nil-tolerance is not a dead flag. A Proc is
+        # uninspectable, so the detector optimistically treats it as possibly-rescuing rather than rejecting.
+        expect do
+          build_axn do
+            expects :company, model: FakeModel, allow_nil: true, default: -> { FakeModel.new }
+            expects :name, on: :company, type: String
+          end
+        end.not_to raise_error
       end
     end
 

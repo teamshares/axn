@@ -117,14 +117,37 @@ module Axn
       # wholesale, rescuing its SUBTREE from omission/nil regardless of the node's own nil-tolerance. Judged
       # across configs collectively (like stranded_by?): a default on ANY config materializes the one SHARED
       # node value, so a merged wire path where only one route carries the default still shields its
-      # descendants. NO config may be a model, though: a model route reads the shared value as a record and
-      # ModelValidator rejects the materialized non-record (family 3), so the default rescues nothing —
-      # leaving such a node un-shielded keeps it tracked as a nil-tolerant ancestor so a stranded descendant
-      # still raises rather than slipping through.
+      # descendants. A MODEL route is special: it reads the shared value as a record, so it shields only via
+      # its OWN default that may supply a record (Proc / model-instance literal); a model relying on a
+      # synthesized `{}`, or whose own default is a non-record (Hash/id/scalar), is rejected by
+      # ModelValidator, so it does NOT shield — the node stays a nil-tolerant ancestor and a stranded
+      # descendant still raises (family 1/3) rather than slipping through.
       def shielded?(node)
-        !node.implicit? &&
-          node.configs.none? { |c| c.validations[:model] } &&
-          node.configs.any? { |c| rescuing_default?(c) }
+        return false if node.implicit?
+        # Some config supplies a default that materializes the shared node value.
+        return false unless node.configs.any? { |c| rescuing_default?(c) }
+
+        # Every MODEL route must be satisfied by that materialization: a model reads the shared value as a
+        # record, so it shields only via its OWN default that may supply a record (a Proc, or a literal
+        # model instance). A model relying on a synthesized `{}` — or whose own default is a non-record
+        # (a Hash/id/scalar) — is rejected by ModelValidator, so it does NOT shield (family 3).
+        node.configs.all? { |c| !c.validations[:model] || model_own_default_may_supply_record?(c) }
+      end
+
+      # Whether a `model:` config's OWN default may resolve to a record (so omission is genuinely rescued):
+      # a Proc (uninspectable — the detector must not reject a contract it might satisfy) or a literal
+      # instance of the model class. A Hash/id/scalar literal is NOT a record (ModelValidator rejects it),
+      # so it does not rescue. Side-effect-free (never calls the Proc; `is_a?` only).
+      def model_own_default_may_supply_record?(config)
+        return false unless config.respond_to?(:default)
+
+        default = config.default
+        return false if default.nil?
+        return true if default.is_a?(Proc)
+
+        model_opts = config.validations[:model]
+        klass = model_opts.is_a?(Hash) ? model_opts[:klass] : model_opts
+        klass.is_a?(Class) && default.is_a?(klass)
       end
 
       # Whether a config carries a default that could actually RESCUE the node from a nil ancestor. Reuses
@@ -147,12 +170,16 @@ module Axn
         node.configs.find { |c| Schema.nil_accepted?(c) }
       end
 
+      # A nil-tolerant model is a family-3 hazard ancestor only when its OWN default can't supply a record:
+      # then omission relies on a synthesized `{}` (rejected by ModelValidator). A model whose own default
+      # may supply a record (Proc / model-instance literal) resolves to that record on omission — no `{}`
+      # hazard — so it is not tracked (and is shielded, see shielded?).
       def nil_tolerant_model?(node)
-        !node.implicit? && node.configs.any? { |c| c.validations[:model] && Schema.nil_accepted?(c) }
+        !node.implicit? && !nil_tolerant_model_config(node).nil?
       end
 
       def nil_tolerant_model_config(node)
-        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) }
+        node.configs.find { |c| c.validations[:model] && Schema.nil_accepted?(c) && !model_own_default_may_supply_record?(c) }
       end
 
       # This node's own nil-tolerant config, when it is itself nil-tolerant — nil otherwise (no ancestor
