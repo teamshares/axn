@@ -64,6 +64,14 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
       expect { extract("items.fetch", { items: [1, 2] }) }.to raise_error(Axn::ContractViolation::UnextractableError)
       expect { extract(:fetch, [1, 2]) }.to raise_error(Axn::ContractViolation::UnextractableError)
     end
+
+    it "does not swallow an ArgumentError the reader itself raises (only the wrong-arity case is classified)" do
+      # A zero-arity reader that raises its own ArgumentError signals a broken reader, not an
+      # unextractable path — it must bubble, not be turned into absence.
+      obj = Object.new
+      def obj.boom = raise(ArgumentError, "reader is broken")
+      expect { extract(:boom, obj) }.to raise_error(ArgumentError, "reader is broken")
+    end
   end
 
   describe "Array sources" do

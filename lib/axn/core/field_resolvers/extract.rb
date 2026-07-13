@@ -42,11 +42,15 @@ module Axn
           # needs arguments (e.g. `Array#fetch`, `#at`, `#dig`) — can't answer the path, so surface
           # the typed UnextractableError (read as absent) rather than leaking a raw ArgumentError
           # past the malformed-input doctrine. Arity/params can't distinguish these up front (both
-          # `count` and `fetch` reflect as `[[:rest]]`), so we dispatch and classify the arity failure.
+          # `count` and `fetch` reflect as `[[:rest]]`), so we dispatch and classify only the
+          # wrong-arity failure by its message (a stable, non-localized Ruby core string); any other
+          # ArgumentError is the reader's own and re-raises untouched so a broken reader isn't hidden.
           if source.respond_to?(segment)
             begin
               return source.public_send(segment)
-            rescue ArgumentError
+            rescue ArgumentError => e
+              raise unless e.message.start_with?("wrong number of arguments")
+
               raise Axn::ContractViolation::UnextractableError, "Unclear how to extract #{field} from #{provided_data.inspect}"
             end
           end
