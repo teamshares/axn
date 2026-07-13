@@ -251,6 +251,11 @@ RSpec.describe "per-class config overrides on actions" do
     expect { action.sidekiq_job_tag_sources %i[bogus] }.to raise_error(ArgumentError)
   end
 
+  it "reads a value written through the no-arg configure bag (core namespace)" do
+    action.configure { |c| c.sidekiq_job_tag_sources = %i[dimension] }
+    expect(action.resolved_sidekiq_job_tag_sources).to eq(%i[dimension])
+  end
+
   it "inherits a per-class override into subclasses" do
     action.sidekiq_job_tag_sources %i[dimension]
     expect(Class.new(action).resolved_sidekiq_job_tag_sources).to eq(%i[dimension])

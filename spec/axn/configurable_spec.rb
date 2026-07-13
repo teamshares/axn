@@ -331,3 +331,57 @@ RSpec.describe Axn::Configurable::Settings do
     end
   end
 end
+
+RSpec.describe "Axn::Configurable namespaced per-class config" do
+  let(:mcp) do
+    Module.new do
+      extend Axn::Configurable
+      config_namespace :mcp
+      setting :shared, default: :mcp_default, one_of: %i[mcp_default m], overridable: true
+    end
+  end
+
+  let(:ruby_llm) do
+    Module.new do
+      extend Axn::Configurable
+      config_namespace :ruby_llm
+      setting :shared, default: :llm_default, overridable: true
+    end
+  end
+
+  # A class composing two adapters that happen to share a setting name — the
+  # tool topology the namespacing exists for.
+  let(:tool) do
+    a = mcp.overrides
+    b = ruby_llm.overrides
+    Class.new do
+      include a
+      include b
+    end
+  end
+
+  it "keeps same-named settings from different namespaces independent" do
+    tool.configure(:mcp) { |c| c.shared = :m }
+    tool.configure(:ruby_llm) { |c| c.shared = :r }
+
+    expect(mcp.resolve_override_for(tool, :shared)).to eq(:m)
+    expect(ruby_llm.resolve_override_for(tool, :shared)).to eq(:r)
+  end
+
+  it "stores config for an unloaded namespace inertly, leaving loaded ones untouched" do
+    expect { tool.configure(:not_loaded) { |c| c.anything = :x } }.not_to raise_error
+    expect(mcp.resolve_override_for(tool, :shared)).to eq(:mcp_default)
+  end
+
+  it "defers validation of a configure-written value until it is resolved" do
+    expect { tool.configure(:mcp) { |c| c.shared = :bogus } }.not_to raise_error
+    expect { mcp.resolve_override_for(tool, :shared) }.to raise_error(ArgumentError, /shared/)
+  end
+
+  it "agrees with the flat accessor on the same namespace slot" do
+    mod = mcp.overrides
+    single = Class.new { include mod }
+    single.configure(:mcp) { |c| c.shared = :m }
+    expect(single.resolved_shared).to eq(:m)
+  end
+end

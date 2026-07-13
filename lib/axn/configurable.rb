@@ -61,10 +61,24 @@ module Axn
               # Breadcrumb before extending, while `base`'s own lookup still reflects only its
               # ancestors (not yet axn's accessors), so the check sees a genuine external definition.
               config_source.send(:_warn_on_shadowed_overrides, base)
+              base.extend(ClassConfigWriter)
               base.extend(methods_module)
             end
           end
         end
+      end
+
+      # The store namespace this config source owns. Overridable settings and their
+      # per-class overrides are keyed by `[namespace, setting]`, so two modules that
+      # declare a same-named setting (e.g. a tool composing several adapter mixins)
+      # never collide in the consumer class's single override store. Declared once via
+      # `config_namespace :mcp`; the symbol is also what `configure(:mcp) { … }` targets.
+      # Defaults to the module/class itself — unique per source, so flat-accessor-only
+      # consumers stay collision-safe without declaring anything.
+      def config_namespace(value = UNSET)
+        return (@_config_namespace ||= self) if UNSET.equal?(value)
+
+        @_config_namespace = value
       end
 
       # Resolves `name` for `klass` through the same override store + fallback the
@@ -122,13 +136,14 @@ module Axn
       # can't shadow the internals the other accessors rely on.
       def _define_override_methods(setting, fallback)
         name = setting.name
+        namespace = config_namespace
 
         raw_lookup = lambda do |start|
           klass = start
           while klass.is_a?(Module)
             if klass.instance_variable_defined?(:@_axn_config_overrides)
-              store = klass.instance_variable_get(:@_axn_config_overrides)
-              return store[name] if store.key?(name)
+              slot = klass.instance_variable_get(:@_axn_config_overrides)[namespace]
+              return slot[name] if slot&.key?(name)
             end
             break unless klass.is_a?(Class) && klass.superclass
 
@@ -139,7 +154,15 @@ module Axn
 
         resolve_override = lambda do |start|
           found = raw_lookup.call(start)
-          UNSET.equal?(found) ? fallback.call : setting.resolve(found)
+          return fallback.call if UNSET.equal?(found)
+
+          # Values written through the tolerant `configure(namespace)` bag are stored
+          # unvalidated (core can't see an unloaded adapter's schema), so the owning
+          # source validates its own slice here, at read — surfacing a bad value when
+          # the adapter first resolves it. Flat-accessor writes already validated, so
+          # this is a no-op for them.
+          setting.validate!(found)
+          setting.resolve(found)
         end
 
         # Register for the collision-proof `resolve_override_for` path, so framework
@@ -152,7 +175,7 @@ module Axn
               resolve_override.call(self)
             else
               setting.validate!(value)
-              (@_axn_config_overrides ||= {})[name] = value
+              ((@_axn_config_overrides ||= {})[namespace] ||= {})[name] = value
             end
           end
 
@@ -164,6 +187,49 @@ module Axn
     end
 
     include PerClassOverrides
+
+    # Extended onto any class that includes an `overrides` module (and thus onto every
+    # action via `Axn::Configuration.overrides`), giving it the namespaced `configure`
+    # writer. Kept separate from the per-source methods module because `configure` is
+    # source-agnostic: one method serves every namespace, so extending it twice (a tool
+    # composing several adapters) is idempotent.
+    module ClassConfigWriter
+      # Sets per-class config for `namespace` via the yielded writer. No namespace ⇒
+      # `:core` (axn's own overridable settings). The writer is a tolerant bag: it stores
+      # any `<setting>=` blindly, whether or not an adapter for `namespace` is loaded, so
+      # a library can pre-declare `configure(:mcp) { … }` for an adapter absent from this
+      # process; the value sits inert until that adapter resolves it. Yielded-receiver +
+      # assignment mirrors `Axn.configure { |c| … }`.
+      def configure(namespace = :core)
+        writer = NamespaceWriter.new(self, namespace)
+        yield(writer) if block_given?
+        writer
+      end
+    end
+
+    # The tolerant bag `configure` yields. Each `<setting>=` writes straight into the
+    # class's `[namespace][setting]` override slot with no validation — the owning config
+    # source validates its slice at read (see `_define_override_methods`).
+    class NamespaceWriter
+      def initialize(klass, namespace)
+        @klass = klass
+        @namespace = namespace
+      end
+
+      def respond_to_missing?(name, _include_private = false)
+        name.to_s.end_with?("=") || super
+      end
+
+      def method_missing(name, *args)
+        str = name.to_s
+        return super unless str.end_with?("=")
+
+        key = str.delete_suffix("=").to_sym
+        store = @klass.instance_variable_get(:@_axn_config_overrides) ||
+                @klass.instance_variable_set(:@_axn_config_overrides, {})
+        (store[@namespace] ||= {})[key] = args.first
+      end
+    end
 
     def _axn_config_settings
       @_axn_config_settings ||= {}
