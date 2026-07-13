@@ -97,7 +97,7 @@ module Axn
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
         field_configs.select { |config| config.validations[:model] }.each do |config|
           children = tree.roots[config.reader_as].children
-          apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
+          apply_model_id_requiredness!(config, children, field_configs, properties, required)
         end
 
         schema = { type: "object", properties: }
@@ -124,6 +124,24 @@ module Axn
       # subfield defaults can satisfy the parent type (`{}` is a Hash, matching an object branch).
       def object_shaped?(config)
         object_type_branches(config).any? { |k| [Hash, :params].include?(k) }
+      end
+
+      # Whether the runtime may synthesize `{}` for this config's ABSENT value (the Executor's
+      # write-chain gate consults this per node): its declared type must admit an object AND it must
+      # not be a `model:` route — a synthesized `{}` would be preferred by the model resolver over a
+      # caller-supplied `<field>_id` (clobbering a valid id-based call) and is rejected by
+      # ModelValidator regardless.
+      def synthesizable?(config)
+        object_shaped?(config) && !config.validations[:model]
+      end
+
+      # Presence analysis IGNORING default-rescue, for subtrees whose ancestor can never be
+      # synthesized (a `model:` parent — the write-chain gate refuses, so NO default anywhere in the
+      # subtree ever applies): a node is omittable only through nil/blank-tolerance, at every depth
+      # (a nil ancestor yields every descendant absent, PRO-2857).
+      def node_omittable_without_synthesis?(node)
+        (node.implicit? || node.configs.all? { |c| nil_accepted?(c) }) &&
+          node.children.values.all? { |child| node_omittable_without_synthesis?(child) }
       end
 
       # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
@@ -248,7 +266,7 @@ module Axn
         # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!). Walks the WHOLE
         # subtree: a dotted-NAME default lands on a deeper node and still materializes the parent, firing
         # the shape-member hazard.
-        synthesizer = object_shaped?(config) && subtree_has_applied_subfield_default?(children)
+        synthesizer = synthesizable?(config) && subtree_has_applied_subfield_default?(children)
         synthesizer && required_shape_member?(config)
       end
 
@@ -824,12 +842,15 @@ module Axn
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
+      def apply_model_id_requiredness!(config, children, field_configs, properties, required)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
+        # No default anywhere in a model's subtree can ever apply (the runtime write-chain gate
+        # refuses to synthesize a model node — see Schema.synthesizable?), so omittability is pure
+        # nil-tolerance analysis at every depth: defaults neither rescue a child's own presence nor
+        # poison the model with a synthesized `{}`.
         model_omittable = optional_for_schema?(config) &&
-                          !children_require_presence?(children, ann) &&
-                          !subtree_has_applied_subfield_default?(children)
+                          children.values.all? { |child| node_omittable_without_synthesis?(child) }
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s

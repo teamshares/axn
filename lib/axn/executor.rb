@@ -845,8 +845,7 @@ module Axn
       return true if path.ancestors.empty?
 
       value = @context.provided_data[path.wire_path.first]
-      root = path.ancestors.first.first
-      return false if value.nil? && !root.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) }
+      return false if value.nil? && !_synthesizable_node?(path.ancestors.first.first)
 
       carried = []
       path.ancestors.each_cons(2) do |(parent, seg), (child, _next_seg)|
@@ -854,7 +853,7 @@ module Axn
 
         members = child.implicit? ? Axn::Reflection::Schema.shape_members_at(parent.configs + carried, seg) : []
         if value.nil?
-          return false unless child.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) }
+          return false unless _synthesizable_node?(child)
           return false if members.any? { |m| !Axn::Reflection::Schema.nestable_as_object?(m) }
         end
         carried = members.select { |m| Axn::Reflection::Schema.nestable_as_object?(m) }
@@ -864,6 +863,16 @@ module Axn
       # A malformed (present but key-less) intermediate can't be written into — the default is
       # skipped and the intermediate's own validation classifies the bad value.
       false
+    end
+
+    # Whether an ABSENT node may be synthesized as `{}`: every config's declared type must admit an
+    # object (Schema.object_shaped?, any-branch — `{}` satisfies a union that includes Hash), and no
+    # config may be a `model:` route — a synthesized `{}` would be preferred by the model resolver
+    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and per PRO-2877's
+    # family-3 analysis it rescues nothing: ModelValidator rejects it anyway). Mirrors the model
+    # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
+    def _synthesizable_node?(node)
+      node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
     end
 
     # The parent value a subfield validates against, resolved once per distinct `on:` target per

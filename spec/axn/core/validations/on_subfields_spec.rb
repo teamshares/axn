@@ -626,6 +626,27 @@ RSpec.describe Axn do
           expect(result.parent).to eq({ other: 1 })
         end
 
+        it "never synthesizes an absent model: parent (a default there would clobber a valid id-based call)" do
+          model = Struct.new(:id, :timezone) do
+            def self.find(id) = new(id, "America/New_York")
+            def self.name = "FakeSynthModel"
+          end
+
+          action = build_axn do
+            expects :company, model: { klass: model }
+            expects :timezone, on: :company, optional: true, default: "UTC"
+            exposes :got, optional: true
+
+            def call = expose(got: timezone)
+          end
+
+          # Supplied by id: the record resolves through company_id — synthesizing { timezone: "UTC" }
+          # into provided_data[:company] would make the model resolver prefer that hash over the id.
+          result = action.call(company_id: 7)
+          expect(result).to be_ok
+          expect(result.got).to eq("America/New_York")
+        end
+
         it "skips a nested default when the implicit intermediate collides with a non-object shape member" do
           # `settings` is declared in payload's SHAPE as a String — synthesizing `{ enabled: true }`
           # there would turn a validly-absent optional member into a shape violation, so the default
