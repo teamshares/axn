@@ -231,7 +231,8 @@ module Axn
             raise ArgumentError,
                   "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
                   "(the ambient parent is resolved per-invocation, not read from provided_data) — " \
-                  "compute defaults/preprocessing in your ambient_context_provider or a before hook. `sensitive:` is supported."
+                  "shape those values in your ambient_context_provider instead (a before hook runs after " \
+                  "inbound validation has already resolved ambient, so it's too late). `sensitive:` is supported."
           end
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,

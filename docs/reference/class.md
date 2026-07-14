@@ -263,7 +263,7 @@ expects :ip,      on: :request, type: String   # resolves ambient_context[:reque
 expects "request.ip", on: :ambient_context, type: String, as: :ip
 ```
 
-The filter reconstructs only the declared leaves along their paths, never a whole sub-hash — so an undeclared sibling at any depth (`request[:token]` when only `request[:ip]` is declared) never reaches the resolved value, logs, or exception context. `sensitive:` composes down the path (mark a nested leaf, or an ancestor, and the reconstructed nested value is filtered). Because ambient values are resolved per-invocation and never read from the inbound arguments, `default:`, `preprocess:`, and `coerce:` are **not** supported on any ambient subfield (nested or not) and raise at declaration — compute those in your provider or a `before` hook instead; `sensitive:` is supported.
+The filter reconstructs only the declared leaves along their paths, never a whole sub-hash — so an undeclared sibling at any depth (`request[:token]` when only `request[:ip]` is declared) never reaches the resolved value, logs, or exception context. `sensitive:` composes down the path (mark a nested leaf, or an ancestor, and the reconstructed nested value is filtered). Because ambient values are resolved per-invocation and never read from the inbound arguments, `default:`, `preprocess:`, and `coerce:` are **not** supported on any ambient subfield (nested or not) and raise at declaration — shape those values in your `ambient_context_provider` instead (a `before` hook is too late: inbound validation resolves ambient before hooks run). `sensitive:` is supported.
 
 #### Resolving a subfield by calling a method (`method_call:`)
 
