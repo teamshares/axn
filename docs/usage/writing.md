@@ -480,7 +480,19 @@ fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't
 fails_on(ActiveRecord::RecordInvalid, standalone: true, &:message)  # message stands alone
 ```
 
-The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations. It also accepts `standalone:`, forwarded to that wired `error`: by default the message attaches as a reason under any declared base `error` headline (e.g. `"Couldn't save order: Unable to submit"`); `standalone: true` makes it replace the base instead, so the exception's own message stands alone.
+The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations. It also accepts `standalone:`, forwarded to that wired `error`: by default the message attaches as a reason under any declared base `error` headline (e.g. `"Couldn't save order: Unable to submit"`); `standalone: true` makes it replace the base instead, so the message stands alone. (`standalone:` only configures that wired message, so passing it with no message/block raises — there's nothing to configure.)
+
+::: tip `result.error` never leaks `exception.message` by default
+When you reclassify but declare **no** message, `result.error` resolves to your base `error` (or the generic `"Something went wrong"`) — **not** the exception's own `#message`. That separation is deliberate: a foreign exception's `#message` is a technical string (e.g. `"Validation failed: Email can't be blank"`, or a raw `Faraday` error body) and stays on `result.exception` for debugging, out of the user-facing presentation.
+
+Some exception classes, though, already carry a genuinely user-appropriate message (a `Stripe::CardError`'s `"Your card was declined."`, say). For *those* classes — and only those — opt the message in explicitly, per class:
+
+```ruby
+fails_on Stripe::CardError, &:message   # this class's message IS user-facing
+```
+
+That's a deliberate, class-scoped decision (you're vouching that *this* exception's message is safe to show), not a global "surface every exception's message" switch — which is exactly why it isn't the default.
+:::
 
 ::: tip Callbacks receive the original exception
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.

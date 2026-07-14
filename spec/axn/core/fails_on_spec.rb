@@ -129,6 +129,26 @@ RSpec.describe "fails_on" do
       end
       expect(action.call.error).to eq("Bad: raw")
     end
+
+    it "raises at declaration when standalone: true is passed without a message or block" do
+      expect do
+        build_axn { fails_on ArgumentError, standalone: true }
+      end.to raise_error(ArgumentError, /standalone: has no effect without a message or block/)
+    end
+
+    it "raises for standalone: false without a message or block too (inert either way)" do
+      expect do
+        build_axn { fails_on ArgumentError, standalone: false }
+      end.to raise_error(ArgumentError, /standalone: has no effect without a message or block/)
+    end
+
+    it "leaves bare fails_on (no standalone:) untouched" do
+      action = build_axn do
+        fails_on ArgumentError
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("Something went wrong")
+    end
   end
 
   describe "multiple exception classes (array)" do

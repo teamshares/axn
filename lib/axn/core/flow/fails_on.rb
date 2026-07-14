@@ -21,13 +21,18 @@ module Axn
           # @param exceptions [Class, Array<Class>] one or more Exception classes
           # @param message [String, #call, nil] optional message (positional, like fail!)
           # @param standalone [Boolean, nil] forwarded to the wired `error` — true lets the message
-          #   replace a declared base headline instead of attaching under it (moot without a message)
+          #   replace a declared base headline instead of attaching under it; only meaningful with a
+          #   message/block (there is no wired `error` to configure otherwise)
           # @yield optional block receiving the exception (like error { |e| ... })
           def fails_on(exceptions, message = nil, standalone: nil, &block)
             classes = Array(exceptions)
             if classes.empty? || classes.any? { |c| !(c.is_a?(Class) && c <= Exception) }
               raise ArgumentError, "fails_on requires one or more Exception classes (got #{exceptions.inspect})"
             end
+
+            # standalone: only configures the wired `error`, so it's inert without a message/block —
+            # raise rather than silently drop it (true and false alike), matching the message DSL.
+            raise ArgumentError, "fails_on standalone: has no effect without a message or block" if !standalone.nil? && !(message || block)
 
             self._fails_on_matchers = (_fails_on_matchers + classes).freeze
 
