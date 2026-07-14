@@ -160,6 +160,39 @@ module Axn
         Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
       end
 
+      # The builtin scalars whose reader-method surface is statically judgeable: for these exact
+      # families, an instance answers a segment read iff the class publicly defines the method
+      # (post-PRO-2886 extraction: a Hash-like source reads any key; everything else is a
+      # public_send). Anything outside this list — Data/Struct/custom classes, model records —
+      # may answer dynamically, so it is never judged (optimistic: rejection needs proof).
+      SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Numeric, Array, Date, DateTime, Time, TrueClass, FalseClass].freeze
+
+      # Whether ONE admissible declared branch can answer reading `segment` off its value.
+      def branch_answers_segment?(branch, segment)
+        return true if branch == :params
+
+        klasses = case branch
+                  when :uuid then [String]
+                  when :boolean then [TrueClass, FalseClass]
+                  else [branch]
+                  end
+        klasses.any? do |k|
+          next true unless k.is_a?(Class)
+          next true if k <= Hash
+
+          judged = SEGMENT_JUDGED_SCALARS.any? { |s| k <= s }
+          !judged || k.public_method_defined?(segment)
+        end
+      end
+
+      # Whether a config's declared type admits SOME branch that can answer `segment`. A `model:`
+      # route resolves to a record, whose method surface is never statically refutable.
+      def config_answers_segment?(config, segment)
+        return true if config.validations[:model]
+
+        object_type_branches(config).any? { |branch| branch_answers_segment?(branch, segment) }
+      end
+
       # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
       # the shape's properties on OUTPUT matches serialize_exposed). Only asserted for types with a
       # language-guaranteed member-keyed serialization: `:params`, an untyped shape (caller supplies a

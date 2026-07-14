@@ -92,6 +92,86 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
     end
   end
 
+  describe "family 2: unanswerable segments" do
+    it "rejects a dotted name whose segment reads through a scalar shape member" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
+          expects "bar.baz", on: :payload, type: Integer
+        end
+      end.to raise_error(ArgumentError, /"bar\.baz".*can never resolve.*baz/m)
+    end
+
+    it "rejects a multi-segment name off a declared-scalar explicit parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :bar, on: :payload, type: String
+          expects "a.b", on: :bar, type: Integer
+        end
+      end.to raise_error(ArgumentError, /can never resolve/)
+    end
+
+    it "rejects an unanswerable segment via a dotted on: path" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :bar, on: :payload, type: String
+          expects :id, on: "payload.bar", type: Integer
+        end
+      end.to raise_error(ArgumentError, /can never resolve/)
+    end
+
+    it "rejects regardless of the subfield's own optional:/default: (dead machinery)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
+          expects "bar.baz", on: :payload, type: Integer, optional: true, default: 1
+        end
+      end.to raise_error(ArgumentError, /can never resolve/)
+    end
+
+    # Legal reader patterns — the false-positives that killed the pulled detector:
+    it "accepts a method-answerable segment on a scalar (Array#count)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :items, on: :payload, type: Array
+          expects :count, on: :items, type: Integer
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts String#length on a scalar shape member" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :bar, type: String
+          end
+          expects "bar.length", on: :payload, type: Integer
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts segments through unknown classes and model parents (optimistic)" do
+      data_klass = Class.new { def self.fetch(_id) = nil }
+      stub_const("OpaqueThing", data_klass)
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, type: OpaqueThing
+          expects "a.b", on: :thing, type: Integer, optional: true
+          expects :company, on: :payload, model: { klass: OpaqueThing, finder: :fetch }, optional: true
+          expects "x.y", on: :company, type: Integer, optional: true
+        end
+      end.not_to raise_error
+    end
+  end
+
   describe "family 3: the model flavor" do
     it "rejects a nil-tolerant model parent with an unrescued required descendant" do
       expect do

@@ -771,16 +771,16 @@ RSpec.describe Axn::Reflection::Schema do
 
   it "strips null from a non-nestable (Array) parent when a required DEEP descendant forbids a nil parent (PRO-2872)" do
     # `items` is non-nestable (type: Array), so its subfield shape is omitted — but a required DEEP
-    # descendant (`items.first_item.sku`) still forces `items` required (field_optional?). A nil parent
+    # descendant (`items.first.sku`) still forces `items` required (field_optional?). A nil parent
     # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
-    # non-nullable: type exactly "array", no null branch. The required `sku` carries a Proc default so the
-    # contract is legal under PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so
-    # `items` is still required + non-nullable. The Proc rescues omission at runtime — schema stricter than
-    # runtime, the safe divergence.
+    # non-nullable: type exactly "array", no null branch. The dig reads a real reader segment (`Array#first`)
+    # so family 2 accepts it. The required `sku` carries a Proc default so the contract is legal under
+    # PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so `items` is still
+    # required + non-nullable. The Proc rescues omission at runtime — schema stricter than runtime, the safe divergence.
     klass = Class.new do
       include Axn
       expects :items, type: Array, allow_nil: true
-      expects :sku, on: "items.first_item", type: String, default: -> { "x" }
+      expects :sku, on: "items.first", type: String, default: -> { "x" }
       def call; end
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -817,7 +817,7 @@ RSpec.describe Axn::Reflection::Schema do
     klass = Class.new do
       include Axn
       expects :items, type: Array, allow_nil: true
-      expects :sku, on: "items.first_item", type: String, optional: true
+      expects :sku, on: "items.first", type: String, optional: true
       def call; end
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -1792,7 +1792,7 @@ RSpec.describe Axn::Reflection::Schema do
         expects :items, type: Array, allow_nil: true do
           field :status, type: String
         end
-        expects :note, on: :items, optional: true, type: String, default: "x"
+        expects :first, on: :items, optional: true, type: String, default: "x"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3397,7 +3397,7 @@ RSpec.describe Axn::Reflection::Schema do
         include Axn
         expects :payload, type: Hash
         expects :items, on: :payload, type: Array
-        expects :first_sku, on: :items, type: String, optional: true
+        expects :first, on: :items, type: String, optional: true # reads Array#first (a real reader — answerable)
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3459,17 +3459,18 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
          "though its shape is omitted (runtime still validates it)" do
-        # `first_sku` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts
-        # the Proc); strict reflection ignores Procs, so the deep-leaf-forces-ancestors override still stands.
+        # `first` reads a real reader segment (Array#first, so family 2 accepts it) and carries a Proc
+        # default so the contract is legal under PRO-2889 (satisfiability counts the Proc); strict
+        # reflection ignores Procs, so the deep-leaf-forces-ancestors override still stands.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash, allow_nil: true
           expects :items, on: :payload, type: Array, optional: true
-          expects :first_sku, on: :items, type: String, default: -> { "x" }
+          expects :first, on: :items, type: String, default: -> { "x" }
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        # first_sku is dropped from the schema shape (non-object parent) but runtime requires it,
+        # first is dropped from the schema shape (non-object parent) but runtime requires it,
         # which requires items present, which requires payload present.
         payload = schema[:properties][:payload]
         expect(payload[:required]).to eq(["items"])
@@ -3621,18 +3622,21 @@ RSpec.describe Axn::Reflection::Schema do
         expect(bar[:required]).to include("baz")
       end
 
-      it "leaves a NON-object shape member untouched and drops the colliding deep config (warned via dropped_deep_subfields)" do
+      it "leaves a NON-object (union) shape member untouched and drops the colliding deep config (warned via dropped_deep_subfields)" do
+        # `[Hash, String]`: non-nestable (the String branch blocks the drop pass) yet answerable (the Hash
+        # branch reads a key), so family 2 accepts the declaration while `bar.baz` still drops.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
-            field :bar, type: String
+            field :bar, type: [Hash, String]
           end
           expects "bar.baz", on: :payload, type: String
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         bar = schema[:properties][:payload][:properties][:bar]
-        expect(bar).to include(type: "string")
+        expect(bar).to have_key(:anyOf)
+        expect(Array(bar[:type])).not_to include("object")
         expect(bar).not_to have_key(:properties)
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
         expect(dropped.map(&:field)).to eq([:"bar.baz"])
@@ -3706,14 +3710,14 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
       end
 
-      # Scalar member variant: same required/non-nullable treatment. (No satisfying call exists — a String
-      # bar can't yield the deep baz — so only the failure modes are asserted; the schema still forbids the
-      # nil/omitted member that runtime also rejects.)
-      it "forces a blocked SCALAR member required + non-nullable when the dropped subtree requires presence" do
+      # Union member variant (`[Hash, String]`): same required/non-nullable treatment. Only a present,
+      # object-valued `bar` yields the deep `baz`; a nil/omitted or String-valued `bar` strands it, so the
+      # schema forbids the nil/omitted member that runtime also rejects.
+      it "forces a blocked union member required + non-nullable when the dropped subtree requires presence" do
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
-            field :bar, type: String, optional: true
+            field :bar, type: [Hash, String], optional: true
           end
           expects :baz, on: "payload.bar", type: String
           def call = nil
@@ -3723,7 +3727,8 @@ RSpec.describe Axn::Reflection::Schema do
         payload = schema[:properties][:payload]
         bar = payload[:properties][:bar]
         expect(payload[:required]).to include("bar")
-        expect(bar[:type]).to eq("string") # null branch stripped from ["string", "null"]
+        expect(bar).to have_key(:anyOf)
+        expect(bar[:anyOf]).not_to include(hash_including(type: "null")) # null admission stripped
         expect(bar).not_to have_key(:properties)
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
         expect(dropped.map(&:field)).to eq([:baz])
@@ -3732,12 +3737,14 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).not_to be_ok
       end
 
-      it "leaves a SCALAR member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
+      it "leaves a non-object (union) member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
+        # `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2) yet answerable
+        # via its Hash branch, so family 2 accepts the declaration while `bar.baz.qux` drops.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
             field :bar, type: Hash do
-              field :baz, type: String
+              field :baz, type: [Hash, String]
             end
           end
           expects "bar.baz.qux", on: :payload
@@ -3745,7 +3752,8 @@ RSpec.describe Axn::Reflection::Schema do
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         baz = schema[:properties][:payload][:properties][:bar][:properties][:baz]
-        expect(baz).to include(type: "string") # scalar member kept as-is
+        expect(baz).to have_key(:anyOf) # union member kept as-is
+        expect(Array(baz[:type])).not_to include("object")
         expect(baz).not_to have_key(:properties) # no forced object / qux under it
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
         expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
@@ -3848,14 +3856,14 @@ RSpec.describe Axn::Reflection::Schema do
       # so the config the tree dropped isn't quietly re-nested by the property (built from the first
       # config, which has no shape). (A subfield can't take a `do…end` block, so the shape rides a raw
       # `shape:` kwarg — the same structure the block DSL builds.)
-      it "drops a deep config colliding with a SCALAR shape member declared on the node's SECOND config" do
-        x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
+      it "drops a deep config colliding with a non-object (union) shape member declared on the node's SECOND config" do
+        x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
         klass = Class.new do
           include Axn
           expects :foo, type: Hash
           expects :bar, on: :foo, type: Hash
           expects "bar.baz", on: :foo, type: Hash                                                  # baz config #1 (no shape)
-          expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (scalar member x)
+          expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (non-nestable member x)
           expects "baz.x.y", on: :bar                                                              # implicit x under baz + grandchild y
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3868,14 +3876,15 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       # Two routes to a merged node each carry a nestable Hash member `x`, but their NESTED members at
-      # `y` disagree: route 1's `y` is a nestable Hash, route 2's `y` is a scalar String. Emission carries
-      # ALL colliding members through the implicit hop, so at `y` it sees the scalar and drops `x.y.z`. The
-      # drop pass must carry them ALL too (not just the first nestable `x`), or `x.y.z` validates at runtime
-      # yet is absent from BOTH the schema and dropped_deep_subfields — a silent, unwarned gap.
+      # `y` disagree: route 1's `y` is a nestable Hash, route 2's `y` is a non-nestable `[Hash, String]`
+      # union. Emission carries ALL colliding members through the implicit hop, so at `y` it sees the
+      # non-nestable route and drops `x.y.z`. The drop pass must carry them ALL too (not just the first
+      # nestable `x`), or `x.y.z` validates at runtime yet is absent from BOTH the schema and
+      # dropped_deep_subfields — a silent, unwarned gap. The union stays answerable for family 2 (Hash branch).
       it "drops a deep config when merged colliding shape members carry disagreeing nested members" do
         y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
         x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
-        y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
+        y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
         x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
         klass = Class.new do
           include Axn
@@ -4392,6 +4401,60 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(strict[id_node].required).to be(true)   # schema: unknowable → required (safe direction)
       expect(sat[id_node].required).to be(false)     # detector: the Proc DOES apply at runtime
+    end
+  end
+
+  describe "segment answerability predicates (family 2)" do
+    Cfg = Data.define(:validations) unless defined?(Cfg)
+
+    describe ".branch_answers_segment?" do
+      it "answers anything through :params, Hash (and subclasses), and untyped branches" do
+        expect(described_class.branch_answers_segment?(:params, :anything)).to be(true)
+        expect(described_class.branch_answers_segment?(Hash, :anything)).to be(true)
+        expect(described_class.branch_answers_segment?(Class.new(Hash), :anything)).to be(true)
+      end
+
+      it "judges an exact builtin scalar by its public method surface" do
+        expect(described_class.branch_answers_segment?(String, :length)).to be(true)
+        expect(described_class.branch_answers_segment?(String, :baz)).to be(false)
+        expect(described_class.branch_answers_segment?(Array, :count)).to be(true)
+        expect(described_class.branch_answers_segment?(Array, :first_item)).to be(false)
+      end
+
+      it "maps :uuid to String and :boolean to TrueClass/FalseClass" do
+        expect(described_class.branch_answers_segment?(:uuid, :length)).to be(true)
+        expect(described_class.branch_answers_segment?(:uuid, :baz)).to be(false)
+        expect(described_class.branch_answers_segment?(:boolean, :to_s)).to be(true)
+        expect(described_class.branch_answers_segment?(:boolean, :baz)).to be(false)
+      end
+
+      it "is optimistic about non-Class branches and unknown/Data/Struct classes" do
+        expect(described_class.branch_answers_segment?(Class.new, :anything)).to be(true)
+        expect(described_class.branch_answers_segment?(Data.define(:x), :anything)).to be(true)
+        expect(described_class.branch_answers_segment?(Struct.new(:x), :anything)).to be(true)
+      end
+    end
+
+    describe ".config_answers_segment?" do
+      it "is never refutable for a model: route" do
+        cfg = Cfg.new(validations: { model: { klass: String }, type: { klass: String } })
+        expect(described_class.config_answers_segment?(cfg, :baz)).to be(true)
+      end
+
+      it "answers when ANY declared branch answers (a union including Hash)" do
+        cfg = Cfg.new(validations: { type: { klass: [Hash, String] } })
+        expect(described_class.config_answers_segment?(cfg, :baz)).to be(true)
+      end
+
+      it "refutes when NO declared branch can answer the segment" do
+        cfg = Cfg.new(validations: { type: { klass: String } })
+        expect(described_class.config_answers_segment?(cfg, :baz)).to be(false)
+      end
+
+      it "treats an untyped config as object-shaped (answers anything)" do
+        cfg = Cfg.new(validations: { presence: true })
+        expect(described_class.config_answers_segment?(cfg, :baz)).to be(true)
+      end
     end
   end
 end

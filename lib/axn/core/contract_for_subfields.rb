@@ -35,7 +35,7 @@ module Axn
         path = action.class._resolved_subfields.index[config]
         return _resolve_parent_by_recipe(action, config.on) if path.nil?
 
-        reader_index = (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
+        reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
 
         value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
@@ -43,6 +43,14 @@ module Axn
           value = Axn::Core::FieldResolvers.extract_or_nil(field: hop.last.to_s, provided_data: value)
         end
         value
+      end
+
+      # The chain index of the deepest reader-bearing ancestor at-or-before the `on:` target — the
+      # node resolve_parent public_sends; the hops AFTER it are the ones the runtime actually digs.
+      # Shared with the family-2 answerability check so the two can't disagree about which segments
+      # are dig-read. Nil when no ancestor bears a reader (the recipe fallback path).
+      def self.deepest_reader_index(path)
+        (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end
 
       # The node's reader-bearing config, if any: a config generates a reader unless its reader name

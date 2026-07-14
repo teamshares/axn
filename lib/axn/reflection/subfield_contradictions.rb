@@ -14,12 +14,58 @@ module Axn
     module SubfieldContradictions
       module_function
 
-      # `new_configs` is the prospective batch (consumed by the family-2 check added in a later
-      # commit — earlier configs were judged at their own declaration; the dead-tolerance walk
-      # re-scans the whole tree because a NEW required descendant can kill an OLD tolerance).
-      def check!(field_configs, subfield_configs, new_configs:) # rubocop:disable Lint/UnusedMethodArgument
+      # `new_configs` is the prospective batch: the family-2 check judges only it (earlier configs
+      # were judged at their own declaration), while the dead-tolerance walk re-scans the whole tree
+      # because a NEW required descendant can kill an OLD tolerance.
+      def check!(field_configs, subfield_configs, new_configs:)
         tree = SubfieldTree.build(field_configs, subfield_configs)
+        check_unanswerable_segments!(tree, new_configs) # first: its message is the more specific when both fire
         check_dead_nil_tolerance!(tree, field_configs)
+      end
+
+      # Family 2: a subfield whose resolution provably cannot traverse some segment — for EVERY
+      # contract-valid input, the read settles absent (post-PRO-2886: a failed dig/method read is
+      # UnextractableError → nil). Judged only along the hops the runtime actually digs (after the
+      # deepest reader-bearing ancestor — the same recipe resolve_parent uses), against each
+      # position's enforced declarations: its explicit configs plus the shape members an implicit
+      # position stands in for (ALL colliding members, nestable or not — answerability is about
+      # reading through the member's value, not nesting under it). Rejected regardless of the
+      # subfield's own optional:/default: — an unreachable path is dead machinery (the shipped
+      # family-4 precedent), and with a default it degenerates to a constant field.
+      def check_unanswerable_segments!(tree, new_configs)
+        new_configs.each do |config|
+          path = tree.index[config]
+          next if path.nil? # ambient-anchored — resolved per-invocation, out of scope
+
+          reader_index = Axn::Core::ContractForSubfields.deepest_reader_index(path)
+          next if reader_index.nil?
+
+          carried = []
+          path.ancestors.each_with_index do |(node, seg), i|
+            if i >= reader_index && (blocker = segment_blocker(node, carried, seg))
+              raise_unanswerable!(config, blocker, seg)
+            end
+            carried = node.children[seg]&.implicit? ? Schema.shape_members_at(node.configs + carried, seg) : []
+          end
+        end
+      end
+
+      # The first enforced declaration at this position that provably cannot answer `segment`
+      # (nil when the position is answerable). A position with any model: route resolves to a
+      # record — never refutable.
+      def segment_blocker(node, carried, segment)
+        return nil if node.configs.any? { |c| c.validations[:model] }
+
+        (node.configs + carried).find { |c| !Schema.config_answers_segment?(c, segment) }
+      end
+
+      def raise_unanswerable!(config, blocker, segment)
+        types = Schema.object_type_branches(blocker).map { |b| b.is_a?(Class) ? b.name : b.inspect }.join(", ")
+        raise ArgumentError,
+              "subfield #{config.field.inspect} (on #{config.on.inspect}) can never resolve: segment #{segment.inspect} " \
+              "is read from #{blocker.field.inspect}, declared #{types}, which cannot answer it (no key access, no such " \
+              "method) — no contract-valid input ever reaches this subfield. Make #{blocker.field.inspect} object-shaped, " \
+              "or drop the subfield."
       end
 
       # Families 1+3: a statically-declared nil-tolerance (allow_nil:/optional:/allow_blank:/

@@ -7,7 +7,7 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
       expects :address, type: Hash, optional: true, as: :addr
       expects :meta, on: :payload, type: Hash, optional: true
       expects :locale, on: "payload.meta", type: String, optional: true
-      expects :zip, on: :addr, type: String, optional: true
+      expects :zip, on: :addr, type: Hash, optional: true # Hash (object-shaped) so the `region` subfield can anchor on it (family 2)
     end
   end
 

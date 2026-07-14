@@ -345,7 +345,7 @@ RSpec.describe Axn do
         it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
           action = build_axn do
             expects :items, type: Array, optional: true
-            expects "a.b", on: :items, optional: true, type: String, default: "x"
+            expects "first.b", on: :items, optional: true, type: String, default: "x" # `first` is a real Array reader (family 2 answerable)
             def call = nil
           end
           result = action.call(items: nil)
@@ -717,12 +717,13 @@ RSpec.describe Axn do
         end
 
         it "skips a nested default when the implicit intermediate collides with a non-object shape member" do
-          # `settings` is declared in payload's SHAPE as a String — synthesizing `{ enabled: true }`
-          # there would turn a validly-absent optional member into a shape violation, so the default
-          # is skipped (the same member-nestability rule the schema's drop pass applies).
+          # `settings` is a non-nestable `[Hash, String]` member (the String branch blocks nesting, the Hash
+          # branch keeps it family-2 answerable) — synthesizing `{ enabled: true }` there would turn a
+          # validly-absent optional member into a shape violation, so the default is skipped (the same
+          # member-nestability rule the schema's drop pass applies).
           action = build_axn do
             expects :payload, type: Hash do
-              field :settings, type: String, optional: true
+              field :settings, type: [Hash, String], optional: true
             end
             expects :enabled, on: "payload.settings", optional: true, type: :boolean, default: true
             exposes :parent, optional: true
@@ -736,11 +737,12 @@ RSpec.describe Axn do
         end
 
         it "drops a nested preprocess result when the implicit intermediate collides with a non-object shape member" do
-          # Same synthesis gate as defaults: the write would have to create `settings` as an object
-          # where the shape declares a String, so the result has nowhere to land and is dropped.
+          # Same synthesis gate as defaults: the write would have to create `settings` as an object where the
+          # shape declares a non-nestable `[Hash, String]` member, so the result has nowhere to land and is
+          # dropped. (The Hash branch keeps the segment family-2 answerable; the String branch blocks nesting.)
           action = build_axn do
             expects :payload, type: Hash do
-              field :settings, type: String, optional: true
+              field :settings, type: [Hash, String], optional: true
             end
             expects :flag, on: "payload.settings", optional: true, preprocess: ->(v) { v.nil? ? "computed" : v }
             exposes :parent, optional: true
@@ -1896,7 +1898,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :payload, type: Array, allow_nil: true
-          expects "meta.count", on: :payload, type: Integer, default: 0
+          expects "first.count", on: :payload, type: Integer, default: 0 # `first` is a real Array reader (family 2 answerable)
           def call = nil
         end
       end
