@@ -81,6 +81,15 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end
       end.to raise_error(ArgumentError, /:payload is declared nil-tolerant/)
     end
+
+    it "accepts a blank default when no active presence validator rejects it" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects :name, on: :payload, presence: false, default: ""
+        end
+      end.not_to raise_error
+    end
   end
 
   describe "family 3: the model flavor" do
@@ -116,6 +125,17 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :company_id, type: Integer, default: 42
           expects :company, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a model SUBFIELD with a defaulted id sibling subfield" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Integer, default: 42
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
           expects :name, on: :company, type: String
         end
       end.not_to raise_error

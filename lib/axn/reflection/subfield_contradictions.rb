@@ -112,7 +112,7 @@ module Axn
                        ""
                      end
         raise ArgumentError,
-              ":#{owner} is declared nil-tolerant (allow_nil:/optional:/allow_blank:), but " \
+              ":#{owner} is declared nil-tolerant (allow_nil:/optional:/allow_blank:/presence: false), but " \
               "#{stranded ? ":#{stranded}" : 'its subtree'} is required and nothing rescues an omitted :#{owner} — " \
               "the tolerance can never be exercised (every nil/omitted :#{owner} fails validation). " \
               "Drop the tolerance on :#{owner}, or mark #{stranded ? ":#{stranded}" : 'the subtree'} optional: or give it a " \
