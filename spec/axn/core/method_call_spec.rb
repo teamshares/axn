@@ -45,10 +45,7 @@ RSpec.describe "expects ..., method_call: true" do
     end
   end
 
-  describe "preprocess:/coerce: are inert (not yet composed — PRO-2903)" do
-    # A method-derived value can't be written back, so preprocess/coerce can't apply. They're SKIPPED
-    # entirely rather than run for a discarded result — so a preprocess proc never fires its side
-    # effects (or raises) on a value the reader never sees, and the resolved value is un-transformed.
+  describe "preprocess:/coerce: compose on the read path" do
     let(:event_class) do
       Class.new do
         attr_reader :data
@@ -57,7 +54,7 @@ RSpec.describe "expects ..., method_call: true" do
       end
     end
 
-    it "does not run the preprocess proc for a method_call subfield" do
+    it "runs preprocess on the resolved (post-dispatch) value" do
       ran = false
       action = build_axn do
         expects :event
@@ -70,31 +67,47 @@ RSpec.describe "expects ..., method_call: true" do
       end
       result = action.call(event: event_class.new("raw"))
       expect(result).to be_ok
-      expect(ran).to be(false) # the proc never fired
-      expect(result.out).to eq("raw") # value is the un-preprocessed method result
+      expect(ran).to be(true)
+      expect(result.out).to eq("processed:raw")
     end
 
-    it "does not raise when a method_call subfield's preprocess proc would raise" do
+    it "surfaces a PreprocessingError when the proc raises on the resolved value" do
       action = build_axn do
         expects :event
-        expects :data, on: :event, method_call: true, preprocess: ->(_v) { raise "should never run" }
-        exposes :out
-        def call = expose(out: data)
-      end
-      expect(action.call(event: event_class.new("raw")).out).to eq("raw")
-    end
-
-    it "does not coerce a method_call value (coercion skipped, so a wrong-type result fails validation)" do
-      action = build_axn do
-        expects :event
-        expects :data, on: :event, method_call: true, coerce: Integer # coerce: sets type: Integer
+        expects :data, on: :event, method_call: true, preprocess: ->(_v) { raise "boom" }
         exposes :out, allow_nil: true
         def call = expose(out: data)
       end
-      # "42" would coerce to 42 if coercion applied; it's skipped, so the raw String fails type: Integer.
-      result = action.call(event: event_class.new("42"))
+      Axn.config.instance_variable_set(:@on_exception, nil)
+      result = action.call(event: event_class.new("raw"))
       expect(result).not_to be_ok
-      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception).to be_a(Axn::ContractViolation::PreprocessingError)
+    ensure
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
+
+    it "coerces the resolved value (coerce: Integer on a String result)" do
+      action = build_axn do
+        expects :event
+        expects :data, on: :event, method_call: true, coerce: Integer # coerce: sets type: Integer
+        exposes :out
+        def call = expose(out: data)
+      end
+      result = action.call(event: event_class.new("42"))
+      expect(result).to be_ok
+      expect(result.out).to eq(42)
+    end
+
+    it "does not mutate the caller's object on the read path" do
+      obj = event_class.new("42")
+      action = build_axn do
+        expects :event
+        expects :data, on: :event, method_call: true, coerce: Integer
+        exposes :out
+        def call = expose(out: data)
+      end
+      action.call(event: obj)
+      expect(obj.data).to eq("42") # the caller's object is untouched
     end
   end
 
@@ -139,20 +152,18 @@ RSpec.describe "expects ..., method_call: true" do
   end
 
   describe "with coerce_input_types enabled globally" do
-    # coerce_input_types auto-coerces every coercible-typed field by writing back into provided_data
-    # before validation. For a method_call subfield the read honors the opt-in (no gate crash) but the
-    # write-back can't reach the method-derived value, so coercion is a no-op and it validates as-is.
     before { Axn.config.coerce_input_types = true }
     after { Axn.config.coerce_input_types = false }
 
-    it "resolves a coercible-typed method_call subfield without crashing" do
+    it "coerces a coercible-typed method_call subfield's String result" do
+      obj = Class.new { def raw_count = "3" }.new
       action = build_axn do
         expects :payload
-        expects "items.count", on: :payload, as: :item_count, type: Integer, method_call: true
+        expects :raw_count, on: :payload, type: Integer, method_call: true
         exposes :out
-        def call = expose(out: item_count)
+        def call = expose(out: raw_count)
       end
-      result = action.call(payload: { items: [10, 20, 30] })
+      result = action.call(payload: obj)
       expect(result).to be_ok
       expect(result.out).to eq(3)
     end
@@ -212,10 +223,7 @@ RSpec.describe "expects ..., method_call: true" do
       expect(action.call(event: event_class_returning.call({ role: "admin" })).out).to eq("admin")
     end
 
-    it "does not crash coerce_input_types for a coercible subfield under a method_call parent" do
-      # coerce_input_types walks the wire chain across the method_call parent honoring its opt-in, so
-      # the read doesn't raise the gate error; the coerced write-back can't reach a method-derived
-      # parent, so it's a no-op and the value validates as declared.
+    it "coerces a coercible subfield under a method_call parent (coerce_input_types)" do
       Axn.config.coerce_input_types = true
       action = build_axn do
         expects :event
@@ -224,7 +232,7 @@ RSpec.describe "expects ..., method_call: true" do
         exposes :out
         def call = expose(out: n)
       end
-      result = action.call(event: event_class_returning.call({ n: 3 }))
+      result = action.call(event: event_class_returning.call({ n: "3" }))
       expect(result).to be_ok
       expect(result.out).to eq(3)
     ensure

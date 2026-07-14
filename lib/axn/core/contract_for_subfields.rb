@@ -112,10 +112,26 @@ module Axn
                 end
         return cache[config] if cache.key?(config)
 
-        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config),
+        parent = resolve_parent(action, config)
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
                                                          permit_method_call: config.method_call)
+        # A method-derived value is never written back into provided_data, so the write-back coercion/
+        # preprocess passes skip it; apply them here, to the resolved value, in the top-level pass order
+        # (coerce → preprocess). Non-mutating: transforms the resolved value, never the caller's object.
+        value = _apply_read_path_transforms(action, config, value, parent) if resolution_crosses_method_call?(action, config)
         value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         cache[config] = value
+      end
+
+      # coerce → preprocess, applied to a resolved subfield value on the read path (the top-level pass
+      # order, minus default: which the caller applies after). Preprocess is skipped when the parent is
+      # absent (nil): an absent subfield has no value to transform, matching the write-back's
+      # drop-on-nil-parent. coerce_value no-ops on a nil/non-String value, so coercion needs no guard.
+      def self._apply_read_path_transforms(action, config, value, parent)
+        coerce_input_types = Axn::Configuration.resolve_override_for(action.class, :coerce_input_types)
+        value = Axn::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
+        value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
+        value
       end
 
       # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
