@@ -158,51 +158,12 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     expect(klass.call).to be_ok # absent ambient value is tolerated
   end
 
-  it "rejects a dotted `on:` path rooted at ambient_context (deep ambient nesting is deferred)" do
-    expect do
-      Class.new do
-        include Axn
-        expects :ip, on: "ambient_context.request", type: String
-      end
-    end.to raise_error(ArgumentError, /dotted `on:` path rooted at :ambient_context/)
-  end
-
   it "still allows a plain (non-dotted) on: :ambient_context subfield" do
     klass = Class.new do
       include Axn
       expects :company, on: :ambient_context, type: Integer
     end
     expect(klass).to be_a(Class)
-  end
-
-  it "rejects a dotted subfield NAME on an ambient_context parent (deep ambient nesting is deferred)" do
-    expect do
-      Class.new do
-        include Axn
-        expects "request.ip", on: :ambient_context, type: String
-      end
-    end.to raise_error(ArgumentError, /dotted subfield name.*ambient_context|ambient_context.*dotted subfield name/)
-  end
-
-  it "rejects a subfield nested UNDER an ambient_context subfield (deep ambient nesting is deferred)" do
-    expect do
-      Class.new do
-        include Axn
-        expects :request, on: :ambient_context
-        expects :ip, on: :request
-      end
-    end.to raise_error(ArgumentError, /nested under :ambient_context|deep ambient nesting/)
-  end
-
-  it "rejects a subfield nested two levels under an ambient_context subfield" do
-    expect do
-      Class.new do
-        include Axn
-        expects :request, on: :ambient_context
-        expects :headers, on: :request
-        expects :auth, on: :headers
-      end
-    end.to raise_error(ArgumentError, /nested under :ambient_context|deep ambient nesting/)
   end
 
   it "does NOT reject a non-ambient nested subfield chain, and resolves it at runtime" do
@@ -237,6 +198,229 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
   end
 end
 
+RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  describe "form 1: a dotted `on:` path rooted at ambient_context" do
+    let(:klass) do
+      Class.new do
+        include Axn
+        expects :session, on: "ambient_context.request", type: String
+        exposes :sess
+        def call = expose(sess: session)
+      end
+    end
+
+    it "declares without error and resolves from an explicit kwarg" do
+      result = klass.call(ambient_context: { request: { session: "abc" } })
+      expect(result).to be_ok
+      expect(result.sess).to eq("abc")
+    end
+
+    it "resolves from the configured provider" do
+      with_ambient_context(request: { session: "xyz" }) do
+        result = klass.call
+        expect(result).to be_ok
+        expect(result.sess).to eq("xyz")
+      end
+    end
+  end
+
+  describe "form 2: a dotted subfield NAME on an ambient_context parent" do
+    it "declares without error and validates the nested value (no reader)" do
+      klass = Class.new do
+        include Axn
+        expects "request.ip", on: :ambient_context, type: String
+        def call = nil
+      end
+      expect(klass.call(ambient_context: { request: { ip: "1.2.3.4" } })).to be_ok
+      expect(klass.call(ambient_context: { request: { ip: 5 } })).not_to be_ok
+    end
+
+    it "resolves the aliased nested value via its reader" do
+      klass = Class.new do
+        include Axn
+        expects "request.ip", on: :ambient_context, type: String, as: :ip
+        exposes :the_ip
+        def call = expose(the_ip: ip)
+      end
+      result = klass.call(ambient_context: { request: { ip: "1.2.3.4" } })
+      expect(result).to be_ok
+      expect(result.the_ip).to eq("1.2.3.4")
+    end
+  end
+
+  describe "form 3: a subfield nested UNDER an ambient_context subfield" do
+    let(:klass) do
+      Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String
+        exposes :the_ip, :the_request
+        def call = expose(the_ip: ip, the_request: request)
+      end
+    end
+
+    it "declares without error and resolves the nested leaf (explicit + provider)" do
+      result = klass.call(ambient_context: { request: { ip: "1.2.3.4" } })
+      expect(result).to be_ok
+      expect(result.the_ip).to eq("1.2.3.4")
+
+      with_ambient_context(request: { ip: "5.6.7.8" }) do
+        expect(klass.call.the_ip).to eq("5.6.7.8")
+      end
+    end
+
+    it "resolves two levels deep" do
+      klass2 = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :headers, on: :request, type: Hash
+        expects :auth, on: :headers, type: String
+        exposes :the_auth
+        def call = expose(the_auth: auth)
+      end
+      result = klass2.call(ambient_context: { request: { headers: { auth: "Bearer x" } } })
+      expect(result).to be_ok
+      expect(result.the_auth).to eq("Bearer x")
+    end
+  end
+
+  describe "leak prevention: only declared leaves survive, never a whole sub-hash" do
+    let(:klass) do
+      Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String
+        exposes :the_request
+        def call = expose(the_request: request)
+      end
+    end
+
+    it "strips an undeclared sibling key at depth from the resolved value" do
+      result = klass.call(ambient_context: { request: { ip: "1.2.3.4", token: "secret" } })
+      expect(result).to be_ok
+      expect(result.the_request).to eq(ip: "1.2.3.4")
+      expect(result.the_request).not_to have_key(:token)
+    end
+
+    it "keeps the undeclared sibling out of execution_context" do
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4", token: "secret" } })
+      inst._run
+      ambient = inst.execution_context[:ambient_context]
+      expect(ambient[:request]).to eq(ip: "1.2.3.4")
+      expect(ambient[:request]).not_to have_key(:token)
+    end
+
+    it "strips an undeclared top-level ambient key too" do
+      result = klass.call(ambient_context: { request: { ip: "1.2.3.4" }, other: "leak" })
+      expect(result).to be_ok
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4" }, other: "leak" })
+      inst._run
+      expect(inst.execution_context[:ambient_context]).not_to have_key(:other)
+    end
+  end
+
+  describe "malformed intermediate: a non-hash parent value is not masked" do
+    let(:klass) do
+      Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String
+        def call = nil
+      end
+    end
+
+    it "surfaces the parent type error rather than reconstructing it to {}" do
+      result = klass.call(ambient_context: { request: "notahash" })
+      expect(result).not_to be_ok
+    end
+  end
+
+  describe "sensitive: composes down the declared path" do
+    it "filters a sensitive nested leaf in execution_context" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String, sensitive: true
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4" } })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request][:ip]).to eq("[FILTERED]")
+    end
+
+    it "filters a sensitive ancestor (the whole reconstructed sub-hash) in execution_context" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash, sensitive: true
+        expects :ip, on: :request, type: String
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4" } })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request]).to eq("[FILTERED]")
+    end
+
+    it "filters a nested model: subfield's generated <field>_id at depth" do
+      company_klass = Class.new do
+        def self.find(_id) = new
+        def id = 42
+      end
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :company, on: :request, model: { klass: company_klass, finder: :find }, sensitive: true
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: { company_id: 42 } })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request][:company_id]).to eq("[FILTERED]")
+    end
+  end
+
+  describe "retained guards still fire on a nested ambient subfield" do
+    it "rejects default: on a subfield nested under ambient_context" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash
+          expects :ip, on: :request, default: "0.0.0.0"
+        end
+      end.to raise_error(ArgumentError, /default/)
+    end
+
+    it "rejects preprocess: on a subfield nested under ambient_context" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash
+          expects :ip, on: :request, preprocess: ->(v) { v }
+        end
+      end.to raise_error(ArgumentError, /preprocess/)
+    end
+
+    it "rejects coerce: on a subfield nested under ambient_context" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash
+          expects :ip, on: :request, type: Integer, coerce: true
+        end
+      end.to raise_error(ArgumentError, /coerce/)
+    end
+
+    it "rejects default: on a dotted `on:` path rooted at ambient_context" do
+      expect do
+        Class.new do
+          include Axn
+          expects :session, on: "ambient_context.request", default: "x"
+        end
+      end.to raise_error(ArgumentError, /default/)
+    end
+  end
+end
+
 RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
   it "preserves the <field>_id key when filtering a model ambient subfield" do
     klass = Class.new do
@@ -268,6 +452,47 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     inst = klass.send(:new, ambient_context: { tenant: "acme", tenant_id: "x" })
     filtered = inst.send(:_filter_to_declared, { tenant: "acme", tenant_id: "x" })
     expect(filtered).to eq(tenant: "acme") # tenant_id NOT copied (non-model)
+  end
+
+  it "reconstructs a nested declared leaf and drops undeclared siblings at every depth" do
+    klass = Class.new do
+      include Axn
+      expects :request, on: :ambient_context, type: Hash
+      expects :ip, on: :request, type: String
+    end
+    inst = klass.send(:new)
+    filtered = inst.send(:_filter_to_declared, { request: { ip: "1.2.3.4", token: "secret" }, other: "leak" })
+    expect(filtered).to eq(request: { ip: "1.2.3.4" })
+  end
+
+  it "omits an intermediate whose source branch is absent" do
+    klass = Class.new do
+      include Axn
+      expects :request, on: :ambient_context, type: Hash
+      expects :ip, on: :request, type: String
+    end
+    inst = klass.send(:new)
+    expect(inst.send(:_filter_to_declared, { unrelated: 1 })).to eq({})
+  end
+
+  it "copies a non-hash intermediate value raw so its own validation can catch it" do
+    klass = Class.new do
+      include Axn
+      expects :request, on: :ambient_context, type: Hash
+      expects :ip, on: :request, type: String
+    end
+    inst = klass.send(:new)
+    expect(inst.send(:_filter_to_declared, { request: "notahash" })).to eq(request: "notahash")
+  end
+
+  it "reconstructs a dotted-`on:` nested leaf" do
+    klass = Class.new do
+      include Axn
+      expects :session, on: "ambient_context.request", type: String
+    end
+    inst = klass.send(:new)
+    filtered = inst.send(:_filter_to_declared, { request: { session: "abc", extra: "x" } })
+    expect(filtered).to eq(request: { session: "abc" })
   end
 end
 
