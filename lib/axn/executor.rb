@@ -478,13 +478,7 @@ module Axn
         next unless (path = _resolved_path_for(config))
 
         current_value = _current_value_at(path)
-        preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing #{_field_descriptor(config)}: #{error.message}" },
-          field_identifier: _field_identifier(config),
-        ) do
-          @action.instance_exec(current_value, &config.preprocess)
-        end
+        preprocessed_value = Internal::FieldConfig.resolve_preprocess(@action, config, current_value)
         # The write may synthesize missing IMPLICIT intermediates (never the root — a nil root
         # drops the value, see _write_value_at!), so it obeys the same synthesis gate as defaults:
         # an intermediate whose declared types/shape members can't hold an object is not created,
@@ -935,15 +929,6 @@ module Axn
                                                     permit_method_call: _segment_permits_method_call?(path, k))
       end
       value
-    end
-
-    # Human identifiers for contract-error reporting, matching each level's historical wording.
-    def _field_descriptor(config)
-      config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
-    end
-
-    def _field_identifier(config)
-      config.subfield? ? "#{config.field} on #{config.on}" : config.field
     end
 
     # Whether a subfield default's ancestor chain can be fully materialized: every nil/absent node
