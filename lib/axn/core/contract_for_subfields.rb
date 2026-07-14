@@ -44,10 +44,10 @@ module Axn
         value
       end
 
-      # The node's reader-bearing config, if any: every non-dotted-named config generates a reader
-      # (a dotted NAME gets none; an implicit node has no configs at all).
+      # The node's reader-bearing config, if any: a config generates a reader unless its reader name
+      # is dotted (a dotted NAME with no `as:` alias gets none; an implicit node has no configs at all).
       def self._reader_config(node)
-        node.configs.find { |c| !c.field.to_s.include?(".") }
+        node.configs.find(&:generates_reader?)
       end
 
       # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
@@ -241,21 +241,20 @@ module Axn
                 "(the ambient parent is resolved per-invocation, not read from provided_data)"
         end
 
-        # A dotted field NAME (e.g. "org.company") generates no reader (see
-        # `_define_subfield_reader`'s early return), so `model:`'s id→record lookup —
-        # which is wired onto the generated reader — never runs, and the advertised
-        # `<leaf>_id` is unconsumable. The working spelling swaps which half is dotted:
-        # a dotted `on:` with a single-level name (`expects :company, on: "payload.org"`)
-        # still gets a reader. Point the error at that spelling.
+        # A dotted field NAME with no `as:` alias generates no reader (see `_define_subfield_reader`'s
+        # early return), so `model:`'s id→record lookup — which is wired onto the generated reader —
+        # never runs, and the advertised `<leaf>_id` is unconsumable. Two working spellings: supply an
+        # `as:` alias (the reader then digs the dotted path), or move the dot into `on:` with a
+        # single-level name (`expects :company, on: "payload.org"`). Point the error at both.
         def _reject_dotted_model_name!(config, fields:)
-          return unless config.validations.key?(:model) && config.field.to_s.include?(".")
+          return unless config.validations.key?(:model) && !config.generates_reader?
 
           *parents, leaf = config.field.to_s.split(".")
           working_on = ([config.on] + parents).join(".")
           raise ArgumentError,
                 "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{config.on}) has no consumable id — " \
                 "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-                "Use the reader spelling instead: expects :#{leaf}, on: \"#{working_on}\", model: ..."
+                "Add an `as:` alias (e.g. as: :#{leaf}), or use the reader spelling: expects :#{leaf}, on: \"#{working_on}\", model: ..."
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
@@ -267,7 +266,7 @@ module Axn
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
-            next if config.field.to_s.include?(".")
+            next unless config.generates_reader?
 
             reader = config.reader_as
             if method_defined?(reader) || seen.include?(reader)
@@ -304,8 +303,9 @@ module Axn
         def _define_subfield_reader(config)
           reader = config.reader_as
           source_field = config.field
-          # Don't create top-level readers for nested fields
-          return if source_field.to_s.include?(".")
+          # A dotted wire key names no method on its own; only an `as:` alias gives it a reader (whose
+          # body resolves the dotted path segment-by-segment via Extract). No alias → no reader.
+          return unless config.generates_reader?
 
           # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
           # reader is generated, so there is no duplicate to guard against here.
@@ -324,20 +324,27 @@ module Axn
         # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
         # any explicit same-named reader regardless of declaration order.
         def _define_subfield_companion_readers(config)
-          return if config.field.to_s.include?(".")
+          return unless config.generates_reader?
 
           _define_boolean_predicate_reader(config.reader_as) if config.boolean?
           return unless config.validations.key?(:model)
 
-          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
-          _define_subfield_model_id_reader(config, processed_options)
+          _define_subfield_model_id_reader(config, _subfield_model_options(config))
+        end
+
+        # Syntactic-sugar processing for a subfield `model:`, keyed on the LEAF segment so a defaulted
+        # `klass` derives from the field name itself (`items.widget` → `Widget`) rather than the dotted
+        # path (`"items.widget".classify`). The full dotted `field` remains the id-extraction key. For
+        # a non-dotted field the leaf is the field, so this is a no-op there.
+        def _subfield_model_options(config)
+          leaf = config.field.to_s.split(".").last.to_sym
+          Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [leaf])
         end
 
         def _define_subfield_model_reader(config)
           reader = config.reader_as
           source_field = config.field
-          # Apply the same syntactic sugar processing as the main contract system
-          processed_options = Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [source_field])
+          processed_options = _subfield_model_options(config)
 
           Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
             # Create a data source that contains the subfield data for the resolver

@@ -58,13 +58,14 @@ module Axn
           @id_value ||= _read(id_field)
         end
 
-        # A source that can't answer named keys (e.g. a String where a Hash was declared) reads as
-        # absent — the source's own type validation classifies the malformed value (PRO-2857
-        # spirit), rather than a raw TypeError from the model lookup pre-empting the contract.
+        # Reads a key through the canonical extraction path (segment-by-segment, key-or-method
+        # dispatch, indifferent access) rather than a raw `[]`, so model reads behave identically to
+        # every other reader: a dotted key (`items.widget`) digs the nested path, a record parent is
+        # read by method, and a source that can't answer the key (e.g. a String where a Hash was
+        # declared) reads as ABSENT — its own type validation classifies the malformed value
+        # (PRO-2857) rather than a raw error pre-empting the contract.
         def _read(key)
-          provided_data[key]
-        rescue TypeError, NoMethodError
-          nil
+          Axn::Core::FieldResolvers.extract_or_nil(field: key, provided_data:)
         end
       end
     end

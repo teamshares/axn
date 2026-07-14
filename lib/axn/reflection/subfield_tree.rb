@@ -74,9 +74,9 @@ module Axn
           index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
                                            ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
 
-          # Only a non-dotted field name gets a real reader method, so only it can anchor a later
-          # `on:` (see ContractForSubfields#_define_subfield_reader).
-          by_reader[config.reader_as.to_sym] = { node: leaf, hops: } unless config.field.to_s.include?(".")
+          # Only a reader-bearing config can anchor a later `on:` (a dotted NAME without an `as:` alias
+          # generates no reader — see ContractForSubfields#_define_subfield_reader).
+          by_reader[config.reader_as.to_sym] = { node: leaf, hops: } if config.generates_reader?
           # Shallow (single hop off a top-level root) configs are always representable; only deeper
           # paths are candidates for dropping.
           deep_paths << [config, hops] if hops.size > 1
