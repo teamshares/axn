@@ -35,6 +35,16 @@ module Axn
       ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
         # The `on:`-target Node (the config's immediate parent in contract terms).
         def parent_node = ancestors[parent_index].first
+
+        # The leaf's immediate WIRE parent Node — the LAST hop's node. For a dotted subfield NAME the
+        # leaf sits below the `on:` target through implicit segments, so this differs from parent_node
+        # (the `on:` target); for a non-dotted subfield the two coincide. Sibling lookups (a
+        # `<field>_id` companion) key off this so both spellings agree (PRO-2896's aliased dotted model
+        # subfields made the two diverge for a legal declaration).
+        def leaf_parent_node = ancestors.last.first
+
+        # The leaf's own wire key — the last wire segment.
+        def leaf_key = wire_path.last
       end
 
       # The finished build: per-root node trees, the dropped-config list, and the per-config

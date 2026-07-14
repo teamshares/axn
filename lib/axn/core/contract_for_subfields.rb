@@ -101,17 +101,27 @@ module Axn
       # supplies the lookup token, and the model resolves from it. This is the model-flavored half of
       # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
       # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
-      # failed lookup stays nil). A model subfield's field is always a non-dotted leaf wire key
-      # (family 4), so `config.field` keys both the model resolve and the sibling lookup.
+      # failed lookup stays nil). The sibling `<field>_id` lives beside the model leaf under the leaf's
+      # own WIRE parent, which coincides with the `on:` target ONLY for a non-dotted subfield. PRO-2896
+      # legalized aliased dotted model subfields (`expects "meta.company", on: :payload, model:, as:`),
+      # whose leaf sits below the `on:` target through implicit segments, so the sibling lookup keys off
+      # the leaf's wire parent (`leaf_parent_node`) and leaf wire key (`leaf_key`) — not `config.field`
+      # (the full, possibly-dotted name) or `parent_node`.
       def self.resolve_model_via_sibling_id(action, config, options, parent_value)
-        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent_value)
+        # The raw-id absence guard digs the config's full `<field>_id` off the resolved parent value:
+        # for a dotted field name Extract splits per segment, reaching the same wire slot the leaf-keyed
+        # lookup below targets.
+        raw_id = Axn::Core::FieldResolvers.extract_or_nil(
+          field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
+        )
         return nil unless raw_id.nil?
 
         path = action.class._resolved_subfields.index[config]
         return nil if path.nil?
 
-        sibling = path.parent_node.children[id_key.to_sym]
+        leaf_key = path.leaf_key
+        id_key = Axn::Internal::FieldConfig.model_id_key(leaf_key)
+        sibling = path.leaf_parent_node.children[id_key.to_sym]
         # Select the sibling config with the SAME predicate the declaration credits
         # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
         # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
@@ -131,7 +141,10 @@ module Axn
                         end
         return nil if sibling_value.nil?
 
-        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => sibling_value })
+        # Leaf-keyed synthetic resolve: the Model resolver reads `<leaf>_id` from a hash keyed by that
+        # same leaf id key. Passing the dotted `config.field` here would make it dig per segment into a
+        # FLAT single-key hash and resolve nil.
+        Axn::Core::FieldResolvers.resolve(type: :model, field: leaf_key, options:, provided_data: { id_key => sibling_value })
       end
 
       module ClassMethods

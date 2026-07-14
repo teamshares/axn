@@ -2024,6 +2024,76 @@ RSpec.describe Axn do
       end
     end
 
+    context "with a DOTTED-NAME aliased model subfield and dotted sibling id (PRO-2896 spelling, PRO-2889)" do
+      # `expects "meta.company", on: :payload, ..., as: :company` is a legal aliased dotted model
+      # subfield (PRO-2896). Its leaf's WIRE parent is the implicit `meta` node, NOT the `on:` target
+      # (`payload`), so sibling lookups must key off the leaf's wire parent, not `parent_node`.
+      let(:r4_class) do
+        Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "Acme"
+          def self.fetch(id) = new(id)
+          def self.find(id) = new(id)
+        end
+      end
+
+      before { stub_const("R4Co", r4_class) }
+
+      it "resolves the record via the dotted sibling id's VALUE-LEVEL default when the write chain is refused (C7)" do
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+
+      it "resolves via the wire write-back when the object-shaped chain omits the id (regression)" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+
+      it "skips the dotted id default when the sibling record is already present (C8)" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :find }, allow_nil: true, as: :company
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: { company: R4Co.new(7) } })
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
+
+      it "loads cleanly: the dotted sibling id credits the required descendant's rescue (declaration side)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects "meta.company_id", on: :payload, optional: true, default: 42
+            expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+            expects :name, on: :company, type: String
+            def call = nil
+          end
+        end.not_to raise_error
+      end
+    end
+
     context "resolve_value cache is scoped to the settled pipeline (Fix A, PRO-2889)" do
       it "reads the settled wire value, not a value cached before preprocess/defaults settled" do
         # An earlier field's preprocess touches the `company` reader, which (via

@@ -761,20 +761,27 @@ module Axn
     end
 
     # The sibling `model:` route whose companion `<field>_id` node this path lands on, or nil. Keyed on
-    # the id node's own wire key (`path.wire_path.last`), which the tree derives as
-    # `model_id_key(model's wire key)` — so it matches the id however it was declared (`:company_id` or
-    # a dotted `"meta.company_id"`), the same way credit_sibling_id_defaults! locates the pair by node
-    # key. Siblings come from the id's own wire parent at depth, or the top-level field configs at
+    # the id node's own leaf wire key (`path.leaf_key`), matched against `model_id_key(<sibling leaf
+    # wire key>)` — the tree keys each child by its own leaf wire key, so this matches the id however it
+    # was declared (`:company_id` or a dotted `"meta.company_id"`), the same way credit_sibling_id_defaults!
+    # locates the pair by node key. Siblings come from the id's own WIRE parent at depth (not the `on:`
+    # target — the two diverge for a dotted subfield name, PRO-2896), or the top-level field configs at
     # depth 0.
     def _sibling_model_route_for_id(path)
-      id_key = path.wire_path.last
-      candidates = if path.wire_path.size > 1
-                     Array(path.parent_node&.children&.values).flat_map(&:configs)
-                   else
-                     @action_class.send(:internal_field_configs)
-                   end
-      candidates.find do |c|
-        c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
+      id_key = path.leaf_key
+      if path.wire_path.size > 1
+        siblings = path.leaf_parent_node&.children || {}
+        siblings.each do |key, child|
+          next unless Internal::FieldConfig.model_id_key(key) == id_key
+
+          model_config = child.configs.find { |c| c.validations[:model] }
+          return model_config if model_config
+        end
+        nil
+      else
+        @action_class.send(:internal_field_configs).find do |c|
+          c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
+        end
       end
     end
 
