@@ -291,8 +291,17 @@ module Axn
           next if child.implicit? || !ann[child].required
           next unless child.configs.any? { |c| c.validations[:model] }
 
+          # The sibling id supplies ONLY the model lookup token; a NON-model route merged onto the same
+          # node reads the raw wire value the id can't provide. Credit the rescue only when every
+          # non-model route is own-level satisfiability-tolerant (a usable default or nil-accepting) —
+          # own-level only, no subtree term, because the model subtree is satisfied via the resolved
+          # record; it's the non-model route's OWN wire value the id can't supply. (A pure-model node
+          # has no non-model route, so the empty set trivially satisfies this.)
+          non_model = child.configs.reject { |c| c.validations[:model] }
+          next unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
+
           sibling = node.children[Internal::FieldConfig.model_id_key(key)]
-          next unless sibling&.configs&.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
+          next unless sibling&.configs&.any? { |c| usable_id_token_default?(c) }
 
           ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
         end
@@ -504,6 +513,23 @@ module Axn
         return value.empty? if value.instance_of?(Hash) || value.instance_of?(Array)
 
         false
+      end
+
+      # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
+      # for all three id-rescue sites (credit_sibling_id_defaults!, and SubfieldContradictions'
+      # defaulted_id_sibling? / model_omittable?). usable_default? judges a default for the FIELD's OWN
+      # omission, where a blank literal ("" / {}) is usable when no presence validator rejects it — but
+      # the model resolver blank-guards the id (Model#derive_value: `return nil if id_value.blank?`), so
+      # a blank id default can never resolve a record and never rescues an omitted model. It must
+      # therefore be satisfiability-usable AND not a blank literal. A Proc default stays optimistic
+      # (unknowable at declaration), matching usable_default?'s satisfiability doctrine.
+      def usable_id_token_default?(config)
+        return false unless usable_default?(config, subfield: true, satisfiability: true)
+
+        value = config.respond_to?(:default) ? config.default : nil
+        return true if value.is_a?(Proc)
+
+        !presence_blank?(value)
       end
 
       # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing

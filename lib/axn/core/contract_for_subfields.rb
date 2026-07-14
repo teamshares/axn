@@ -76,10 +76,23 @@ module Axn
       # malformed parent). No wire data is written here and the parent's own value stays untouched, so
       # a nil-tolerant parent remains genuinely nil.
       def self.resolve_value(action, config)
-        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config))
-        return value unless value.nil? && config.applied_default?
+        # Memoize on the action INSTANCE, keyed by config identity — mirrors the reader memoization
+        # that already covers configs WITH a generated reader, extending it to the reader-less callers
+        # this seam serves (validation's no-reader branch and resolve_model_via_sibling_id's
+        # dotted-sibling path). Without it a reader-less config re-resolves once per ActiveModel
+        # validator, re-running a Proc default each time — a Proc default must resolve at most once per
+        # call. A config with a reader already memoizes, so this second layer is harmless there.
+        # `key?` presence (not truthiness) so a nil/false resolved value memoizes too.
+        cache = if action.instance_variable_defined?(:@__resolve_value_cache)
+                  action.instance_variable_get(:@__resolve_value_cache)
+                else
+                  action.instance_variable_set(:@__resolve_value_cache, {}.compare_by_identity)
+                end
+        return cache[config] if cache.key?(config)
 
-        Axn::Internal::FieldConfig.resolve_default(action, config)
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config))
+        value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
+        cache[config] = value
       end
 
       # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling

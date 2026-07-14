@@ -276,5 +276,78 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end
       end.not_to raise_error
     end
+
+    context "sibling-id credit is limited to the model route at a merged node" do
+      it "rejects when a merged NON-model route on the same node needs the raw wire value" do
+        # `:company` and `"meta.company"` merge onto one node: a model route (rescued by the id) AND a
+        # required non-model route. The id default supplies only the model lookup token; the non-model
+        # route reads the raw wire value the id can't provide, so `:meta`'s tolerance is still dead
+        # (call(payload: {}) fails the non-model route). Declaration order matters — model + sibling
+        # before the non-model route.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, type: Integer, default: 42
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects "meta.company", on: :payload, type: DeadCo
+          end
+        end.to raise_error(ArgumentError, /:meta is declared nil-tolerant/)
+      end
+
+      it "accepts when the merged non-model route is itself nil-tolerant (optional:)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, type: Integer, default: 42
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects "meta.company", on: :payload, type: DeadCo, optional: true
+          end
+        end.not_to raise_error
+      end
+    end
+
+    context "a blank-literal id default is never a lookup token" do
+      it "rejects an optional blank <field>_id default as a model rescue" do
+        # A blank id default ("") is credited usable for the id field's OWN omission, but the model
+        # resolver blank-guards the id (Model#derive_value returns nil on a blank token), so it can
+        # never resolve the record — the tolerance on the omitted model (and its :meta ancestor) is
+        # dead.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, optional: true, default: ""
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String
+          end
+        end.to raise_error(ArgumentError, /declared nil-tolerant/)
+      end
+
+      it "accepts a non-blank literal id default (42)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, type: Integer, default: 42
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String
+          end
+        end.not_to raise_error
+      end
+
+      it "accepts a Proc id default (unknowable → optimistic)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, default: -> { 42 }
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String
+          end
+        end.not_to raise_error
+      end
+    end
   end
 end

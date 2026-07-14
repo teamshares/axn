@@ -1936,6 +1936,25 @@ RSpec.describe Axn do
         expect(calls).to eq(1)
       end
 
+      it "resolves a dotted-name Proc default exactly once per call (memoized across validators)" do
+        # A dotted-name subfield has no reader, so validation resolves it through resolve_value
+        # directly — once per ActiveModel validator (type + presence). A model parent refuses the
+        # write chain, so the Proc default is the only source; without value-level memoization it ran
+        # once per validator.
+        calls = 0
+        counter = lambda {
+          calls += 1
+          3
+        }
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects "settings.retries", on: :company, type: Integer, default: counter
+          def call = nil
+        end
+        expect(action.call).to be_ok
+        expect(calls).to eq(1)
+      end
+
       it "still materializes fully-object-shaped chains over an explicit nil (unchanged)" do
         action = build_axn do
           expects :payload, type: Hash, allow_nil: true
