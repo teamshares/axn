@@ -48,8 +48,15 @@ module Axn
             next
           end
 
+          # `record` is the parent field's one-off validator, which carries the action (threaded by
+          # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
+          # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
+          # condition is action-scoped, never element-scoped). Orthogonal to the dispatch gate:
+          # permission stays the member's own method_call: opt-in, never inferred from the action.
           errors = Axn::Validation::Fields.errors_for(
-            member_validator_classes[member.field], source:, validations: member.validations, permit_method_call: member_method_call?(member)
+            member_validator_classes[member.field],
+            source:, validations: member.validations,
+            action: record.send(:_action_for_validation), permit_method_call: member_method_call?(member)
           )
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
         end

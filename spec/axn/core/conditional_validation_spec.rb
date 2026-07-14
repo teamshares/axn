@@ -188,4 +188,68 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.call(flag: false, num: "junk").ok?).to be false # type still unconditional
     end
   end
+
+  describe "shape members (action-scoped conditions and Symbol args)" do
+    it "resolves a member's Symbol validator argument against the action" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :status, type: String, inclusion: { in: :allowed_statuses }
+        end
+        def allowed_statuses = %w[open closed]
+        def call; end
+      end
+      expect(action.call(payload: { status: "open" }).ok?).to be true
+      expect(action.call(payload: { status: "bogus" }).ok?).to be false
+    end
+
+    it "gates a member's validations on an action-scoped if: condition" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+        def call; end
+      end
+      # `payload` itself defaults to `presence: true` (like any field, an empty Hash counts as
+      # blank) — orthogonal to `note`'s gate, so these calls use a non-blank stand-in key rather
+      # than `{}` to isolate what's under test: the member's OWN if:-gated requiredness.
+      expect(action.call(flag: false, payload: { unused: true }).ok?).to be true
+      expect(action.call(flag: false, payload: { note: 123 }).ok?).to be true
+      expect(action.call(flag: true, payload: { unused: true }).ok?).to be false
+      expect(action.call(flag: true, payload: { note: "hi" }).ok?).to be true
+    end
+
+    it "resolves conditions on NESTED members (the member's validator carries the action down)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :meta, type: Hash do
+            field :note, type: String, if: :flag
+          end
+        end
+        def call; end
+      end
+      # Same non-blank stand-in as above, one level down: `meta` also defaults to `presence: true`.
+      expect(action.call(flag: false, payload: { meta: { unused: true } }).ok?).to be true
+      expect(action.call(flag: true, payload: { meta: { unused: true } }).ok?).to be false
+    end
+
+    it "does NOT expose element data to conditions (action-scoped only — element scoping is a non-goal)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :b, type: String, if: -> { a } # `a` is a sibling MEMBER, not an action method
+        end
+        def call; end
+      end
+      result = action.call(items: [{ "a" => true }])
+      expect(result.ok?).to be false
+      # The if: proc is instance_exec'd against the one-off validator (never the array element), so
+      # bare `a` is looked up there first as a local/method call: absent locally, method_missing
+      # delegates to the action, which also doesn't define `a`. Ruby classifies a bare-identifier
+      # miss (no explicit receiver, no args) as NameError rather than NoMethodError — pinning the
+      # observed class here; the contract under test is that it does NOT silently resolve against
+      # the element, not the exact exception subclass.
+      expect(result.exception).to be_a(NameError)
+    end
+  end
 end
