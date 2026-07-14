@@ -15,25 +15,25 @@ module Axn
       module_function
 
       # Both checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
-      # batch: a NEW declaration can invalidate an OLD subfield regardless of order. For family 1 a new
-      # required descendant kills an old tolerance; for family 2 a new type/shape declaration on a parent
-      # kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted while `bar`
-      # is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
+      # batch: a NEW declaration can invalidate an OLD subfield regardless of order — a new required
+      # descendant kills an old tolerance (dead-tolerance check), and a new type/shape declaration on a
+      # parent kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted
+      # while `bar` is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
       def check!(field_configs, subfield_configs)
         tree = SubfieldTree.build(field_configs, subfield_configs)
         check_unanswerable_segments!(tree) # first: its message is the more specific when both fire
         check_dead_nil_tolerance!(tree, field_configs)
       end
 
-      # Family 2: a subfield whose resolution provably cannot traverse some segment — for EVERY
-      # contract-valid input, the read settles absent (post-PRO-2886: a failed dig/method read is
-      # UnextractableError → nil). Judged only along the hops the runtime actually digs (after the
-      # deepest reader-bearing ancestor — the same recipe resolve_parent uses), against each
+      # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some
+      # segment — for EVERY contract-valid input, the read settles absent (a failed dig/method read
+      # is UnextractableError → nil, PRO-2886). Judged only along the hops the runtime actually digs
+      # (after the deepest reader-bearing ancestor — the same recipe resolve_parent uses), against each
       # position's enforced declarations: its explicit configs plus the shape members an implicit
       # position stands in for (ALL colliding members, nestable or not — answerability is about
       # reading through the member's value, not nesting under it). Rejected regardless of the
-      # subfield's own optional:/default: — an unreachable path is dead machinery (the shipped
-      # family-4 precedent), and with a default it degenerates to a constant field.
+      # subfield's own optional:/default: — an unreachable path is dead machinery, rejected like the
+      # dotted-name model: spelling (PRO-2877), and with a default it degenerates to a constant field.
       def check_unanswerable_segments!(tree)
         tree.index.each do |config, path|
           next unless config.subfield? # skip top-level depth-0 configs; they read no segment

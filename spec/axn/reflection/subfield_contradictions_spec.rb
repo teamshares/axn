@@ -16,7 +16,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
 
   before { stub_const("DeadCo", company_class) }
 
-  describe "family 1: dead nil-tolerance" do
+  describe "dead nil-tolerance rejection" do
     it "rejects a nil-tolerant top-level parent with an unrescued required deep descendant" do
       expect do
         build_axn do
@@ -102,7 +102,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
     end
   end
 
-  describe "family 2: unanswerable segments" do
+  describe "unanswerable-segment rejection" do
     it "rejects a dotted name whose segment reads through a scalar shape member" do
       expect do
         build_axn do
@@ -212,7 +212,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
     end
   end
 
-  describe "family 3: the model flavor" do
+  describe "dead nil-tolerance through a model parent" do
     it "rejects a nil-tolerant model parent with an unrescued required descendant" do
       expect do
         build_axn do

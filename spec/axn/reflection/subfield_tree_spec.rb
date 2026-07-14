@@ -143,7 +143,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     it "drops a deep config whose implicit intermediate collides with a non-object shape member" do
       # The colliding member is a `[Hash, String]` union: non-nestable (the String branch blocks the drop
-      # pass) yet answerable (the Hash branch reads a key), so it survives family 2 while still dropping.
+      # pass) yet answerable (the Hash branch reads a key), so it survives the unanswerable-segment check while still dropping.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash do
@@ -171,7 +171,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
       # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the
-      # non-nestable member x (`[Hash, String]` — blocks the drop pass, answerable for family 2).
+      # non-nestable member x (`[Hash, String]` — blocks the drop pass, yet answerable at declaration).
       # blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
       # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
       x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
@@ -195,7 +195,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a non-nestable `[Hash, String]`
       # union. Carrying only the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying
       # ALL colliding members tests route 2's union `y` and drops `x.y.z`, matching emission (which carries
-      # every member). The union stays answerable for family 2 (the Hash branch) while blocking the drop pass.
+      # every member). The union stays answerable at declaration (the Hash branch) while blocking the drop pass.
       y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
       x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
       y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
@@ -217,7 +217,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     it "drops a deep config whose implicit intermediate collides with a non-object member of a member (carried through implicit descent)" do
       # `baz` is a `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2)
-      # yet answerable via its Hash branch, so family 2 accepts the declaration while `bar.baz.qux` drops.
+      # yet answerable via its Hash branch, so the declaration is accepted while `bar.baz.qux` drops.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash do

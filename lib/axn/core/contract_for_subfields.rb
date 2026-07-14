@@ -48,8 +48,9 @@ module Axn
 
       # The chain index of the deepest reader-bearing ancestor at-or-before the `on:` target — the
       # node resolve_parent public_sends; the hops AFTER it are the ones the runtime actually digs.
-      # Shared with the family-2 answerability check so the two can't disagree about which segments
-      # are dig-read. Nil when no ancestor bears a reader (the recipe fallback path).
+      # Shared with the unanswerable-segment declaration check (SubfieldContradictions) so the two
+      # can't disagree about which segments are dig-read. Nil when no ancestor bears a reader (the
+      # recipe fallback path).
       def self.deepest_reader_index(path)
         (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end

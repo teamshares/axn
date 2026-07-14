@@ -345,7 +345,8 @@ RSpec.describe Axn do
         it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
           action = build_axn do
             expects :items, type: Array, optional: true
-            expects "first.b", on: :items, optional: true, type: String, default: "x" # `first` is a real Array reader (family 2 answerable)
+            # `first` is a real Array reader, so the segment is answerable at declaration
+            expects "first.b", on: :items, optional: true, type: String, default: "x"
             def call = nil
           end
           result = action.call(items: nil)
@@ -718,7 +719,7 @@ RSpec.describe Axn do
 
         it "skips a nested default when the implicit intermediate collides with a non-object shape member" do
           # `settings` is a non-nestable `[Hash, String]` member (the String branch blocks nesting, the Hash
-          # branch keeps it family-2 answerable) — synthesizing `{ enabled: true }` there would turn a
+          # branch keeps the segment answerable at declaration) — synthesizing `{ enabled: true }` there would turn a
           # validly-absent optional member into a shape violation, so the default is skipped (the same
           # member-nestability rule the schema's drop pass applies).
           action = build_axn do
@@ -739,7 +740,7 @@ RSpec.describe Axn do
         it "drops a nested preprocess result when the implicit intermediate collides with a non-object shape member" do
           # Same synthesis gate as defaults: the write would have to create `settings` as an object where the
           # shape declares a non-nestable `[Hash, String]` member, so the result has nowhere to land and is
-          # dropped. (The Hash branch keeps the segment family-2 answerable; the String branch blocks nesting.)
+          # dropped. (The Hash branch keeps the segment answerable at declaration; the String branch blocks nesting.)
           action = build_axn do
             expects :payload, type: Hash do
               field :settings, type: [Hash, String], optional: true
@@ -1857,7 +1858,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "with a REQUIRED defaulted subfield under a nil-tolerant model parent (family 3 capability)" do
+    context "with a REQUIRED defaulted subfield under a nil-tolerant model parent (value-level defaults)" do
       let(:action) do
         build_axn do
           expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
@@ -1883,7 +1884,7 @@ RSpec.describe Axn do
 
       it "rejects a BLANK default a presence validator rejects at declaration (the tolerance is dead)" do
         # A blank default under a nil-tolerant model parent can't rescue omission (presence rejects the
-        # blank), so the tolerance is provably dead — PRO-2889 raises at declaration (family 3).
+        # blank), so the tolerance is provably dead — PRO-2889 raises at declaration.
         expect do
           build_axn do
             expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
@@ -1898,7 +1899,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :payload, type: Array, allow_nil: true
-          expects "first.count", on: :payload, type: Integer, default: 0 # `first` is a real Array reader (family 2 answerable)
+          expects "first.count", on: :payload, type: Integer, default: 0 # `first` is a real Array reader, so the segment is answerable at declaration
           def call = nil
         end
       end

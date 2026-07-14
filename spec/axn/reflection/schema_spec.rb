@@ -774,7 +774,7 @@ RSpec.describe Axn::Reflection::Schema do
     # descendant (`items.first.sku`) still forces `items` required (field_optional?). A nil parent
     # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
     # non-nullable: type exactly "array", no null branch. The dig reads a real reader segment (`Array#first`)
-    # so family 2 accepts it. The required `sku` carries a Proc default so the contract is legal under
+    # so the segment is answerable at declaration. The required `sku` carries a Proc default so the contract is legal under
     # PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so `items` is still
     # required + non-nullable. The Proc rescues omission at runtime — schema stricter than runtime, the safe divergence.
     klass = Class.new do
@@ -3459,7 +3459,7 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
          "though its shape is omitted (runtime still validates it)" do
-        # `first` reads a real reader segment (Array#first, so family 2 accepts it) and carries a Proc
+        # `first` reads a real reader segment (Array#first — answerable at declaration) and carries a Proc
         # default so the contract is legal under PRO-2889 (satisfiability counts the Proc); strict
         # reflection ignores Procs, so the deep-leaf-forces-ancestors override still stands.
         klass = Class.new do
@@ -3624,7 +3624,7 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "leaves a NON-object (union) shape member untouched and drops the colliding deep config (warned via dropped_deep_subfields)" do
         # `[Hash, String]`: non-nestable (the String branch blocks the drop pass) yet answerable (the Hash
-        # branch reads a key), so family 2 accepts the declaration while `bar.baz` still drops.
+        # branch reads a key), so the declaration is accepted while `bar.baz` still drops.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
@@ -3739,7 +3739,7 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "leaves a non-object (union) member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
         # `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2) yet answerable
-        # via its Hash branch, so family 2 accepts the declaration while `bar.baz.qux` drops.
+        # via its Hash branch, so the declaration is accepted while `bar.baz.qux` drops.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
@@ -3880,7 +3880,7 @@ RSpec.describe Axn::Reflection::Schema do
       # union. Emission carries ALL colliding members through the implicit hop, so at `y` it sees the
       # non-nestable route and drops `x.y.z`. The drop pass must carry them ALL too (not just the first
       # nestable `x`), or `x.y.z` validates at runtime yet is absent from BOTH the schema and
-      # dropped_deep_subfields — a silent, unwarned gap. The union stays answerable for family 2 (Hash branch).
+      # dropped_deep_subfields — a silent, unwarned gap. The union stays answerable at declaration (Hash branch).
       it "drops a deep config when merged colliding shape members carry disagreeing nested members" do
         y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
         x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
@@ -4135,7 +4135,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "flags a deep subfield under a non-object intermediate, regardless of declaration order" do
-      # `:count` is Array-answerable (Array#count), so family 2 accepts the segment; the deep path is
+      # `:count` is Array-answerable (Array#count), so the segment is answerable at declaration; the deep path is
       # still dropped from the schema because it passes THROUGH the non-object Array intermediate.
       klass = Class.new do
         include Axn
@@ -4406,7 +4406,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "segment answerability predicates (family 2)" do
+  describe "segment answerability predicates" do
     Cfg = Data.define(:validations) unless defined?(Cfg)
 
     describe ".branch_answers_segment?" do

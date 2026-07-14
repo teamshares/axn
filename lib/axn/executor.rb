@@ -954,8 +954,8 @@ module Axn
     # Whether an ABSENT node may be synthesized as `{}`: every config's declared type must admit an
     # object (Schema.object_shaped?, any-branch — `{}` satisfies a union that includes Hash), and no
     # config may be a `model:` route — a synthesized `{}` would be preferred by the model resolver
-    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and per PRO-2877's
-    # family-3 analysis it rescues nothing: ModelValidator rejects it anyway). Mirrors the model
+    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and it rescues
+    # nothing: ModelValidator rejects a `{}` regardless, PRO-2877). Mirrors the model
     # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
     def _synthesizable_node?(node)
       node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
