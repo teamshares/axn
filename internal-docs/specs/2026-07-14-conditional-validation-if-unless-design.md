@@ -4,7 +4,7 @@
 
 ## Problem
 
-axn has no global conditional-requiredness mechanism: `optional:`/`allow_nil:`/`allow_blank:` are static booleans baked into the validations hash at declaration, and `if:`/`unless:` exist only on message handlers, callbacks, and step mounting. PRO-2877 deliberately rejects the "family 1" shape (nil-tolerant ancestor + required subfield descendant) rather than granting it an implicit conditional reading — but real contracts exhibit exactly that conditionality ("if `data` is present, `data.user` is required"), and today there is no sanctioned way to express it.
+axn has no global conditional-requiredness mechanism: `optional:`/`allow_nil:`/`allow_blank:` are static booleans baked into the validations hash at declaration, and `if:`/`unless:` exist only on message handlers, callbacks, and step mounting. PRO-2877 deliberately rejects a nil-tolerant ancestor with a required subfield descendant (the "dead nil-tolerance" contradiction: the tolerance can never be exercised because every nil/omitted ancestor strands the required descendant) rather than granting that shape an implicit conditional reading — but real contracts exhibit exactly that conditionality ("if `data` is present, `data.user` is required"), and today there is no sanctioned way to express it.
 
 ## Decision
 
@@ -35,7 +35,7 @@ expects :num, type: Integer,
 
 The type check is unconditional; the numericality check runs only when `big_num_needed?` is truthy. No duplicate `expects :num` declaration needed (the duplicate-field guard stays).
 
-### 3. The family-1 pattern, now expressible (the PRO-2877 payoff)
+### 3. A required subfield under an optional parent, now expressible (the PRO-2877 payoff)
 
 ```ruby
 expects :data, optional: true
@@ -122,7 +122,7 @@ reflects as `coupon_code` absent from the top-level `required`, plus:
 
 This covers the canonical boolean-flag pattern exactly, degrades to the safe fallback everywhere else, and is purely an emission refinement (zero runtime impact) — so it can land as a fast-follow PR if the main implementation runs large. `dependentRequired` remains unused (it conditions on key *presence* only; truthiness needs `if`/`then`).
 
-**One deliberate exception to static-maximal: a gated required subfield does not force its ancestors.** For the family-1 example, the natural JSON Schema is exactly: `data` optional/nullable, with `data`'s object schema carrying `required: ["user_id"]` (the model route's wire token) — nested `required` only binds when the parent object is present, which is precisely the canonical condition (`if: -> { data.present? }`). Full static-maximal propagation would instead force `data` itself required, defeating the declared `optional: true` and re-imposing the family-1 reading this ticket exists to escape. So in strict (schema) mode:
+**One deliberate exception to static-maximal: a gated required subfield does not force its ancestors.** For the optional-parent example (example 3 above), the natural JSON Schema is exactly: `data` optional/nullable, with `data`'s object schema carrying `required: ["user_id"]` (the model route's wire token) — nested `required` only binds when the parent object is present, which is precisely the canonical condition (`if: -> { data.present? }`). Full static-maximal propagation would instead force `data` itself required, defeating the declared `optional: true` and re-imposing the unconditional reading this ticket exists to escape. So in strict (schema) mode:
 
 - the gated subfield stays in its parent's nested `required` array (own-level static-maximal), but
 - it does NOT propagate requiredness/non-nullability up the ancestor chain (`NodeAnnotation.required` = false for ancestor-forcing purposes).
@@ -170,7 +170,7 @@ This surfaces as a normal recoverable validation error, and only arises when a c
 - In **satisfiability mode** (the declaration-rejection detector), a gated config's requiredness is treated as relaxable: the condition may be false at runtime, so a nil/omitted ancestor CAN validate — the tolerance is exercisable, no rejection. This threads through the same `satisfiability:` flag `usable_default?` already uses for Proc defaults (unknowable-at-declaration resolves toward satisfiable; rejection is reserved for provably dead declarations).
 - In **strict (schema) mode**, the gated config follows the reflection rules above.
 - `check_unanswerable_segments!` and `check_conflicting_defaults!` are unaffected (conditions change neither path reachability nor defaults).
-- The family-1 rejection message (`raise_dead_tolerance!`) gains a pointer at the new spelling: "…or gate the required subfield with `if:` (e.g. `if: -> { <parent>.present? }`) if it is only required when the parent is supplied."
+- The dead-tolerance rejection message (`raise_dead_tolerance!`) gains a pointer at the new spelling: "…or gate the required subfield with `if:` (e.g. `if: -> { <parent>.present? }`) if it is only required when the parent is supplied."
 
 ## What we're deliberately NOT doing
 
@@ -196,7 +196,7 @@ Three sites currently reject the combination and change together: `Matcher.build
 2. Shape member parsing (`_build_shape_member`): reject `:if`/`:unless`.
 3. `Schema.nil_accepted?`/`nil_tolerant_validation?`: skip `:if`/`:unless` keys.
 4. `Schema` annotation derivation: `conditionally_gated?` predicate; satisfiability mode treats gated configs as relaxable; strict mode keeps own-level required but suppresses ancestor-forcing for gated subfields.
-5. `SubfieldContradictions`: family-1 message gains the `if:` pointer.
+5. `SubfieldContradictions`: the dead-tolerance rejection message gains the `if:` pointer.
 6. Companion change: `Matcher` grows independent if/unless rule sets (ANDed); drop the three both-given guards (`matcher.rb:93`, `messages.rb:25`, `callbacks.rb:46`).
 7. Docs: `docs/reference/class.md` (option table rows + new "Conditional validation" section, including the evaluation-receiver caveat and the defaults-are-ungated rule), `docs/usage/writing.md` cross-link + the messages `if:`+`unless:` combination, terminology alignment note with steps/messages.
 
@@ -205,7 +205,7 @@ Three sites currently reject the combination and change together: `Matcher.build
 - Runtime matrix: `if:`/`unless:`/both × Symbol/Proc × condition true/false × value present/absent/invalid, on `expects`, `exposes`, and `on:` subfields.
 - Declaration rejections: tolerance + truthy `presence:` (all spellings), shape-member conditions.
 - Tolerance + condition combinations (example 4) declare and behave correctly.
-- Family-1 legalization: the PRO-2877 dummy-app shape with `if:` declares, enforces conditionally at runtime, and reflects per the schema rules; without `if:` it still rejects with the extended message.
+- Optional-parent legalization: the PRO-2877 dummy-app shape (optional parent + required subfield) with `if:` declares, enforces conditionally at runtime, and reflects per the schema rules; without `if:` it still rejects with the extended message.
 - Schema: conditional fields reflect static-maximal; gated subfields don't force ancestors; conditions never execute during reflection (extend the existing no-execution specs to declaration-level conditions).
 - Declarative Symbol emission: exact `allOf`/`if`/`then` for the qualifying shape (including the `?` predicate spelling); each guard individually forces the fallback (Proc, non-field method, defaulted/preprocessed/model referenced field, subfield placements, both-conditions).
 - Direction audit: a matrix spec asserting schema-vs-runtime strictness direction (schema stricter or exact, never looser) across condition placements — top-level, subfield, exposes, tolerance combinations, declarative emission.
