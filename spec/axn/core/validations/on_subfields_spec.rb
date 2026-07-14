@@ -2095,7 +2095,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "resolve_value cache is scoped to the settled pipeline (Fix A, PRO-2889)" do
+    context "resolve_value cache is scoped to the settled pipeline (PRO-2889)" do
       it "reads the settled wire value, not a value cached before preprocess/defaults settled" do
         # An earlier field's preprocess touches the `company` reader, which (via
         # resolve_model_via_sibling_id) resolves the dotted sibling `"meta.company_id"` through
@@ -2118,7 +2118,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "a merged nil-tolerant non-model route at a sibling-id-rescued node (Fix B, PRO-2889)" do
+    context "a merged nil-tolerant non-model route at a sibling-id-rescued node (PRO-2889)" do
       it "runs after loading cleanly: the model route resolves via the sibling id, non-model nil tolerated" do
         probe = Class.new do
           attr_reader :id
@@ -2142,7 +2142,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "a leaf default must not clobber a model-routed wire key (Fix C, PRO-2889)" do
+    context "a leaf default must not clobber a model-routed wire key (PRO-2889)" do
       it "resolves the record via the sibling id, not the non-model route's written default" do
         # `meta.company` (untyped, optional, default {x:1}) shares the wire key with the `:company`
         # model route. Writing {x:1} onto that key would be read AS the record and fail ModelValidator,
@@ -2163,7 +2163,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "an id-sibling default must not manufacture a model-consistency mismatch (Fix E, PRO-2889)" do
+    context "an id-sibling default must not manufacture a model-consistency mismatch (PRO-2889)" do
       it "honors a present sibling record over axn's own id default" do
         finder_class = Class.new do
           attr_reader :id
@@ -2205,7 +2205,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "subfield reader memos are cleared at the pipeline boundary (Fix D, PRO-2889)" do
+    context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
       it "validates the settled parent value, not a value memoized before the parent was rewritten" do
         # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
         # a rewritten parent ({name: 123}). Without clearing the generated reader's memo at the boundary,
@@ -2247,7 +2247,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "runtime sibling selection mirrors the declaration credit predicate (Fix F, PRO-2889)" do
+    context "runtime sibling selection mirrors the declaration credit predicate (PRO-2889)" do
       it "resolves via the usable-token id route, not a blank-applied route sharing the wire node" do
         # Two routes land on the same thing.company_id wire node: a blank-token route (default "",
         # declared FIRST) and a usable-token route (default 42). Declaration credits the node (42 is a

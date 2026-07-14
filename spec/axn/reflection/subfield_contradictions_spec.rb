@@ -307,7 +307,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end.not_to raise_error
       end
 
-      it "accepts a nil-tolerant merged non-model route even under a required grandchild (Fix B)" do
+      it "accepts a nil-tolerant merged non-model route even under a required grandchild" do
         # The node carries a model route (rescued by the defaulted `:company_id` sibling) AND a
         # nil-tolerant non-model route, with a REQUIRED grandchild `:name`. The sibling id rescues the
         # whole node: the model route resolves the record which answers `:name`, and the optional
