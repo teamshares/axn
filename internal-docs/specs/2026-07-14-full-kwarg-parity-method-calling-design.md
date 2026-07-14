@@ -69,6 +69,6 @@ At the end of commit 2: one resolution path for subfields, top-level unchanged, 
 - CHANGELOG entry for PRO-2903.
 - Update the executor comments that frame the skips as "keeps them inert (PRO-2903)".
 
-## Follow-up (separate ticket)
+## Follow-up (separate ticket) — PRO-2908
 
 Migrate **top-level** fields off write-back too (the full "stop mutating caller-supplied objects" endgame). Larger: reroutes the context facade — the library's most fundamental input read — plus every remaining raw-`provided_data` consumer. Out of scope here.
