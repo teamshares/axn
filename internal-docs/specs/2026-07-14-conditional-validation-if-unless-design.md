@@ -84,11 +84,43 @@ The `allow_blank`/`allow_nil` push-down (`contract.rb:721-724`) runs `{ allow_bl
 
 **Governing invariant: a condition can only relax enforcement at runtime, never tighten it.** The declared validators are the maximal contract; a false condition waives some of them for that call. So the schema reflects the **static-maximal** contract, which is the established safe direction (stricter than runtime — same doctrine as Proc defaults). Conditions are opaque Procs/Symbols and are **never executed** during reflection (the existing side-effect-free doctrine; already spec-protected for per-validator `if:`).
 
+**This tradeoff must be loudly documented.** Static-maximal means the schema tells tool consumers they can't send parameter combinations that ARE valid at runtime (omitting a field whose condition would be false). That is deliberately preferred over advertising combinations the runtime rejects, but it is a real cost, so the published docs get an explicit callout of the invariant: *the schema advertises the maximal contract — a conditionally-validated field is reflected as if its condition were always true; the schema may be stricter than the runtime, never looser (outside the narrow exceptions documented on the Schema module)*. The implementation must hold that direction in every placement (top-level, subfield, exposes, tolerance-flag combinations), and the test plan includes a direction audit.
+
 Concretely:
 
 - `expects :num, type: Integer, if: :cond` → reflected required, non-nullable (as if unconditional). A caller following the schema always supplies a valid `num`, which passes whether or not the condition fires.
 - `expects :note, type: String, optional: true, if: :cond` → reflected optional (the static tolerance is unconditional; only the type check is gated). Requires fixing `nil_accepted?` (`schema.rb:1081-1096`), which iterates every validations key and would treat `:if` as an unknown nil-rejecting validator — it must skip the shared-option keys (`:if`/`:unless`), treating them as neutral. `FieldConfig#optional?` (the axn-mcp shared predicate) already ignores non-Hash entries and keys off `presence` — no change needed.
-- **No `if`/`then`/`dependentRequired` emission in v1.** Opaque conditions can't be translated. If we later add a declarative condition form (e.g. a sibling-field-presence hash), `dependentRequired` becomes emittable — future ticket.
+- **Opaque conditions (Proc, or a Symbol naming a non-field method) emit no conditional schema** — static-maximal is the only sound fallback for them.
+
+### Declarative reflection: Symbol conditions referencing a declared field
+
+A Symbol condition that names a *declared sibling field* is NOT opaque — reflection can resolve it statically (against reader names, including a boolean field's generated `?` predicate alias) without executing anything. For that case we can emit an exact JSON Schema conditional instead of over-requiring. Ruby truthiness on a JSON value is precisely "present, and neither `false` nor `null`", so:
+
+```ruby
+expects :promo_enabled, type: :boolean
+expects :coupon_code, type: String, if: :promo_enabled?
+```
+
+reflects as `coupon_code` absent from the top-level `required`, plus:
+
+```json
+"allOf": [{
+  "if": { "required": ["promo_enabled"], "properties": { "promo_enabled": { "not": { "enum": [false, null] } } } },
+  "then": { "required": ["coupon_code"] }
+}]
+```
+
+`unless:` emits the same `if` clause with `else` instead of `then`. The gated field's *property* (type etc.) stays static-maximal and unconditional — only its `required` membership becomes conditional (a wrong-typed value sent while the condition is false is rejected by schema but accepted by runtime: stricter, safe).
+
+**Guards — all must hold, else fall back to static-maximal required:**
+
+- exactly one of `if:`/`unless:` is given, and its value is a Symbol;
+- the Symbol resolves to a declared **top-level inbound** field's reader (a `?`-suffixed Symbol resolves through the boolean predicate alias to its field) — anything else is an action method, opaque;
+- the referenced field carries no `default:` and no `preprocess:` — either can make the settled runtime value diverge from what the caller sent, flipping the condition relative to the wire (a default of `true` on an omitted field would make the schema looser than runtime, the forbidden direction). Wire coercion is fine: it can only flip a truthy wire literal (`"false"`) to falsey, which leaves the schema stricter, never looser;
+- the referenced field is not `model:` (its reader resolves a record; lookup success isn't wire-expressible);
+- the gated field is itself top-level and statically required (subfields keep the nested-`required` rule above; an already-optional field has nothing to make conditional).
+
+This covers the canonical boolean-flag pattern exactly, degrades to the safe fallback everywhere else, and is purely an emission refinement (zero runtime impact) — so it can land as a fast-follow PR if the main implementation runs large. `dependentRequired` remains unused (it conditions on key *presence* only; truthiness needs `if`/`then`).
 
 **One deliberate exception to static-maximal: a gated required subfield does not force its ancestors.** For the family-1 example, the natural JSON Schema is exactly: `data` optional/nullable, with `data`'s object schema carrying `required: ["user_id"]` (the model route's wire token) — nested `required` only binds when the parent object is present, which is precisely the canonical condition (`if: -> { data.present? }`). Full static-maximal propagation would instead force `data` itself required, defeating the declared `optional: true` and re-imposing the family-1 reading this ticket exists to escape. So in strict (schema) mode:
 
@@ -111,7 +143,7 @@ Concretely:
 
 - **Dynamic `optional:` (Proc/Symbol).** Redundant: `if:` on the declaration already makes requiredness conditional, and two mechanisms for one semantic invite drift. `optional:` stays a static boolean.
 - **Duplicate-declaration refinements** (`expects :foo, ...` twice to split validations). Per-validator `if:` covers the motivating case in one line; the duplicate-field guard stays. Possible follow-up if the nested form proves cramped.
-- **Declarative/reflectable condition forms** (and `dependentRequired`/`if-then` schema emission). Future ticket if demand appears.
+- **A separate declarative condition DSL.** Symbol-references-a-field already reflects declaratively (see above) without new surface area; a hash-based condition language stays unbuilt unless demand appears.
 - **Consolidating `optional:`/`allow_nil:`/`allow_blank:`.** Separate ticket: it's a breaking change needing a downstream sweep, and `optional:` (omittability) vs `allow_nil:` (nullability) is the closest thing we have to JSON Schema's `required`-vs-`type: null` distinction — collapsing them forecloses ever separating those axes.
 - **Unifying the three existing `if:`/`unless:` evaluators** (Matcher, steps, and now fields). Out of scope; noted as a known inconsistency (Matcher forbids `if:`+`unless:` together, steps and fields AND them).
 
@@ -131,5 +163,7 @@ Concretely:
 - Tolerance + condition combinations (example 4) declare and behave correctly.
 - Family-1 legalization: the PRO-2877 dummy-app shape with `if:` declares, enforces conditionally at runtime, and reflects per the schema rules; without `if:` it still rejects with the extended message.
 - Schema: conditional fields reflect static-maximal; gated subfields don't force ancestors; conditions never execute during reflection (extend the existing no-execution specs to declaration-level conditions).
+- Declarative Symbol emission: exact `allOf`/`if`/`then` for the qualifying shape (including the `?` predicate spelling); each guard individually forces the fallback (Proc, non-field method, defaulted/preprocessed/model referenced field, subfield placements, both-conditions).
+- Direction audit: a matrix spec asserting schema-vs-runtime strictness direction (schema stricter or exact, never looser) across condition placements — top-level, subfield, exposes, tolerance combinations, declarative emission.
 - Defaults/preprocess apply regardless of condition state.
 - Evaluation-count and side-effect documentation backed by a spec pinning "condition may run more than once per validation pass".
