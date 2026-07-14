@@ -44,5 +44,11 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     it "still allows presence: false alongside a tolerance flag (explicit suppression, coherent)" do
       expect { build_axn { expects :note, optional: true, presence: false } }.not_to raise_error
     end
+
+    it "leaves other non-Hash validator values under a tolerance flag as a (pre-existing) declaration error" do
+      expect do
+        build_axn { expects :num, optional: true, numericality: true }
+      end.to raise_error(TypeError)
+    end
   end
 end

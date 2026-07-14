@@ -788,10 +788,16 @@ module Axn
             gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
             validations.except!(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
             validations.transform_values! do |v|
-              # A falsy scalar (only `presence: false` survives the check above) isn't a validator
-              # options hash — there's nothing to push tolerance into, and `validates` treats a
-              # falsy value as "skip this validator" regardless, so it passes through unchanged.
-              v.is_a?(Hash) ? { allow_blank:, allow_nil: }.merge(v) : v
+              # A disabled validator (only `presence: false` survives the check above) has nothing
+              # to push tolerance into — `validates` treats a falsy value as "skip this validator"
+              # regardless, so it passes through unchanged. Any other non-Hash validator shape
+              # (e.g. `numericality: true`) has no options hash to merge the tolerance into either,
+              # but silently dropping the tolerance there would leave the field acting required
+              # despite optional:/allow_blank:/allow_nil: — worse than failing loudly, so it falls
+              # through to `.merge(v)` and keeps its pre-existing TypeError (unsupported, unchanged).
+              next v if v == false
+
+              { allow_blank:, allow_nil: }.merge(v)
             end
             validations.merge!(gates)
           else
