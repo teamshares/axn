@@ -201,7 +201,7 @@ Rules and caveats:
 - Shape-block members (`field :x` inside `do … end`) support `if:`/`unless:` too, with the same action-scoped semantics — the condition resolves against the action, **not** the element being validated (a condition cannot reference sibling members). This also means Symbol validator arguments (e.g. `inclusion: { in: :allowed_statuses }`) now resolve on members.
 
 ::: warning Schema reflection advertises the maximal contract
-`input_schema` never executes conditions. It reflects every conditional field **as if every gate were open** — `if:` treated as true, `unless:` treated as false, every declared validator counted — so the schema may be *stricter* than the runtime (it can tell a caller a field is required when a closed gate would have accepted omission), but never looser. Two refinements: a Symbol condition referencing a declared sibling field (like `if: :promo_enabled?` above) is emitted *exactly*, as a JSON Schema `allOf`/`if`/`then` conditional instead of an unconditional requirement; and a gated required subfield keeps its nested `required` without forcing its ancestors, so the parent's own declared optionality is honored. On `output_schema`, a gated exposed field admits `null` (a closed gate can emit nil).
+`input_schema` never executes conditions. It reflects every conditional field **as if every gate were open** — `if:` treated as true, `unless:` treated as false, every declared validator counted — so the schema may be *stricter* than the runtime (it can tell a caller a field is required when a closed gate would have accepted omission), but never looser. One narrow, documented exception: a gated required subfield whose condition does not reference its own parent's presence — omitting the parent while the condition is true passes the schema but fails at runtime with a normal validation error (the canonical `if: -> { parent.present? }` pattern is exact). Two refinements: a Symbol condition referencing a declared sibling field (like `if: :promo_enabled?` above) is emitted *exactly*, as a JSON Schema `allOf`/`if`/`then` conditional instead of an unconditional requirement; and a gated required subfield keeps its nested `required` without forcing its ancestors, so the parent's own declared optionality is honored. On `output_schema`, a gated exposed field admits `null` (a closed gate can emit nil).
 :::
 
 ### Details specific to `.exposes`
@@ -549,6 +549,7 @@ def should_skip?
   # local decision based on inputs/outputs
   name == "temporary"
 end
+```
 
 ::: tip Combining `if:` and `unless:`
 `if:` and `unless:` may be given together on the same message; they combine with AND — the message only matches when every condition passes — the same combination rule used by [conditional steps](/usage/steps#conditional-steps) and by [conditional validation](#conditional-validation-if-unless) on field declarations. These are different mechanisms, though: a message's `if:`/`unless:` only selects which failure message renders, while a field's `if:`/`unless:` (see [Conditional validation](#conditional-validation-if-unless)) gates whether the field is validated at all.
