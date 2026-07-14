@@ -438,6 +438,8 @@ module Axn
       coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
 
       _inbound_configs.each do |config|
+        next if _resolution_crosses_method_call?(config) # method-derived value: resolved on the read path, not coerced here
+
         type_opt = config.validations[:type]
         klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
         next if klasses.empty?
@@ -483,6 +485,10 @@ module Axn
     def apply_inbound_preprocessing!
       _inbound_configs.each do |config|
         next unless config.preprocess
+        # A method-derived value can't be written back, so preprocess can't apply (PRO-2903). Skip it
+        # entirely rather than run the proc for a discarded result (which would fire its side effects /
+        # raise a PreprocessingError on a value the reader never sees).
+        next if _resolution_crosses_method_call?(config)
         next unless (path = _resolved_path_for(config))
 
         current_value = _current_value_at(path)
@@ -604,6 +610,20 @@ module Axn
 
     # Whether a tree node is produced by a method_call: subfield. Single source for "is this hop sharp?"
     def _node_dispatches?(node) = node.configs.any?(&:method_call)
+
+    # Whether resolving this config's value crosses any method_call hop — the config itself, or any
+    # ancestor on its chain. The write-back pre-validation passes (defaults/preprocess/coercion) skip
+    # such configs: a method-derived value is resolved on the READ path (ContractForSubfields
+    # .resolve_value — which applies default: there), never read back from provided_data, so a
+    # write-back can't affect it. Skipping also keeps preprocess/coerce genuinely inert on a
+    # method_call: subfield (they don't compose yet — PRO-2903) rather than running their proc for a
+    # discarded result. An unindexed config (ambient) has no path, so only its own flag applies.
+    def _resolution_crosses_method_call?(config)
+      return true if config.method_call
+      return false unless (path = _resolved_path_for(config))
+
+      path.ancestors.any? { |node, _seg| _node_dispatches?(node) }
+    end
 
     def _suppressed_by_failed_ancestor?(path, failed_nodes)
       path.ancestors.any? { |node, _seg| failed_nodes.key?(node) }
@@ -728,6 +748,10 @@ module Axn
     def apply_inbound_defaults!
       _inbound_configs.each do |config|
         next unless config.applied_default?
+        # A method-derived value is resolved on the read path, where resolve_value already applies the
+        # default (value-level, PRO-2889); the write-back here can't reach it, so skip it (also avoids a
+        # redundant method invocation during this pass).
+        next if _resolution_crosses_method_call?(config)
         next unless (path = _resolved_path_for(config))
         next unless _current_value_at(path).nil?
         next if _default_clobbers_model_route?(path)

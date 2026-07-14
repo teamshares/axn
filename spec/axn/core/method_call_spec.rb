@@ -45,6 +45,59 @@ RSpec.describe "expects ..., method_call: true" do
     end
   end
 
+  describe "preprocess:/coerce: are inert (not yet composed — PRO-2903)" do
+    # A method-derived value can't be written back, so preprocess/coerce can't apply. They're SKIPPED
+    # entirely rather than run for a discarded result — so a preprocess proc never fires its side
+    # effects (or raises) on a value the reader never sees, and the resolved value is un-transformed.
+    let(:event_class) do
+      Class.new do
+        attr_reader :data
+
+        def initialize(data) = (@data = data)
+      end
+    end
+
+    it "does not run the preprocess proc for a method_call subfield" do
+      ran = false
+      action = build_axn do
+        expects :event
+        expects :data, on: :event, method_call: true, preprocess: lambda { |v|
+          ran = true
+          "processed:#{v}"
+        }
+        exposes :out
+        def call = expose(out: data)
+      end
+      result = action.call(event: event_class.new("raw"))
+      expect(result).to be_ok
+      expect(ran).to be(false) # the proc never fired
+      expect(result.out).to eq("raw") # value is the un-preprocessed method result
+    end
+
+    it "does not raise when a method_call subfield's preprocess proc would raise" do
+      action = build_axn do
+        expects :event
+        expects :data, on: :event, method_call: true, preprocess: ->(_v) { raise "should never run" }
+        exposes :out
+        def call = expose(out: data)
+      end
+      expect(action.call(event: event_class.new("raw")).out).to eq("raw")
+    end
+
+    it "does not coerce a method_call value (coercion skipped, so a wrong-type result fails validation)" do
+      action = build_axn do
+        expects :event
+        expects :data, on: :event, method_call: true, coerce: Integer # coerce: sets type: Integer
+        exposes :out, allow_nil: true
+        def call = expose(out: data)
+      end
+      # "42" would coerce to 42 if coercion applied; it's skipped, so the raw String fails type: Integer.
+      result = action.call(event: event_class.new("42"))
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+  end
+
   describe "resolving a PORO reader subfield (event.data)" do
     let(:action) do
       build_axn do
