@@ -597,12 +597,10 @@ module Axn
     # .resolve_value — which applies default: there), never read back from provided_data, so a
     # write-back can't affect it. Skipping also keeps preprocess/coerce genuinely inert on a
     # method_call: subfield (they don't compose yet — PRO-2903) rather than running their proc for a
-    # discarded result. An unindexed config (ambient) has no path, so only its own flag applies.
+    # discarded result. Single-sourced in ContractForSubfields so the skip and the read-path branch
+    # stay exact complements.
     def _resolution_crosses_method_call?(config)
-      return true if config.method_call
-      return false unless (path = _resolved_path_for(config))
-
-      path.ancestors.any? { |node, _seg| _node_dispatches?(node) }
+      Axn::Core::ContractForSubfields.resolution_crosses_method_call?(@action, config)
     end
 
     def _suppressed_by_failed_ancestor?(path, failed_nodes)

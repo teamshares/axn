@@ -51,6 +51,21 @@ module Axn
         value
       end
 
+      # Whether resolving this config's value crosses any method_call hop — the config itself, or any
+      # ancestor on its chain. A method-derived value is resolved on the READ path (resolve_value),
+      # never written back into provided_data, so the executor's write-back passes skip such configs and
+      # resolve_value applies coerce:/preprocess: to the resolved value instead. Single-sourced here so
+      # the skip and the read-path branch stay exact complements. An unindexed config (ambient) has no
+      # path, so only its own flag applies.
+      def self.resolution_crosses_method_call?(action, config)
+        return true if config.method_call
+
+        path = action.class._resolved_subfields.index[config]
+        return false if path.nil?
+
+        path.ancestors.any? { |node, _seg| node.configs.any?(&:method_call) }
+      end
+
       # The chain index of the deepest reader-bearing ancestor at-or-before the `on:` target — the
       # node resolve_parent public_sends; the hops AFTER it are the ones the runtime actually digs.
       # Shared with the unanswerable-segment declaration check (SubfieldContradictions) so the two
