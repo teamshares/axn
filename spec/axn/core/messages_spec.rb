@@ -504,27 +504,30 @@ RSpec.describe Axn do
           end
         end
 
-        context "raises error when both if and unless provided" do
-          it "raises ArgumentError for success" do
-            expect do
-              build_axn do
-                success "Great news!", if: :condition?, unless: :other_condition?
-              end
-            end.to raise_error(Axn::UnsupportedArgument,
-                               "calling success with both :if and :unless is not currently supported.\n\n" \
-                               "Implementation is technically possible but very complex. Please submit a " \
-                               "Github Issue if you have a real-world need for this functionality.")
+        context "when both if and unless are provided" do
+          it "accepts success with if: and unless: together (ANDed: every condition must pass)" do
+            action = build_axn do
+              expects :flagged, :suppressed, type: :boolean, optional: true
+              success "combined message", if: -> { flagged }, unless: -> { suppressed }
+            end
+
+            expect(action.call(flagged: true, suppressed: false).success).to eq("combined message")
+            expect(action.call(flagged: true, suppressed: true).success).not_to eq("combined message")
+            expect(action.call(flagged: false, suppressed: false).success).not_to eq("combined message")
           end
 
-          it "raises ArgumentError for error" do
-            expect do
-              build_axn do
-                error "Bad news!", if: :condition?, unless: :other_condition?
+          it "accepts error with if: and unless: together (ANDed: every condition must pass)" do
+            action = build_axn do
+              expects :flagged, :suppressed, type: :boolean, optional: true
+              error "combined message", if: -> { flagged }, unless: -> { suppressed }
+              def call
+                raise "boom"
               end
-            end.to raise_error(Axn::UnsupportedArgument,
-                               "calling error with both :if and :unless is not currently supported.\n\n" \
-                               "Implementation is technically possible but very complex. Please submit a " \
-                               "Github Issue if you have a real-world need for this functionality.")
+            end
+
+            expect(action.call(flagged: true, suppressed: false).error).to eq("combined message")
+            expect(action.call(flagged: true, suppressed: true).error).not_to eq("combined message")
+            expect(action.call(flagged: false, suppressed: false).error).not_to eq("combined message")
           end
         end
       end

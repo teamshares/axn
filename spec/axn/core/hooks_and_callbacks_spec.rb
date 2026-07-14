@@ -394,15 +394,30 @@ RSpec.describe Axn do
         end
       end
 
-      context "raises error when both if and unless provided" do
-        %i[success failure exception error].each do |callback_type|
-          it "raises ArgumentError for on_#{callback_type}" do
-            expect do
-              build_axn do
-                public_send("on_#{callback_type}", if: :condition?, unless: :other_condition?) { puts callback_type }
-              end
-            end.to raise_error(ArgumentError, /on_#{callback_type} cannot be called with both :if and :unless/)
+      context "with both if and unless provided" do
+        let(:action) do
+          build_axn do
+            expects :flagged, :suppressed, type: :boolean, optional: true
+            on_failure(if: -> { flagged }, unless: -> { suppressed }) { puts "on_failure_combined" }
+
+            def call
+              fail!("nope")
+            end
           end
+        end
+
+        it "accepts if: and unless: together (ANDed: every condition must pass)" do
+          expect do
+            action.call(flagged: true, suppressed: false)
+          end.to output("on_failure_combined\n").to_stdout
+
+          expect do
+            action.call(flagged: true, suppressed: true)
+          end.not_to output("on_failure_combined\n").to_stdout
+
+          expect do
+            action.call(flagged: false, suppressed: false)
+          end.not_to output("on_failure_combined\n").to_stdout
         end
       end
 

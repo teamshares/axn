@@ -69,11 +69,13 @@ module Axn
         end
 
         class Matcher
-          # NOTE: invert means it's an unless rather than an if.  This will apply to ALL rules (sufficient for current use case,
-          # but flagging if we ever extend this for complex matching)
-          def initialize(rules, invert: false)
-            @rules = Array(rules).compact
-            @invert = invert
+          # if: and unless: may be combined (ANDed): every if: rule must match AND every unless:
+          # rule must not — the same combination rule as steps and field declarations. Multi-rule
+          # arrays keep their existing semantics (if: [A, B] requires all; unless: [A, B] requires
+          # none).
+          def initialize(if_rules: [], unless_rules: [])
+            @if_rules = Array(if_rules).compact
+            @unless_rules = Array(unless_rules).compact
           end
 
           def call(exception:, action:)
@@ -82,27 +84,21 @@ module Axn
             Axn::Internal::PipingError.swallow("determining if handler applies to exception", action:, exception: e)
           end
 
-          def static? = @rules.empty?
-          def invert? = !!@invert
+          def static? = @if_rules.empty? && @unless_rules.empty?
 
           # Class method to build matcher from kwargs
           def self.build(if: nil, unless: nil)
-            if_condition = binding.local_variable_get(:if)
-            unless_condition = binding.local_variable_get(:unless)
-
-            raise Axn::UnsupportedArgument, "providing both :if and :unless" if if_condition && unless_condition
-
-            new(Array(if_condition || unless_condition).compact, invert: !!unless_condition)
+            new(
+              if_rules: Array(binding.local_variable_get(:if)).compact,
+              unless_rules: Array(binding.local_variable_get(:unless)).compact,
+            )
           end
 
           private
 
           def matches?(exception:, action:)
-            return true if @rules.empty?
-
-            @rules.all? do |rule|
-              SingleRuleMatcher.new(rule, invert: @invert).call(exception:, action:)
-            end
+            @if_rules.all? { |rule| SingleRuleMatcher.new(rule).call(exception:, action:) } &&
+              @unless_rules.all? { |rule| SingleRuleMatcher.new(rule, invert: true).call(exception:, action:) }
           end
         end
       end
