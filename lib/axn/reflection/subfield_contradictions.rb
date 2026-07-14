@@ -56,23 +56,24 @@ module Axn
               "key present and is silently skipped). Keep a single default:, or split the routes onto distinct wire keys."
       end
 
-      # Exact built-in scalar classes safe to render via #inspect. Scoped to instance_of? matches (per
-      # normalize_schema_literal): a subclass — or any other object — could override #inspect with user
-      # code, and reflection must dispatch none while building a declaration error. Containers are omitted
-      # deliberately: Hash/Array#inspect recurses into #inspect on arbitrary elements.
-      SAFE_DEFAULT_LITERALS = [String, Symbol, Integer, Float, TrueClass, FalseClass].freeze
-
-      # A default's description for the conflict message. Side-effect-free: it dispatches no user-overridable
-      # method on an arbitrary default. A callable (any respond_to?(:call), matching resolve_default's
-      # dynamic-default rule — not just Proc) is unknowable and uncomparable, so it is named generically; an
-      # exact built-in scalar is inspected; anything else (a container, a subclass, an opaque object) stays
-      # opaque. Reached only for applied defaults, so the value is never nil.
+      # A default's description for the conflict message. Side-effect-free BY CONSTRUCTION: it dispatches
+      # NO method on the default object, so no user code — a custom or singleton #inspect/#respond_to?, etc.
+      # — can run (and mask the intended declaration error) while reflection builds it. Classification is by
+      # class match (`Klass === value`, a C-level kind-of check that never invokes the value's own methods —
+      # the same trust normalize_schema_literal places in type checks). Only IMMEDIATES render their value:
+      # Ruby forbids singleton methods on Integer/Float/Symbol/true/false, so their #inspect is provably the
+      # core one and safe; a String (singleton #inspect possible), a container (recurses #inspect into
+      # arbitrary elements), a Proc, and any other object are named by kind instead. Reached only for applied
+      # defaults, so the value is never nil.
       def describe_default(config)
-        value = config.default
-        return "a callable" if value.respond_to?(:call)
-        return value.inspect if SAFE_DEFAULT_LITERALS.any? { |klass| value.instance_of?(klass) }
-
-        "a non-literal default"
+        case config.default
+        when Proc then "a callable"
+        when Integer, Float, Symbol, TrueClass, FalseClass then config.default.inspect
+        when String then "a String value"
+        when Hash then "a Hash value"
+        when Array then "an Array value"
+        else "a non-literal default"
+        end
       end
 
       # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some

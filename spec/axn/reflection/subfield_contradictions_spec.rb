@@ -392,7 +392,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects "meta.count", on: :payload, default: "", optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
         end
-      end.to raise_error(ArgumentError, /"meta\.count".*on :payload.*default: "".*:count.*on :meta.*default: 42/m)
+      end.to raise_error(ArgumentError, /"meta\.count".*on :payload.*default: a String value.*:count.*on :meta.*default: 42/m)
     end
 
     it "rejects EQUAL literal defaults uniformly (agreement today drifts tomorrow)" do
@@ -417,33 +417,36 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
     end
 
-    it "names a non-Proc callable default generically without dispatching it (side-effect-free)" do
-      # A callable OBJECT (not a Proc) is a dynamic default (resolve_default treats any respond_to?(:call)
-      # as dynamic). The conflict message must name it generically, never invoke it while building the error.
-      callable = Class.new do
+    it "names an object default generically without dispatching ANY method on it (side-effect-free)" do
+      # An arbitrary object default — even one that responds to :call or overrides #inspect/#respond_to? —
+      # must be named by kind without invoking it, so building the declaration error can never run user
+      # code (and never mask the conflict message). The stubs raise if any of those methods is dispatched.
+      hostile = Class.new do
         def call = raise("must not be called during reflection")
         def inspect = raise("must not be inspected during reflection")
+        def respond_to?(*) = raise("must not be queried during reflection")
       end.new
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: callable, optional: true
+          expects "meta.count", on: :payload, default: hostile, optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true
         end
-      end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
+      end.to raise_error(ArgumentError, /conflicting default:.*a non-literal default/m)
     end
 
-    it "names an opaque object default generically without inspecting it (side-effect-free)" do
-      opaque = Class.new { def inspect = raise("must not be inspected during reflection") }.new
+    it "renders a String default by kind, not its (possibly-singleton) #inspect" do
+      hostile_string = +"x"
+      def hostile_string.inspect = raise("must not be inspected during reflection")
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: opaque, optional: true
+          expects "meta.count", on: :payload, default: hostile_string, optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true
         end
-      end.to raise_error(ArgumentError, /conflicting default:.*a non-literal default/m)
+      end.to raise_error(ArgumentError, /conflicting default:.*a String value/m)
     end
 
     it "rejects a Proc default competing with a literal default" do
