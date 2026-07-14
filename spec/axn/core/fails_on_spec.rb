@@ -102,6 +102,35 @@ RSpec.describe "fails_on" do
     end
   end
 
+  describe "standalone: forwarding" do
+    it "attaches the message under a declared base by default (standalone omitted)" do
+      action = build_axn do
+        error "Couldn't save widget"
+        fails_on ArgumentError, "Unable to submit"
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("Couldn't save widget: Unable to submit")
+    end
+
+    it "lets the message stand alone (replacing the base) with standalone: true" do
+      action = build_axn do
+        error "Couldn't save widget"
+        fails_on ArgumentError, "Unable to submit", standalone: true
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("Unable to submit")
+    end
+
+    it "forwards standalone: for the block form too" do
+      action = build_axn do
+        error "Couldn't save widget"
+        fails_on(ArgumentError, standalone: true) { |e| "Bad: #{e.message}" }
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("Bad: raw")
+    end
+  end
+
   describe "multiple exception classes (array)" do
     let(:action) do
       build_axn do

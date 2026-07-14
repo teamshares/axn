@@ -20,8 +20,10 @@ module Axn
         module ClassMethods
           # @param exceptions [Class, Array<Class>] one or more Exception classes
           # @param message [String, #call, nil] optional message (positional, like fail!)
+          # @param standalone [Boolean, nil] forwarded to the wired `error` — true lets the message
+          #   replace a declared base headline instead of attaching under it (moot without a message)
           # @yield optional block receiving the exception (like error { |e| ... })
-          def fails_on(exceptions, message = nil, &block)
+          def fails_on(exceptions, message = nil, standalone: nil, &block)
             classes = Array(exceptions)
             if classes.empty? || classes.any? { |c| !(c.is_a?(Class) && c <= Exception) }
               raise ArgumentError, "fails_on requires one or more Exception classes (got #{exceptions.inspect})"
@@ -30,8 +32,9 @@ module Axn
             self._fails_on_matchers = (_fails_on_matchers + classes).freeze
 
             # Wire the message through the existing `error` DSL when provided. Uses an OR proc
-            # (not `if: classes`) because `if:` with an array matches via `all?` (AND).
-            error(message, if: ->(exception:) { classes.any? { |klass| exception.is_a?(klass) } }, &block) if message || block
+            # (not `if: classes`) because `if:` with an array matches via `all?` (AND). standalone:
+            # is forwarded verbatim (nil = the DSL's conditional default: an attached reason).
+            error(message, if: ->(exception:) { classes.any? { |klass| exception.is_a?(klass) } }, standalone:, &block) if message || block
 
             true
           end

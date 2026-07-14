@@ -652,16 +652,17 @@ The _global_ handler will be triggered _after_ all class-specific handlers.
 class SubmitOrder
   include Axn
 
-  fails_on ActiveRecord::RecordInvalid                       # default message
-  # fails_on ActiveRecord::RecordInvalid, "Unable to submit" # positional string
-  # fails_on(ActiveRecord::RecordInvalid) { |e| e.message }  # block (receives the exception)
+  fails_on ActiveRecord::RecordInvalid                          # default message
+  # fails_on ActiveRecord::RecordInvalid, "Unable to submit"    # positional string
+  # fails_on(ActiveRecord::RecordInvalid) { |e| e.message }     # block (receives the exception)
   # fails_on [RecordInvalid, RecordNotUnique], "Couldn't save"
+  # fails_on RecordInvalid, "Unable to submit", standalone: true # message replaces the base headline
 
   def call = order.save!
 end
 ```
 
-Signature: `fails_on(exceptions, message = nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
+Signature: `fails_on(exceptions, message = nil, standalone: nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). `standalone:` is forwarded to that wired `error`: omitted (the default) the message attaches as a reason under any declared base `error`; `standalone: true` makes it replace the base headline instead — the same knob [`error`](#message-matching-order) itself exposes (moot when no message/block is given). See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation, and the [Model strategy](/strategies/model) for the common ActiveRecord case.
 
 ## Contract reflection (`.input_schema` / `.output_schema`)
 

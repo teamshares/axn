@@ -477,9 +477,10 @@ result.exception        # => the original ActiveRecord::RecordInvalid
 fails_on ActiveRecord::RecordInvalid, "Unable to submit"
 fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sentence }
 fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
+fails_on(ActiveRecord::RecordInvalid, standalone: true, &:message)  # message stands alone
 ```
 
-The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations.
+The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations. It also accepts `standalone:`, forwarded to that wired `error`: by default the message attaches as a reason under any declared base `error` headline (e.g. `"Couldn't save order: Unable to submit"`); `standalone: true` makes it replace the base instead, so the exception's own message stands alone.
 
 ::: tip Callbacks receive the original exception
 Inside `on_failure` / `on_error`, the `exception` argument (and `result.exception`) is the **original** raised object — e.g. the `ActiveRecord::RecordInvalid` — not an `Axn::Failure`. So a handler can read `exception.record.errors` directly. You can branch on `exception.is_a?(Axn::Failure)` to distinguish an explicit `fail!` from a `fails_on` reclassification.
