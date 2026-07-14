@@ -21,8 +21,45 @@ module Axn
       # while `bar` is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
       def check!(field_configs, subfield_configs)
         tree = SubfieldTree.build(field_configs, subfield_configs)
-        check_unanswerable_segments!(tree) # first: its message is the more specific when both fire
+        check_unanswerable_segments!(tree) # first: an unreachable path moots any conflict on it
+        check_conflicting_defaults!(tree)  # before dead-tolerance: an explicit conflict is the plainer diagnosis
         check_dead_nil_tolerance!(tree, field_configs)
+      end
+
+      # The EXPLICIT-CONFLICT check (PRO-2901): a wire node reached by two+ routes where more than one
+      # route carries a `default:`. PRO-2883 made merged wire nodes first-class — the same wire key can
+      # be declared via two routes (`expects "meta.count", on: :payload` and `expects :count, on: :meta,
+      # as: :meta_count`) — but only ONE inbound default can win the shared wire key, and the executor's
+      # declaration-order pass silently lets the first-declared default write while every later route
+      # sees the key present and skips. Two explicit defaults for one wire value have no principled
+      # winner (declaration order is not a principle), so — unlike the inferred families 1–3, which defer
+      # — this rejects at declaration per the AGENTS.md doctrine that an explicit conflict raises loudly.
+      # Rejected uniformly, even for equal literals: agreeing today drifts tomorrow, and two Proc defaults
+      # can't be compared at all. Subfield-tree-only by construction (a top-level field can't merge with
+      # itself — the duplicate-field guard prevents it; the top-level `<field>_id`/`model:` default
+      # interplay is covered by PRO-2889's usable_id_token_default? sites).
+      def check_conflicting_defaults!(tree)
+        each_explicit_node(tree.roots) do |_parent, _key, node|
+          defaulted = node.configs.select(&:applied_default?)
+          next if defaulted.size < 2
+
+          raise_conflicting_defaults!(defaulted, tree.index[defaulted.first].wire_path)
+        end
+      end
+
+      def raise_conflicting_defaults!(configs, wire_path)
+        routes = configs.map { |c| "#{c.field.inspect} (on #{c.on.inspect}, default: #{describe_default(c)})" }.join(" and ")
+        raise ArgumentError,
+              "conflicting default: declarations on wire path #{wire_path.join('.').inspect}: routes #{routes} both " \
+              "carry a default: for the same wire value, and only declaration order — not any principle — decides " \
+              "which one applies (the first-declared default writes the wire key; every later route then sees the " \
+              "key present and is silently skipped). Keep a single default:, or split the routes onto distinct wire keys."
+      end
+
+      # A default's description for the conflict message: a Proc is unknowable (and uncomparable), so it
+      # is named generically; a literal is inspected. Side-effect-free — never calls the Proc.
+      def describe_default(config)
+        config.default.is_a?(Proc) ? "a callable" : config.default.inspect
       end
 
       # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some

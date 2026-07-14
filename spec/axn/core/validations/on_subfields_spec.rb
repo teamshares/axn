@@ -2247,17 +2247,13 @@ RSpec.describe Axn do
       end
     end
 
-    context "runtime sibling selection mirrors the declaration credit predicate (PRO-2889)" do
-      it "resolves via the usable-token id route, not a blank-applied route sharing the wire node" do
-        # Two routes land on the same thing.company_id wire node: a blank-token route (default "",
-        # declared FIRST) and a usable-token route (default 42). Declaration credits the node (42 is a
-        # usable token); runtime must resolve the SAME route. Selecting by applied_default? alone picks
-        # the blank "" route, whose blank token the model resolver guards → the record never resolves.
-        #
-        # The parent (`thing`) is an opaque non-Hash object, so the defaults write-back is refused and
-        # NEITHER default reaches the wire — both id routes supply their value LEVEL only, isolating the
-        # sibling SELECTION (a writable Hash chain would let the first-declared blank default clobber the
-        # shared wire key before selection, a separate write-order concern).
+    context "two defaults on one sibling-id wire node are rejected at declaration (PRO-2901)" do
+      it "rejects the blank-token + usable-token routes that shared the thing.company_id wire node" do
+        # Two routes land on the same thing.company_id wire node: a blank-token route (default "") and a
+        # usable-token route (default 42). PRO-2889's read-side selection made the RUNTIME survive this by
+        # resolving the usable route — but two explicit defaults for one wire value have no principled
+        # winner, so PRO-2901 now rejects the construction at declaration rather than papering over the
+        # write-order interaction. The error names both declarations and the fix.
         finder = Class.new do
           attr_reader :id
 
@@ -2266,20 +2262,18 @@ RSpec.describe Axn do
           def self.fetch(id) = new(id)
         end
         stub_const("SiblingCo", finder)
-        opaque = Class.new.new
-        action = build_axn do
-          expects :payload, type: Hash
-          expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
-          expects "thing.company_id", on: :payload, optional: true, default: ""
-          expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
-          expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String
-          exposes :cid, allow_nil: true
-          def call = expose(cid: company&.id)
-        end
-        result = action.call(payload: { thing: opaque })
-        expect(result).to be_ok
-        expect(result.cid).to eq(42)
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
+            expects "thing.company_id", on: :payload, optional: true, default: ""
+            expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
+            expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String
+            exposes :cid, allow_nil: true
+            def call = expose(cid: company&.id)
+          end
+        end.to raise_error(ArgumentError, /conflicting default:.*payload\.thing\.company_id/m)
       end
     end
   end
