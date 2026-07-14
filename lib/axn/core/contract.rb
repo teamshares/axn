@@ -83,7 +83,16 @@ module Axn
       # One member declared inside a structured field's block (`field :name, ...`).
       # Nested members live in validations[:shape][:members], so the tree is uniform
       # at every depth and walked by both ShapeValidator (runtime) and axn-mcp (schema).
-      ShapeConfig = Data.define(:field, :validations, :metadata) do
+      # `method_call:` opts the member into the sharp path — reading it by INVOKING it as a method
+      # on the element being validated (a non-`Data` PORO reader or an Array method) rather than
+      # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
+      # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
+      # `method_call:` (PRO-2907).
+      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call) do
+        def initialize(field:, validations:, metadata: {}, method_call: false)
+          super
+        end
+
         include FieldOptionality
 
         def description = metadata[:description]
@@ -452,7 +461,7 @@ module Axn
         # are validation/schema-only: they have no single value to default/preprocess, and the log
         # filter can't redact a per-element member, so default:/preprocess:/sensitive: are rejected
         # rather than silently dropped when converting to a ShapeConfig.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional].freeze
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
@@ -489,7 +498,7 @@ module Axn
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
-          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata)
+          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata, method_call: config.method_call)
         end
 
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.

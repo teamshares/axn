@@ -48,6 +48,34 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
     end
   end
 
+  # A shape member compiles through the same _parse_field_validations path as a top-level `expects`
+  # field, so it inherits default presence: a declared member is required unless it opts out
+  # (`optional:`/`allow_nil:`/`allow_blank:`, or a `:boolean`/`:params` type). This pins that parity.
+  describe "default presence (parity with top-level expects)" do
+    it "requires a declared member by default — an absent key fails per element" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String
+        end
+      end
+
+      result = action.call(items: [{ status: "ok" }, { other: "x" }])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 1/)
+      expect(result.exception.message).to match(/status can't be blank/)
+    end
+
+    it "opts out of default presence with optional: (an absent member passes)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, optional: true
+        end
+      end
+
+      expect(action.call(items: [{ other: "x" }])).to be_ok
+    end
+  end
+
   describe "single structured value (type: Hash)" do
     it "validates the value's members directly, without an element index" do
       action = build_axn do
@@ -293,6 +321,190 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           end
         end
       end.to raise_error(ArgumentError, /single field/)
+    end
+  end
+
+  # A shape member is read off the element being validated. For Hash keys and Struct/OpenStruct/Data
+  # members that read resolves declared data (dig / #to_h) and never invokes a behavioral method. For
+  # a non-`Data` PORO reader or an Array method the only way to reach the member is to INVOKE it —
+  # the sharp path — so, mirroring a subfield's `method_call:`, it's an explicit per-member opt-in.
+  describe "method_call: opt-in for object/Array-method shape members (PRO-2907)" do
+    # A plain PORO exposing a reader (no dig/[], not Data) — the canonical sharp shape member.
+    let(:poro_class) do
+      Class.new do
+        attr_reader :status
+
+        def initialize(status) = (@status = status)
+      end
+    end
+
+    describe "without the flag (safe default)" do
+      it "raises MethodCallNotPermittedError reading a non-Data object member (loud, not silent)" do
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String
+          end
+        end
+
+        result = action.call(items: [poro_class.new("ok")])
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+      end
+
+      it "never mutates an element during validation (field :pop over Array elements does not run)" do
+        inner = [1, 2, 3]
+        action = build_axn do
+          expects :items, type: Array do
+            field :pop, type: Integer
+          end
+        end
+
+        result = action.call(items: [inner])
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+        expect(inner).to eq([1, 2, 3]) # the gate fires before dispatch — no #pop ever ran
+      end
+    end
+
+    describe "with method_call: true" do
+      it "resolves a non-Data object member by invoking its reader" do
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String, method_call: true
+          end
+        end
+
+        expect(action.call(items: [poro_class.new("ok")])).to be_ok
+
+        result = action.call(items: [poro_class.new(123)])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 0/)
+        expect(result.exception.message).to match(/status/)
+      end
+
+      it "resolves an Array-method member by invoking it" do
+        action = build_axn do
+          expects :items, type: Array do
+            field :length, type: Integer, method_call: true
+          end
+        end
+
+        expect(action.call(items: [[1, 2, 3], [4, 5]])).to be_ok
+      end
+    end
+
+    describe "regression: safe members keep working with no flag" do
+      it "reads Hash-key members via dig" do
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String
+          end
+        end
+
+        expect(action.call(items: [{ status: "ok" }])).to be_ok
+      end
+
+      it "reads Struct members via dig" do
+        struct = Struct.new(:status)
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String
+          end
+        end
+
+        expect(action.call(items: [struct.new("ok")])).to be_ok
+      end
+
+      it "reads OpenStruct members via dig" do
+        require "ostruct"
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String
+          end
+        end
+
+        expect(action.call(items: [OpenStruct.new(status: "ok")])).to be_ok # rubocop:disable Style/OpenStructUse
+      end
+
+      it "reads Data members via #to_h (the axn-mcp array-element-shape-over-Data case)" do
+        point = Data.define(:status)
+        action = build_axn do
+          expects :items, type: Array do
+            field :status, type: String
+          end
+        end
+
+        expect(action.call(items: [point.new(status: "ok")])).to be_ok
+
+        result = action.call(items: [point.new(status: 123)])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 0/)
+      end
+    end
+
+    # The dispatch gate is carried explicitly by the call site, NOT inferred from whether an action
+    # is threaded. This pins that invariant so a future change that threads the action into
+    # shape-member validation (e.g. to resolve a Symbol validation arg or if:/unless: against the
+    # action, PRO-2881) cannot silently re-permit method dispatch.
+    describe "gate is independent of action threading" do
+      let(:validator_class) do
+        Axn::Validation::Fields.validator_class_for(field: :status, validations: { type: { klass: String } })
+      end
+
+      it "raises even when an action IS present, as long as method_call was not permitted" do
+        errors = nil
+        expect do
+          errors = Axn::Validation::Fields.errors_for(
+            validator_class, source: poro_class.new("ok"), validations: { type: { klass: String } },
+                             action: Object.new, permit_method_call: false
+          )
+        end.to raise_error(Axn::ContractViolation::MethodCallNotPermittedError)
+        expect(errors).to be_nil
+      end
+
+      it "resolves when method_call is permitted, action present or not" do
+        errors = Axn::Validation::Fields.errors_for(
+          validator_class, source: poro_class.new("ok"), validations: { type: { klass: String } },
+                           action: Object.new, permit_method_call: true
+        )
+        expect(errors).to be_empty
+      end
+    end
+
+    describe "nested shapes inherit the rule at each depth" do
+      it "raises for a method-dispatch member nested inside another shape without the flag" do
+        klass = poro_class
+        action = build_axn do
+          inner = klass
+          expects :items, type: Array do
+            field :point, type: inner do
+              field :status, type: String
+            end
+          end
+        end
+
+        result = action.call(items: [{ point: poro_class.new("ok") }])
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+      end
+
+      it "resolves a nested method-dispatch member when it opts in" do
+        klass = poro_class
+        action = build_axn do
+          inner = klass
+          expects :items, type: Array do
+            field :point, type: inner do
+              field :status, type: String, method_call: true
+            end
+          end
+        end
+
+        expect(action.call(items: [{ point: poro_class.new("ok") }])).to be_ok
+
+        result = action.call(items: [{ point: poro_class.new(123) }])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/status/)
+      end
     end
   end
 end

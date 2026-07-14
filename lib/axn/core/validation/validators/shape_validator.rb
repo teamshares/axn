@@ -47,7 +47,9 @@ module Axn
             next
           end
 
-          errors = Axn::Validation::Fields.errors_for(member_validator_classes[member.field], source:, validations: member.validations)
+          errors = Axn::Validation::Fields.errors_for(
+            member_validator_classes[member.field], source:, validations: member.validations, permit_method_call: member.method_call
+          )
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
         end
       end
@@ -59,6 +61,10 @@ module Axn
       # so `Array#dig("status")` would raise a TypeError; excluding them keeps the element index in
       # the error (e.g. "element at index 0: status could not be read") instead of letting the
       # resolver raise and lose it. Guarding here mirrors FieldResolvers::Extract's own dispatch.
+      # Being extractable is necessary but not sufficient to READ a member by method dispatch: a
+      # non-`Data` object reader / Array method is resolved only when the member opted in with
+      # `method_call: true`, otherwise the read raises MethodCallNotPermittedError (PRO-2907). The
+      # safe branches (Hash keys, Struct/OpenStruct/Data members) never dispatch and need no flag.
       def extractable?(source, field)
         return true if source.respond_to?(field)
 

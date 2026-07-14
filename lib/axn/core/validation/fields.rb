@@ -28,21 +28,29 @@ module Axn
         elsif @action && @config&.subfield?
           Axn::Core::ContractForSubfields.resolve_value(@action, @config)
         else
-          # Only a top-level/outbound field reaches here (subfields resolve via the reader or
-          # resolve_value above); its source is the framework's own context/result facade, whose
-          # per-field reader is a safe accessor — so method dispatch is always permitted here (it's the
-          # facade's generated reader, not the caller-object dispatch the method_call gate targets).
+          # Two occupants reach here. A top-level/outbound FACADE read: its source is the framework's
+          # own context/result facade, whose per-field reader is a safe generated accessor — method
+          # dispatch is always permitted (it's not the caller-object dispatch the method_call gate
+          # targets), so the facade call site (collect_errors) passes `permit_method_call: true`. A
+          # SHAPE MEMBER read (ShapeValidator): its source is a caller-supplied element, so it honors
+          # the member's own `method_call:` opt-in — the same gate as a subfield (PRO-2907). The
+          # permission is carried explicitly by each call site (NOT inferred from @action presence):
+          # threading the action into shape-member validation — e.g. to resolve a Symbol validation
+          # arg or if:/unless: condition against the action — must not silently re-permit dispatch.
           # Malformed sources still read as absent (one doctrine — see FieldResolvers.extract_or_nil):
           # this field's own validators report against nil while the source's own type validation
           # classifies the bad value.
-          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source, permit_method_call: true)
+          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source, permit_method_call: @permit_method_call)
         end
       end
 
       # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if
-      # valid).
+      # valid). This is THE facade call site (top-level inbound + outbound): its source is the
+      # framework's context/result facade, whose generated reader is safe, so it permits method
+      # dispatch unconditionally. (A subfield reaches read_attribute_for_validation via the reader/
+      # resolve_value branches, never the dispatch-gated else, so the flag is a no-op for it here.)
       def self.collect_errors(field:, validations:, source:, action: nil, reader: nil, config: nil)
-        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:, config:)
+        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:, config:, permit_method_call: true)
       end
 
       # Builds the one-off validator class for a (field, validations) pair. Callers that validate
@@ -59,7 +67,11 @@ module Axn
       end
 
       # Runs a validator class against a source and returns its ActiveModel::Errors (empty if valid).
-      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil)
+      # `permit_method_call:` governs the dispatch gate in the else branch of
+      # read_attribute_for_validation: the facade call site (collect_errors) passes `true`; a shape
+      # member passes its own `method_call:` opt-in (PRO-2907). It is deliberately independent of
+      # `action:` so the two can be threaded separately.
+      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false)
         validator = validator_class.new(source)
 
         # Set the action context for model field resolution + symbol-argument delegation
@@ -67,6 +79,7 @@ module Axn
         validator.instance_variable_set(:@validations, validations)
         validator.instance_variable_set(:@reader, reader)
         validator.instance_variable_set(:@config, config)
+        validator.instance_variable_set(:@permit_method_call, permit_method_call)
 
         validator.valid?
         validator.errors
