@@ -345,6 +345,33 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a dotted path crossing a nested Array (PRO-2886)" do
+        # The reader spelling (`:count on :items`) and the dotted spelling (`"items.count" on :payload`)
+        # name the same wire path and must resolve identically — reaching Array#count on the nested
+        # Array rather than digging a String key into it.
+        it "resolves a nested Array method the same via the reader and the dotted spelling" do
+          # Reader spelling exposes the resolved Array#count directly.
+          reader = build_axn do
+            expects :payload, type: Hash
+            expects :items, on: :payload, type: Array
+            expects :count, on: :items, type: Integer
+            exposes :n, allow_nil: true
+            def call = expose(n: count)
+          end
+          # Dotted spelling generates no reader, but a required `type: Integer` on the path passes
+          # only if it resolves to the Integer 3 (before the fix it resolved to nil → validation
+          # failure), so validation success stands in for the resolved value.
+          dotted = build_axn do
+            expects :payload, type: Hash
+            expects "items.count", on: :payload, type: Integer
+            def call = nil
+          end
+
+          expect(reader.call(payload: { items: [10, 20, 30] }).n).to eq(3)
+          expect(dotted.call(payload: { items: [10, 20, 30] })).to be_ok
+        end
+      end
+
       context "with a defaulted parent and a preprocessed subfield" do
         let(:action) do
           build_axn do
