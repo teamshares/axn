@@ -1485,13 +1485,14 @@ RSpec.describe Axn do
         end
       end
 
-      it "applies defaults to object-based parent fields" do
+      it "applies defaults to object-based parent fields without mutating the caller's object (PRO-2889)" do
         result = action.call(user_object:)
         expect(result).to be_ok
 
-        # Check that the default was applied to the object
+        # The reader/validation see the default via the value-level fallback...
         expect(result.__action__.bio).to eq("Default bio")
-        expect(user_object.bio).to eq("Default bio")
+        # ...but the caller's own object is never mutated (write-path gate: PRO-2889).
+        expect(user_object.bio).to be_nil
       end
     end
 
@@ -1895,6 +1896,45 @@ RSpec.describe Axn do
 
       it "validates the fallback value (no reader exists for a dotted name)" do
         expect(action.call(payload: nil)).to be_ok
+      end
+    end
+
+    context "write-path behavior (PRO-2889)" do
+      it "never mutates a caller-supplied record with a default" do
+        rec = FallbackCompany.new(id: 1)
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: "x"
+          def call = nil
+        end
+        expect(action.call(company: rec)).to be_ok
+        expect(rec.name).to be_nil
+      end
+
+      it "evaluates a Proc default exactly once when the write chain is refused" do
+        calls = 0
+        counter = lambda {
+          calls += 1
+          "x"
+        }
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: counter
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+        expect(action.call.n).to eq("x")
+        expect(calls).to eq(1)
+      end
+
+      it "still materializes fully-object-shaped chains over an explicit nil (unchanged)" do
+        action = build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects :id, on: "payload.meta", type: Integer, default: 42
+          exposes :got
+          def call = expose(got: id)
+        end
+        expect(action.call(payload: nil).got).to eq(42)
       end
     end
   end

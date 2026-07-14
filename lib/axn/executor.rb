@@ -712,6 +712,7 @@ module Axn
         # type — so the subfield is absent. Skip evaluating/writing its default: a Proc default would
         # run its side effects for nothing, and the write would synthesize a type-violating value.
         next unless _write_chain_materializable?(path)
+        next unless _default_chain_hash_writable?(path)
 
         @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
@@ -866,6 +867,26 @@ module Axn
     # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
     def _synthesizable_node?(node)
       node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
+    end
+
+    # A default: writes only into Hash chains (copy-on-write) or materializes absent ones. A
+    # PRESENT non-Hash level anywhere along the write path (a caller-supplied record, a Struct)
+    # is never mutated by a declared default (PRO-2889) — the write is skipped (before the
+    # default is even evaluated, so a Proc runs once, at read) and the value-level fallback
+    # supplies the default to readers and validation instead. Depth 0 assigns the root key
+    # directly (no object mutation), so it always writes.
+    def _default_chain_hash_writable?(path)
+      return true if path.wire_path.size == 1
+
+      value = @context.provided_data[path.wire_path.first]
+      path.wire_path[1..-2].each do |seg|
+        return true if value.nil? # absent from here down — materialized fresh, nothing to mutate
+
+        return false unless value.is_a?(Hash)
+
+        value = Core::FieldResolvers.extract_or_nil(field: seg.to_s, provided_data: value)
+      end
+      value.nil? || value.is_a?(Hash)
     end
 
     # The parent value a subfield validates against, resolved once per distinct `on:` target per
