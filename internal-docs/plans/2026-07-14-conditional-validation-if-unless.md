@@ -12,6 +12,8 @@
 
 ## Global Constraints
 
+- **Sequencing: PRO-2907 must land first.** This branch builds on `kali/pro-2907-axn-add-shape-block-handling-of-method-calls` (shape-member `method_call:` gate): Task 2 consumes its `ShapeConfig#method_call`, the `permit_method_call:` kwarg on `Fields.errors_for`, and its regression specs, and Tasks 1-2 edit the same lines of `fields.rb`/`shape_validator.rb` it touched. Rebase this branch onto main AFTER PRO-2907 merges, before starting; if PRO-2907 hasn't merged, do Tasks 3-10 and hold Tasks 1-2 (Task 1's `validator_class_for` edit also collides trivially).
+- **Orthogonality (PRO-2907): the `method_call:` dispatch gate must stay independent of action threading.** Permission is carried explicitly per call site (`permit_method_call:` — facade passes `true`, ShapeValidator passes `member.method_call`); when Task 2 threads `action:` into member validation it must NOT touch that kwarg or reintroduce any "action present → permit dispatch" inference. The regression spec "gate is independent of action threading" in `spec/axn/core/validations/shape_contracts_spec.rb` (written against exactly this change) must stay green.
 - Reflection is side-effect-free: schema/contradiction code must NEVER call a condition Proc or dispatch methods on user values (repo doctrine; see `Schema` module header).
 - Schema direction invariant: input schema may be stricter than runtime, never looser (documented exceptions only); output schema must admit a superset of what the runtime emits.
 - No manual line breaks in Markdown prose (one line per paragraph — repo convention).
@@ -182,61 +184,130 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Reject `if:`/`unless:` on shape members
+### Task 2: Thread the action into shape-member validation (member conditions + Symbol args)
+
+> **DEPENDS ON PRO-2907 having merged and this branch being rebased on it** (see Global Constraints). The code below assumes PRO-2907's `fields.rb`/`shape_validator.rb` (with `permit_method_call:`); on the pre-2907 tree the anchors won't match.
+
+Members already *compile* `if:`/`unless:` (they share `_parse_field_validations`; the gates survive onto `ShapeConfig#validations`, and Task 1's push-down guard covers them). The gap is runtime-only: `ShapeValidator` passes no `action:` into the per-member `errors_for`, so ANY action-scoped Symbol/Proc on a member — an `if:` condition or a Symbol validator argument like `inclusion: { in: :allowed_statuses }` — dies with `NoMethodError: undefined method ... for an instance of Axn::Validation::Fields::OneOff` (verified by probe; the same declaration works top-level). Fix: `validate_each`'s `record` IS the parent field's one-off validator, which already carries `@action` — read it via the `_action_for_validation` seam and thread it down. Nested shapes inherit for free (the member's validator becomes the next level's `record`).
 
 **Files:**
-- Modify: `lib/axn/core/contract.rb:460-477` (`_build_shape_member`)
-- Test: `spec/axn/core/conditional_validation_spec.rb` (extend)
+- Modify: `lib/axn/core/validation/validators/shape_validator.rb` (`validate_members`, currently ~lines 43-55 on the PRO-2907 tree)
+- Test: `spec/axn/core/conditional_validation_spec.rb` (extend), `spec/axn/core/validations/shape_contracts_spec.rb` (must stay green untouched)
 
 **Interfaces:**
-- Consumes: `Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS` (Task 1).
+- Consumes: `Axn::Validation::Base#_action_for_validation` (private reader for the injected `@action`); PRO-2907's `permit_method_call:` kwarg on `Fields.errors_for` and `ShapeConfig#method_call`.
+- Constraint: `permit_method_call: member.method_call` stays EXACTLY as-is — do not add, remove, or derive it from the action (Global Constraints orthogonality rule).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 Append to `spec/axn/core/conditional_validation_spec.rb`:
 
 ```ruby
-  describe "shape members" do
-    it "rejects if:/unless: on a shape member at declaration (no action to resolve against)" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash do
-            field :note, type: String, if: :cond
+  describe "shape members (action-scoped conditions and Symbol args)" do
+    it "resolves a member's Symbol validator argument against the action" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :status, type: String, inclusion: { in: :allowed_statuses }
+        end
+        def allowed_statuses = %w[open closed]
+        def call; end
+      end
+      expect(action.call(payload: { status: "open" }).ok?).to be true
+      expect(action.call(payload: { status: "bogus" }).ok?).to be false
+    end
+
+    it "gates a member's validations on an action-scoped if: condition" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+        def call; end
+      end
+      expect(action.call(flag: false, payload: {}).ok?).to be true
+      expect(action.call(flag: false, payload: { note: 123 }).ok?).to be true
+      expect(action.call(flag: true, payload: {}).ok?).to be false
+      expect(action.call(flag: true, payload: { note: "hi" }).ok?).to be true
+    end
+
+    it "resolves conditions on NESTED members (the member's validator carries the action down)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :meta, type: Hash do
+            field :note, type: String, if: :flag
           end
         end
-      end.to raise_error(ArgumentError, /shape member `note` does not support if:/)
+        def call; end
+      end
+      expect(action.call(flag: false, payload: { meta: {} }).ok?).to be true
+      expect(action.call(flag: true, payload: { meta: {} }).ok?).to be false
+    end
+
+    it "does NOT expose element data to conditions (action-scoped only — element scoping is a non-goal)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :b, type: String, if: -> { a }  # `a` is a sibling MEMBER, not an action method
+        end
+        def call; end
+      end
+      result = action.call(items: [{ "a" => true }])
+      expect(result.ok?).to be false
+      expect(result.exception).to be_a(NoMethodError) # condition cannot see the element
     end
   end
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+(For the last example: pin whatever exception class actually surfaces — the contract is "does not silently resolve against the element"; adjust the matcher to the observed class and leave a comment.)
+
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `bundle exec rspec spec/axn/core/conditional_validation_spec.rb -e "shape members"`
-Expected: FAIL (declaration currently succeeds; the condition would break at validation time instead).
+Expected: the first three FAIL with `NoMethodError` surfacing as the call's exception; the last may already pass (pins the non-goal).
 
 - [ ] **Step 3: Implement**
 
-In `lib/axn/core/contract.rb` `_build_shape_member`, directly after the existing `unsupported` check (the `raise ArgumentError, "shape member ... (shape blocks declare validation/schema only)"` block, currently lines 461-466), add:
+In `lib/axn/core/validation/validators/shape_validator.rb`, replace `validate_members`:
 
 ```ruby
-          gated = opts.keys & Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-          if gated.any?
-            raise ArgumentError,
-                  "shape member `#{name}` does not support #{gated.map { |k| "#{k}:" }.join('/')} " \
-                  "(member validators run without an action instance, so a condition has nothing to resolve against)"
+      def validate_members(record, attribute, source, prefix:)
+        members.each do |member|
+          unless extractable?(source, member.field)
+            record.errors.add(attribute, "#{prefix}#{member.field} could not be read (got #{source.class})")
+            next
           end
+
+          errors = Axn::Validation::Fields.errors_for(
+            member_validator_classes[member.field], source:, validations: member.validations,
+            action: record.send(:_action_for_validation), permit_method_call: member.method_call
+          )
+          errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
+        end
+      end
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Add a comment above the `errors_for` call:
 
-Run: `bundle exec rspec spec/axn/core/conditional_validation_spec.rb`
-Expected: PASS.
+```ruby
+          # `record` is the parent field's one-off validator, which carries the action (threaded by
+          # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
+          # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
+          # condition is action-scoped, never element-scoped). Orthogonal to the dispatch gate:
+          # permission stays the member's own method_call: opt-in, never inferred from the action.
+```
+
+Nothing else changes — in particular `permit_method_call: member.method_call` is untouched.
+
+- [ ] **Step 4: Run tests to verify they pass — including the PRO-2907 regression suite**
+
+Run: `bundle exec rspec spec/axn/core/conditional_validation_spec.rb spec/axn/core/validations/shape_contracts_spec.rb`
+Expected: PASS — all new examples AND the untouched shape-contracts suite, especially "gate is independent of action threading" (if that one fails, the orthogonality constraint was violated — do not adjust the spec; fix the change).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/axn/core/contract.rb spec/axn/core/conditional_validation_spec.rb
-git commit -m "PRO-2881: Reject if:/unless: on shape members at declaration
+git add lib/axn/core/validation/validators/shape_validator.rb spec/axn/core/conditional_validation_spec.rb
+git commit -m "PRO-2881: Thread action into shape-member validation (conditions + Symbol args resolve)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -452,8 +523,22 @@ Append to `spec/axn/reflection/schema_spec.rb` (a new top-level describe, follow
       end
       expect(action.output_schema[:properties][:num][:type]).to eq(%w[integer null])
     end
+
+    it "reflects a gated shape member static-maximal (required inside its object)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+      end
+      prop = action.input_schema[:properties][:payload]
+      expect(prop[:required]).to include("note")
+      expect(prop[:properties][:note][:type]).to eq("string")
+    end
   end
 ```
+
+(The shape-member example only needs Task 1 — members share the parse path — but its runtime counterpart lands in Task 2.)
 
 - [ ] **Step 2: Run tests to verify current state**
 
@@ -1129,7 +1214,8 @@ Rules and caveats:
 - **Conditions gate validation only.** `default:` and `preprocess:` are pipeline stages, not validations — they still apply when the condition is false. Readers and `sensitive:` filtering are likewise ungated.
 - **Condition forms**: a Symbol names an action method or reader (a boolean field's generated `?` predicate works: `if: :promo_enabled?`); a Proc should be zero-arity and call reader methods (`if: -> { data.present? }`). Inside a Proc, method calls resolve to the action, but `self` is a validation-internal object — instance variables will not resolve; use readers.
 - **Conditions must be cheap and side-effect-free**: a declaration-level condition may be evaluated once *per validator* on the field during a single validation pass.
-- Combining a tolerance flag (`optional:`/`allow_nil:`/`allow_blank:`) with an explicit `presence:` raises at declaration — the tolerance would make the presence check unable to fire. Shape-block members (`do … end`) don't support `if:`/`unless:` (member validators run without an action to resolve conditions against).
+- Combining a tolerance flag (`optional:`/`allow_nil:`/`allow_blank:`) with an explicit `presence:` raises at declaration — the tolerance would make the presence check unable to fire.
+- Shape-block members (`field :x` inside `do … end`) support `if:`/`unless:` too, with the same action-scoped semantics — the condition resolves against the action, **not** the element being validated (a condition cannot reference sibling members). This also means Symbol validator arguments (e.g. `inclusion: { in: :allowed_statuses }`) now resolve on members.
 
 ::: warning Schema reflection advertises the maximal contract
 `input_schema` never executes conditions. It reflects every conditional field **as if every gate were open** — `if:` treated as true, `unless:` treated as false, every declared validator counted — so the schema may be *stricter* than the runtime (it can tell a caller a field is required when a closed gate would have accepted omission), but never looser. Two refinements: a Symbol condition referencing a declared sibling field (like `if: :promo_enabled?` above) is emitted *exactly*, as a JSON Schema `allOf`/`if`/`then` conditional instead of an unconditional requirement; and a gated required subfield keeps its nested `required` without forcing its ancestors, so the parent's own declared optionality is honored. On `output_schema`, a gated exposed field admits `null` (a closed gate can emit nil).
@@ -1145,7 +1231,7 @@ Run: `grep -n "unless" docs/usage/writing.md docs/usage/steps.md`. In `writing.m
 Add at the top of the Unreleased section:
 
 ```markdown
-* [FEAT] Conditional validation: `expects`/`exposes` accept declaration-level `if:`/`unless:` (PRO-2881). The condition (a Symbol naming an action method/reader — a boolean field's `?` predicate works — or a zero-arity Proc) gates every validator in the declaration, including the implicit presence check, so requiredness itself can be conditional; per-validator conditions (nested in a validator's options hash) gate a single check. This makes the conditionally-required-subfield pattern expressible: `expects :data, optional: true` + `expects :user, on: :data, if: -> { data.present? }` now declares (the dead-tolerance rejection treats a gated subfield as relaxable, and its message points at the spelling). Tolerance-flag interplay is fixed: `optional:`/`allow_nil:`/`allow_blank:` + a declaration-level condition now works (previously a bare `TypeError` at declaration), while a tolerance flag + explicit truthy `presence:` now raises a clear `ArgumentError` (the tolerance made the presence check unable to fire — previously a crash for `presence: true` and a silently-dead check for `presence: { if: }`). Shape-block members reject `if:`/`unless:` (no action to resolve against). `input_schema` reflects conditionals static-maximally (gates treated as open; stricter than runtime, never looser), with two refinements: a Symbol condition referencing a declared sibling field emits an exact `allOf`/`if`/`then` conditional, and a gated required subfield keeps its nested `required` without forcing its ancestors. `output_schema` admits `null` on gated exposed fields. `default:`/`preprocess:` are pipeline stages and apply regardless of the condition.
+* [FEAT] Conditional validation: `expects`/`exposes` accept declaration-level `if:`/`unless:` (PRO-2881). The condition (a Symbol naming an action method/reader — a boolean field's `?` predicate works — or a zero-arity Proc) gates every validator in the declaration, including the implicit presence check, so requiredness itself can be conditional; per-validator conditions (nested in a validator's options hash) gate a single check. This makes the conditionally-required-subfield pattern expressible: `expects :data, optional: true` + `expects :user, on: :data, if: -> { data.present? }` now declares (the dead-tolerance rejection treats a gated subfield as relaxable, and its message points at the spelling). Tolerance-flag interplay is fixed: `optional:`/`allow_nil:`/`allow_blank:` + a declaration-level condition now works (previously a bare `TypeError` at declaration), while a tolerance flag + explicit truthy `presence:` now raises a clear `ArgumentError` (the tolerance made the presence check unable to fire — previously a crash for `presence: true` and a silently-dead check for `presence: { if: }`). Shape-block members support conditions too (action-scoped, never element-scoped): ShapeValidator now threads the action into member validation, which also fixes Symbol validator arguments (`inclusion: { in: :action_method }`) on members — previously a `NoMethodError`. The member `method_call:` dispatch gate (PRO-2907) is unaffected: permission stays the member's own opt-in, never inferred from the action. `input_schema` reflects conditionals static-maximally (gates treated as open; stricter than runtime, never looser), with two refinements: a Symbol condition referencing a declared sibling field emits an exact `allOf`/`if`/`then` conditional, and a gated required subfield keeps its nested `required` without forcing its ancestors. `output_schema` admits `null` on gated exposed fields. `default:`/`preprocess:` are pipeline stages and apply regardless of the condition.
 * [FEAT] `error`/`success`/`fails_on` and the `on_*` callbacks now accept `if:` and `unless:` together (PRO-2881), combined with AND (every condition must pass) — matching steps and field declarations. Previously the combination raised at declaration; single-condition and array-rule behavior is unchanged.
 ```
 
