@@ -773,28 +773,34 @@ RSpec.describe Axn::Reflection::Schema do
     # `items` is non-nestable (type: Array), so its subfield shape is omitted — but a required DEEP
     # descendant (`items.first_item.sku`) still forces `items` required (field_optional?). A nil parent
     # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
-    # non-nullable: type exactly "array", no null branch. Runtime agrees — `items: nil` and omission both fail.
+    # non-nullable: type exactly "array", no null branch. The required `sku` carries a Proc default so the
+    # contract is legal under PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so
+    # `items` is still required + non-nullable. The Proc rescues omission at runtime — schema stricter than
+    # runtime, the safe divergence.
     klass = Class.new do
       include Axn
       expects :items, type: Array, allow_nil: true
-      expects :sku, on: "items.first_item", type: String
+      expects :sku, on: "items.first_item", type: String, default: -> { "x" }
       def call; end
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
     expect(schema[:properties][:items][:type]).to eq("array")
     expect(schema[:required]).to include("items")
-    expect(klass.call(items: nil)).not_to be_ok
-    expect(klass.call).not_to be_ok
+    expect(klass.call(items: nil)).to be_ok # Proc default rescues omission; schema stays stricter
+    expect(klass.call).to be_ok
   end
 
   it "strips the null member from a non-nestable UNION parent when a required DEEP descendant forbids nil (PRO-2872)" do
     # A mixed union (type: [Hash, Array]) is non-nestable, so its subfield shape is omitted, but the
     # required deep descendant forces it required and non-nullable — the anyOf must carry no `null` member.
+    # The required `sku` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts
+    # the Proc); strict reflection ignores Procs, so `items` stays required + non-nullable while the Proc
+    # rescues omission at runtime (schema stricter than runtime, the safe divergence).
     klass = Class.new do
       include Axn
       expects :items, type: [Hash, Array], allow_nil: true
-      expects :sku, on: "items.first_item", type: String
+      expects :sku, on: "items.first_item", type: String, default: -> { "x" }
       def call; end
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -802,7 +808,7 @@ RSpec.describe Axn::Reflection::Schema do
     members = schema[:properties][:items][:anyOf]
     expect(members).not_to include({ type: "null" })
     expect(schema[:required]).to include("items")
-    expect(klass.call(items: nil)).not_to be_ok
+    expect(klass.call(items: nil)).to be_ok # Proc default rescues omission; schema stays stricter
   end
 
   it "keeps the null branch on a non-nestable parent when every deep descendant is optional (PRO-2872)" do
@@ -1125,12 +1131,13 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "requires the model <field>_id when a nil-tolerant model field has a required shallow subfield" do
-      # `company` accepts nil, but a required `name` subfield still resolves off the record, so omitting
-      # the id leaves company nil and the call fails — the id must stay required despite allow_nil.
+      # `company` accepts nil, but a required `name` subfield still resolves off the record — the id must
+      # stay required despite allow_nil. `name` carries a Proc default so the contract is legal under
+      # PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so the override stands.
       klass = Class.new do
         include Axn
         expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
-        expects :name, on: :company, type: String
+        expects :name, on: :company, type: String, default: -> { "x" }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1687,10 +1694,12 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "types an allow_nil parent as plain object when it has a REQUIRED subfield (a nil parent can't yield it)" do
+      # `name` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
+      # Proc); strict reflection ignores Procs, so the required-subfield override still types payload object.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
-        expects :name, on: :payload, type: String
+        expects :name, on: :payload, type: String, default: -> { "x" }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1714,10 +1723,12 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "keeps a nil-tolerant parent object-only when a required subfield can't be yielded by nil" do
+      # `nick` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
+      # Proc); strict reflection ignores Procs, so the required subfield still keeps payload object-only.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
-        expects :nick, on: :payload, type: String
+        expects :nick, on: :payload, type: String, default: -> { "x" }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1792,9 +1803,11 @@ RSpec.describe Axn::Reflection::Schema do
       # A truthy-default `on:` subfield makes apply_defaults_for_subfields! materialize the nil parent, so
       # ShapeValidator no longer skips and enforces the required `status` member — runtime rejects
       # `payload: null`/omitted. Schema must agree: non-nullable AND required (unlike the no-default case).
+      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
+      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, allow_nil: true do
+        expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         expects :note, on: :payload, optional: true, type: String, default: "x"
@@ -1812,9 +1825,11 @@ RSpec.describe Axn::Reflection::Schema do
       # default, so ShapeValidator no longer short-circuits on nil and enforces the required `status`
       # member — omission AND `payload: nil` FAIL. The shape-member hazard must walk the whole subtree,
       # not just direct children, so the schema agrees: payload required AND non-nullable.
+      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
+      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, allow_nil: true do
+        expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         expects "address.zip", on: :payload, default: "x"
@@ -1833,9 +1848,11 @@ RSpec.describe Axn::Reflection::Schema do
       # Same as above but the default is a Proc. Runtime materializes `{}` under `payload` BEFORE the Proc
       # is evaluated, so the required `status` member is still enforced — omission/nil FAIL. The hazard
       # predicate counts Procs, so the schema marks payload required AND non-nullable.
+      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
+      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, allow_nil: true do
+        expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         # optional: so the zip itself isn't a required descendant — the shape-member hazard clause,
@@ -2418,15 +2435,17 @@ RSpec.describe Axn::Reflection::Schema do
   describe "a dotted `on:` PARENT or an `on:` pointing at another subfield nests recursively and forces " \
            "its ancestor chain required when a descendant is required" do
     it "requires an allow_nil parent through both a required SHALLOW child and its dotted-deep analog" do
+      # `zip` carries a Proc default in both routes so the contracts are legal under PRO-2889 (satisfiability
+      # counts the Proc); strict reflection ignores Procs, so the required leaf still forces the chain.
       shallow = Class.new do
         include Axn
         expects :address, allow_nil: true
-        expects :zip, on: :address
+        expects :zip, on: :address, default: -> { "x" }
       end
       dotted = Class.new do
         include Axn
         expects :address, allow_nil: true
-        expects :zip, on: "address.billing"
+        expects :zip, on: "address.billing", default: -> { "x" }
       end
 
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
@@ -2447,12 +2466,13 @@ RSpec.describe Axn::Reflection::Schema do
 
     it "requires the top-level root when only a DEEP leaf (subfield-of-a-subfield) is required" do
       # A required descendant (:leaf) at any depth forces its whole ancestor chain required: the nil
-      # parent (:foo) can't yield the descendant, so runtime and schema agree it must be present.
+      # parent (:foo) can't yield the descendant. `leaf` carries a Proc default so the contract is legal
+      # under PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so the override stands.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
         expects :mid, on: :foo, optional: true
-        expects :leaf, on: :mid
+        expects :leaf, on: :mid, default: -> { "x" }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -2465,10 +2485,12 @@ RSpec.describe Axn::Reflection::Schema do
     it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
       # The shallow child :mid is required, so an omitted :foo strands it at runtime — the parent is
       # required on that basis alone; the deeper :leaf (which also nests under :mid) merely reinforces it.
+      # `mid` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the Proc);
+      # strict reflection ignores Procs, so :mid stays required and still forces :foo required.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
-        expects :mid, on: :foo
+        expects :mid, on: :foo, default: -> { {} }
         expects :leaf, on: :mid
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3387,11 +3409,13 @@ RSpec.describe Axn::Reflection::Schema do
     describe "transitive requiredness/nullability (a required descendant strands every nil/omitted ancestor)" do
       it "forces an optional: intermediate AND its nil-tolerant top-level parent required when a deep leaf " \
          "is required (fixes the old shallow-only divergence)" do
+        # `id` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
+        # Proc); strict reflection ignores Procs, so the transitive-requiredness override still stands.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash, allow_nil: true
           expects :meta, on: :payload, type: Hash, optional: true
-          expects :id, on: :meta, type: Integer
+          expects :id, on: :meta, type: Integer, default: -> { 1 }
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3435,11 +3459,13 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
          "though its shape is omitted (runtime still validates it)" do
+        # `first_sku` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts
+        # the Proc); strict reflection ignores Procs, so the deep-leaf-forces-ancestors override still stands.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash, allow_nil: true
           expects :items, on: :payload, type: Array, optional: true
-          expects :first_sku, on: :items, type: String
+          expects :first_sku, on: :items, type: String, default: -> { "x" }
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3513,16 +3539,19 @@ RSpec.describe Axn::Reflection::Schema do
       end
 
       it "requires the top-level model <field>_id when the model has a REQUIRED deep subfield (an omitted record strands it at runtime)" do
+        # `theme` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
+        # Proc); strict reflection ignores Procs, so the id stays required. The Proc rescues omission at
+        # runtime — schema stricter than runtime, the safe divergence.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
-          expects :theme, on: "company.settings", type: String
+          expects :theme, on: "company.settings", type: String, default: -> { "x" }
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         expect(schema[:required]).to include("company_id")
-        expect(klass.call).not_to be_ok # runtime agreement: required deep subfield strands the omitted record
+        expect(klass.call).to be_ok # Proc default rescues omission; schema stays stricter
       end
 
       it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional deep subfield" do
@@ -3984,7 +4013,9 @@ RSpec.describe Axn::Reflection::Schema do
           expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first)
           expects :account, on: :payload, type: Hash
           expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }, optional: true # model route
-          expects :name, on: :user, type: String # deep grandchild
+          # `name` carries a Proc default so the contract is legal under PRO-2889 (the nil-tolerant :user
+          # model strands it otherwise); strict reflection ignores Procs, so the drop/nesting behavior is unchanged.
+          expects :name, on: :user, type: String, default: -> { "x" } # deep grandchild
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -4000,19 +4031,22 @@ RSpec.describe Axn::Reflection::Schema do
   # The schema's deep requiredness claims must AGREE with runtime outcomes (or diverge only in the
   # stricter direction). Each example asserts both sides against the same class.
   describe "runtime agreement for deep subfields" do
-    it "required deep leaf: schema requires the chain, runtime rejects omission and accepts the full path" do
+    it "required deep leaf with a Proc default: schema requires the chain (strict), the Proc rescues omission at runtime" do
+      # `id` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the Proc).
+      # Strict reflection ignores Procs, so the schema still requires the whole chain, while the Proc rescues
+      # an omitted/nil-meta call at runtime — the ALLOWED stricter divergence (schema never rejects a valid call).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
         expects :meta, on: :payload, type: Hash, optional: true
-        expects :id, on: :meta, type: Integer
+        expects :id, on: :meta, type: Integer, default: -> { 1 }
         def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:required]).to include("payload")
-      expect(klass.call).not_to be_ok                                   # omitted payload strands id
-      expect(klass.call(payload: { meta: nil })).not_to be_ok           # nil meta strands id
+      expect(klass.call).to be_ok                                       # Proc default rescues omission
+      expect(klass.call(payload: { meta: nil })).to be_ok               # Proc default rescues nil meta
       expect(klass.call(payload: { meta: { id: 7 } })).to be_ok
     end
 
@@ -4281,9 +4315,12 @@ RSpec.describe Axn::Reflection::Schema do
     it "emits the same input_schema for the shape-member synthesis hazard: a nil-tolerant Hash parent " \
        "with a required do...end shape member plus a defaulted shallow on: subfield " \
        "(required_child?'s surviving second disjunct)" do
+      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
+      # rescue) while strict reflection ignores Procs — the emitted schema is unchanged (Proc defaults are
+      # never serialized, and the hazard still forces payload required + non-nullable).
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, allow_nil: true do
+        expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         expects :note, on: :payload, optional: true, type: String, default: "x"
@@ -4307,9 +4344,12 @@ RSpec.describe Axn::Reflection::Schema do
 
     it "emits the same input_schema for the shape-member synthesis hazard triggered by a DEEP " \
        "(dotted-name) default" do
+      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
+      # rescue) while strict reflection ignores Procs — the emitted schema is unchanged (Proc defaults are
+      # never serialized, and the hazard still forces payload required + non-nullable).
       klass = Class.new do
         include Axn
-        expects :payload, type: Hash, allow_nil: true do
+        expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         expects "address.zip", on: :payload, default: "x"

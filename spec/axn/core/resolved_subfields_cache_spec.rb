@@ -113,6 +113,9 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
 
   describe "reflection reuse" do
     it "input_schema consumes the cached artifact (no rebuild per call)" do
+      # Force class definition first: the PRO-2889 contradiction detector builds a candidate tree
+      # at each `expects` declaration, and those builds must not count against the per-call stub.
+      klass
       expect(Axn::Reflection::SubfieldTree).to receive(:build).once.and_call_original
       klass.input_schema
       klass.input_schema

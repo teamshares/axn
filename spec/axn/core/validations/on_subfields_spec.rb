@@ -214,10 +214,13 @@ RSpec.describe Axn do
         end
       end
 
-      context "with a required subfield" do
+      context "with a required parent and a required subfield" do
+        # The parent is required (not nil-tolerant): a nil-tolerant parent with a bare required subfield is
+        # now rejected at declaration under PRO-2889 (see subfield_contradictions_spec). A nil value on the
+        # required parent still surfaces a clean InboundValidationError, never a bare RuntimeError.
         let(:action) do
           build_axn do
-            expects :payload, optional: true
+            expects :payload
             expects :name, on: :payload, type: String
             def call = nil
           end
@@ -420,9 +423,12 @@ RSpec.describe Axn do
       end
 
       context "when a defaulted on: subfield synthesizes the parent into a required shape member" do
+        # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as
+        # a rescue); the runtime is unchanged — the Proc still materializes `{}`, so the required shape member
+        # is enforced on an omitted/nil parent exactly as before.
         let(:action) do
           build_axn do
-            expects :payload, type: Hash, allow_nil: true do
+            expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
               field :status, type: String
             end
             expects :note, on: :payload, optional: true, type: String, default: "x"
@@ -982,17 +988,17 @@ RSpec.describe Axn do
           expect(result.exception.message.scan("'payload.address' is nil").count).to eq(1)
         end
 
-        it "adds no diagnostic for a plain nil top-level parent (self-evident from the report)" do
-          action = build_axn do
-            expects :payload, type: Hash, optional: true, allow_nil: true
-            expects :note, on: :payload
+        it "rejects a nil-tolerant top-level parent with a bare required subfield at declaration (no runtime diagnostic needed)" do
+          # A plain nil top-level parent stranding a required subfield is now a dead-tolerance contradiction
+          # (PRO-2889): it raises at declaration, so the runtime stranded-path diagnostic is never reached.
+          expect do
+            build_axn do
+              expects :payload, type: Hash, optional: true, allow_nil: true
+              expects :note, on: :payload
 
-            def call = nil
-          end
-
-          result = action.call
-          expect(result.outcome).to be_exception
-          expect(result.exception.message).to eq("Note can't be blank")
+              def call = nil
+            end
+          end.to raise_error(ArgumentError, /:payload is declared nil-tolerant/)
         end
       end
 
@@ -1873,15 +1879,16 @@ RSpec.describe Axn do
         expect(action.call(company_id: 7).n).to eq("x") # fetch returns name: nil → default
       end
 
-      it "does not rescue a BLANK default a presence validator rejects" do
-        blank = build_axn do
-          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, default: ""
-          def call = nil
-        end
-        result = blank.call
-        expect(result).not_to be_ok
-        expect(result.exception.message).to match(/Name can't be blank/)
+      it "rejects a BLANK default a presence validator rejects at declaration (the tolerance is dead)" do
+        # A blank default under a nil-tolerant model parent can't rescue omission (presence rejects the
+        # blank), so the tolerance is provably dead — PRO-2889 raises at declaration (family 3).
+        expect do
+          build_axn do
+            expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String, default: ""
+            def call = nil
+          end
+        end.to raise_error(ArgumentError, /:company is declared nil-tolerant/)
       end
     end
 
