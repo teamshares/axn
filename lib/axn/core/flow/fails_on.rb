@@ -20,18 +20,26 @@ module Axn
         module ClassMethods
           # @param exceptions [Class, Array<Class>] one or more Exception classes
           # @param message [String, #call, nil] optional message (positional, like fail!)
+          # @param standalone [Boolean, nil] forwarded to the wired `error` — true lets the message
+          #   replace a declared base headline instead of attaching under it; only meaningful with a
+          #   message/block (there is no wired `error` to configure otherwise)
           # @yield optional block receiving the exception (like error { |e| ... })
-          def fails_on(exceptions, message = nil, &block)
+          def fails_on(exceptions, message = nil, standalone: nil, &block)
             classes = Array(exceptions)
             if classes.empty? || classes.any? { |c| !(c.is_a?(Class) && c <= Exception) }
               raise ArgumentError, "fails_on requires one or more Exception classes (got #{exceptions.inspect})"
             end
 
+            # standalone: only configures the wired `error`, so it's inert without a message/block —
+            # raise rather than silently drop it (true and false alike), matching the message DSL.
+            raise ArgumentError, "fails_on standalone: has no effect without a message or block" if !standalone.nil? && !(message || block)
+
             self._fails_on_matchers = (_fails_on_matchers + classes).freeze
 
             # Wire the message through the existing `error` DSL when provided. Uses an OR proc
-            # (not `if: classes`) because `if:` with an array matches via `all?` (AND).
-            error(message, if: ->(exception:) { classes.any? { |klass| exception.is_a?(klass) } }, &block) if message || block
+            # (not `if: classes`) because `if:` with an array matches via `all?` (AND). standalone:
+            # is forwarded verbatim (nil = the DSL's conditional default: an attached reason).
+            error(message, if: ->(exception:) { classes.any? { |klass| exception.is_a?(klass) } }, standalone:, &block) if message || block
 
             true
           end
