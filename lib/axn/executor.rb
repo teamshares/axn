@@ -426,7 +426,7 @@ module Axn
 
     # Wire→Ruby coercion for declared-inbound fields, for those that opted in via `coerce:` (a
     # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
-    # every coercible-typed field that didn't opt out (see #coerce_field_inbound?). Runs first in the
+    # every coercible-typed field that didn't opt out (see Axn::Reflection::Coercion.field_coerces?). Runs first in the
     # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
     # see the Ruby value. One depth-generalized pass over both stores (a top-level field is the
     # depth-0 case of its ResolvedPath). Coerce-or-leave (Axn::Reflection::Coercion): only String
@@ -439,26 +439,12 @@ module Axn
 
       _inbound_configs.each do |config|
         next if _resolution_crosses_method_call?(config) # method-derived value: resolved on the read path, not coerced here
-
-        type_opt = config.validations[:type]
-        klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
-        next if klasses.empty?
-        next unless coerce_field_inbound?(type_opt, coerce_input_types)
         next unless (path = _resolved_path_for(config))
 
         current = _current_value_at(path)
-        coerced = Axn::Reflection::Coercion.coerce_value(current, klasses)
+        coerced = Axn::Reflection::Coercion.coerce_config_value(current, config, coerce_input_types:)
         _write_value_at!(path, coerced) unless coerced.equal?(current)
       end
-    end
-
-    # Whether a field coerces this run. A field's own `coerce` flag is a tri-state (true/false/absent)
-    # and always wins: explicit true coerces, explicit false opts out (even when coerce_input_types is
-    # on), and absent follows the resolved coerce_input_types flag. Only reached for a field with ≥1
-    # coercible member, so a coerce_input_types-on action still leaves non-coercible types untouched.
-    def coerce_field_inbound?(type_opt, coerce_input_types)
-      explicit = type_opt.is_a?(Hash) ? type_opt[:coerce] : nil
-      explicit.nil? ? coerce_input_types : explicit
     end
 
     # With coerce_input_types resolved on, surface `coerce: true` in the type bag for a coercible field
