@@ -233,6 +233,8 @@ An **unconditional** `error "Headline"` acts as the **base**: it becomes the hea
 
 What sets the role is **conditionality, not whether you pass a string or a block**: `error "..."` and `error { "..." }` are both unconditional headlines and behave identically. Reach for `if:`/`unless:` (a conditional reason) or `standalone: false` (which promotes an unconditional entry to a reason attached under the base) when you want something attached to the base rather than treated as the headline.
 
+`if:` and `unless:` can be given together on one message; they combine with AND, so the message only matches when every condition passes. This is a different mechanism from a field's own [conditional validation](/reference/class#conditional-validation-if-unless): a message's `if:`/`unless:` picks which failure message renders, while a field's `if:`/`unless:` gates whether the field is validated at all.
+
 ```ruby
 class SyncUser
   include Axn
