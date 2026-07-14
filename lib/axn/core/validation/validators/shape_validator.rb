@@ -11,7 +11,8 @@ module Axn
     #   end
     #
     # options[:members] is an array of ShapeConfig-like objects (responding to #field and
-    # #validations); options[:container] is the declared structured type (Array, Hash, or a class).
+    # #validations, and optionally #method_call — a member that doesn't implement it defaults to no
+    # method dispatch); options[:container] is the declared structured type (Array, Hash, or a class).
     # For an Array container each element is validated with its index in the message; for any other
     # container the single value's members are validated directly. A value that doesn't match the
     # declared container is left to TypeValidator (we don't try to extract members from it). Nesting
@@ -48,13 +49,19 @@ module Axn
           end
 
           errors = Axn::Validation::Fields.errors_for(
-            member_validator_classes[member.field], source:, validations: member.validations, permit_method_call: member.method_call
+            member_validator_classes[member.field], source:, validations: member.validations, permit_method_call: member_method_call?(member)
           )
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
         end
       end
 
       def members = options[:members] || []
+
+      # A member's `method_call:` opt-in, honored when present. The documented member contract is
+      # duck-typed (`#field` + `#validations`) — a raw `shape:` supplied with a member object that
+      # doesn't implement `#method_call` is treated as not opted in (the safe default: no dispatch),
+      # rather than raising. Declared shapes always yield ShapeConfig, which carries the reader.
+      def member_method_call?(member) = member.respond_to?(:method_call) && member.method_call
 
       # A value can yield a named member only if it responds to the reader (objects/Data) or
       # supports named-key access (Hash-like). Arrays respond to #dig but only by integer index,

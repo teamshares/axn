@@ -471,6 +471,27 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
+    # with a member object that doesn't implement #method_call must not raise — it defaults to the
+    # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
+    describe "duck-typed member contract (member without #method_call)" do
+      it "treats a member lacking #method_call as not opted in (safe default), no NoMethodError" do
+        raw_member = Struct.new(:field, :validations).new(:status, { type: { klass: String } })
+        action = build_axn do
+          member = raw_member
+          expects :items, type: Array, shape: { members: [member], container: Array }
+        end
+
+        # A Hash-key member read (safe path) succeeds — proves the member was validated without the
+        # missing #method_call raising.
+        expect(action.call(items: [{ status: "ok" }])).to be_ok
+
+        result = action.call(items: [{ status: 123 }])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/status/)
+      end
+    end
+
     describe "nested shapes inherit the rule at each depth" do
       it "raises for a method-dispatch member nested inside another shape without the flag" do
         klass = poro_class
