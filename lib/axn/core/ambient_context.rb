@@ -131,10 +131,17 @@ module Axn
             _copy_ambient_leaf!(acc, key, child, indifferent)
           elsif indifferent.key?(key)
             sub = indifferent[key]
-            # A non-hash present value carries no undeclared nested keys, so copy it raw — this keeps the
-            # intermediate node's own type validation able to reject a malformed parent (e.g. a String
-            # where a Hash is declared) rather than masking it as a reconstructed `{}` (PRO-2857 doctrine).
-            acc[key] = sub.respond_to?(:to_hash) ? _filter_ambient_node(child, sub) : sub
+            if sub.respond_to?(:to_hash)
+              acc[key] = _filter_ambient_node(child, sub)
+            elsif !child.implicit?
+              # A non-hash value under a DECLARED intermediate is copied raw so the node's own type
+              # validation can reject the malformed parent (a String where a Hash was declared) rather
+              # than masking it as a reconstructed `{}` (PRO-2857 doctrine). An IMPLICIT intermediate
+              # (an undeclared `on:`/dotted-name path segment) has no validator to benefit — copying its
+              # raw value would only leak undeclared ambient state into logs/exception context — so it is
+              # omitted, and the declared leaf below it resolves absent, same as any malformed hop.
+              acc[key] = sub
+            end
           end
         end
       end

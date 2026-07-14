@@ -350,6 +350,24 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
+  describe "an undeclared (implicit) intermediate supplied as a non-hash does not leak" do
+    let(:klass) do
+      Class.new do
+        include Axn
+        # `request` is never declared — only `session` beneath it is, so `request` is an implicit
+        # path segment with no validator of its own.
+        expects :session, on: "ambient_context.request", type: String, allow_nil: true
+        def call = nil
+      end
+    end
+
+    it "keeps the raw non-hash intermediate out of execution_context" do
+      inst = klass.send(:new, ambient_context: { request: "secret" })
+      inst._run
+      expect(inst.execution_context).not_to have_key(:ambient_context)
+    end
+  end
+
   describe "malformed intermediate: a non-hash parent value is not masked" do
     let(:klass) do
       Class.new do
@@ -504,7 +522,7 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     expect(inst.send(:_filter_to_declared, { unrelated: 1 })).to eq({})
   end
 
-  it "copies a non-hash intermediate value raw so its own validation can catch it" do
+  it "copies a non-hash DECLARED intermediate value raw so its own validation can catch it" do
     klass = Class.new do
       include Axn
       expects :request, on: :ambient_context, type: Hash
@@ -512,6 +530,15 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     end
     inst = klass.send(:new)
     expect(inst.send(:_filter_to_declared, { request: "notahash" })).to eq(request: "notahash")
+  end
+
+  it "omits a non-hash IMPLICIT intermediate (undeclared segment — nothing to validate, would only leak)" do
+    klass = Class.new do
+      include Axn
+      expects :session, on: "ambient_context.request", type: String, allow_nil: true
+    end
+    inst = klass.send(:new)
+    expect(inst.send(:_filter_to_declared, { request: "secret" })).to eq({})
   end
 
   it "preserves a model parent's <field>_id even when it has declared descendants" do
