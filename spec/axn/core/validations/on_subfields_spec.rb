@@ -322,15 +322,21 @@ RSpec.describe Axn do
           expect(action.call(items: nil)).to be_ok
         end
 
-        it "does not evaluate a Proc default when the nil parent isn't materialized (no side effects)" do
+        it "evaluates the value-level Proc default on the nil parent without materializing it (PRO-2889)" do
+          # PRO-2889: validation reads each subfield through its reader, which resolves the value-level
+          # default — so the Proc runs even under a nil non-object parent (the reader's resolved value is
+          # the default). The write-back pass still refuses to materialize the parent, so `items` stays nil.
           ran = []
           action = build_axn do
             expects :items, type: Array, optional: true
             expects :count, on: :items, optional: true, type: Integer, default: -> { ran.push(5).last }
-            def call = nil
+            exposes :parent, optional: true, allow_nil: true
+            def call = expose(parent: items)
           end
-          expect(action.call(items: nil)).to be_ok
-          expect(ran).to be_empty
+          result = action.call(items: nil)
+          expect(result).to be_ok
+          expect(ran).to eq([5])
+          expect(result.parent).to be_nil
         end
 
         it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
@@ -1803,7 +1809,7 @@ RSpec.describe Axn do
       expect(action.call.nick).to eq("anon")
     end
 
-    it "prefers the resolved value when present" do
+    it "falls back when the present parent cannot answer the key" do
       expect(action.call(company: FallbackCompany.new(id: 1, name: "zed")).nick).to eq("anon")
     end
 
@@ -1839,6 +1845,56 @@ RSpec.describe Axn do
 
       it "falls back when the attribute is nil" do
         expect(action.call(company: FallbackCompany.new(id: 1)).n).to eq("anon")
+      end
+    end
+
+    context "with a REQUIRED defaulted subfield under a nil-tolerant model parent (family 3 capability)" do
+      let(:action) do
+        build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: "x"
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+      end
+
+      it "succeeds on omission: the default satisfies validation and the parent stays nil" do
+        result = action.call
+        expect(result).to be_ok
+        expect(result.n).to eq("x")
+      end
+
+      it "succeeds on explicit nil" do
+        expect(action.call(company: nil)).to be_ok
+      end
+
+      it "still reads the record's value when id-resolved" do
+        expect(action.call(company_id: 7).n).to eq("x") # fetch returns name: nil → default
+      end
+
+      it "does not rescue a BLANK default a presence validator rejects" do
+        blank = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: ""
+          def call = nil
+        end
+        result = blank.call
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/Name can't be blank/)
+      end
+    end
+
+    context "with a dotted-name defaulted subfield under a refused chain" do
+      let(:action) do
+        build_axn do
+          expects :payload, type: Array, allow_nil: true
+          expects "meta.count", on: :payload, type: Integer, default: 0
+          def call = nil
+        end
+      end
+
+      it "validates the fallback value (no reader exists for a dotted name)" do
+        expect(action.call(payload: nil)).to be_ok
       end
     end
   end

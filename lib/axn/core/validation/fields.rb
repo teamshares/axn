@@ -16,12 +16,14 @@ module Axn
       end
 
       def read_attribute_for_validation(attr)
-        # A subfield `model:` config resolves through the action's generated reader (which digs the
-        # wire key and its `_id` out of the parent) — `@reader` is only supplied for subfields, so a
-        # top-level model field (inbound facade or outbound result) reads through its facade, which
-        # already resolves the record.
-        if @action && @reader && @validations&.key?(:model) && @action.respond_to?(@reader)
+        # A subfield reads through the action's generated reader when one exists — the reader IS the
+        # field's value (memoized, model-resolving, value-level-default-applying, PRO-2889), so
+        # validation sees exactly what user code sees. A dotted-name subfield has no reader and
+        # resolves through the same shared helper. Top-level fields keep reading their source facade.
+        if @action && @reader && @action.respond_to?(@reader)
           @action.public_send(@reader)
+        elsif @action && @config&.subfield?
+          Axn::Core::ContractForSubfields.resolve_value(@action, @config)
         else
           # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil):
           # this field's own validators report against nil while the source's own type validation
@@ -32,8 +34,8 @@ module Axn
 
       # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if
       # valid).
-      def self.collect_errors(field:, validations:, source:, action: nil, reader: nil)
-        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:)
+      def self.collect_errors(field:, validations:, source:, action: nil, reader: nil, config: nil)
+        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:, config:)
       end
 
       # Builds the one-off validator class for a (field, validations) pair. Callers that validate
@@ -50,13 +52,14 @@ module Axn
       end
 
       # Runs a validator class against a source and returns its ActiveModel::Errors (empty if valid).
-      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil)
+      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil)
         validator = validator_class.new(source)
 
         # Set the action context for model field resolution + symbol-argument delegation
         validator.instance_variable_set(:@action, action)
         validator.instance_variable_set(:@validations, validations)
         validator.instance_variable_set(:@reader, reader)
+        validator.instance_variable_set(:@config, config)
 
         validator.valid?
         validator.errors

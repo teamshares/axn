@@ -554,6 +554,7 @@ module Axn
           source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
           action: @action,
           reader: config.subfield? ? config.reader_as : nil,
+          config: config.subfield? ? config : nil,
         )
         next if errors.empty?
 
