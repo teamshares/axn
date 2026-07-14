@@ -97,7 +97,7 @@ module Axn
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
         field_configs.select { |config| config.validations[:model] }.each do |config|
           children = tree.roots[config.reader_as].children
-          apply_model_id_requiredness!(config, children, field_configs, properties, required)
+          apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
         end
 
         schema = { type: "object", properties: }
@@ -135,15 +135,6 @@ module Axn
         object_shaped?(config) && !config.validations[:model]
       end
 
-      # Presence analysis IGNORING default-rescue, for subtrees whose ancestor can never be
-      # synthesized (a `model:` parent — the write-chain gate refuses, so NO default anywhere in the
-      # subtree ever applies): a node is omittable only through nil/blank-tolerance, at every depth
-      # (a nil ancestor yields every descendant absent, PRO-2857).
-      def node_omittable_without_synthesis?(node)
-        (node.implicit? || node.configs.all? { |c| nil_accepted?(c) }) &&
-          node.children.values.all? { |child| node_omittable_without_synthesis?(child) }
-      end
-
       # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
       # rejecting a valid non-object branch. A mixed union (`type: [Hash, Array]`) is NOT nestable: at
       # runtime the subfield can be read from the Array branch too (e.g. `Array#length`), so forcing
@@ -167,6 +158,57 @@ module Axn
         return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
 
         Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+      end
+
+      # The builtin scalars whose reader-method surface we judge as the class's own public methods:
+      # an instance answers a segment read iff the declared class publicly defines the method
+      # (post-PRO-2886 extraction: a Hash-like source reads any key; everything else is a
+      # public_send). Anything outside this list — Data/Struct/custom classes, model records —
+      # may answer dynamically, so it is never judged (optimistic: rejection needs proof).
+      #
+      # ACCEPTED DIVERGENCE from the strict no-false-rejection doctrine. TypeValidator is `is_a?`, so
+      # a `type: String` value can be a String SUBCLASS that adds methods, or a plain String carrying a
+      # singleton method — either is contract-valid yet answers a segment this judgment refutes. We
+      # judge anyway, deliberately: the approved design takes the DECLARED class's method surface as the
+      # contract (`type: String` promises the String surface, not whatever an exotic subclass bolts on),
+      # so a subclass adding readers doesn't hold the declaration hostage. The conventional instance of
+      # each listed class IS exactly that class, so the judgment matches real inputs; the subclass/
+      # singleton case is the narrow, documented exception. The membership test below is `k <= s`, so a
+      # declared class equal to (or a subclass of) a judged entry is judged on that entry's surface.
+      #
+      # `Numeric` and `Date` are excluded — the boundary is drawn narrower there for a different reason:
+      # every contract-valid `type: Numeric` value is a STRICT subclass (Integer/Float/Rational/
+      # BigDecimal/…) whose surface is wider than `Numeric` itself (`Integer#bit_length` exists but
+      # `Numeric.public_method_defined?(:bit_length)` is false), and `type: Date` admits `DateTime`
+      # (adding `hour`/`minute`/…). There the subclass IS the conventional instance, so judging on the
+      # abstract class would refute a segment ordinary valid input answers — a real false positive — so
+      # both stay optimistic, same as Data/Struct/unknown classes.
+      SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Array, DateTime, Time, TrueClass, FalseClass].freeze
+
+      # Whether ONE admissible declared branch can answer reading `segment` off its value.
+      def branch_answers_segment?(branch, segment)
+        return true if branch == :params
+
+        klasses = case branch
+                  when :uuid then [String]
+                  when :boolean then [TrueClass, FalseClass]
+                  else [branch]
+                  end
+        klasses.any? do |k|
+          next true unless k.is_a?(Class)
+          next true if k <= Hash
+
+          judged = SEGMENT_JUDGED_SCALARS.any? { |s| k <= s }
+          !judged || k.public_method_defined?(segment)
+        end
+      end
+
+      # Whether a config's declared type admits SOME branch that can answer `segment`. A `model:`
+      # route resolves to a record, whose method surface is never statically refutable.
+      def config_answers_segment?(config, segment)
+        return true if config.validations[:model]
+
+        object_type_branches(config).any? { |branch| branch_answers_segment?(branch, segment) }
       end
 
       # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
@@ -211,20 +253,21 @@ module Axn
       # rounds-5/8/9 findings (a dropped/blocked deep shape agreeing at some sites but not others).
       # `compare_by_identity`: SubfieldTree::Node is a plain Data value, so identity (not #==/#hash on its
       # contents) is what distinguishes one tree position from another.
-      def derive_annotations(roots)
+      def derive_annotations(roots, satisfiability: false)
         ann = {}.compare_by_identity
-        roots.each_value { |node| annotate_node!(node, ann) }
+        roots.each_value { |node| annotate_node!(node, ann, satisfiability:) }
         ann
       end
 
       # Post-order: a node's annotation only depends on its (already-annotated) children.
-      def annotate_node!(node, ann)
-        node.children.each_value { |child| annotate_node!(child, ann) }
+      def annotate_node!(node, ann, satisfiability: false)
+        node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
+        credit_sibling_id_defaults!(node, ann) if satisfiability
 
         # node_optional?'s own-level rule, always evaluated with the node's FULL config set — exactly
         # what children_require_presence? has always asked of a child (never a subset), so this is a
         # pure cache of that recursive call, not a new rule.
-        required = !node_optional?(node, ann, node.configs)
+        required = !node_optional?(node, ann, node.configs, satisfiability:)
 
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
@@ -240,6 +283,45 @@ module Axn
         end
 
         ann[node] = NodeAnnotation.new(required:, nullable:)
+      end
+
+      # Satisfiability-only post-adjustment (runs before this node's own requiredness is computed, so the
+      # credit propagates up every ancestor): a model-routed child that a sibling `<key>_id` subfield can
+      # rescue is re-annotated non-required. The sibling's value-level default supplies the lookup token at
+      # read time (see ContractForSubfields.resolve_model_via_sibling_id), so omitting the record still
+      # resolves it and the record answers the subtree; the record's attributes are unknowable at
+      # declaration, so crediting the rescue is the satisfiability doctrine. STRICT (schema) mode is
+      # untouched — it keeps its documented stricter-than-runtime divergence for self-referential id/model
+      # subfield pairs (apply_model_id_requiredness!'s KNOWN LIMITATION).
+      def credit_sibling_id_defaults!(node, ann)
+        node.children.each do |key, child|
+          next if child.implicit? || !ann[child].required
+          next unless sibling_id_rescued?(node, key, child)
+
+          ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
+        end
+      end
+
+      # Whether a node's model route is rescued by a sibling `<key>_id` default — the SINGLE source of
+      # truth for both the satisfiability annotation credit (credit_sibling_id_defaults!) and
+      # SubfieldContradictions' per-config tolerance loop, so the two can't drift on which nodes the
+      # id rescues. Three conjuncts:
+      #   * the node carries a `model:` route (the record it resolves answers the subtree at runtime);
+      #   * every NON-model route merged onto the node is own-level satisfiability-tolerant (a usable
+      #     default or nil-accepting) — own-level only, because the model subtree is satisfied via the
+      #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
+      #     node has no non-model route, so the empty set trivially satisfies this); AND
+      #   * a sibling `<key>_id` child carries a default usable as a lookup token (usable_id_token_default?
+      #     rejects a blank literal — the model resolver blank-guards the id).
+      # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
+      def sibling_id_rescued?(parent, key, node)
+        return false unless node.configs.any? { |c| c.validations[:model] }
+
+        non_model = node.configs.reject { |c| c.validations[:model] }
+        return false unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
+
+        sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
+        !!sibling&.configs&.any? { |c| usable_id_token_default?(c) }
       end
 
       # Whether a nil/absent parent leaves a required nested obligation unmet — so it can't validate and
@@ -295,26 +377,37 @@ module Axn
       # omittable only if every config is. `configs` defaults to the whole node but may be a subset: a
       # merged node's model and non-model routes emit separate properties (`<leaf>_id` vs the object),
       # each required per its own routes' configs, not the node as a whole.
-      def node_optional?(node, ann, configs = node.configs)
+      def node_optional?(node, ann, configs = node.configs, satisfiability: false)
         return !subtree_requires_presence?(node, ann) if node.implicit?
 
-        configs.all? { |c| usable_default?(c, subfield: true) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
+        # Satisfiability doctrine: a default on ANY of the node's OWN configs (node.configs — the FULL
+        # set, not the possibly-subset `configs` param) writes the SHARED wire value at this node, so it
+        # rescues omission for every route reading it. The defaults write pass materializes the wire node
+        # from that default, and each sibling route then validates against the written value — being
+        # optimistic that the default satisfies each sibling's validator is the satisfiability doctrine
+        # (rejection is reserved for provably dead declarations). Gated on satisfiability so strict schema
+        # mode stays byte-identical to the per-config rule below.
+        return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
+
+        configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
       end
 
-      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE (truthy, non-Proc)
-      # default — the synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE
-      # parent (materializes `{}`, then writes the default) from a usable default at any depth: a
-      # dotted-NAME default lands on a deeper node yet still materializes the parent, so it rescues
-      # omission just like a direct child's default. Procs stay EXCLUDED (usable_default? drops them),
-      # unlike subtree_has_applied_subfield_default? (the hazard predicate, which counts Procs): here the
-      # Proc's SUCCESS is what would rescue omission, and a raising Proc would instead make omission FAIL,
-      # so counting it would reflect the parent omittable though runtime rejects the omitted call — the
-      # looser, unsafe direction. The hazard predicate counts Procs because materialization fires before
-      # the Proc runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
-      def subtree_has_usable_subfield_default?(children)
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE default — the
+      # synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE parent
+      # (materializes `{}`, then writes the default) from a usable default at any depth: a dotted-NAME
+      # default lands on a deeper node yet still materializes the parent, so it rescues omission just
+      # like a direct child's default. Whether a Proc default counts follows usable_default?'s mode
+      # split: strict (schema) mode EXCLUDES Procs, unlike subtree_has_applied_subfield_default? (the
+      # hazard predicate, which always counts Procs) — here the Proc's SUCCESS is what would rescue
+      # omission, and a raising Proc would instead make omission FAIL, so counting it would reflect the
+      # parent omittable though runtime rejects the omitted call (the looser, unsafe direction), while
+      # satisfiability mode (the declaration-rejection detector) COUNTS the Proc since it does apply at
+      # runtime. The hazard predicate always counts Procs because materialization fires before the Proc
+      # runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
+      def subtree_has_usable_subfield_default?(children, satisfiability: false)
         children.values.any? do |node|
-          node.configs.any? { |c| usable_default?(c, subfield: true) } ||
-            subtree_has_usable_subfield_default?(node.children)
+          node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability:) } ||
+            subtree_has_usable_subfield_default?(node.children, satisfiability:)
         end
       end
 
@@ -325,11 +418,11 @@ module Axn
       # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
       # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
       # before the default's value matters — so this uses FieldConfig#applied_default? (side-effect-free:
-      # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
-      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
-      # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
-      # so a dotted-NAME default on a deeper node is counted, but this HAZARD walk counts Procs and that
-      # rescue walk does not.
+      # `!!config.default`, never calls the Proc), unlike usable_default? which excludes a Proc in strict
+      # (schema) mode because it judges whether a default's VALUE satisfies the contract (irrelevant here).
+      # This HAZARD walk is mode-independent: it ALWAYS counts Procs. Companion to
+      # subtree_has_usable_subfield_default? (the RESCUE walk, which excludes Procs only in strict mode):
+      # both walk the whole subtree so a dotted-NAME default on a deeper node is counted.
       def subtree_has_applied_subfield_default?(children)
         children.values.any? do |node|
           node.configs.any?(&:applied_default?) ||
@@ -343,13 +436,13 @@ module Axn
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
-      def field_optional?(config, children, ann)
+      def field_optional?(config, children, ann, satisfiability: false)
         has_required_child = required_child?(config, children, ann)
 
         # A usable default on the PARENT materializes it (with its declared contents) before validation,
         # so it may always be omitted — its own default, not its subfields, decides. (A default whose
         # contents fail a child's validators is a separate, narrow divergence handled by usable_default?.)
-        return true if usable_default?(config, subfield: false)
+        return true if usable_default?(config, subfield: false, satisfiability:)
 
         # The parent's own nil-tolerance (optional:/allow_nil:) only makes it omittable when no required
         # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
@@ -358,17 +451,17 @@ module Axn
         # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
         # COMPLETE parent from subfield defaults — a usable default ANYWHERE in the subtree supplies a
         # value (a dotted-NAME default lands on a deeper node yet still materializes the parent) and none
-        # of the subtree is required (a required descendant has no default and can't be synthesized). Procs
-        # stay excluded (subtree_has_usable_subfield_default?): a Proc default is uninspectable and a
-        # raising one would make omission FAIL, so counting it would reflect the parent omittable though
-        # runtime rejects the omitted call — the looser, unsafe direction (the hazard side counts Procs
-        # because materialization fires before the Proc runs; here the Proc's success is what rescues, and
-        # that is unknowable). This synthesis only rescues an OBJECT-shaped parent:
-        # `apply_defaults_for_subfields!` injects `{}`, which satisfies a Hash/`:params`/untyped parent but
-        # not a non-object one (`type: Array`, a typed class) whose top-level type validator rejects the `{}`.
+        # of the subtree is required (a required descendant has no default and can't be synthesized).
+        # Whether a Proc default counts follows subtree_has_usable_subfield_default?'s mode split: strict
+        # (schema) mode excludes Procs (a Proc default is uninspectable and a raising one would make
+        # omission FAIL, so counting it would reflect the parent omittable though runtime rejects the
+        # omitted call — the looser, unsafe direction), while satisfiability mode counts them. This
+        # synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`,
+        # which satisfies a Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed
+        # class) whose top-level type validator rejects the `{}`.
         return false unless object_shaped?(config)
 
-        subtree_has_usable_subfield_default?(children) && !has_required_child
+        subtree_has_usable_subfield_default?(children, satisfiability:) && !has_required_child
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -376,15 +469,18 @@ module Axn
       # `build_output` marks every top-level exposed key required directly (the serializer always emits
       # them). This method reaches a `for_output` config only for a nested shape member, which is
       # serialized from the actual value and so honors its own `optional:`/`allow_nil:`/`default:`.
-      def optional_for_schema?(config, subfield: false)
-        return true if usable_default?(config, subfield:)
+      def optional_for_schema?(config, subfield: false, satisfiability: false)
+        return true if usable_default?(config, subfield:, satisfiability:)
 
         nil_accepted?(config)
       end
 
       # A default lets the client omit the field (Axn applies it before validation). We judge usability
-      # by declared SHAPE only — present, not a Proc — never by running the field's validators. A Proc
-      # default is uninspectable here. For a subfield, only a truthy default is applied at runtime
+      # by declared SHAPE only — never by running the field's validators. A Proc default is unknowable at
+      # declaration, so the two modes diverge on it (the ONLY semantic delta): strict (schema) mode
+      # resolves toward required — the safe direction — while satisfiability mode (the declaration-rejection
+      # detector) resolves toward satisfiable, since the Proc DOES apply at runtime and rejection is
+      # reserved for provably dead declarations. For a subfield, only a truthy default is applied at runtime
       # (`next unless config.default`), so a falsey subfield default never counts.
       #
       # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when no active presence
@@ -397,11 +493,16 @@ module Axn
       # The emptiness check is limited to literal containers (Hash/Array/String): reflection must stay
       # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
       # other lazy collection) could issue a query or run user code. A non-literal default is present.
-      def usable_default?(config, subfield:)
+      def usable_default?(config, subfield:, satisfiability: false)
         return false unless config.respond_to?(:default)
 
         value = config.default
-        return false if value.nil? || value.is_a?(Proc)
+        return false if value.nil?
+        # The governing split (PRO-2889): a Proc default is unknowable at declaration. Strict (schema)
+        # mode resolves toward required — the safe direction — while satisfiability mode (the
+        # declaration-rejection detector) resolves toward satisfiable: the Proc DOES apply at runtime,
+        # and rejection is reserved for provably dead declarations.
+        return satisfiability if value.is_a?(Proc)
         return false if presence_blank?(value) && presence_rejects_blank?(config)
 
         subfield ? config.applied_default? : true
@@ -429,6 +530,23 @@ module Axn
         return value.empty? if value.instance_of?(Hash) || value.instance_of?(Array)
 
         false
+      end
+
+      # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
+      # for every id-rescue site (sibling_id_rescued?, which serves both the annotation credit and the
+      # contradictions loop, and SubfieldContradictions' model_omittable?). usable_default? judges a default for the FIELD's OWN
+      # omission, where a blank literal ("" / {}) is usable when no presence validator rejects it — but
+      # the model resolver blank-guards the id (Model#derive_value: `return nil if id_value.blank?`), so
+      # a blank id default can never resolve a record and never rescues an omitted model. It must
+      # therefore be satisfiability-usable AND not a blank literal. A Proc default stays optimistic
+      # (unknowable at declaration), matching usable_default?'s satisfiability doctrine.
+      def usable_id_token_default?(config)
+        return false unless usable_default?(config, subfield: true, satisfiability: true)
+
+        value = config.respond_to?(:default) ? config.default : nil
+        return true if value.is_a?(Proc)
+
+        !presence_blank?(value)
       end
 
       # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing
@@ -829,28 +947,26 @@ module Axn
       # (order-independent — runs after all properties are built).
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
-      # with its own usable default) AND no descendant subfield requires presence (a required subfield at
-      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
-      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
-      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
-      # model instance — so an omitted id fails at runtime). OR an
-      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
-      # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
-      # required it also can't be null, so any `null` branch is stripped.
+      # with its own usable default) AND no descendant requires presence per its own annotation (a
+      # defaulted descendant is self-rescuing at read time). A subfield default now applies at read time
+      # at any depth under a model — value-level defaults, PRO-2889, no synthesis involved — so a
+      # defaulted descendant resolves to its own value and never forces the id; only a descendant with no
+      # rescuing signal (no usable default, not nil-tolerant) strands an omitted record and keeps the id
+      # required. OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply
+      # the token before the lookup). A merely nullable/optional explicit id with no default doesn't help.
+      # When the id IS required it also can't be null, so any `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, children, field_configs, properties, required)
+      def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        # No default anywhere in a model's subtree can ever apply (the runtime write-chain gate
-        # refuses to synthesize a model node — see Schema.synthesizable?), so omittability is pure
-        # nil-tolerance analysis at every depth: defaults neither rescue a child's own presence nor
-        # poison the model with a synthesized `{}`.
-        model_omittable = optional_for_schema?(config) &&
-                          children.values.all? { |child| node_omittable_without_synthesis?(child) }
+        # A default at ANY depth under the model applies at read time (value-level defaults,
+        # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
+        # annotation-derived rule, same as every other parent.
+        model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s

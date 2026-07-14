@@ -17,7 +17,7 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value(3.14)).to be_a(Float).and eq(3.14)
     end
 
-    it "serializes a Symbol as its String form (Codex review: matches TYPE_MAP's Symbol => \"string\")" do
+    it "serializes a Symbol as its String form (matching TYPE_MAP's Symbol => \"string\")" do
       # JSON has no symbol type — a Symbol must render as a String, matching the schema's
       # `type: Symbol` => "string" mapping (Axn::Reflection::Schema::TYPE_MAP), not fall through
       # to the generic `to_s` else-branch incidentally.
@@ -91,7 +91,7 @@ RSpec.describe Axn::Reflection::Values do
     end
 
     it "recurses the as_json result so nested Date/Time leaves and symbol keys are made JSON-safe" do
-      # Regression (Codex P2): the `to_h` fallback branch already recurses
+      # Regression: the `to_h` fallback branch already recurses
       # (`serialize_value(value.to_h)`), but the `as_json` branch used to return its result
       # verbatim. A value object's `as_json` can legitimately return a Hash/Array containing
       # symbol keys and/or raw Date/Time/Numeric leaves (as_json only promises "JSON-ish", not

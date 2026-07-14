@@ -405,15 +405,16 @@ RSpec.describe Axn::Validators::ModelValidator do
       expect(result.user_name).to be_nil
     end
 
-    it "fails cleanly when a required nested model's parent is nil" do
-      action = build_axn do
-        expects :data, optional: true
-        expects :user, model: { klass: User }, on: :data
-      end
-
-      result = action.call(data: nil)
-      expect(result).not_to be_ok
-      expect(result.exception).to be_a(Axn::InboundValidationError)
+    it "rejects the contract at declaration: an optional parent can never rescue a required nested model (PRO-2889)" do
+      # No contract-valid input ever satisfies a required :user under a nil-tolerant :data (every
+      # nil/omitted :data fails validation before :user is even reached), so the tolerance on :data
+      # is dead machinery — Axn::Reflection::SubfieldContradictions rejects it at declaration.
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, model: { klass: User }, on: :data
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
     end
 
     it "handles model: true syntax for nested fields" do

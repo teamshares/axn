@@ -2,6 +2,8 @@
 
 require "axn/core/validation/fields"
 require "axn/reflection/resolved_subfields"
+require "axn/reflection/schema"
+require "axn/reflection/subfield_contradictions"
 
 module Axn
   module Core
@@ -34,7 +36,7 @@ module Axn
         path = action.class._resolved_subfields.index[config]
         return _resolve_parent_by_recipe(action, config.on) if path.nil?
 
-        reader_index = (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
+        reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
 
         value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
@@ -42,6 +44,15 @@ module Axn
           value = Axn::Core::FieldResolvers.extract_or_nil(field: hop.last.to_s, provided_data: value)
         end
         value
+      end
+
+      # The chain index of the deepest reader-bearing ancestor at-or-before the `on:` target — the
+      # node resolve_parent public_sends; the hops AFTER it are the ones the runtime actually digs.
+      # Shared with the unanswerable-segment declaration check (SubfieldContradictions) so the two
+      # can't disagree about which segments are dig-read. Nil when no ancestor bears a reader (the
+      # recipe fallback path).
+      def self.deepest_reader_index(path)
+        (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end
 
       # The node's reader-bearing config, if any: a config generates a reader unless its reader name
@@ -58,6 +69,83 @@ module Axn
         return value if rest.empty?
 
         Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value)
+      end
+
+      # THE subfield value read — readers and validation share it: leaf-extract from the canonically
+      # resolved parent, then value-level default fallback (PRO-2889). A declared default: guarantees
+      # the RESOLVED value is never nil-by-omission even when the wire write-back couldn't apply it (a
+      # refused chain under a model:/non-object parent, a parent record whose attribute is nil, a
+      # malformed parent). No wire data is written here and the parent's own value stays untouched, so
+      # a nil-tolerant parent remains genuinely nil.
+      def self.resolve_value(action, config)
+        # Memoize on the action INSTANCE, keyed by config identity — mirrors the reader memoization
+        # that already covers configs WITH a generated reader, extending it to the reader-less callers
+        # this seam serves (validation's no-reader branch and resolve_model_via_sibling_id's
+        # dotted-sibling path). Without it a reader-less config re-resolves once per ActiveModel
+        # validator, re-running a Proc default each time — a Proc default must resolve at most once per
+        # call. A config with a reader already memoizes, so this second layer is harmless there.
+        # `key?` presence (not truthiness) so a nil/false resolved value memoizes too.
+        cache = if action.instance_variable_defined?(:@__resolve_value_cache)
+                  action.instance_variable_get(:@__resolve_value_cache)
+                else
+                  action.instance_variable_set(:@__resolve_value_cache, {}.compare_by_identity)
+                end
+        return cache[config] if cache.key?(config)
+
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config))
+        value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
+        cache[config] = value
+      end
+
+      # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
+      # `<field>_id` subfield's VALUE-LEVEL resolution (its own reader — which applies its default:)
+      # supplies the lookup token, and the model resolves from it. This is the model-flavored half of
+      # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
+      # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
+      # failed lookup stays nil). The sibling `<field>_id` lives beside the model leaf under the leaf's
+      # own WIRE parent, which coincides with the `on:` target ONLY for a non-dotted subfield. PRO-2896
+      # legalized aliased dotted model subfields (`expects "meta.company", on: :payload, model:, as:`),
+      # whose leaf sits below the `on:` target through implicit segments, so the sibling lookup keys off
+      # the leaf's wire parent (`leaf_parent_node`) and leaf wire key (`leaf_key`) — not `config.field`
+      # (the full, possibly-dotted name) or `parent_node`.
+      def self.resolve_model_via_sibling_id(action, config, options, parent_value)
+        # The raw-id absence guard digs the config's full `<field>_id` off the resolved parent value:
+        # for a dotted field name Extract splits per segment, reaching the same wire slot the leaf-keyed
+        # lookup below targets.
+        raw_id = Axn::Core::FieldResolvers.extract_or_nil(
+          field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
+        )
+        return nil unless raw_id.nil?
+
+        path = action.class._resolved_subfields.index[config]
+        return nil if path.nil?
+
+        leaf_key = path.leaf_key
+        id_key = Axn::Internal::FieldConfig.model_id_key(leaf_key)
+        sibling = path.leaf_parent_node.children[id_key.to_sym]
+        # Select the sibling config with the SAME predicate the declaration credits
+        # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
+        # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
+        # applied at runtime but is blank-guarded by the model resolver, so it is not a usable token:
+        # picking it by applied_default? alone (blank route declared first) would supply no id and
+        # silently defeat the rescue the declaration accepted.
+        sibling_config = sibling&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+        return nil if sibling_config.nil?
+
+        # A reader-less sibling (a dotted NAME with no `as:` alias) reads through the value-level
+        # resolver; anything reader-bearing reads through its reader (the canonical, memoized path —
+        # PRO-2896's `as:` gives even a dotted-name sibling one).
+        sibling_value = if sibling_config.generates_reader?
+                          action.public_send(sibling_config.reader_as)
+                        else
+                          resolve_value(action, sibling_config)
+                        end
+        return nil if sibling_value.nil?
+
+        # Leaf-keyed synthetic resolve: the Model resolver reads `<leaf>_id` from a hash keyed by that
+        # same leaf id key. Passing the dotted `config.field` here would make it dig per segment into a
+        # FLAT single-key hash and resolve nil.
+        Axn::Core::FieldResolvers.resolve(type: :model, field: leaf_key, options:, provided_data: { id_key => sibling_value })
       end
 
       module ClassMethods
@@ -175,6 +263,11 @@ module Axn
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
             # leaves the class untouched.
             _validate_subfield_reader_names!(configs)
+
+            # Contradiction-only contracts raise BEFORE any class mutation (PRO-2889): the candidate
+            # tree includes the prospective configs, so a new required descendant that kills an
+            # already-declared tolerance is caught at the declaration that completes it.
+            Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -298,11 +391,10 @@ module Axn
           # rubocop:enable Style/CombinableLoops
         end
 
-        # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
-        # wire key extracted from the `on:` parent.
+        # `reader` is the accessor's name (may be aliased via as:/prefix:); the wire key it extracts
+        # from the `on:` parent is the config's own field (resolve_value reads it).
         def _define_subfield_reader(config)
           reader = config.reader_as
-          source_field = config.field
           # A dotted wire key names no method on its own; only an `as:` alias gives it a reader (whose
           # body resolves the dotted path segment-by-segment via Extract). No alias → no reader.
           return unless config.generates_reader?
@@ -314,8 +406,7 @@ module Axn
             _define_subfield_model_reader(config)
           else
             Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-              Axn::Core::FieldResolvers.extract_or_nil(field: source_field,
-                                                       provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
+              Axn::Core::ContractForSubfields.resolve_value(self, config)
             end
           end
         end
@@ -350,12 +441,18 @@ module Axn
             # Create a data source that contains the subfield data for the resolver
             subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, config)
 
-            Axn::Core::FieldResolvers.resolve(
+            record = Axn::Core::FieldResolvers.resolve(
               type: :model,
               field: source_field,
               options: processed_options,
               provided_data: subfield_data,
             )
+            # When the raw wire data carried no id, a sibling `<field>_id` subfield's value-level
+            # default supplies the lookup token so the record still resolves (PRO-2889).
+            record ||= Axn::Core::ContractForSubfields.resolve_model_via_sibling_id(self, config, processed_options, subfield_data)
+            # A nil-resolving model subfield falls back to a record-supplying default (validated by
+            # ModelValidator like any record) — the same value-level rule as plain subfields.
+            record.nil? && config.applied_default? ? Axn::Internal::FieldConfig.resolve_default(self, config) : record
           end
         end
 

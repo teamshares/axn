@@ -56,6 +56,7 @@ module Axn
       apply_inbound_coercion!
       apply_inbound_preprocessing!
       apply_defaults!(:inbound)
+      _clear_pre_pipeline_memos!
     rescue StandardError => e
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
     end
@@ -372,6 +373,14 @@ module Axn
       return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
 
+      # An early read — a hook/preprocess touching a subfield reader (which may consult a dotted
+      # sibling's value-level default via resolve_model_via_sibling_id) — can populate both
+      # ContractForSubfields' @__resolve_value_cache AND the reader's own memo before
+      # coercion/preprocess/defaults have settled. The settled pipeline is the authoritative input
+      # state, so discard any pre-pipeline cache: the validation-time reads below then resolve against
+      # the settled wire values.
+      _clear_pre_pipeline_memos!
+
       validate_contract!(:inbound)
 
       # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
@@ -554,6 +563,7 @@ module Axn
           source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
           action: @action,
           reader: config.subfield? ? config.reader_as : nil,
+          config: config.subfield? ? config : nil,
         )
         next if errors.empty?
 
@@ -705,12 +715,15 @@ module Axn
         next unless config.applied_default?
         next unless (path = _resolved_path_for(config))
         next unless _current_value_at(path).nil?
+        next if _default_clobbers_model_route?(path)
+        next if _id_default_would_conflict_with_present_record?(path)
 
         # A nil non-object ancestor anywhere along the chain can't hold the nested structure —
         # materialization refuses to inject `{}` where it would fail that ancestor's own declared
         # type — so the subfield is absent. Skip evaluating/writing its default: a Proc default would
         # run its side effects for nothing, and the write would synthesize a type-violating value.
         next unless _write_chain_materializable?(path)
+        next unless _default_chain_hash_writable?(path)
 
         @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
@@ -718,14 +731,62 @@ module Axn
       end
     end
 
-    def _resolve_default(config)
-      Internal::ContractErrorHandling.with_contract_error_handling(
-        exception_class: ContractViolation::DefaultAssignmentError,
-        message: ->(_field, error) { "Error applying default for #{_field_descriptor(config)}: #{error.message}" },
-        field_identifier: _field_identifier(config),
-      ) do
-        config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
+    # Whether a subfield default's WIRE write would clobber a model route sharing the same wire key.
+    # A merged non-model route (or the model config's own default) at a node that also carries a
+    # `model:` route must NOT write its value onto the shared key: the model resolver prefers a
+    # written value over a caller-supplied/sibling `<field>_id`, so the written default is read AS the
+    # record and fails ModelValidator — killing the sibling-id rescue. The value-level fallback
+    # (ContractForSubfields.resolve_value) still serves the non-model route's readers and validation,
+    # and the model route resolves via id/sibling untouched. Only a depth>0 write shares a nested key;
+    # a top-level (depth-0) model default supplies the record itself and keeps writing. This is the
+    # same clobbering class `_synthesizable_node?` documents for `{}` synthesis.
+    def _default_clobbers_model_route?(path)
+      return false if path.wire_path.size <= 1
+
+      path.node.configs.any? { |c| c.validations[:model] }
+    end
+
+    # Whether writing this config's `<field>_id` default would fabricate a model-consistency mismatch.
+    # When a sibling model route's RECORD is already present in the wire data, the caller's record is
+    # authoritative and the id default (a lookup TOKEN for the absent-record case) must not be
+    # written — otherwise _model_consistency_mismatches compares the present record against axn's own
+    # injected id and raises. Mirrors "a present value is never overridden". Works at depth (sibling =
+    # the id's own wire parent) and top level (sibling = another top-level field).
+    def _id_default_would_conflict_with_present_record?(path)
+      model_config = _sibling_model_route_for_id(path)
+      return false unless model_config
+      return false unless (model_path = _resolved_path_for(model_config))
+
+      !_current_value_at(model_path).nil?
+    end
+
+    # The sibling `model:` route whose companion `<field>_id` node this path lands on, or nil. Keyed on
+    # the id node's own leaf wire key (`path.leaf_key`), matched against `model_id_key(<sibling leaf
+    # wire key>)` — the tree keys each child by its own leaf wire key, so this matches the id however it
+    # was declared (`:company_id` or a dotted `"meta.company_id"`), the same way credit_sibling_id_defaults!
+    # locates the pair by node key. Siblings come from the id's own WIRE parent at depth (not the `on:`
+    # target — the two diverge for a dotted subfield name, PRO-2896), or the top-level field configs at
+    # depth 0.
+    def _sibling_model_route_for_id(path)
+      id_key = path.leaf_key
+      if path.wire_path.size > 1
+        siblings = path.leaf_parent_node&.children || {}
+        siblings.each do |key, child|
+          next unless Internal::FieldConfig.model_id_key(key) == id_key
+
+          model_config = child.configs.find { |c| c.validations[:model] }
+          return model_config if model_config
+        end
+        nil
+      else
+        @action_class.send(:internal_field_configs).find do |c|
+          c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
+        end
       end
+    end
+
+    def _resolve_default(config)
+      Internal::FieldConfig.resolve_default(@action, config)
     end
 
     # on_success is defined to run only once the *enclosing* transaction durably commits
@@ -807,6 +868,33 @@ module Axn
       @action_class._resolved_subfields.index[config]
     end
 
+    # Drop the per-instance caches an early pre-pipeline read may have populated before
+    # coercion/preprocess/defaults settled: ContractForSubfields' value-level-default cache
+    # (@__resolve_value_cache, see resolve_value) AND each SUBFIELD reader's memoized value
+    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called once the
+    # inbound pipeline has settled — the settled wire values are authoritative. Without this, a
+    # preprocess/default Proc that reads a subfield reader before its parent is rewritten caches the
+    # pre-rewrite value, and validation (which public_sends the reader — see Validation::Fields) then
+    # sees stale input, so invalid data passes. Same accepted trade as the resolve_value clear: a Proc
+    # default read early and re-read post-clear runs twice.
+    #
+    # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
+    # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
+    # The model `<field>_id` reader is an unmemoized define_method (nothing to clear), and the boolean
+    # `?` predicate is an alias of the primary reader (sharing its ivar), so neither needs its own clear.
+    # Top-level reader memos are deliberately NOT cleared: a top-level model record would re-run its
+    # finder — pre-existing behavior, out of scope here.
+    def _clear_pre_pipeline_memos!
+      @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
+
+      @action_class.send(:subfield_configs).each do |config|
+        next unless config.generates_reader?
+
+        ivar = :"@_memoized_reader_#{config.reader_as}"
+        @action.remove_instance_variable(ivar) if @action.instance_variable_defined?(ivar)
+      end
+    end
+
     # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
     # Extract dig from the root value (nil-safe: a nil root yields nil).
     def _current_value_at(path)
@@ -866,11 +954,31 @@ module Axn
     # Whether an ABSENT node may be synthesized as `{}`: every config's declared type must admit an
     # object (Schema.object_shaped?, any-branch — `{}` satisfies a union that includes Hash), and no
     # config may be a `model:` route — a synthesized `{}` would be preferred by the model resolver
-    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and per PRO-2877's
-    # family-3 analysis it rescues nothing: ModelValidator rejects it anyway). Mirrors the model
+    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and it rescues
+    # nothing: ModelValidator rejects a `{}` regardless, PRO-2877). Mirrors the model
     # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
     def _synthesizable_node?(node)
       node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
+    end
+
+    # A default: writes only into Hash chains (copy-on-write) or materializes absent ones. A
+    # PRESENT non-Hash level anywhere along the write path (a caller-supplied record, a Struct)
+    # is never mutated by a declared default (PRO-2889) — the write is skipped (before the
+    # default is even evaluated, so a Proc runs once, at read) and the value-level fallback
+    # supplies the default to readers and validation instead. Depth 0 assigns the root key
+    # directly (no object mutation), so it always writes.
+    def _default_chain_hash_writable?(path)
+      return true if path.wire_path.size == 1
+
+      value = @context.provided_data[path.wire_path.first]
+      path.wire_path[1..-2].each do |seg|
+        return true if value.nil? # absent from here down — materialized fresh, nothing to mutate
+
+        return false unless value.is_a?(Hash)
+
+        value = Core::FieldResolvers.extract_or_nil(field: seg.to_s, provided_data: value)
+      end
+      value.nil? || value.is_a?(Hash)
     end
 
     # The parent value a subfield validates against, resolved once per distinct `on:` target per

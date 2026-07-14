@@ -214,10 +214,13 @@ RSpec.describe Axn do
         end
       end
 
-      context "with a required subfield" do
+      context "with a required parent and a required subfield" do
+        # The parent is required (not nil-tolerant): a nil-tolerant parent with a bare required subfield is
+        # now rejected at declaration under PRO-2889 (see subfield_contradictions_spec). A nil value on the
+        # required parent still surfaces a clean InboundValidationError, never a bare RuntimeError.
         let(:action) do
           build_axn do
-            expects :payload, optional: true
+            expects :payload
             expects :name, on: :payload, type: String
             def call = nil
           end
@@ -322,21 +325,28 @@ RSpec.describe Axn do
           expect(action.call(items: nil)).to be_ok
         end
 
-        it "does not evaluate a Proc default when the nil parent isn't materialized (no side effects)" do
+        it "evaluates the value-level Proc default on the nil parent without materializing it (PRO-2889)" do
+          # PRO-2889: validation reads each subfield through its reader, which resolves the value-level
+          # default — so the Proc runs even under a nil non-object parent (the reader's resolved value is
+          # the default). The write-back pass still refuses to materialize the parent, so `items` stays nil.
           ran = []
           action = build_axn do
             expects :items, type: Array, optional: true
             expects :count, on: :items, optional: true, type: Integer, default: -> { ran.push(5).last }
-            def call = nil
+            exposes :parent, optional: true, allow_nil: true
+            def call = expose(parent: items)
           end
-          expect(action.call(items: nil)).to be_ok
-          expect(ran).to be_empty
+          result = action.call(items: nil)
+          expect(result).to be_ok
+          expect(ran).to eq([5])
+          expect(result.parent).to be_nil
         end
 
         it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
           action = build_axn do
             expects :items, type: Array, optional: true
-            expects "a.b", on: :items, optional: true, type: String, default: "x"
+            # `first` is a real Array reader, so the segment is answerable at declaration
+            expects "first.b", on: :items, optional: true, type: String, default: "x"
             def call = nil
           end
           result = action.call(items: nil)
@@ -414,9 +424,12 @@ RSpec.describe Axn do
       end
 
       context "when a defaulted on: subfield synthesizes the parent into a required shape member" do
+        # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as
+        # a rescue); the runtime is unchanged — the Proc still materializes `{}`, so the required shape member
+        # is enforced on an omitted/nil parent exactly as before.
         let(:action) do
           build_axn do
-            expects :payload, type: Hash, allow_nil: true do
+            expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
               field :status, type: String
             end
             expects :note, on: :payload, optional: true, type: String, default: "x"
@@ -705,12 +718,13 @@ RSpec.describe Axn do
         end
 
         it "skips a nested default when the implicit intermediate collides with a non-object shape member" do
-          # `settings` is declared in payload's SHAPE as a String — synthesizing `{ enabled: true }`
-          # there would turn a validly-absent optional member into a shape violation, so the default
-          # is skipped (the same member-nestability rule the schema's drop pass applies).
+          # `settings` is a non-nestable `[Hash, String]` member (the String branch blocks nesting, the Hash
+          # branch keeps the segment answerable at declaration) — synthesizing `{ enabled: true }` there would turn a
+          # validly-absent optional member into a shape violation, so the default is skipped (the same
+          # member-nestability rule the schema's drop pass applies).
           action = build_axn do
             expects :payload, type: Hash do
-              field :settings, type: String, optional: true
+              field :settings, type: [Hash, String], optional: true
             end
             expects :enabled, on: "payload.settings", optional: true, type: :boolean, default: true
             exposes :parent, optional: true
@@ -724,11 +738,12 @@ RSpec.describe Axn do
         end
 
         it "drops a nested preprocess result when the implicit intermediate collides with a non-object shape member" do
-          # Same synthesis gate as defaults: the write would have to create `settings` as an object
-          # where the shape declares a String, so the result has nowhere to land and is dropped.
+          # Same synthesis gate as defaults: the write would have to create `settings` as an object where the
+          # shape declares a non-nestable `[Hash, String]` member, so the result has nowhere to land and is
+          # dropped. (The Hash branch keeps the segment answerable at declaration; the String branch blocks nesting.)
           action = build_axn do
             expects :payload, type: Hash do
-              field :settings, type: String, optional: true
+              field :settings, type: [Hash, String], optional: true
             end
             expects :flag, on: "payload.settings", optional: true, preprocess: ->(v) { v.nil? ? "computed" : v }
             exposes :parent, optional: true
@@ -976,17 +991,17 @@ RSpec.describe Axn do
           expect(result.exception.message.scan("'payload.address' is nil").count).to eq(1)
         end
 
-        it "adds no diagnostic for a plain nil top-level parent (self-evident from the report)" do
-          action = build_axn do
-            expects :payload, type: Hash, optional: true, allow_nil: true
-            expects :note, on: :payload
+        it "rejects a nil-tolerant top-level parent with a bare required subfield at declaration (no runtime diagnostic needed)" do
+          # A plain nil top-level parent stranding a required subfield is now a dead-tolerance contradiction
+          # (PRO-2889): it raises at declaration, so the runtime stranded-path diagnostic is never reached.
+          expect do
+            build_axn do
+              expects :payload, type: Hash, optional: true, allow_nil: true
+              expects :note, on: :payload
 
-            def call = nil
-          end
-
-          result = action.call
-          expect(result.outcome).to be_exception
-          expect(result.exception.message).to eq("Note can't be blank")
+              def call = nil
+            end
+          end.to raise_error(ArgumentError, /:payload is declared nil-tolerant/)
         end
       end
 
@@ -1479,13 +1494,14 @@ RSpec.describe Axn do
         end
       end
 
-      it "applies defaults to object-based parent fields" do
+      it "applies defaults to object-based parent fields without mutating the caller's object (PRO-2889)" do
         result = action.call(user_object:)
         expect(result).to be_ok
 
-        # Check that the default was applied to the object
+        # The reader/validation see the default via the value-level fallback...
         expect(result.__action__.bio).to eq("Default bio")
-        expect(user_object.bio).to eq("Default bio")
+        # ...but the caller's own object is never mutated (write-path gate: PRO-2889).
+        expect(user_object.bio).to be_nil
       end
     end
 
@@ -1762,6 +1778,508 @@ RSpec.describe Axn do
             expects :company_id, :company, on: :settings, model: FakeModel
           end
         end.to raise_error(ArgumentError, /names both :company and its own id companion :company_id/)
+      end
+    end
+  end
+
+  describe "value-level default fallback (PRO-2889)" do
+    let(:company_class) do
+      Class.new do
+        attr_accessor :id, :name
+
+        def initialize(id:, name: nil)
+          @id = id
+          @name = name
+        end
+
+        def self.fetch(id) = new(id:)
+      end
+    end
+
+    before { stub_const("FallbackCompany", company_class) }
+
+    let(:action) do
+      build_axn do
+        expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+        expects :nickname, on: :company, type: String, optional: true, default: "anon"
+        exposes :nick, allow_nil: true
+        def call = expose(nick: nickname)
+      end
+    end
+
+    it "falls back to the default when the parent record's attribute is nil" do
+      expect(action.call(company: FallbackCompany.new(id: 1)).nick).to eq("anon")
+    end
+
+    it "falls back when the id-resolved record's attribute is nil" do
+      expect(action.call(company_id: 7).nick).to eq("anon")
+    end
+
+    it "falls back when the model parent is omitted entirely" do
+      expect(action.call.nick).to eq("anon")
+    end
+
+    it "falls back when the present parent cannot answer the key" do
+      expect(action.call(company: FallbackCompany.new(id: 1, name: "zed")).nick).to eq("anon")
+    end
+
+    context "with a record-supplying default on a model subfield" do
+      let(:action) do
+        build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects :company, on: :payload, model: { klass: FallbackCompany, finder: :fetch },
+                            optional: true, default: -> { FallbackCompany.new(id: 99, name: "dflt") }
+          exposes :got_id, allow_nil: true
+          def call = expose(got_id: company&.id)
+        end
+      end
+
+      it "resolves the defaulted record when the chain is refused" do
+        expect(action.call(payload: nil).got_id).to eq(99)
+      end
+    end
+
+    context "when the parent answers the key" do
+      let(:action) do
+        build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true, default: "anon"
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+      end
+
+      it "prefers a present attribute over the default" do
+        expect(action.call(company: FallbackCompany.new(id: 1, name: "zed")).n).to eq("zed")
+      end
+
+      it "falls back when the attribute is nil" do
+        expect(action.call(company: FallbackCompany.new(id: 1)).n).to eq("anon")
+      end
+    end
+
+    context "with a REQUIRED defaulted subfield under a nil-tolerant model parent (value-level defaults)" do
+      let(:action) do
+        build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: "x"
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+      end
+
+      it "succeeds on omission: the default satisfies validation and the parent stays nil" do
+        result = action.call
+        expect(result).to be_ok
+        expect(result.n).to eq("x")
+      end
+
+      it "succeeds on explicit nil" do
+        expect(action.call(company: nil)).to be_ok
+      end
+
+      it "still reads the record's value when id-resolved" do
+        expect(action.call(company_id: 7).n).to eq("x") # fetch returns name: nil → default
+      end
+
+      it "rejects a BLANK default a presence validator rejects at declaration (the tolerance is dead)" do
+        # A blank default under a nil-tolerant model parent can't rescue omission (presence rejects the
+        # blank), so the tolerance is provably dead — PRO-2889 raises at declaration.
+        expect do
+          build_axn do
+            expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+            expects :name, on: :company, type: String, default: ""
+            def call = nil
+          end
+        end.to raise_error(ArgumentError, /:company is declared nil-tolerant/)
+      end
+    end
+
+    context "with a dotted-name defaulted subfield under a refused chain" do
+      let(:action) do
+        build_axn do
+          expects :payload, type: Array, allow_nil: true
+          expects "first.count", on: :payload, type: Integer, default: 0 # `first` is a real Array reader, so the segment is answerable at declaration
+          def call = nil
+        end
+      end
+
+      it "validates the fallback value (no reader exists for a dotted name)" do
+        expect(action.call(payload: nil)).to be_ok
+      end
+    end
+
+    context "write-path behavior (PRO-2889)" do
+      it "never mutates a caller-supplied record with a default" do
+        rec = FallbackCompany.new(id: 1)
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: "x"
+          def call = nil
+        end
+        expect(action.call(company: rec)).to be_ok
+        expect(rec.name).to be_nil
+      end
+
+      it "evaluates a Proc default exactly once when the write chain is refused" do
+        calls = 0
+        counter = lambda {
+          calls += 1
+          "x"
+        }
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: counter
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+        expect(action.call.n).to eq("x")
+        expect(calls).to eq(1)
+      end
+
+      it "resolves a dotted-name Proc default exactly once per call (memoized across validators)" do
+        # A dotted-name subfield has no reader, so validation resolves it through resolve_value
+        # directly — once per ActiveModel validator (type + presence). A model parent refuses the
+        # write chain, so the Proc default is the only source; without value-level memoization it ran
+        # once per validator.
+        calls = 0
+        counter = lambda {
+          calls += 1
+          3
+        }
+        action = build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects "settings.retries", on: :company, type: Integer, default: counter
+          def call = nil
+        end
+        expect(action.call).to be_ok
+        expect(calls).to eq(1)
+      end
+
+      it "still materializes fully-object-shaped chains over an explicit nil (unchanged)" do
+        action = build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects :id, on: "payload.meta", type: Integer, default: 42
+          exposes :got
+          def call = expose(got: id)
+        end
+        expect(action.call(payload: nil).got).to eq(42)
+      end
+    end
+
+    context "with a sibling <field>_id default reaching model subfield resolution (PRO-2889)" do
+      it "resolves the record via the sibling id default when the object-shaped chain omits the id" do
+        # call(payload: {}): the id default materializes meta = {company_id: 42} on the wire, the finder
+        # resolves the record, and :name reads off it. (Regression for the wire write-back path — it may
+        # already pass pre-fix.)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+
+      it "resolves the record via the sibling id's VALUE-LEVEL default when the write chain is refused" do
+        # The parent value is an opaque object: extraction of both :company and :company_id reads absent,
+        # the defaults write pass refuses (non-Hash parent), and ONLY the sibling id subfield's own
+        # value-level default (its reader applies default: 42) can supply the lookup token.
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: :thing, type: Integer, default: 42
+          expects :company, on: :thing, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { thing: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+
+      it "does NOT override a present raw id with the sibling default (a failed lookup stays nil)" do
+        # The wire carries company_id: 7; the finder returns nil for 7 (only 42 resolves). The present raw
+        # id must resolve the record directly — the sibling default never overrides it, so :company stays
+        # nil rather than silently falling back to id 42.
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = id == 42 ? new(id) : nil
+        end
+        stub_const("PickyCompany", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Integer, default: 42
+          expects :company, on: :payload, model: { klass: PickyCompany, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: { company_id: 7 }).cid).to be_nil
+      end
+    end
+
+    context "with a DOTTED-NAME aliased model subfield and dotted sibling id (PRO-2896 spelling, PRO-2889)" do
+      # `expects "meta.company", on: :payload, ..., as: :company` is a legal aliased dotted model
+      # subfield (PRO-2896). Its leaf's WIRE parent is the implicit `meta` node, NOT the `on:` target
+      # (`payload`), so sibling lookups must key off the leaf's wire parent, not `parent_node`.
+      let(:r4_class) do
+        Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "Acme"
+          def self.fetch(id) = new(id)
+          def self.find(id) = new(id)
+        end
+      end
+
+      before { stub_const("R4Co", r4_class) }
+
+      it "resolves the record via the dotted sibling id's VALUE-LEVEL default when the write chain is refused (C7)" do
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+
+      it "resolves via the wire write-back when the object-shaped chain omits the id (regression)" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+
+      it "skips the dotted id default when the sibling record is already present (C8)" do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects "meta.company_id", on: :payload, optional: true, default: 42
+          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :find }, allow_nil: true, as: :company
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: { company: R4Co.new(7) } })
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
+
+      it "loads cleanly: the dotted sibling id credits the required descendant's rescue (declaration side)" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects "meta.company_id", on: :payload, optional: true, default: 42
+            expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+            expects :name, on: :company, type: String
+            def call = nil
+          end
+        end.not_to raise_error
+      end
+    end
+
+    context "resolve_value cache is scoped to the settled pipeline (PRO-2889)" do
+      it "reads the settled wire value, not a value cached before preprocess/defaults settled" do
+        # An earlier field's preprocess touches the `company` reader, which (via
+        # resolve_model_via_sibling_id) resolves the dotted sibling `"meta.company_id"` through
+        # resolve_value BEFORE its own preprocess/default have run — caching the pre-pipeline default
+        # (42). Validation must read the SETTLED wire value (preprocess wrote 6), not the stale cache.
+        action = build_axn do
+          # kick's preprocess touches the `company` reader early (before the pipeline settles).
+          expects :kick, type: String, preprocess: lambda { |v|
+            company
+            v
+          }
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects "meta.company_id", on: :payload, type: Integer, default: 42,
+                                     preprocess: ->(v) { (v || 5) + 1 }, inclusion: { in: [6] }
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          def call = nil
+        end
+        expect(action.call(kick: "go", payload: { meta: {} })).to be_ok
+      end
+    end
+
+    context "a merged nil-tolerant non-model route at a sibling-id-rescued node (PRO-2889)" do
+      it "runs after loading cleanly: the model route resolves via the sibling id, non-model nil tolerated" do
+        probe = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "answered"
+          def self.fetch(id) = new(id)
+        end
+        stub_const("ProbeCo", probe)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: ProbeCo, finder: :fetch }, allow_nil: true
+          expects "meta.company", on: :payload, type: ProbeCo, optional: true
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+    end
+
+    context "a leaf default must not clobber a model-routed wire key (PRO-2889)" do
+      it "resolves the record via the sibling id, not the non-model route's written default" do
+        # `meta.company` (untyped, optional, default {x:1}) shares the wire key with the `:company`
+        # model route. Writing {x:1} onto that key would be read AS the record and fail ModelValidator,
+        # killing the sibling-id rescue. The write is skipped; the model route resolves via id 42 and the
+        # non-model route sees the default value-level.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects "meta.company", on: :payload, optional: true, default: { x: 1 }
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: {})
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+    end
+
+    context "an id-sibling default must not manufacture a model-consistency mismatch (PRO-2889)" do
+      it "honors a present sibling record over axn's own id default" do
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("FindCo", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FindCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: { company: FindCo.new(7) } })
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
+
+      it "still supplies the id default as a lookup token when the record is absent" do
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("FindCo", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FindCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+    end
+
+    context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
+      it "validates the settled parent value, not a value memoized before the parent was rewritten" do
+        # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
+        # a rewritten parent ({name: 123}). Without clearing the generated reader's memo at the boundary,
+        # validation public_sends `name` and sees the stale pre-rewrite "ok" — invalid input passes.
+        action = build_axn do
+          expects :payload, type: Hash, preprocess: lambda { |_v|
+            name
+            { name: 123 }
+          }
+          expects :name, on: :payload, type: String
+          def call = nil
+        end
+        result = action.call(payload: { name: "ok" })
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/Name is not a String/)
+      end
+
+      it "re-resolves a model subfield record against the rewritten parent id" do
+        # payload's preprocess reads the `company` model reader (resolving id 1's record), memoizing it,
+        # BEFORE returning a rewritten parent carrying company_id: 2. Without the boundary clear the
+        # memoized record (id 1) survives and the run exposes the stale record.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = new(id)
+        end
+        stub_const("MemoCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash, preprocess: lambda { |_v|
+            company
+            { company_id: 2 }
+          }
+          expects :company, on: :payload, model: { klass: MemoCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: { company_id: 1 }).cid).to eq(2)
+      end
+    end
+
+    context "runtime sibling selection mirrors the declaration credit predicate (PRO-2889)" do
+      it "resolves via the usable-token id route, not a blank-applied route sharing the wire node" do
+        # Two routes land on the same thing.company_id wire node: a blank-token route (default "",
+        # declared FIRST) and a usable-token route (default 42). Declaration credits the node (42 is a
+        # usable token); runtime must resolve the SAME route. Selecting by applied_default? alone picks
+        # the blank "" route, whose blank token the model resolver guards → the record never resolves.
+        #
+        # The parent (`thing`) is an opaque non-Hash object, so the defaults write-back is refused and
+        # NEITHER default reaches the wire — both id routes supply their value LEVEL only, isolating the
+        # sibling SELECTION (a writable Hash chain would let the first-declared blank default clobber the
+        # shared wire key before selection, a separate write-order concern).
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "acme"
+          def self.fetch(id) = new(id)
+        end
+        stub_const("SiblingCo", finder)
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
+          expects "thing.company_id", on: :payload, optional: true, default: ""
+          expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
+          expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { thing: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
       end
     end
   end

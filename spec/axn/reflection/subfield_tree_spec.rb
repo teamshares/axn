@@ -142,10 +142,12 @@ RSpec.describe Axn::Reflection::SubfieldTree do
     end
 
     it "drops a deep config whose implicit intermediate collides with a non-object shape member" do
+      # The colliding member is a `[Hash, String]` union: non-nestable (the String branch blocks the drop
+      # pass) yet answerable (the Hash branch reads a key), so it survives the unanswerable-segment check while still dropping.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash do
-          field :bar, type: String
+          field :bar, type: [Hash, String]
         end
         expects "bar.baz", on: :payload, type: String
       end
@@ -168,10 +170,11 @@ RSpec.describe Axn::Reflection::SubfieldTree do
     end
 
     it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
-      # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the scalar
-      # member x. blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
+      # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the
+      # non-nestable member x (`[Hash, String]` — blocks the drop pass, yet answerable at declaration).
+      # blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
       # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
-      x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String }, presence: true }, metadata: {})
+      x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
@@ -189,12 +192,13 @@ RSpec.describe Axn::Reflection::SubfieldTree do
 
     it "drops a deep config when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
       # baz is a merged node; both routes declare a nestable Hash member `x`, but their NESTED members at
-      # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a scalar String. Carrying only
-      # the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying ALL colliding members
-      # tests route 2's scalar `y` and drops `x.y.z`, matching emission (which carries every member).
+      # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a non-nestable `[Hash, String]`
+      # union. Carrying only the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying
+      # ALL colliding members tests route 2's union `y` and drops `x.y.z`, matching emission (which carries
+      # every member). The union stays answerable at declaration (the Hash branch) while blocking the drop pass.
       y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
       x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
-      y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: String }, presence: true }, metadata: {})
+      y2 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
       x2 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y2], container: Hash } }, metadata: {})
       klass = Class.new do
         include Axn
@@ -211,12 +215,14 @@ RSpec.describe Axn::Reflection::SubfieldTree do
       expect(tree.dropped.map(&:field)).to eq([:"x.y.z"])
     end
 
-    it "drops a deep config whose implicit intermediate collides with a SCALAR member of a member (carried through implicit descent)" do
+    it "drops a deep config whose implicit intermediate collides with a non-object member of a member (carried through implicit descent)" do
+      # `baz` is a `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2)
+      # yet answerable via its Hash branch, so the declaration is accepted while `bar.baz.qux` drops.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash do
           field :bar, type: Hash do
-            field :baz, type: String
+            field :baz, type: [Hash, String]
           end
         end
         expects "bar.baz.qux", on: :payload

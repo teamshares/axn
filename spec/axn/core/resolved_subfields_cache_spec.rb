@@ -7,7 +7,8 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
       expects :address, type: Hash, optional: true, as: :addr
       expects :meta, on: :payload, type: Hash, optional: true
       expects :locale, on: "payload.meta", type: String, optional: true
-      expects :zip, on: :addr, type: String, optional: true
+      # Hash (object-shaped) so the `region` subfield can anchor on it without a declaration-time rejection
+      expects :zip, on: :addr, type: Hash, optional: true
     end
   end
 
@@ -113,6 +114,9 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
 
   describe "reflection reuse" do
     it "input_schema consumes the cached artifact (no rebuild per call)" do
+      # Force class definition first: the PRO-2889 contradiction detector builds a candidate tree
+      # at each `expects` declaration, and those builds must not count against the per-call stub.
+      klass
       expect(Axn::Reflection::SubfieldTree).to receive(:build).once.and_call_original
       klass.input_schema
       klass.input_schema
