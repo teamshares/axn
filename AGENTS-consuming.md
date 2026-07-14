@@ -179,6 +179,11 @@ reported to `Axn.config.on_exception`. Key consequences:
   the action that **raises** the exception — it doesn't suppress a report from a deeper action. Only
   reclassify deterministic/non-transient errors (e.g. `ActiveRecord::RecordInvalid`), never a
   transient one you'd want retried. In async, a `fails_on` failure is terminal (no retry).
+  `result.error` never defaults to the exception's own (technical) `#message`; opt a specific class
+  in with `fails_on ExceptionClass, &:message` when that message is genuinely user-facing. This is
+  the idiom for the "save an ActiveRecord model" case — a plain action plus
+  `fails_on ActiveRecord::RecordInvalid, &:message` surfaces the record's validation errors as the
+  failure message (and, e.g., `fails_on Stripe::CardError, &:message` for a card-declined message).
 - **`expects` violations are dev-facing by default** → exception bucket, pages, generic
   `"Something went wrong"`. A missing required input is your bug. Mark a genuinely caller-supplied
   field `user_facing: true` (or a String/Symbol/Proc message) to move *its* violations to the
@@ -240,13 +245,6 @@ sensitive values in `sensitive:` fields. Detail:
 
 ## Strategies (DRYed configuration via `use`)
 
-- **`use :model, create: Widget` / `update: :widget` / `as: :widget`** — build/find an
-  ActiveRecord record, assign `model_params` (defaults to `params`), save in a `before` hook, expose
-  it (as `result.model` or the field name). Validation failures become clean failures with
-  `record.errors` (wires `fails_on ActiveRecord::RecordInvalid`); no global report. `call` runs
-  post-save. `model_params` must return a plain Hash or **permitted** params (mass-assignment
-  protection — raw controller params raise; `params.permit(...)` or override `model_params`).
-  <https://teamshares.github.io/axn/strategies/model>.
 - **`use :form do … end`** — validate user input via an `Axn::FormObject` (full ActiveModel
   validations) before `call`; exposes `form`. For genuinely user-facing input.
   <https://teamshares.github.io/axn/strategies/form>.

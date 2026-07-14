@@ -503,7 +503,7 @@ When an action runs as a background job, a `fails_on` exception is treated exact
 :::
 
 ::: tip
-For the common "save an ActiveRecord model" case, reach for the [Model strategy](/strategies/model), which wires `fails_on ActiveRecord::RecordInvalid` (and the save/expose boilerplate) for you.
+For the common "save an ActiveRecord model" case, a plain action plus `fails_on ActiveRecord::RecordInvalid, &:message` surfaces the record's validation errors as the failure message — no strategy needed.
 :::
 
 ### Suppressing reports for expected failures in composed actions
