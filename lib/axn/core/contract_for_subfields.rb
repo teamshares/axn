@@ -60,6 +60,19 @@ module Axn
         Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value)
       end
 
+      # THE subfield value read — readers and validation share it: leaf-extract from the canonically
+      # resolved parent, then value-level default fallback (PRO-2889). A declared default: guarantees
+      # the RESOLVED value is never nil-by-omission even when the wire write-back couldn't apply it (a
+      # refused chain under a model:/non-object parent, a parent record whose attribute is nil, a
+      # malformed parent). No wire data is written here and the parent's own value stays untouched, so
+      # a nil-tolerant parent remains genuinely nil.
+      def self.resolve_value(action, config)
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config))
+        return value unless value.nil? && config.applied_default?
+
+        Axn::Internal::FieldConfig.resolve_default(action, config)
+      end
+
       module ClassMethods
         # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
         # the class. Cache validity is decided by IDENTITY of the two config arrays: both are
@@ -314,8 +327,7 @@ module Axn
             _define_subfield_model_reader(config)
           else
             Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-              Axn::Core::FieldResolvers.extract_or_nil(field: source_field,
-                                                       provided_data: Axn::Core::ContractForSubfields.resolve_parent(self, config))
+              Axn::Core::ContractForSubfields.resolve_value(self, config)
             end
           end
         end
@@ -350,12 +362,15 @@ module Axn
             # Create a data source that contains the subfield data for the resolver
             subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, config)
 
-            Axn::Core::FieldResolvers.resolve(
+            record = Axn::Core::FieldResolvers.resolve(
               type: :model,
               field: source_field,
               options: processed_options,
               provided_data: subfield_data,
             )
+            # A nil-resolving model subfield falls back to a record-supplying default (validated by
+            # ModelValidator like any record) — the same value-level rule as plain subfields.
+            record.nil? && config.applied_default? ? Axn::Internal::FieldConfig.resolve_default(self, config) : record
           end
         end
 

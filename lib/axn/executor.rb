@@ -719,13 +719,7 @@ module Axn
     end
 
     def _resolve_default(config)
-      Internal::ContractErrorHandling.with_contract_error_handling(
-        exception_class: ContractViolation::DefaultAssignmentError,
-        message: ->(_field, error) { "Error applying default for #{_field_descriptor(config)}: #{error.message}" },
-        field_identifier: _field_identifier(config),
-      ) do
-        config.default.respond_to?(:call) ? @action.instance_exec(&config.default) : config.default
-      end
+      Internal::FieldConfig.resolve_default(@action, config)
     end
 
     # on_success is defined to run only once the *enclosing* transaction durably commits

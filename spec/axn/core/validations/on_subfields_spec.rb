@@ -1765,4 +1765,81 @@ RSpec.describe Axn do
       end
     end
   end
+
+  describe "value-level default fallback (PRO-2889)" do
+    let(:company_class) do
+      Class.new do
+        attr_accessor :id, :name
+
+        def initialize(id:, name: nil)
+          @id = id
+          @name = name
+        end
+
+        def self.fetch(id) = new(id:)
+      end
+    end
+
+    before { stub_const("FallbackCompany", company_class) }
+
+    let(:action) do
+      build_axn do
+        expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+        expects :nickname, on: :company, type: String, optional: true, default: "anon"
+        exposes :nick, allow_nil: true
+        def call = expose(nick: nickname)
+      end
+    end
+
+    it "falls back to the default when the parent record's attribute is nil" do
+      expect(action.call(company: FallbackCompany.new(id: 1)).nick).to eq("anon")
+    end
+
+    it "falls back when the id-resolved record's attribute is nil" do
+      expect(action.call(company_id: 7).nick).to eq("anon")
+    end
+
+    it "falls back when the model parent is omitted entirely" do
+      expect(action.call.nick).to eq("anon")
+    end
+
+    it "prefers the resolved value when present" do
+      expect(action.call(company: FallbackCompany.new(id: 1, name: "zed")).nick).to eq("anon")
+    end
+
+    context "with a record-supplying default on a model subfield" do
+      let(:action) do
+        build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects :company, on: :payload, model: { klass: FallbackCompany, finder: :fetch },
+                            optional: true, default: -> { FallbackCompany.new(id: 99, name: "dflt") }
+          exposes :got_id, allow_nil: true
+          def call = expose(got_id: company&.id)
+        end
+      end
+
+      it "resolves the defaulted record when the chain is refused" do
+        expect(action.call(payload: nil).got_id).to eq(99)
+      end
+    end
+
+    context "when the parent answers the key" do
+      let(:action) do
+        build_axn do
+          expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true, default: "anon"
+          exposes :n, allow_nil: true
+          def call = expose(n: name)
+        end
+      end
+
+      it "prefers a present attribute over the default" do
+        expect(action.call(company: FallbackCompany.new(id: 1, name: "zed")).n).to eq("zed")
+      end
+
+      it "falls back when the attribute is nil" do
+        expect(action.call(company: FallbackCompany.new(id: 1)).n).to eq("anon")
+      end
+    end
+  end
 end
