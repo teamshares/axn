@@ -40,18 +40,24 @@ module Axn
 
           # Object/Array sources: use the reader method. A reader that needs arguments can't answer
           # the path as a bare read — that's "unclear how to extract" (typed UnextractableError, read
-          # as absent), not a raw ArgumentError leaking past the malformed-input doctrine. Ruby-defined
-          # readers advertise their required params (`:req`/`:keyreq`), so gate on that before
-          # dispatching (covers e.g. a `lookup(id:)` required-keyword reader). Core (C) readers can
-          # misreport — `Array#fetch` shows `[[:rest]]` yet still needs an index — so also classify the
-          # arity ArgumentError they raise, keyed off its stable, non-localized core message. Any OTHER
-          # ArgumentError is the reader's own and re-raises untouched so a broken reader isn't hidden.
+          # as absent), not a raw ArgumentError leaking past the malformed-input doctrine.
           if source.respond_to?(segment)
-            raise_unextractable if reader_requires_arguments?(source, segment)
+            reader = source.method(segment)
+
+            # A Ruby-defined reader advertises its required params (`:req`/`:keyreq`) accurately, so
+            # gate on them before dispatching (covers e.g. a `lookup(id:)` required-keyword reader) —
+            # and once past that gate, ANY ArgumentError it raises is from inside its body (a
+            # programmer bug), so it re-raises untouched rather than being hidden as absence.
+            raise_unextractable if reader_requires_arguments?(reader)
 
             begin
               return source.public_send(segment)
             rescue ArgumentError => e
+              # Only a core (C) reader can still be a bare-call arity failure here: its params can't be
+              # trusted (`Array#fetch` shows `[[:rest]]` yet needs an index) so the gate above couldn't
+              # catch it. Ruby-defined readers (`source_location` present) have no such excuse — surface
+              # their error. Classify the C-reader arity failure by its stable, non-localized message.
+              raise if reader.source_location
               raise unless arity_error?(e)
 
               raise_unextractable
@@ -61,8 +67,8 @@ module Axn
           raise_unextractable
         end
 
-        def reader_requires_arguments?(source, segment)
-          source.method(segment).parameters.any? { |type, _| %i[req keyreq].include?(type) }
+        def reader_requires_arguments?(reader)
+          reader.parameters.any? { |type, _| %i[req keyreq].include?(type) }
         end
 
         def arity_error?(error)

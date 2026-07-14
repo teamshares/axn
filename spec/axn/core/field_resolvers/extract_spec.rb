@@ -73,6 +73,16 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
       expect { extract(:boom, obj) }.to raise_error(ArgumentError, "reader is broken")
     end
 
+    it "surfaces an arity-worded ArgumentError raised inside a bare-callable reader (not masked as absent)" do
+      # `total` takes no args (passes the required-arg gate) but its body calls a helper wrong, so
+      # the resulting "wrong number of arguments" is a programmer bug in the reader — it must bubble,
+      # not be misclassified as an unextractable path just because the message matches.
+      obj = Object.new
+      def obj.total = broken_helper
+      def obj.broken_helper(required) = required
+      expect { extract(:total, obj) }.to raise_error(ArgumentError, /wrong number of arguments/)
+    end
+
     it "treats a required-argument reader as unextractable (positional or keyword)" do
       # A reader that can't be called bare (required positional/keyword arg) can't answer the path.
       obj = Object.new
