@@ -1137,19 +1137,6 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
-    it "requires the model <field>_id when a model field has a DEFAULTED shallow subfield (synthesized Hash isn't the model)" do
-      # A subfield default synthesizes a Hash under `company`; the model resolver returns that Hash and
-      # ModelValidator rejects it (not a model instance), so omitting the id fails — even with allow_nil.
-      klass = Class.new do
-        include Axn
-        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
-        expects :name, on: :company, default: "x"
-      end
-      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-      expect(schema[:required]).to include("company_id")
-    end
-
     it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional shallow subfield" do
       # `company` accepts nil and `name` is optional, so an omitted id resolves company to nil and the
       # optional subfield validates as absent — the omitted call succeeds, so the id must not be required.
@@ -1165,10 +1152,10 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
     end
 
-    it "does not require the model <field>_id for a nil-tolerant model with an optional defaulted subfield (never synthesized)" do
-      # The runtime never synthesizes a model: parent (a `{}` there would clobber a valid id-based
-      # call and is rejected by ModelValidator regardless), so the default simply doesn't apply when
-      # the object is absent — the optional subfield stays absent and omitting the id succeeds.
+    it "does not require the model <field>_id for a nil-tolerant model with an optional defaulted subfield" do
+      # The optional subfield never forces the id: omitting it resolves company to nil, the value-level
+      # default supplies name="x" at read time (PRO-2889), and an optional String validates either way —
+      # so the omitted call succeeds and the id stays out of `required`.
       klass = Class.new do
         include Axn
         expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
@@ -1181,7 +1168,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds (no synthesis under a model)
     end
 
-    it "does not require the model <field>_id for an optional PROC-defaulted subfield either (same non-synthesis rule)" do
+    it "does not require the model <field>_id for an optional PROC-defaulted subfield either (optionality alone rescues it)" do
       klass = Class.new do
         include Axn
         expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
@@ -1191,25 +1178,7 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(Array(schema[:required])).not_to include("company_id")
-      expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds (no synthesis under a model)
-    end
-
-    it "keeps the model <field>_id required in-schema while PRO-2889's value-level default rescues the runtime call" do
-      # PRO-2889: a subfield default now guarantees the RESOLVED value (reader + validation), so
-      # omitting the id resolves `name` to its default "x" and the call SUCCEEDS — the default rescues
-      # the child's presence even under a model parent. The schema still conservatively marks
-      # company_id required (over-requiring is the safe, stricter-than-runtime direction the schema
-      # already takes elsewhere); mirroring value-level rescue into the schema is a PRO-2889 follow-up.
-      klass = Class.new do
-        include Axn
-        expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
-        expects :name, on: :company, type: String, default: "x"
-        def call = nil
-      end
-      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-      expect(schema[:required]).to include("company_id")
-      expect(klass.call).to be_ok # PRO-2889: the value-level default satisfies the required name on omission
+      expect(klass.call).to be_ok # runtime agreement: the optional subfield never forces the id, so omission succeeds
     end
 
     it "de-duplicates required company_id regardless of declaration order (model: first, explicit id second)" do
@@ -1222,6 +1191,34 @@ RSpec.describe Axn::Reflection::Schema do
 
       expect(schema[:required].count("company_id")).to eq(1)
       expect(schema[:properties][:company_id]).to include(type: "string", format: "uuid")
+    end
+
+    describe "model id requiredness with value-level defaults (PRO-2889)" do
+      let(:model_class) do
+        Class.new do
+          def self.fetch(_id) = nil
+        end
+      end
+
+      before { stub_const("SchemaCo", model_class) }
+
+      it "does not require the id when the nil-tolerant model's descendants are all defaulted/optional" do
+        action = build_axn do
+          expects :company, model: { klass: SchemaCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: "x"
+          def call = nil
+        end
+        expect(action.input_schema[:required].to_a).not_to include("company_id")
+      end
+
+      it "keeps the id required for a Proc-defaulted descendant (strict mode: unknowable → required)" do
+        action = build_axn do
+          expects :company, model: { klass: SchemaCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, default: -> { "x" }
+          def call = nil
+        end
+        expect(action.input_schema[:required]).to include("company_id")
+      end
     end
   end
 
@@ -3543,12 +3540,12 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
       end
 
-      it "keeps the model <field>_id required in-schema while PRO-2889's value-level default rescues the deep dotted-name subfield at runtime" do
+      it "does not require the model <field>_id when a deep dotted-name subfield is value-level defaulted (PRO-2889)" do
         # `expects "settings.theme", on: :company, default: "x"` lands the defaulted config on a DEEPER
-        # node with a dotted NAME (no reader). PRO-2889: validation resolves it through the shared
-        # `resolve_value`, so the value-level default "x" applies and the omitted call SUCCEEDS. The
-        # schema still conservatively requires company_id (stricter-than-runtime is the safe direction);
-        # mirroring value-level rescue into the schema is a PRO-2889 follow-up.
+        # node with a dotted NAME (no reader). PRO-2889: the value-level default "x" applies at read time
+        # (validation resolves it through the shared `resolve_value`, no synthesis), so the deep subfield
+        # is self-rescuing and the omitted call SUCCEEDS — the schema mirrors that and drops company_id
+        # from `required`.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
@@ -3557,14 +3554,14 @@ RSpec.describe Axn::Reflection::Schema do
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        expect(schema[:required]).to include("company_id")
-        expect(klass.call).to be_ok # PRO-2889: the value-level default satisfies the deep subfield on omission
+        expect(Array(schema[:required])).not_to include("company_id")
+        expect(klass.call).to be_ok # runtime agreement: the value-level default satisfies the deep subfield on omission
       end
 
-      it "does not require the model <field>_id for an optional deep PROC default via a dotted NAME (never synthesized)" do
-        # The write-chain gate refuses to synthesize the model root, so the deep default never
-        # applies when the object is absent — the optional deep subfield stays absent and omitting
-        # the id succeeds; the schema mirrors that.
+      it "does not require the model <field>_id for an optional deep PROC default via a dotted NAME (optionality alone rescues it)" do
+        # The optional deep subfield never forces the id: omitting it resolves company to nil, the deep
+        # dotted-name default applies at read time (PRO-2889), and an optional String validates either
+        # way — so the omitted call succeeds and the schema mirrors that.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true

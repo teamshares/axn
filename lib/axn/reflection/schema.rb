@@ -97,7 +97,7 @@ module Axn
         # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
         field_configs.select { |config| config.validations[:model] }.each do |config|
           children = tree.roots[config.reader_as].children
-          apply_model_id_requiredness!(config, children, field_configs, properties, required)
+          apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
         end
 
         schema = { type: "object", properties: }
@@ -133,15 +133,6 @@ module Axn
       # ModelValidator regardless.
       def synthesizable?(config)
         object_shaped?(config) && !config.validations[:model]
-      end
-
-      # Presence analysis IGNORING default-rescue, for subtrees whose ancestor can never be
-      # synthesized (a `model:` parent — the write-chain gate refuses, so NO default anywhere in the
-      # subtree ever applies): a node is omittable only through nil/blank-tolerance, at every depth
-      # (a nil ancestor yields every descendant absent, PRO-2857).
-      def node_omittable_without_synthesis?(node)
-        (node.implicit? || node.configs.all? { |c| nil_accepted?(c) }) &&
-          node.children.values.all? { |child| node_omittable_without_synthesis?(child) }
       end
 
       # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
@@ -829,28 +820,26 @@ module Axn
       # (order-independent — runs after all properties are built).
       #
       # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
-      # with its own usable default) AND no descendant subfield requires presence (a required subfield at
-      # any depth resolves off the record, so an omitted record strands it) AND no descendant carries a
-      # subfield default runtime would apply (any truthy default, a Proc included, materializes `{}` under
-      # the model's wire key BEFORE the default is evaluated, which ModelValidator then rejects as not a
-      # model instance — so an omitted id fails at runtime). OR an
-      # explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply the token before
-      # the lookup). A merely nullable/optional explicit id with no default doesn't help. When the id IS
-      # required it also can't be null, so any `null` branch is stripped.
+      # with its own usable default) AND no descendant requires presence per its own annotation (a
+      # defaulted descendant is self-rescuing at read time). A subfield default now applies at read time
+      # at any depth under a model — value-level defaults, PRO-2889, no synthesis involved — so a
+      # defaulted descendant resolves to its own value and never forces the id; only a descendant with no
+      # rescuing signal (no usable default, not nil-tolerant) strands an omitted record and keeps the id
+      # required. OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply
+      # the token before the lookup). A merely nullable/optional explicit id with no default doesn't help.
+      # When the id IS required it also can't be null, so any `null` branch is stripped.
       #
       # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
       # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
       # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
       # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-      def apply_model_id_requiredness!(config, children, field_configs, properties, required)
+      def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
         id_field, = model_id_property(config)
         explicit_id = field_configs.find { |c| c.field == id_field }
-        # No default anywhere in a model's subtree can ever apply (the runtime write-chain gate
-        # refuses to synthesize a model node — see Schema.synthesizable?), so omittability is pure
-        # nil-tolerance analysis at every depth: defaults neither rescue a child's own presence nor
-        # poison the model with a synthesized `{}`.
-        model_omittable = optional_for_schema?(config) &&
-                          children.values.all? { |child| node_omittable_without_synthesis?(child) }
+        # A default at ANY depth under the model applies at read time (value-level defaults,
+        # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
+        # annotation-derived rule, same as every other parent.
+        model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
         return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
         key = id_field.to_s
