@@ -4135,15 +4135,17 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "flags a deep subfield under a non-object intermediate, regardless of declaration order" do
+      # `:count` is Array-answerable (Array#count), so family 2 accepts the segment; the deep path is
+      # still dropped from the schema because it passes THROUGH the non-object Array intermediate.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
-        expects :sku, on: "payload.items", type: String
+        expects :count, on: "payload.items", type: Integer
         expects :items, on: :payload, type: Array
       end
 
       dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-      expect(dropped.map(&:field)).to eq([:sku])
+      expect(dropped.map(&:field)).to eq([:count])
     end
 
     it "returns [] when every subfield is a shallow child of a top-level field" do

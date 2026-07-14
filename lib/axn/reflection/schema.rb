@@ -333,6 +333,15 @@ module Axn
       def node_optional?(node, ann, configs = node.configs, satisfiability: false)
         return !subtree_requires_presence?(node, ann) if node.implicit?
 
+        # Satisfiability doctrine: a default on ANY of the node's OWN configs (node.configs — the FULL
+        # set, not the possibly-subset `configs` param) writes the SHARED wire value at this node, so it
+        # rescues omission for every route reading it. The defaults write pass materializes the wire node
+        # from that default, and each sibling route then validates against the written value — being
+        # optimistic that the default satisfies each sibling's validator is the satisfiability doctrine
+        # (rejection is reserved for provably dead declarations). Gated on satisfiability so strict schema
+        # mode stays byte-identical to the per-config rule below.
+        return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
+
         configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
       end
 

@@ -73,6 +73,16 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.not_to raise_error
     end
 
+    it "accepts a merged-route default declared first (the sibling route's wire value rescues)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash, allow_nil: true
+          expects "meta.id", on: :payload, type: Integer, default: 5
+          expects :id, on: "payload.meta", type: Integer
+        end
+      end.not_to raise_error
+    end
+
     it "rejects a blank default that an active presence validator would reject" do
       expect do
         build_axn do
@@ -120,6 +130,16 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects :payload, type: Hash
           expects :bar, on: :payload, type: String
           expects :id, on: "payload.bar", type: Integer
+        end
+      end.to raise_error(ArgumentError, /can never resolve/)
+    end
+
+    it "rejects when a LATER type declaration makes an EARLIER subfield unanswerable" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects "bar.baz", on: :payload, type: Integer
+          expects :bar, on: :payload, type: String
         end
       end.to raise_error(ArgumentError, /can never resolve/)
     end

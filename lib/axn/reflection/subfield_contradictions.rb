@@ -14,12 +14,14 @@ module Axn
     module SubfieldContradictions
       module_function
 
-      # `new_configs` is the prospective batch: the family-2 check judges only it (earlier configs
-      # were judged at their own declaration), while the dead-tolerance walk re-scans the whole tree
-      # because a NEW required descendant can kill an OLD tolerance.
-      def check!(field_configs, subfield_configs, new_configs:)
+      # Both checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
+      # batch: a NEW declaration can invalidate an OLD subfield regardless of order. For family 1 a new
+      # required descendant kills an old tolerance; for family 2 a new type/shape declaration on a parent
+      # kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted while `bar`
+      # is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
+      def check!(field_configs, subfield_configs)
         tree = SubfieldTree.build(field_configs, subfield_configs)
-        check_unanswerable_segments!(tree, new_configs) # first: its message is the more specific when both fire
+        check_unanswerable_segments!(tree) # first: its message is the more specific when both fire
         check_dead_nil_tolerance!(tree, field_configs)
       end
 
@@ -32,10 +34,9 @@ module Axn
       # reading through the member's value, not nesting under it). Rejected regardless of the
       # subfield's own optional:/default: — an unreachable path is dead machinery (the shipped
       # family-4 precedent), and with a default it degenerates to a constant field.
-      def check_unanswerable_segments!(tree, new_configs)
-        new_configs.each do |config|
-          path = tree.index[config]
-          next if path.nil? # ambient-anchored — resolved per-invocation, out of scope
+      def check_unanswerable_segments!(tree)
+        tree.index.each do |config, path|
+          next unless config.subfield? # skip top-level depth-0 configs; they read no segment
 
           reader_index = Axn::Core::ContractForSubfields.deepest_reader_index(path)
           next if reader_index.nil?

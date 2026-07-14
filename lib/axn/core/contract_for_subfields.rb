@@ -201,7 +201,7 @@ module Axn
             # Contradiction-only contracts raise BEFORE any class mutation (PRO-2889): the candidate
             # tree includes the prospective configs, so a new required descendant that kills an
             # already-declared tolerance is caught at the declaration that completes it.
-            Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs, new_configs: configs)
+            Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
