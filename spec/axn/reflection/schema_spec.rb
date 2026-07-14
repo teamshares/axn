@@ -4462,4 +4462,48 @@ RSpec.describe Axn::Reflection::Schema do
       end
     end
   end
+
+  describe "conditional validation (if:/unless:) reflection" do
+    it "reflects a bare conditional field static-maximal (required, non-null) without executing the condition" do
+      ran = false
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :num, type: Integer, if: -> { ran = true }
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("num")
+      expect(schema[:properties][:num][:type]).to eq("integer")
+      expect(ran).to be false
+    end
+
+    it "keeps a tolerance-flagged conditional field optional (the static tolerance is unconditional)" do
+      action = build_axn do
+        expects :note, type: String, optional: true, if: :cond
+      end
+      schema = action.input_schema
+      expect(schema[:required].to_a).not_to include("note")
+      expect(schema[:properties][:note][:type]).to eq(%w[string null])
+    end
+
+    it "admits null on a gated exposes property (a closed gate can emit nil)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :num, type: Integer, if: :flag
+        def call; end
+      end
+      expect(action.output_schema[:properties][:num][:type]).to eq(%w[integer null])
+    end
+
+    it "reflects a gated shape member static-maximal (required inside its object)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+      end
+      prop = action.input_schema[:properties][:payload]
+      expect(prop[:required]).to include("note")
+      expect(prop[:properties][:note][:type]).to eq("string")
+    end
+  end
 end

@@ -732,7 +732,11 @@ module Axn
         prop[:description] = config.description if config.description
 
         type_info = json_type_for(config.validations, for_output:)
-        nullable = nil_allowed?(config)
+        # OUTPUT safety runs the other direction from input: the property must admit a superset of
+        # what the serializer can emit. A gated outbound field may skip its validators entirely
+        # (condition false), so nil can flow through — admit null regardless of the validators'
+        # own nil-tolerance.
+        nullable = nil_allowed?(config) || (for_output && conditionally_gated?(config))
         apply_type_info!(prop, type_info, config, nullable:)
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
@@ -1024,10 +1028,19 @@ module Axn
       # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
       # `numericality: true`) — rejects nil.
       def nil_accepted?(config)
-        v = config.validations
+        # Gate keys (if:/unless:) are shared options, not validators — neutral here. The judgment is
+        # static-maximal: the gated validators are counted as if their gates were open (a condition
+        # can only relax enforcement at runtime, never tighten it).
+        v = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         return true if v.empty?
 
         v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
+      end
+
+      # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
+      # that its enforcement (NOT its shape) is conditional at runtime.
+      def conditionally_gated?(config)
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| config.validations.key?(k) }
       end
 
       def nil_tolerant_validation?(key, opt)
