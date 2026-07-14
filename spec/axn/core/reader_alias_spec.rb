@@ -166,7 +166,8 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     it "reads the nested `_id` off a record parent via method dispatch (not `[]`)" do
       widget = widget_class
       # A parent record exposing `widget_id` as a METHOD with no `[]` accessor — only Extract's
-      # method-dispatch read can reach it (raw `record[:widget_id]` would NoMethodError → nil).
+      # method-dispatch read can reach it (raw `record[:widget_id]` would NoMethodError → nil), so
+      # the `:widget` subfield must opt into method dispatch with `method_call: true` (PRO-2898).
       company = Class.new do
         def self.name = "Company"
         def self.find(_id) = new
@@ -176,7 +177,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       action = build_axn do
         expects :payload, type: Hash
         expects :company, on: :payload, model: { klass: company, finder: :find }
-        expects :widget, on: :company, model: { klass: widget, finder: :find }
+        expects :widget, on: :company, model: { klass: widget, finder: :find }, method_call: true
         exposes :got
 
         def call = expose(got: widget)

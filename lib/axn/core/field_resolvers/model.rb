@@ -4,10 +4,11 @@ module Axn
   module Core
     module FieldResolvers
       class Model
-        def initialize(field:, options:, provided_data:)
+        def initialize(field:, options:, provided_data:, permit_method_call: false)
           @field = field
           @options = options
           @provided_data = provided_data
+          @permit_method_call = permit_method_call
         end
 
         def call
@@ -16,7 +17,7 @@ module Axn
 
         private
 
-        attr_reader :field, :options, :provided_data
+        attr_reader :field, :options, :provided_data, :permit_method_call
 
         def provided_value
           @provided_value ||= _read(field)
@@ -35,6 +36,11 @@ module Axn
           else
             raise "Unknown finder: #{finder}"
           end
+        rescue Axn::ContractViolation::MethodCallNotPermittedError
+          # A forgotten `method_call:` reached via the `_id` read (`id_value` above) is a contract bug,
+          # not a finder failure — it must stay loud (PRO-2898's "loud, never silent" guarantee), so it
+          # propagates rather than being swallowed to nil by the finder rescue below.
+          raise
         rescue StandardError => e
           # Log the exception but don't re-raise
           finder_name = finder.is_a?(Method) ? finder.name : finder
@@ -65,7 +71,7 @@ module Axn
         # declared) reads as ABSENT — its own type validation classifies the malformed value
         # (PRO-2857) rather than a raw error pre-empting the contract.
         def _read(key)
-          Axn::Core::FieldResolvers.extract_or_nil(field: key, provided_data:)
+          Axn::Core::FieldResolvers.extract_or_nil(field: key, provided_data:, permit_method_call:)
         end
       end
     end

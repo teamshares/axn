@@ -582,7 +582,8 @@ module Axn
       return nil if value.nil?
 
       path.wire_path[1..-2].each_with_index do |seg, i|
-        value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+        value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value,
+                                             permit_method_call: _segment_permits_method_call?(path, i + 1))
         return path.wire_path[0..i + 1].join(".") if value.nil?
       end
       nil
@@ -590,6 +591,19 @@ module Axn
       # A malformed intermediate isn't a nil strand — its own validation reports it; no diagnostic.
       nil
     end
+
+    # Whether reading the wire segment at `wire_index` (≥1) may dispatch a method: governed by the
+    # config of the node that segment PRODUCES (its child — the deeper hop's parent, or the leaf for
+    # the last segment), so a method_call: subfield's own segment is read by method while implicit or
+    # plain intermediates stay on the safe path. Mirrors the per-config threading the subfield readers
+    # use, so this diagnostic agrees with runtime resolution on which hops may dispatch.
+    def _segment_permits_method_call?(path, wire_index)
+      child = wire_index < path.ancestors.size ? path.ancestors[wire_index].first : path.node
+      _node_dispatches?(child)
+    end
+
+    # Whether a tree node is produced by a method_call: subfield. Single source for "is this hop sharp?"
+    def _node_dispatches?(node) = node.configs.any?(&:method_call)
 
     def _suppressed_by_failed_ancestor?(path, failed_nodes)
       path.ancestors.any? { |node, _seg| failed_nodes.key?(node) }
@@ -656,7 +670,7 @@ module Axn
       @action_class.send(:internal_field_configs).each do |config|
         next unless _id_based_model?(config)
 
-        msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field)
+        msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field, permit_method_call: config.method_call)
         mismatches << msg if msg
       end
 
@@ -664,7 +678,7 @@ module Axn
         next unless _id_based_model?(config)
         next if (path = _resolved_path_for(config)) && _suppressed_by_failed_ancestor?(path, failed_nodes)
 
-        msg = _model_record_id_mismatch(source: _resolved_parent_value(config), field: config.field)
+        msg = _model_record_id_mismatch(source: _resolved_parent_value(config), field: config.field, permit_method_call: config.method_call)
         mismatches << msg if msg
       end
 
@@ -676,11 +690,12 @@ module Axn
       model.is_a?(Hash) && model[:finder] == :find
     end
 
-    def _model_record_id_mismatch(source:, field:)
+    def _model_record_id_mismatch(source:, field:, permit_method_call: false)
       return nil if source.nil?
 
-      record = Core::FieldResolvers.extract_or_nil(field:, provided_data: source)
-      raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(field), provided_data: source)
+      record = Core::FieldResolvers.extract_or_nil(field:, provided_data: source, permit_method_call:)
+      raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(field), provided_data: source,
+                                                   permit_method_call:)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
       return nil if record.id.to_s == raw_id.to_s
@@ -896,15 +911,20 @@ module Axn
     end
 
     # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
-    # Extract dig from the root value (nil-safe: a nil root yields nil).
+    # Extract dig from the root value (nil-safe: a nil root yields nil). Walked one segment at a time
+    # so each crossed hop honors its own `method_call:` opt-in — a segment produced by a method_call
+    # subfield is read by method, plain/implicit intermediates stay safe — matching runtime resolution.
+    # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil): the
+    # pre-validation passes skip/no-op and the source's own validation classifies the bad value.
     def _current_value_at(path)
-      root_value = @context.provided_data[path.wire_path.first]
-      below = path.wire_path[1..]
-      return root_value if below.empty?
+      value = @context.provided_data[path.wire_path.first]
+      (1...path.wire_path.size).each do |k|
+        break if value.nil?
 
-      # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil): the
-      # pre-validation passes skip/no-op and the source's own validation classifies the bad value.
-      Core::FieldResolvers.extract_or_nil(field: below.join("."), provided_data: root_value)
+        value = Core::FieldResolvers.extract_or_nil(field: path.wire_path[k].to_s, provided_data: value,
+                                                    permit_method_call: _segment_permits_method_call?(path, k))
+      end
+      value
     end
 
     # Human identifiers for contract-error reporting, matching each level's historical wording.
@@ -935,7 +955,11 @@ module Axn
 
       carried = []
       path.ancestors.each_cons(2) do |(parent, seg), (child, _next_seg)|
-        value = value.nil? ? nil : Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value)
+        # Reading `seg` yields `child`, so `child`'s own config governs whether that hop may dispatch.
+        unless value.nil?
+          value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value,
+                                               permit_method_call: _node_dispatches?(child))
+        end
 
         members = child.implicit? ? Axn::Reflection::Schema.shape_members_at(parent.configs + carried, seg) : []
         if value.nil?

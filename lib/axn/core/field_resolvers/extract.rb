@@ -6,10 +6,11 @@ module Axn
   module Core
     module FieldResolvers
       class Extract
-        def initialize(field:, provided_data:, options: {})
+        def initialize(field:, provided_data:, options: {}, permit_method_call: false)
           @field = field
           @options = options
           @provided_data = provided_data
+          @permit_method_call = permit_method_call
         end
 
         def call
@@ -22,7 +23,7 @@ module Axn
 
         private
 
-        attr_reader :field, :options, :provided_data
+        attr_reader :field, :options, :provided_data, :permit_method_call
 
         def resolve_segment(source, segment)
           # A nil intermediate means the path fell off a missing/omitted parent: read as absent
@@ -57,10 +58,23 @@ module Axn
             return base.dig(segment) # rubocop:disable Style/SingleArgumentDig -- #[] raises NameError on an absent Struct member; #dig reads it as nil
           end
 
-          # Object/Array sources: use the reader method. A reader that needs arguments can't answer
-          # the path as a bare read — that's "unclear how to extract" (typed UnextractableError, read
-          # as absent), not a raw ArgumentError leaking past the malformed-input doctrine.
+          # Data isn't diggable, but its declared members are DATA, not behavior — read them through
+          # `#to_h` so no method is ever invoked (`d.to_h[:zip]` is a member lookup). A *behavioral*
+          # method (`d.computed`) is not in `to_h`, so it misses here and correctly falls to the gated
+          # method branch below. This keeps the safe/sharp axis honest at the mechanism level: the safe
+          # path never `public_send`s the segment.
+          return source.to_h[segment.to_sym] if source.is_a?(Data) && source.class.members.include?(segment.to_sym)
+
+          # Object/Array sources: the segment can only be reached by INVOKING it as a method. That's
+          # the sharp path — it runs ONLY when the declaration opted in with `method_call: true`.
+          # Reached without that opt-in, it's a contract-configuration bug, raised loudly (a distinct
+          # error `extract_or_nil` does not swallow) rather than silently method-dispatching.
           if source.respond_to?(segment)
+            raise_method_call_not_permitted(source, segment) unless permit_method_call
+
+            # A reader that needs arguments can't answer the path as a bare read — that's "unclear how
+            # to extract" (typed UnextractableError, read as absent), not a raw ArgumentError leaking
+            # past the malformed-input doctrine.
             reader = source.method(segment)
 
             # A Ruby-defined reader advertises its required params (`:req`/`:keyreq`) accurately, so
@@ -92,6 +106,17 @@ module Axn
 
         def arity_error?(error)
           error.message.start_with?("wrong number of arguments", "missing keyword")
+        end
+
+        # The actionable text rides on this exception's own #message (see MethodCallNotPermittedError):
+        # it names the field, the parent's runtime class, and the fix, so it reaches developers via
+        # on_exception/logs while the end user sees only the generic result.error headline.
+        def raise_method_call_not_permitted(source, segment)
+          raise Axn::ContractViolation::MethodCallNotPermittedError,
+                "Refusing to resolve `#{field}` by calling `##{segment}` on #{source.class}: resolving a subfield by " \
+                "invoking a method is opt-in. Add `method_call: true` to this expectation if that is intended " \
+                "(e.g. `expects ..., method_call: true`); otherwise the safe default reads declared data only " \
+                "(Hash keys, Struct/OpenStruct/Data members)."
         end
 
         def raise_unextractable

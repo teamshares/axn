@@ -16,7 +16,8 @@ RSpec.describe "PRO-2889 value-level subfield defaults" do
   let(:action) do
     build_axn do
       expects :user, model: { klass: User }, allow_nil: true
-      expects :email, on: :user, type: String, default: "anon@example.com"
+      # Reading an attribute off the resolved AR record is method dispatch (PRO-2898).
+      expects :email, on: :user, type: String, default: "anon@example.com", method_call: true
       exposes :nick, allow_nil: true
       def call = expose(nick: email)
     end

@@ -360,11 +360,12 @@ RSpec.describe Axn do
         # name the same wire path and must resolve identically — reaching Array#count on the nested
         # Array rather than digging a String key into it.
         it "resolves a nested Array method the same via the reader and the dotted spelling" do
-          # Reader spelling exposes the resolved Array#count directly.
+          # Reader spelling exposes the resolved Array#count directly. Reaching an Array method is
+          # method dispatch, so both spellings opt in with `method_call: true` (PRO-2898).
           reader = build_axn do
             expects :payload, type: Hash
             expects :items, on: :payload, type: Array
-            expects :count, on: :items, type: Integer
+            expects :count, on: :items, type: Integer, method_call: true
             exposes :n, allow_nil: true
             def call = expose(n: count)
           end
@@ -373,7 +374,7 @@ RSpec.describe Axn do
           # failure), so validation success stands in for the resolved value.
           dotted = build_axn do
             expects :payload, type: Hash
-            expects "items.count", on: :payload, type: Integer
+            expects "items.count", on: :payload, type: Integer, method_call: true
             def call = nil
           end
 
@@ -1023,10 +1024,12 @@ RSpec.describe Axn do
     end
 
     context "with objects rather than hashes" do
+      # Reading a subfield off a plain object reaches its method — the sharp path — so it opts in with
+      # `method_call: true` (PRO-2898).
       let(:action) do
         build_axn do
           expects :foo
-          expects :bar, on: :foo
+          expects :bar, on: :foo, method_call: true
         end
       end
       let(:foo) { double(bar: 3) }
@@ -1843,7 +1846,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, optional: true, default: "anon"
+          expects :name, on: :company, type: String, optional: true, default: "anon", method_call: true
           exposes :n, allow_nil: true
           def call = expose(n: name)
         end
@@ -1862,7 +1865,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, default: "x"
+          expects :name, on: :company, type: String, default: "x", method_call: true
           exposes :n, allow_nil: true
           def call = expose(n: name)
         end
@@ -1914,7 +1917,7 @@ RSpec.describe Axn do
         rec = FallbackCompany.new(id: 1)
         action = build_axn do
           expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, default: "x"
+          expects :name, on: :company, type: String, default: "x", method_call: true
           def call = nil
         end
         expect(action.call(company: rec)).to be_ok
@@ -1977,7 +1980,7 @@ RSpec.describe Axn do
           expects :meta, on: :payload, type: Hash, allow_nil: true
           expects :company_id, on: :meta, type: Integer, default: 42
           expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, optional: true
+          expects :name, on: :company, type: String, optional: true, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -1994,7 +1997,7 @@ RSpec.describe Axn do
           expects :thing, on: :payload # untyped
           expects :company_id, on: :thing, type: Integer, default: 42
           expects :company, on: :thing, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects :name, on: :company, type: String, optional: true
+          expects :name, on: :company, type: String, optional: true, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -2048,7 +2051,7 @@ RSpec.describe Axn do
           expects :payload, type: Hash
           expects "meta.company_id", on: :payload, optional: true, default: 42
           expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
-          expects :name, on: :company, type: String
+          expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -2062,7 +2065,7 @@ RSpec.describe Axn do
           expects :payload, type: Hash
           expects "meta.company_id", on: :payload, optional: true, default: 42
           expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
-          expects :name, on: :company, type: String
+          expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -2134,7 +2137,7 @@ RSpec.describe Axn do
           expects :company_id, on: :meta, type: Integer, default: 42
           expects :company, on: :meta, model: { klass: ProbeCo, finder: :fetch }, allow_nil: true
           expects "meta.company", on: :payload, type: ProbeCo, optional: true
-          expects :name, on: :company, type: String
+          expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end

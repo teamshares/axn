@@ -92,7 +92,8 @@ module Axn
                 end
         return cache[config] if cache.key?(config)
 
-        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config))
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config),
+                                                         permit_method_call: config.method_call)
         value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         cache[config] = value
       end
@@ -114,6 +115,7 @@ module Axn
         # lookup below targets.
         raw_id = Axn::Core::FieldResolvers.extract_or_nil(
           field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
+          permit_method_call: config.method_call
         )
         return nil unless raw_id.nil?
 
@@ -181,6 +183,7 @@ module Axn
           metadata: {},
           reader_names: {},
           user_facing: false,
+          method_call: false,
           **validations
         )
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
@@ -255,7 +258,7 @@ module Axn
           end
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                           metadata:, reader_names:, user_facing:, **validations).tap do |configs|
+                                           metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
             duplicated = _duplicate_fields(subfield_configs, configs)
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
 
@@ -311,12 +314,13 @@ module Axn
           metadata: {},
           reader_names: {},
           user_facing: false,
+          method_call: false,
           **validations
         )
           # The config-building itself is the shared top-level path (a subfield is the on:-carrying
           # case); the checks below are pure reads of the built configs, raised before anything commits.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                        metadata:, reader_names:, user_facing:, **validations).each do |config|
+                                        metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
             _reject_ambient_coerce!(config)
             _reject_dotted_model_name!(config, fields:)
           end
@@ -446,6 +450,7 @@ module Axn
               field: source_field,
               options: processed_options,
               provided_data: subfield_data,
+              permit_method_call: config.method_call,
             )
             # When the raw wire data carried no id, a sibling `<field>_id` subfield's value-level
             # default supplies the lookup token so the record still resolves (PRO-2889).
@@ -462,7 +467,7 @@ module Axn
           by_primary_key = processed_options[:finder] == :find
           _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
             parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
-            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent)
+            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
           end
         end
       end

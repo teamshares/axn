@@ -28,10 +28,14 @@ module Axn
         elsif @action && @config&.subfield?
           Axn::Core::ContractForSubfields.resolve_value(@action, @config)
         else
-          # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil):
+          # Only a top-level/outbound field reaches here (subfields resolve via the reader or
+          # resolve_value above); its source is the framework's own context/result facade, whose
+          # per-field reader is a safe accessor — so method dispatch is always permitted here (it's the
+          # facade's generated reader, not the caller-object dispatch the method_call gate targets).
+          # Malformed sources still read as absent (one doctrine — see FieldResolvers.extract_or_nil):
           # this field's own validators report against nil while the source's own type validation
           # classifies the bad value.
-          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source)
+          Axn::Core::FieldResolvers.extract_or_nil(field: attr, provided_data: @source, permit_method_call: true)
         end
       end
 
