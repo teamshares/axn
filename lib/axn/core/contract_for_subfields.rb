@@ -114,11 +114,13 @@ module Axn
         sibling_config = sibling&.configs&.find(&:applied_default?)
         return nil if sibling_config.nil?
 
-        # A dotted-name sibling has no reader of its own, so read it through the value-level resolver.
-        sibling_value = if sibling_config.field.to_s.include?(".")
-                          resolve_value(action, sibling_config)
-                        else
+        # A reader-less sibling (a dotted NAME with no `as:` alias) reads through the value-level
+        # resolver; anything reader-bearing reads through its reader (the canonical, memoized path —
+        # PRO-2896's `as:` gives even a dotted-name sibling one).
+        sibling_value = if sibling_config.generates_reader?
                           action.public_send(sibling_config.reader_as)
+                        else
+                          resolve_value(action, sibling_config)
                         end
         return nil if sibling_value.nil?
 
@@ -368,11 +370,10 @@ module Axn
           # rubocop:enable Style/CombinableLoops
         end
 
-        # `reader` is the accessor's name (may be aliased via as:/prefix:); `source_field` is the
-        # wire key extracted from the `on:` parent.
+        # `reader` is the accessor's name (may be aliased via as:/prefix:); the wire key it extracts
+        # from the `on:` parent is the config's own field (resolve_value reads it).
         def _define_subfield_reader(config)
           reader = config.reader_as
-          source_field = config.field
           # A dotted wire key names no method on its own; only an `as:` alias gives it a reader (whose
           # body resolves the dotted path segment-by-segment via Extract). No alias → no reader.
           return unless config.generates_reader?
