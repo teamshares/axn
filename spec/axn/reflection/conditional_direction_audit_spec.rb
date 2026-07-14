@@ -1,0 +1,76 @@
+# frozen_string_literal: true
+
+# The direction invariant from the design doc: for INPUT, the schema may reject inputs the runtime
+# accepts (stricter) but must never accept an input the runtime rejects (looser) — outside the two
+# documented exceptions. Each case runs a REAL call and checks the schema's verdict by hand
+# (required-array membership + the allOf conditional), so schema and runtime are compared on the
+# same concrete input.
+RSpec.describe "conditional validation direction audit" do
+  # Minimal hand-rolled check: does the input schema (top-level required + allOf clauses +
+  # property-level nested required) permit omitting the named keys for this payload?
+  def schema_accepts_omission?(schema, payload, omitted_key)
+    return false if schema[:required].to_a.include?(omitted_key.to_s)
+
+    Array(schema[:allOf]).all? do |clause|
+      cond = clause[:if]
+      ref_key = cond[:required].first.to_sym
+      ref_present_truthy = payload.key?(ref_key) && ![false, nil].include?(payload[ref_key])
+      branch = ref_present_truthy ? clause[:then] : clause[:else]
+      !branch || !branch[:required].include?(omitted_key.to_s)
+    end
+  end
+
+  it "top-level Proc gate: schema strictly requires; runtime accepts omission when the gate is closed" do
+    action = build_axn do
+      expects :flag, type: :boolean
+      expects :num, type: Integer, if: -> { flag }
+      def call; end
+    end
+    schema = action.input_schema
+    expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be false # stricter
+    expect(action.call(flag: false).ok?).to be true                             # runtime relaxes
+    expect(action.call(flag: true).ok?).to be false                             # and schema agrees when open
+  end
+
+  it "declarative Symbol gate: schema and runtime agree on every quadrant" do
+    action = build_axn do
+      expects :flag, type: :boolean
+      expects :num, type: Integer, if: :flag
+      def call; end
+    end
+    schema = action.input_schema
+    expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be true
+    expect(action.call(flag: false).ok?).to be true
+    expect(schema_accepts_omission?(schema, { flag: true }, :num)).to be false
+    expect(action.call(flag: true).ok?).to be false
+  end
+
+  it "gated subfield, canonical parent-presence condition: exact agreement" do
+    action = build_axn do
+      expects :data, optional: true
+      expects :user, type: String, on: :data, if: -> { data.present? }
+      def call; end
+    end
+    schema = action.input_schema
+    expect(schema_accepts_omission?(schema, {}, :data)).to be true
+    expect(action.call.ok?).to be true
+    expect(schema[:properties][:data][:required]).to include("user") # bound when data sent
+    expect(action.call(data: { role: "x" }).ok?).to be false
+  end
+
+  it "gated subfield, non-parent condition: the documented looser corner, and only that corner" do
+    action = build_axn do
+      expects :strict, type: :boolean
+      expects :data, optional: true
+      expects :user, type: String, on: :data, if: :strict
+      def call; end
+    end
+    schema = action.input_schema
+    # The documented divergence: parent omitted + condition true — schema accepts, runtime rejects.
+    expect(schema_accepts_omission?(schema, { strict: true }, :data)).to be true
+    expect(action.call(strict: true).ok?).to be false
+    # Everything else agrees.
+    expect(action.call(strict: false).ok?).to be true
+    expect(action.call(strict: true, data: { user: "x" }).ok?).to be true
+  end
+end
