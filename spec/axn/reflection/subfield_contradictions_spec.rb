@@ -417,6 +417,35 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
     end
 
+    it "names a non-Proc callable default generically without dispatching it (side-effect-free)" do
+      # A callable OBJECT (not a Proc) is a dynamic default (resolve_default treats any respond_to?(:call)
+      # as dynamic). The conflict message must name it generically, never invoke it while building the error.
+      callable = Class.new do
+        def call = raise("must not be called during reflection")
+        def inspect = raise("must not be inspected during reflection")
+      end.new
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, optional: true
+          expects "meta.count", on: :payload, default: callable, optional: true
+          expects :count, on: :meta, as: :meta_count, default: 42, optional: true
+        end
+      end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
+    end
+
+    it "names an opaque object default generically without inspecting it (side-effect-free)" do
+      opaque = Class.new { def inspect = raise("must not be inspected during reflection") }.new
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, optional: true
+          expects "meta.count", on: :payload, default: opaque, optional: true
+          expects :count, on: :meta, as: :meta_count, default: 42, optional: true
+        end
+      end.to raise_error(ArgumentError, /conflicting default:.*a non-literal default/m)
+    end
+
     it "rejects a Proc default competing with a literal default" do
       expect do
         build_axn do

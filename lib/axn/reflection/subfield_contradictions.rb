@@ -56,10 +56,23 @@ module Axn
               "key present and is silently skipped). Keep a single default:, or split the routes onto distinct wire keys."
       end
 
-      # A default's description for the conflict message: a Proc is unknowable (and uncomparable), so it
-      # is named generically; a literal is inspected. Side-effect-free — never calls the Proc.
+      # Exact built-in scalar classes safe to render via #inspect. Scoped to instance_of? matches (per
+      # normalize_schema_literal): a subclass — or any other object — could override #inspect with user
+      # code, and reflection must dispatch none while building a declaration error. Containers are omitted
+      # deliberately: Hash/Array#inspect recurses into #inspect on arbitrary elements.
+      SAFE_DEFAULT_LITERALS = [String, Symbol, Integer, Float, TrueClass, FalseClass].freeze
+
+      # A default's description for the conflict message. Side-effect-free: it dispatches no user-overridable
+      # method on an arbitrary default. A callable (any respond_to?(:call), matching resolve_default's
+      # dynamic-default rule — not just Proc) is unknowable and uncomparable, so it is named generically; an
+      # exact built-in scalar is inspected; anything else (a container, a subclass, an opaque object) stays
+      # opaque. Reached only for applied defaults, so the value is never nil.
       def describe_default(config)
-        config.default.is_a?(Proc) ? "a callable" : config.default.inspect
+        value = config.default
+        return "a callable" if value.respond_to?(:call)
+        return value.inspect if SAFE_DEFAULT_LITERALS.any? { |klass| value.instance_of?(klass) }
+
+        "a non-literal default"
       end
 
       # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some
