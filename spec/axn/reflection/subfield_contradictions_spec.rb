@@ -260,5 +260,21 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end
       end.not_to raise_error
     end
+
+    it "accepts a nil-tolerant ancestor above a model subfield rescued by a defaulted id sibling" do
+      # The sibling `company_id` value-level default supplies the lookup token at read time
+      # (ContractForSubfields.resolve_model_via_sibling_id), so `:company` resolves and `:name` reads
+      # off the record — which means the nil-tolerant `:meta` ancestor is genuinely exercisable and
+      # must NOT be rejected. call(payload: {}) succeeds at runtime.
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String
+        end
+      end.not_to raise_error
+    end
   end
 end

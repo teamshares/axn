@@ -255,6 +255,7 @@ module Axn
       # Post-order: a node's annotation only depends on its (already-annotated) children.
       def annotate_node!(node, ann, satisfiability: false)
         node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
+        credit_sibling_id_defaults!(node, ann) if satisfiability
 
         # node_optional?'s own-level rule, always evaluated with the node's FULL config set — exactly
         # what children_require_presence? has always asked of a child (never a subset), so this is a
@@ -275,6 +276,26 @@ module Axn
         end
 
         ann[node] = NodeAnnotation.new(required:, nullable:)
+      end
+
+      # Satisfiability-only post-adjustment (runs before this node's own requiredness is computed, so the
+      # credit propagates up every ancestor): a model-routed child that a sibling `<key>_id` subfield can
+      # rescue is re-annotated non-required. The sibling's value-level default supplies the lookup token at
+      # read time (see ContractForSubfields.resolve_model_via_sibling_id), so omitting the record still
+      # resolves it and the record answers the subtree; the record's attributes are unknowable at
+      # declaration, so crediting the rescue is the satisfiability doctrine. STRICT (schema) mode is
+      # untouched — it keeps its documented stricter-than-runtime divergence for self-referential id/model
+      # subfield pairs (apply_model_id_requiredness!'s KNOWN LIMITATION).
+      def credit_sibling_id_defaults!(node, ann)
+        node.children.each do |key, child|
+          next if child.implicit? || !ann[child].required
+          next unless child.configs.any? { |c| c.validations[:model] }
+
+          sibling = node.children[Internal::FieldConfig.model_id_key(key)]
+          next unless sibling&.configs&.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
+
+          ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
+        end
       end
 
       # Whether a nil/absent parent leaves a required nested obligation unmet — so it can't validate and

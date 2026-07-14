@@ -1946,5 +1946,63 @@ RSpec.describe Axn do
         expect(action.call(payload: nil).got).to eq(42)
       end
     end
+
+    context "with a sibling <field>_id default reaching model subfield resolution (PRO-2889)" do
+      it "resolves the record via the sibling id default when the object-shaped chain omits the id" do
+        # call(payload: {}): the id default materializes meta = {company_id: 42} on the wire, the finder
+        # resolves the record, and :name reads off it. (Regression for the wire write-back path — it may
+        # already pass pre-fix.)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+
+      it "resolves the record via the sibling id's VALUE-LEVEL default when the write chain is refused" do
+        # The parent value is an opaque object: extraction of both :company and :company_id reads absent,
+        # the defaults write pass refuses (non-Hash parent), and ONLY the sibling id subfield's own
+        # value-level default (its reader applies default: 42) can supply the lookup token.
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: :thing, type: Integer, default: 42
+          expects :company, on: :thing, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, optional: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { thing: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+
+      it "does NOT override a present raw id with the sibling default (a failed lookup stays nil)" do
+        # The wire carries company_id: 7; the finder returns nil for 7 (only 42 resolves). The present raw
+        # id must resolve the record directly — the sibling default never overrides it, so :company stays
+        # nil rather than silently falling back to id 42.
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = id == 42 ? new(id) : nil
+        end
+        stub_const("PickyCompany", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Integer, default: 42
+          expects :company, on: :payload, model: { klass: PickyCompany, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: { company_id: 7 }).cid).to be_nil
+      end
+    end
   end
 end

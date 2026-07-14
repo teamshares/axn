@@ -82,6 +82,36 @@ module Axn
         Axn::Internal::FieldConfig.resolve_default(action, config)
       end
 
+      # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
+      # `<field>_id` subfield's VALUE-LEVEL resolution (its own reader — which applies its default:)
+      # supplies the lookup token, and the model resolves from it. This is the model-flavored half of
+      # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
+      # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
+      # failed lookup stays nil). A model subfield's field is always a non-dotted leaf wire key
+      # (family 4), so `config.field` keys both the model resolve and the sibling lookup.
+      def self.resolve_model_via_sibling_id(action, config, options, parent_value)
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
+        raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent_value)
+        return nil unless raw_id.nil?
+
+        path = action.class._resolved_subfields.index[config]
+        return nil if path.nil?
+
+        sibling = path.parent_node.children[id_key.to_sym]
+        sibling_config = sibling&.configs&.find(&:applied_default?)
+        return nil if sibling_config.nil?
+
+        # A dotted-name sibling has no reader of its own, so read it through the value-level resolver.
+        sibling_value = if sibling_config.field.to_s.include?(".")
+                          resolve_value(action, sibling_config)
+                        else
+                          action.public_send(sibling_config.reader_as)
+                        end
+        return nil if sibling_value.nil?
+
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => sibling_value })
+      end
+
       module ClassMethods
         # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
         # the class. Cache validity is decided by IDENTITY of the two config arrays: both are
@@ -382,6 +412,9 @@ module Axn
               options: processed_options,
               provided_data: subfield_data,
             )
+            # When the raw wire data carried no id, a sibling `<field>_id` subfield's value-level
+            # default supplies the lookup token so the record still resolves (PRO-2889).
+            record ||= Axn::Core::ContractForSubfields.resolve_model_via_sibling_id(self, config, processed_options, subfield_data)
             # A nil-resolving model subfield falls back to a record-supplying default (validated by
             # ModelValidator like any record) — the same value-level rule as plain subfields.
             record.nil? && config.applied_default? ? Axn::Internal::FieldConfig.resolve_default(self, config) : record

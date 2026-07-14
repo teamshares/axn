@@ -129,7 +129,13 @@ module Axn
       end
 
       # A model SUBFIELD's analog of the explicit-id-sibling rescue: a sibling `<field>_id` subfield
-      # with a satisfiability-usable default supplies the token when the model key is omitted.
+      # with a satisfiability-usable default supplies the token when the model key is omitted. Judged
+      # by the SAME condition Schema.credit_sibling_id_defaults! uses for the annotation credit, so the
+      # per-config tolerance loop and the ancestor-propagating derivation agree on which siblings rescue.
+      # This declaration-side judgment (usable_default? satisfiability) diverges deliberately from the
+      # runtime's applied_default? (ContractForSubfields.resolve_model_via_sibling_id): a blank default a
+      # presence validator rejects is APPLIED at runtime but FAILS validation, so usable_default?'s
+      # blank-handling is the correct declaration-time answer — a blank-rescued tolerance is still dead.
       def defaulted_id_sibling?(parent, key)
         sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
         return false unless sibling
