@@ -202,20 +202,20 @@ module Axn
       # rounds-5/8/9 findings (a dropped/blocked deep shape agreeing at some sites but not others).
       # `compare_by_identity`: SubfieldTree::Node is a plain Data value, so identity (not #==/#hash on its
       # contents) is what distinguishes one tree position from another.
-      def derive_annotations(roots)
+      def derive_annotations(roots, satisfiability: false)
         ann = {}.compare_by_identity
-        roots.each_value { |node| annotate_node!(node, ann) }
+        roots.each_value { |node| annotate_node!(node, ann, satisfiability:) }
         ann
       end
 
       # Post-order: a node's annotation only depends on its (already-annotated) children.
-      def annotate_node!(node, ann)
-        node.children.each_value { |child| annotate_node!(child, ann) }
+      def annotate_node!(node, ann, satisfiability: false)
+        node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
 
         # node_optional?'s own-level rule, always evaluated with the node's FULL config set — exactly
         # what children_require_presence? has always asked of a child (never a subset), so this is a
         # pure cache of that recursive call, not a new rule.
-        required = !node_optional?(node, ann, node.configs)
+        required = !node_optional?(node, ann, node.configs, satisfiability:)
 
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
@@ -286,26 +286,28 @@ module Axn
       # omittable only if every config is. `configs` defaults to the whole node but may be a subset: a
       # merged node's model and non-model routes emit separate properties (`<leaf>_id` vs the object),
       # each required per its own routes' configs, not the node as a whole.
-      def node_optional?(node, ann, configs = node.configs)
+      def node_optional?(node, ann, configs = node.configs, satisfiability: false)
         return !subtree_requires_presence?(node, ann) if node.implicit?
 
-        configs.all? { |c| usable_default?(c, subfield: true) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
+        configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
       end
 
-      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE (truthy, non-Proc)
-      # default — the synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE
-      # parent (materializes `{}`, then writes the default) from a usable default at any depth: a
-      # dotted-NAME default lands on a deeper node yet still materializes the parent, so it rescues
-      # omission just like a direct child's default. Procs stay EXCLUDED (usable_default? drops them),
-      # unlike subtree_has_applied_subfield_default? (the hazard predicate, which counts Procs): here the
-      # Proc's SUCCESS is what would rescue omission, and a raising Proc would instead make omission FAIL,
-      # so counting it would reflect the parent omittable though runtime rejects the omitted call — the
-      # looser, unsafe direction. The hazard predicate counts Procs because materialization fires before
-      # the Proc runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
-      def subtree_has_usable_subfield_default?(children)
+      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE default — the
+      # synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE parent
+      # (materializes `{}`, then writes the default) from a usable default at any depth: a dotted-NAME
+      # default lands on a deeper node yet still materializes the parent, so it rescues omission just
+      # like a direct child's default. Whether a Proc default counts follows usable_default?'s mode
+      # split: strict (schema) mode EXCLUDES Procs, unlike subtree_has_applied_subfield_default? (the
+      # hazard predicate, which always counts Procs) — here the Proc's SUCCESS is what would rescue
+      # omission, and a raising Proc would instead make omission FAIL, so counting it would reflect the
+      # parent omittable though runtime rejects the omitted call (the looser, unsafe direction), while
+      # satisfiability mode (the declaration-rejection detector) COUNTS the Proc since it does apply at
+      # runtime. The hazard predicate always counts Procs because materialization fires before the Proc
+      # runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
+      def subtree_has_usable_subfield_default?(children, satisfiability: false)
         children.values.any? do |node|
-          node.configs.any? { |c| usable_default?(c, subfield: true) } ||
-            subtree_has_usable_subfield_default?(node.children)
+          node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability:) } ||
+            subtree_has_usable_subfield_default?(node.children, satisfiability:)
         end
       end
 
@@ -316,11 +318,11 @@ module Axn
       # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
       # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
       # before the default's value matters — so this uses FieldConfig#applied_default? (side-effect-free:
-      # `!!config.default`, never calls the Proc), unlike usable_default? which deliberately excludes Procs
-      # because it judges whether a default's VALUE satisfies the contract (irrelevant here). Companion to
-      # subtree_has_usable_subfield_default? (the RESCUE walk, Procs excluded): both walk the whole subtree
-      # so a dotted-NAME default on a deeper node is counted, but this HAZARD walk counts Procs and that
-      # rescue walk does not.
+      # `!!config.default`, never calls the Proc), unlike usable_default? which excludes a Proc in strict
+      # (schema) mode because it judges whether a default's VALUE satisfies the contract (irrelevant here).
+      # This HAZARD walk is mode-independent: it ALWAYS counts Procs. Companion to
+      # subtree_has_usable_subfield_default? (the RESCUE walk, which excludes Procs only in strict mode):
+      # both walk the whole subtree so a dotted-NAME default on a deeper node is counted.
       def subtree_has_applied_subfield_default?(children)
         children.values.any? do |node|
           node.configs.any?(&:applied_default?) ||
@@ -334,13 +336,13 @@ module Axn
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
-      def field_optional?(config, children, ann)
+      def field_optional?(config, children, ann, satisfiability: false)
         has_required_child = required_child?(config, children, ann)
 
         # A usable default on the PARENT materializes it (with its declared contents) before validation,
         # so it may always be omitted — its own default, not its subfields, decides. (A default whose
         # contents fail a child's validators is a separate, narrow divergence handled by usable_default?.)
-        return true if usable_default?(config, subfield: false)
+        return true if usable_default?(config, subfield: false, satisfiability:)
 
         # The parent's own nil-tolerance (optional:/allow_nil:) only makes it omittable when no required
         # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
@@ -349,17 +351,17 @@ module Axn
         # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
         # COMPLETE parent from subfield defaults — a usable default ANYWHERE in the subtree supplies a
         # value (a dotted-NAME default lands on a deeper node yet still materializes the parent) and none
-        # of the subtree is required (a required descendant has no default and can't be synthesized). Procs
-        # stay excluded (subtree_has_usable_subfield_default?): a Proc default is uninspectable and a
-        # raising one would make omission FAIL, so counting it would reflect the parent omittable though
-        # runtime rejects the omitted call — the looser, unsafe direction (the hazard side counts Procs
-        # because materialization fires before the Proc runs; here the Proc's success is what rescues, and
-        # that is unknowable). This synthesis only rescues an OBJECT-shaped parent:
-        # `apply_defaults_for_subfields!` injects `{}`, which satisfies a Hash/`:params`/untyped parent but
-        # not a non-object one (`type: Array`, a typed class) whose top-level type validator rejects the `{}`.
+        # of the subtree is required (a required descendant has no default and can't be synthesized).
+        # Whether a Proc default counts follows subtree_has_usable_subfield_default?'s mode split: strict
+        # (schema) mode excludes Procs (a Proc default is uninspectable and a raising one would make
+        # omission FAIL, so counting it would reflect the parent omittable though runtime rejects the
+        # omitted call — the looser, unsafe direction), while satisfiability mode counts them. This
+        # synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`,
+        # which satisfies a Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed
+        # class) whose top-level type validator rejects the `{}`.
         return false unless object_shaped?(config)
 
-        subtree_has_usable_subfield_default?(children) && !has_required_child
+        subtree_has_usable_subfield_default?(children, satisfiability:) && !has_required_child
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -367,15 +369,18 @@ module Axn
       # `build_output` marks every top-level exposed key required directly (the serializer always emits
       # them). This method reaches a `for_output` config only for a nested shape member, which is
       # serialized from the actual value and so honors its own `optional:`/`allow_nil:`/`default:`.
-      def optional_for_schema?(config, subfield: false)
-        return true if usable_default?(config, subfield:)
+      def optional_for_schema?(config, subfield: false, satisfiability: false)
+        return true if usable_default?(config, subfield:, satisfiability:)
 
         nil_accepted?(config)
       end
 
       # A default lets the client omit the field (Axn applies it before validation). We judge usability
-      # by declared SHAPE only — present, not a Proc — never by running the field's validators. A Proc
-      # default is uninspectable here. For a subfield, only a truthy default is applied at runtime
+      # by declared SHAPE only — never by running the field's validators. A Proc default is unknowable at
+      # declaration, so the two modes diverge on it (the ONLY semantic delta): strict (schema) mode
+      # resolves toward required — the safe direction — while satisfiability mode (the declaration-rejection
+      # detector) resolves toward satisfiable, since the Proc DOES apply at runtime and rejection is
+      # reserved for provably dead declarations. For a subfield, only a truthy default is applied at runtime
       # (`next unless config.default`), so a falsey subfield default never counts.
       #
       # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when no active presence
@@ -388,11 +393,16 @@ module Axn
       # The emptiness check is limited to literal containers (Hash/Array/String): reflection must stay
       # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
       # other lazy collection) could issue a query or run user code. A non-literal default is present.
-      def usable_default?(config, subfield:)
+      def usable_default?(config, subfield:, satisfiability: false)
         return false unless config.respond_to?(:default)
 
         value = config.default
-        return false if value.nil? || value.is_a?(Proc)
+        return false if value.nil?
+        # The governing split (PRO-2889): a Proc default is unknowable at declaration. Strict (schema)
+        # mode resolves toward required — the safe direction — while satisfiability mode (the
+        # declaration-rejection detector) resolves toward satisfiable: the Proc DOES apply at runtime,
+        # and rejection is reserved for provably dead declarations.
+        return satisfiability if value.is_a?(Proc)
         return false if presence_blank?(value) && presence_rejects_blank?(config)
 
         subfield ? config.applied_default? : true

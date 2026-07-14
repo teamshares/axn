@@ -1165,7 +1165,7 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(Array(schema[:required])).not_to include("company_id")
-      expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds (no synthesis under a model)
+      expect(klass.call).to be_ok # runtime agreement: the value-level default applies at read time, so omission succeeds
     end
 
     it "does not require the model <field>_id for an optional PROC-defaulted subfield either (optionality alone rescues it)" do
@@ -3571,7 +3571,7 @@ RSpec.describe Axn::Reflection::Schema do
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         expect(Array(schema[:required])).not_to include("company_id")
-        expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds (no synthesis under a model)
+        expect(klass.call).to be_ok # runtime agreement: the optional subfield never forces the id, so omission succeeds
       end
     end
 
@@ -4334,6 +4334,24 @@ RSpec.describe Axn::Reflection::Schema do
         },
         required: ["payload"],
       )
+    end
+  end
+
+  describe "satisfiability mode (PRO-2889)" do
+    it "counts a Proc default as a rescue only in satisfiability mode" do
+      action = build_axn do
+        expects :payload, type: Hash, allow_nil: true
+        expects :id, on: :payload, type: Integer, default: -> { 1 }
+        def call = nil
+      end
+      resolved = action._resolved_subfields
+      id_node = resolved.roots[:payload].children[:id]
+
+      strict = Axn::Reflection::Schema.derive_annotations(resolved.roots)
+      sat    = Axn::Reflection::Schema.derive_annotations(resolved.roots, satisfiability: true)
+
+      expect(strict[id_node].required).to be(true)   # schema: unknowable → required (safe direction)
+      expect(sat[id_node].required).to be(false)     # detector: the Proc DOES apply at runtime
     end
   end
 end
