@@ -269,6 +269,17 @@ module Axn
         # pure cache of that recursive call, not a new rule.
         required = !node_optional?(node, ann, node.configs, satisfiability:)
 
+        # A node whose EVERY declaration is conditionally gated never forces its ancestors: the
+        # gates may all be closed at runtime, so an omitted/nil ancestor CAN validate. Own-level
+        # emission stays static-maximal (apply_children! consults node_optional? directly, so the
+        # nested `required` keeps the gated obligation) — this only stops requiredness from
+        # propagating upward. Mode-independent: satisfiability mode needs it so a declared
+        # tolerance above a gated child is exercisable (not dead), and strict mode honors the
+        # ancestor's own declared optionality instead of inventing strictness the declaration
+        # disavowed (see the design doc's "one deliberate exception"). An implicit node has no
+        # configs, so it is untouched (its required already follows its — now relaxed — subtree).
+        required &&= !(node.configs.any? && node.configs.all? { |c| conditionally_gated?(c) })
+
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
           # presence test here), so it's simply the inverse.

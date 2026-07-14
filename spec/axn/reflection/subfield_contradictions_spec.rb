@@ -102,6 +102,36 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
     end
   end
 
+  describe "conditionally gated required subfields (PRO-2881)" do
+    it "accepts a nil-tolerant parent whose required subfield is gated (the tolerance is exercisable)" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data, if: -> { data.present? }
+        end
+      end.not_to raise_error
+    end
+
+    it "still rejects when an UNGATED required sibling strands the parent" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data, if: -> { data.present? }
+          expects :role, type: String, on: :data
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "points the rejection message at the conditional spelling" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data
+        end
+      end.to raise_error(ArgumentError, /gate it conditionally.*if: -> \{ data\.present\? \}/m)
+    end
+  end
+
   describe "unanswerable-segment rejection" do
     it "rejects a dotted name whose segment reads through a scalar shape member" do
       expect do

@@ -112,7 +112,6 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
 
   describe "conditions on subfields and exposes" do
     it "gates a subfield's validations (required-when-parent-present pattern)" do
-      pending "until the gated-config carve-out (Task 5)"
       action = build_axn do
         expects :data, optional: true
         expects :user, type: String, on: :data, if: -> { data.present? }

@@ -4505,5 +4505,28 @@ RSpec.describe Axn::Reflection::Schema do
       expect(prop[:required]).to include("note")
       expect(prop[:properties][:note][:type]).to eq("string")
     end
+
+    it "does not force a gated required subfield's ancestors (own-level nested required kept)" do
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, type: String, on: :data, if: -> { data.present? }
+      end
+      schema = action.input_schema
+      expect(schema[:required].to_a).not_to include("data")
+      expect(schema[:properties][:data][:type]).to eq(%w[object null])
+      expect(schema[:properties][:data][:required]).to eq(["user"])
+      expect(schema[:properties][:data][:properties][:user][:type]).to eq("string")
+    end
+
+    it "keeps ancestor-forcing when any config at the node is ungated" do
+      action = build_axn do
+        expects :data, type: Hash
+        expects :user, type: String, on: :data, if: :cond
+        expects :role, type: String, on: :data
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("data")
+      expect(schema[:properties][:data][:required]).to match_array(%w[user role])
+    end
   end
 end
