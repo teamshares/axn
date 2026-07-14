@@ -24,6 +24,16 @@ Write-back buys two things; both evaporate for subfields:
    - **Model-consistency** reads `<field>_id` raw off the resolved parent. Removing subfield default write-back *removes* the `_id_default_would_conflict_with_present_record?` guard's reason to exist — the check then sees only genuinely caller-supplied ids. The defaulted-id-still-resolves-a-record path is already handled on the read path by `resolve_model_via_sibling_id`.
    - **Facet prep** (`prepare_inbound_for_facets!`) resolves subfields lazily on read, exactly as `model:` readers already do there.
 
+### Observable behavior change (`[BREAKING]`)
+
+Removing subfield write-back is not purely behavior-preserving. A subfield `default:`/`preprocess:` write-back today doesn't only resolve the child — it **materializes the parent**, observable through the *parent's own reader*. After commit 2:
+
+- **A subfield default/preprocess no longer materializes or mutates its parent.** The parent reader returns the caller's value unchanged; the child still resolves its default via the read path (value-level, PRO-2889).
+- Example: `expects :note, on: :payload, default: "d"` called with `payload: nil` — today `payload` reads back `{note: "d"}`; after, `payload` reads `nil` and `note` reads `"d"`.
+- The setter write-through for a settable-object parent (a `Struct`) — the exact in-place caller mutation PRO-2898 flagged and PRO-2908 targets — is eliminated for subfields.
+
+Accepted deliberately: axn is pre-alpha and subfields are lightly used. `[BREAKING]` CHANGELOG entry. In `subfield_write_back_matrix_spec.rb` (17 examples) exactly the 4 that assert a *synthesized parent shape* (matrix:20, :107, :119, :134) get rewritten to assert the new non-materializing behavior; the rest (child-value and non-mutation assertions) stay green unchanged.
+
 ### Known behavior refinement
 
 A subfield that has a `preprocess:` **and** no validators **and** is never read by user code: its proc fires eagerly under write-back but not under read-path (nothing triggers the read). This is marginal (a field whose only effect is an unread preprocess side-effect is an anti-pattern), is *identical* to how PRO-2889 already treats such a field's `default:`, and is documented. Not a correctness hole.
@@ -60,13 +70,13 @@ At the end of commit 2: one resolution path for subfields, top-level unchanged, 
 - `coerce_input_types` reaches method-call-crossing coercible subfields.
 - **No in-place mutation** of caller-supplied objects on the read path (assert the caller's object is unchanged after the call — the wedge this ticket establishes).
 - Regression: `default:` composition (PRO-2889) continues to hold.
-- Commit 2 regression: the full existing non-method-call subfield `default:`/`preprocess:`/`coerce:` suite stays green through the read path — nested defaults, `{}`-synthesis-equivalent behavior, model-route non-clobbering, model-consistency, `coerce_input_types` at depth.
+- Commit 2 regression: the full existing non-method-call subfield `default:`/`preprocess:`/`coerce:` suite stays green through the read path — nested defaults, model-route non-clobbering, model-consistency, `coerce_input_types` at depth — EXCEPT the 4 parent-materialization assertions (matrix:20, :107, :119, :134), which are rewritten to assert the parent reader returns the caller's value unchanged while the child still resolves.
 - Rewrite the method_call_spec "inert" block to assert composition.
 
 ## Docs / CHANGELOG
 
 - Remove the "silently inert / skipped entirely / planned (PRO-2903)" notes in `docs/reference/class.md` and the PRO-2898 CHANGELOG entry; state that `preprocess:`/`coerce:` compose with `method_call:`.
-- CHANGELOG entry for PRO-2903.
+- `[BREAKING]` CHANGELOG entry for PRO-2903: subfield `default:`/`preprocess:` no longer materialize/mutate the parent (child still resolves via the read path).
 - Update the executor comments that frame the skips as "keeps them inert (PRO-2903)".
 
 ## Follow-up (separate ticket) — PRO-2908
