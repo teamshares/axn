@@ -32,10 +32,12 @@ module Axn
           # Hash-like (named-key) sources: read the key. Checked BEFORE the method branch so a key
           # whose name collides with a Hash/Enumerable method (e.g. `zip`, `count`, `first`) is read
           # as a key rather than dispatched as a method call. Arrays respond to #dig too, but only
-          # with integer indices, so they stay on the reader path (e.g. `items.count`).
+          # with integer indices, so they stay on the reader path (e.g. `items.count`). Read via
+          # single-key `#dig` (not `#[]`) so an absent member reads as nil across diggable types —
+          # notably `Struct#["missing"]` raises `NameError` while `Struct#dig` returns nil.
           if source.respond_to?(:dig) && !source.is_a?(Array)
             base = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
-            return base[segment]
+            return base.dig(segment) # rubocop:disable Style/SingleArgumentDig -- #[] raises NameError on an absent Struct member; #dig reads it as nil
           end
 
           # Object/Array sources: use the reader method. A reader that needs arguments can't answer

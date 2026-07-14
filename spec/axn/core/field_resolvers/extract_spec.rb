@@ -113,6 +113,21 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
     end
   end
 
+  describe "Struct sources (diggable non-Hash)" do
+    # A Struct responds to #dig, so it reads by member name — but `Struct#[]` raises NameError for
+    # an unknown member while `#dig` returns nil, so a missing member must read as absent, not crash.
+    let(:point) { Struct.new(:name).new("here") }
+
+    it "reads a present member" do
+      expect(extract(:name, point)).to eq("here")
+    end
+
+    it "returns nil for a missing member rather than raising" do
+      expect(extract(:missing, point)).to be_nil
+      expect(extract("nested.missing", { nested: point })).to be_nil
+    end
+  end
+
   describe "object sources (non-diggable)" do
     it "uses the reader method" do
       obj = Data.define(:zip).new(zip: "v")
