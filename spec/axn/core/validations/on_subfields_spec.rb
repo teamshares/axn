@@ -1661,7 +1661,7 @@ RSpec.describe Axn do
     # rubocop:enable Lint/ConstantDefinitionInBlock
 
     describe "dotted-name model: subfield" do
-      it "raises, pointing at the reader spelling" do
+      it "raises without an alias, pointing at both working spellings" do
         expect do
           build_axn do
             expects :payload
@@ -1671,8 +1671,17 @@ RSpec.describe Axn do
           ArgumentError,
           'a dotted-name model: subfield (["org.company"] with on: payload) has no consumable id — ' \
           "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-          'Use the reader spelling instead: expects :company, on: "payload.org", model: ...',
+          'Add an `as:` alias (e.g. as: :company), or use the reader spelling: expects :company, on: "payload.org", model: ...',
         )
+      end
+
+      it "does not raise when an `as:` alias supplies the reader (PRO-2896)" do
+        expect do
+          build_axn do
+            expects :payload
+            expects "org.company", on: :payload, model: FakeModel, as: :company
+          end
+        end.not_to raise_error
       end
 
       it "does not raise for the reader spelling (dotted on:, single-level name)" do

@@ -97,6 +97,97 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     end
   end
 
+  describe "`model:` on a dotted subfield key + `as:` (PRO-2896)" do
+    let(:widget_class) do
+      Class.new do
+        def self.name = "Widget"
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+        def ==(other) = other.is_a?(self.class) && other.id == id
+      end
+    end
+
+    it "resolves the model from the nested `_id` under the alias" do
+      klass = widget_class
+      action = build_axn do
+        expects :payload, type: Hash
+        expects "order.widget", on: :payload, model: { klass:, finder: :find }, as: :widget
+        exposes :got
+
+        def call = expose(got: widget)
+      end
+
+      result = action.call(payload: { order: { widget_id: 7 } })
+      expect(result).to be_ok
+      expect(result.got).to eq(widget_class.new(7))
+    end
+
+    it "exposes the nested raw id under the `<alias>_id` companion" do
+      klass = widget_class
+      action = build_axn do
+        expects :payload, type: Hash
+        expects "order.widget", on: :payload, model: { klass:, finder: :find }, as: :widget
+        exposes :got
+
+        def call = expose(got: widget_id)
+      end
+
+      expect(action.call(payload: { order: { widget_id: 7 } }).got).to eq(7)
+    end
+
+    it "derives a defaulted klass from the leaf segment, not the dotted path" do
+      stub_const("Widget", widget_class)
+      action = build_axn do
+        expects :payload, type: Hash
+        expects "order.widget", on: :payload, model: { finder: :find }, as: :widget
+        exposes :got
+
+        def call = expose(got: widget)
+      end
+
+      expect(action.call(payload: { order: { widget_id: 7 } }).got).to eq(widget_class.new(7))
+    end
+  end
+
+  describe "`model:` subfield reading off a record parent (Extract-backed reads, PRO-2896)" do
+    let(:widget_class) do
+      Class.new do
+        def self.name = "Widget"
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+        def ==(other) = other.is_a?(self.class) && other.id == id
+      end
+    end
+
+    it "reads the nested `_id` off a record parent via method dispatch (not `[]`)" do
+      widget = widget_class
+      # A parent record exposing `widget_id` as a METHOD with no `[]` accessor — only Extract's
+      # method-dispatch read can reach it (raw `record[:widget_id]` would NoMethodError → nil).
+      company = Class.new do
+        def self.name = "Company"
+        def self.find(_id) = new
+        def widget_id = 7
+      end
+
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: company, finder: :find }
+        expects :widget, on: :company, model: { klass: widget, finder: :find }
+        exposes :got
+
+        def call = expose(got: widget)
+      end
+
+      result = action.call(payload: { company_id: 1 })
+      expect(result).to be_ok
+      expect(result.got).to eq(widget_class.new(7))
+    end
+  end
+
   describe "`prefix:` (subfield multi-field sugar)" do
     let(:action) do
       build_axn do
@@ -209,6 +300,82 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     end
   end
 
+  describe "`as:` on a dotted subfield key (PRO-2896)" do
+    it "generates a reader under the alias that resolves the nested path" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "items.detail", on: :order, as: :item_detail
+        exposes :got
+
+        def call = expose(got: item_detail)
+      end
+
+      expect(action.call(order: { items: { detail: "x" } }).got).to eq("x")
+    end
+
+    it "validates the nested value under the aliased reader" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "items.qty", on: :order, as: :item_qty, type: Integer
+
+        def call = nil
+      end
+
+      expect(action.call(order: { items: { qty: 3 } })).to be_ok
+      bad = action.call(order: { items: { qty: "nope" } })
+      expect(bad.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "defines the `?` predicate under the aliased name" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "flags.active", on: :order, as: :active, type: :boolean
+        exposes :got
+
+        def call = expose(got: active?)
+      end
+
+      expect(action.call(order: { flags: { active: true } }).got).to be(true)
+    end
+
+    it "applies a default for the nested path" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "meta.tz", on: :order, as: :tz, optional: true, default: "UTC"
+        exposes :got
+
+        def call = expose(got: tz)
+      end
+
+      expect(action.call(order: { meta: {} }).got).to eq("UTC")
+    end
+
+    it "lets a later `on:` anchor on the aliased-dotted reader" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "items.detail", on: :order, as: :detail, type: Hash
+        expects :label, on: :detail
+        exposes :got
+
+        def call = expose(got: label)
+      end
+
+      expect(action.call(order: { items: { detail: { label: "hi" } } }).got).to eq("hi")
+    end
+
+    it "defines the reader under the alias, none under the dotted wire key" do
+      action = build_axn do
+        expects :order, type: Hash
+        expects "items.detail", on: :order, as: :item_detail, optional: true
+
+        def call = nil
+      end
+
+      expect(action.method_defined?(:item_detail)).to be(true)
+      expect(action.method_defined?(:"items.detail")).to be(false)
+    end
+  end
+
   describe "guards" do
     it "rejects `as:` with multiple fields" do
       expect do
@@ -222,13 +389,40 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /as:.*prefix:|prefix:.*as:/)
     end
 
-    it "rejects aliasing a dotted subfield key" do
+    it "rejects `prefix:` on a dotted subfield key (concatenation stays dotted — no reader nameable)" do
       expect do
         build_axn do
           expects :foo
-          expects "billing.zip", on: :foo, as: :zip
+          expects "billing.zip", on: :foo, prefix: :addr_
         end
-      end.to raise_error(ArgumentError, /dotted/)
+      end.to raise_error(ArgumentError, /prefix:.*dotted|dotted.*prefix:/)
+    end
+
+    it "rejects a dotted `as:` alias (a reader name can't be dotted)" do
+      expect do
+        build_axn do
+          expects :foo
+          expects "billing.zip", on: :foo, as: :"a.b"
+        end
+      end.to raise_error(ArgumentError, /reader name may not be dotted/)
+    end
+
+    it "rejects a dotted top-level field name (only a subfield resolves a nested path)" do
+      expect do
+        build_axn { expects "a.b" }
+      end.to raise_error(ArgumentError, /dotted field name.*only valid for a subfield/m)
+    end
+
+    it "rejects a dotted top-level field name even with `as:` (top-level readers aren't path-aware)" do
+      expect do
+        build_axn { expects "a.b", as: :ab }
+      end.to raise_error(ArgumentError, /dotted field name.*only valid for a subfield/m)
+    end
+
+    it "rejects a dotted `exposes` field name (outbound fields have no nested-path reader)" do
+      expect do
+        build_axn { exposes "a.b" }
+      end.to raise_error(ArgumentError, /dotted field name.*not valid for exposes/m)
     end
 
     it "rejects readers: false (removed) with a pointer at as:/prefix:" do

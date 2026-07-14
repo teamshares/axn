@@ -29,6 +29,23 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
     it "returns nil for a missing key" do
       expect(extract(:missing, { name: "x" })).to be_nil
     end
+
+    it "reads indifferently from a HashWithIndifferentAccess source" do
+      hwia = { a: { b: 1 } }.with_indifferent_access
+      expect(extract("a.b", hwia)).to eq(1)
+      expect(extract(:missing, hwia)).to be_nil
+    end
+
+    it "reads a key whose value is present but nil (not treated as absent differently than dig)" do
+      expect(extract(:name, { name: nil })).to be_nil
+    end
+
+    it "does not mutate or convert the source hash" do
+      source = { a: { b: 1 } }
+      extract("a.b", source)
+      expect(source).to eq({ a: { b: 1 } })
+      expect(source[:a]).not_to be_a(ActiveSupport::HashWithIndifferentAccess)
+    end
   end
 
   describe "dotted paths with mixed segment types" do

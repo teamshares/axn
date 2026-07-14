@@ -32,10 +32,27 @@ module Axn
           # Hash-like (named-key) sources: read the key. Checked BEFORE the method branch so a key
           # whose name collides with a Hash/Enumerable method (e.g. `zip`, `count`, `first`) is read
           # as a key rather than dispatched as a method call. Arrays respond to #dig too, but only
-          # with integer indices, so they stay on the reader path (e.g. `items.count`). Read via
-          # single-key `#dig` (not `#[]`) so an absent member reads as nil across diggable types —
-          # notably `Struct#["missing"]` raises `NameError` while `Struct#dig` returns nil.
+          # with integer indices, so they stay on the reader path (e.g. `items.count`).
           if source.respond_to?(:dig) && !source.is_a?(Array)
+            # A Hash (incl. HashWithIndifferentAccess) is read by a direct dual-key lookup rather than
+            # `#with_indifferent_access.dig`, which deep-copies the WHOLE source on every segment (a
+            # per-read cost on the hot path). Neither key form allocates a heap string: `segment` is
+            # already a String (from the dotted split), and `#to_sym` is a symbol-table intern of an
+            # already-declared field name (contract paths are developer-declared, never arbitrary
+            # input, so there's no symbol-table-bloat risk). SYMBOL is tried first because internal
+            # contexts come from kwargs and are predominantly symbol-keyed, saving the redundant
+            # `key?` probe on that common path. (A hash carrying BOTH a symbol and a string form of
+            # the same name — pathological — resolves to the symbol value.)
+            if source.is_a?(Hash)
+              sym = segment.to_sym
+              return source[sym] if source.key?(sym)
+
+              return source.key?(segment) ? source[segment] : nil
+            end
+
+            # Other diggable sources (Struct, ActionController::Parameters, …): fall back to the
+            # indifferent copy. Read via single-key `#dig` (not `#[]`) so an absent member reads as
+            # nil — notably `Struct#["missing"]` raises `NameError` while `Struct#dig` returns nil.
             base = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
             return base.dig(segment) # rubocop:disable Style/SingleArgumentDig -- #[] raises NameError on an absent Struct member; #dig reads it as nil
           end
