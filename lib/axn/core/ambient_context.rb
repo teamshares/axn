@@ -117,15 +117,17 @@ module Axn
         _filter_ambient_node(root, source)
       end
 
-      # Rebuild the declared subtree rooted at `node`, reading from `source`. A childless node is a
-      # declared leaf (copy its value, plus a model subfield's `<field>_id` alias); a node WITH declared
-      # children is an intermediate (recurse into its source sub-hash, keeping only declared descendants).
+      # Rebuild the declared subtree rooted at `node`, reading from `source`. A leaf node — no declared
+      # children, OR a `model:` node (whose descendants read off the RESOLVED RECORD, not a nested
+      # ambient hash, so the source only ever carries its record/`<field>_id`) — copies its value; any
+      # other node WITH children is an intermediate (recurse into its source sub-hash, keeping only
+      # declared descendants).
       def _filter_ambient_node(node, source)
         indifferent = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
         return {} unless indifferent.respond_to?(:key?)
 
         node.children.each_with_object({}) do |(key, child), acc|
-          if child.children.empty?
+          if child.children.empty? || _ambient_model_node?(child)
             _copy_ambient_leaf!(acc, key, child, indifferent)
           elsif indifferent.key?(key)
             sub = indifferent[key]
@@ -142,10 +144,16 @@ module Axn
       # preserve whichever key(s) the source actually supplies.
       def _copy_ambient_leaf!(acc, key, node, indifferent)
         acc[key] = indifferent[key] if indifferent.key?(key)
-        return unless node.configs.any? { |c| c.validations[:model] }
+        return unless _ambient_model_node?(node)
 
         id_key = Internal::FieldConfig.model_id_key(key)
         acc[id_key] = indifferent[id_key] if indifferent.key?(id_key)
+      end
+
+      # A node with a `model:` route on any of its configs resolves to a RECORD — its value (record or
+      # `<field>_id`) is copied whole, never reconstructed from children (they read off the record).
+      def _ambient_model_node?(node)
+        node.configs.any? { |c| c.validations[:model] }
       end
     end
   end

@@ -226,6 +226,45 @@ The **root** segment (`address`) must be a declared field (or subfield). Resolut
 `default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the write-back is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments. Skipping the write-back doesn't skip the default itself — the axn's reader and validation still resolve it (see the tip above); only the materialized-object side effect is unavailable there.
 :::
 
+#### Ambient context (`on: :ambient_context`)
+
+`ambient_context` is a reserved, always-present parent whose subfield values are supplied **per-invocation by the framework** rather than by the caller's arguments. It's how an action declares a dependency on ambient request/tenant state — the current company, the acting user, a request id — as an explicit part of its contract:
+
+```ruby
+class ChargeCard
+  include Axn
+  expects :company, on: :ambient_context, model: Company   # framework-supplied, not a caller argument
+  expects :actor,   on: :ambient_context, model: User
+
+  def call = do_thing(company, actor)   # `company` / `actor` read like any other declared input
+end
+```
+
+Each declared ambient subfield resolves from the first source that provides it, checked in order:
+
+1. an explicit `ambient_context:` kwarg on the call (`ChargeCard.call(ambient_context: { company_id: 7 })`) — an explicit kwarg **replaces** the provider entirely (no merge), so passing `ambient_context: {}` or `nil` deliberately supplies nothing;
+2. otherwise the configured `Axn.config.ambient_context_provider` (a callable returning a Hash);
+3. otherwise, in a Rails app, a live view over every registered `ActiveSupport::CurrentAttributes`;
+4. otherwise `{}`.
+
+Whatever the source, the hash is **filtered to the declared ambient subfields, along their declared paths** — only keys you declared survive, so ambient state never carries a process-wide dump of `Current` into logs or exception context. Ambient subfields are validated like any other input (a required one that resolves absent fails the call) but are deliberately excluded from `input_schema` (they're framework-supplied, never client input).
+
+::: tip Declare the dependency — don't reach into `Current` directly
+Prefer `expects :company, on: :ambient_context` over reading `Current.company` inside `call`. A declared ambient subfield is visible in the contract (a caller can see what ambient state the action needs), is validated and sensitive-filtered, and is trivially driven in tests by passing `ambient_context:` (or the [`with_ambient_context`](/recipes/testing#ambient-context) helper) — no `CurrentAttributes` setup. Reading `Current` directly hides all of that. The optional [`Axn/AmbientContextBypass`](/recipes/rubocop-integration#axn-ambientcontextbypass) RuboCop cop flags a direct `Current.<attr>` read inside an Axn and points at the `on: :ambient_context` fix.
+:::
+
+Ambient subfields **nest to any depth**, exactly like a non-ambient parent — the source can be a nested object and subfields reach into it:
+
+```ruby
+expects :request, on: :ambient_context, type: Hash
+expects :ip,      on: :request, type: String   # resolves ambient_context[:request][:ip]
+
+# equivalently, without the intermediate reader:
+expects "request.ip", on: :ambient_context, type: String, as: :ip
+```
+
+The filter reconstructs only the declared leaves along their paths, never a whole sub-hash — so an undeclared sibling at any depth (`request[:token]` when only `request[:ip]` is declared) never reaches the resolved value, logs, or exception context. `sensitive:` composes down the path (mark a nested leaf, or an ancestor, and the reconstructed nested value is filtered). Because ambient values are resolved per-invocation and never read from the inbound arguments, `default:`, `preprocess:`, and `coerce:` are **not** supported on any ambient subfield (nested or not) and raise at declaration — compute those in your provider or a `before` hook instead; `sensitive:` is supported.
+
 #### Resolving a subfield by calling a method (`method_call:`)
 
 By default a subfield is resolved by reading **declared data** off its parent: a Hash key, or a `Struct`/`OpenStruct`/`Data` member. That's the safe path, and it's all you need for the usual case of reaching into a nested payload.

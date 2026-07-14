@@ -321,6 +321,35 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
+  describe "a model ambient subfield that also has descendants" do
+    let(:company_klass) do
+      Class.new do
+        def self.find(id) = new(id)
+        def initialize(id) = (@id = id)
+        attr_reader :id
+
+        def name = "Acme"
+      end
+    end
+
+    let(:klass) do
+      kls = company_klass
+      Class.new do
+        include Axn
+        expects :company, on: :ambient_context, model: { klass: kls, finder: :find }
+        expects :name, on: :company, type: String, method_call: true
+        exposes :cname
+        def call = expose(cname: name)
+      end
+    end
+
+    it "resolves the model from an id-only ambient supply (id not stripped by the child branch)" do
+      result = klass.call(ambient_context: { company_id: 7 })
+      expect(result).to be_ok
+      expect(result.cname).to eq("Acme")
+    end
+  end
+
   describe "malformed intermediate: a non-hash parent value is not masked" do
     let(:klass) do
       Class.new do
@@ -483,6 +512,16 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     end
     inst = klass.send(:new)
     expect(inst.send(:_filter_to_declared, { request: "notahash" })).to eq(request: "notahash")
+  end
+
+  it "preserves a model parent's <field>_id even when it has declared descendants" do
+    klass = Class.new do
+      include Axn
+      expects :company, on: :ambient_context, model: { klass: Struct.new(:id), finder: :find }
+      expects :name, on: :company, type: String, method_call: true
+    end
+    inst = klass.send(:new)
+    expect(inst.send(:_filter_to_declared, { company_id: 7 })).to eq(company_id: 7)
   end
 
   it "reconstructs a dotted-`on:` nested leaf" do
