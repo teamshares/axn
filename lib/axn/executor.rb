@@ -56,6 +56,7 @@ module Axn
       apply_inbound_coercion!
       apply_inbound_preprocessing!
       apply_defaults!(:inbound)
+      _clear_resolve_value_cache!
     rescue StandardError => e
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
     end
@@ -371,6 +372,13 @@ module Axn
       apply_inbound_coercion!
       return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
+
+      # An early read — a hook/preprocess touching a subfield reader (which may consult a dotted
+      # sibling's value-level default via resolve_model_via_sibling_id) — can populate
+      # ContractForSubfields' @__resolve_value_cache before coercion/preprocess/defaults have settled.
+      # The settled pipeline is the authoritative input state, so discard any pre-pipeline cache: the
+      # validation-time reads below then resolve against the settled wire values.
+      _clear_resolve_value_cache!
 
       validate_contract!(:inbound)
 
@@ -706,6 +714,8 @@ module Axn
         next unless config.applied_default?
         next unless (path = _resolved_path_for(config))
         next unless _current_value_at(path).nil?
+        next if _default_clobbers_model_route?(path)
+        next if _id_default_would_conflict_with_present_record?(path)
 
         # A nil non-object ancestor anywhere along the chain can't hold the nested structure —
         # materialization refuses to inject `{}` where it would fail that ancestor's own declared
@@ -717,6 +727,53 @@ module Axn
         @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
         _write_value_at!(path, _resolve_default(config))
+      end
+    end
+
+    # Whether a subfield default's WIRE write would clobber a model route sharing the same wire key.
+    # A merged non-model route (or the model config's own default) at a node that also carries a
+    # `model:` route must NOT write its value onto the shared key: the model resolver prefers a
+    # written value over a caller-supplied/sibling `<field>_id`, so the written default is read AS the
+    # record and fails ModelValidator — killing the sibling-id rescue. The value-level fallback
+    # (ContractForSubfields.resolve_value) still serves the non-model route's readers and validation,
+    # and the model route resolves via id/sibling untouched. Only a depth>0 write shares a nested key;
+    # a top-level (depth-0) model default supplies the record itself and keeps writing. This is the
+    # same clobbering class `_synthesizable_node?` documents for `{}` synthesis.
+    def _default_clobbers_model_route?(path)
+      return false if path.wire_path.size <= 1
+
+      path.node.configs.any? { |c| c.validations[:model] }
+    end
+
+    # Whether writing this config's `<field>_id` default would fabricate a model-consistency mismatch.
+    # When a sibling model route's RECORD is already present in the wire data, the caller's record is
+    # authoritative and the id default (a lookup TOKEN for the absent-record case) must not be
+    # written — otherwise _model_consistency_mismatches compares the present record against axn's own
+    # injected id and raises. Mirrors "a present value is never overridden". Works at depth (sibling =
+    # the id's own wire parent) and top level (sibling = another top-level field).
+    def _id_default_would_conflict_with_present_record?(path)
+      model_config = _sibling_model_route_for_id(path)
+      return false unless model_config
+      return false unless (model_path = _resolved_path_for(model_config))
+
+      !_current_value_at(model_path).nil?
+    end
+
+    # The sibling `model:` route whose companion `<field>_id` node this path lands on, or nil. Keyed on
+    # the id node's own wire key (`path.wire_path.last`), which the tree derives as
+    # `model_id_key(model's wire key)` — so it matches the id however it was declared (`:company_id` or
+    # a dotted `"meta.company_id"`), the same way credit_sibling_id_defaults! locates the pair by node
+    # key. Siblings come from the id's own wire parent at depth, or the top-level field configs at
+    # depth 0.
+    def _sibling_model_route_for_id(path)
+      id_key = path.wire_path.last
+      candidates = if path.wire_path.size > 1
+                     Array(path.parent_node&.children&.values).flat_map(&:configs)
+                   else
+                     @action_class.send(:internal_field_configs)
+                   end
+      candidates.find do |c|
+        c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
       end
     end
 
@@ -801,6 +858,13 @@ module Axn
 
     def _resolved_path_for(config)
       @action_class._resolved_subfields.index[config]
+    end
+
+    # Drop ContractForSubfields' per-instance value-level-default cache (see resolve_value). Called
+    # once the inbound pipeline has settled, so a value cached by an early pre-pipeline read can't
+    # outlive the inputs it was computed from.
+    def _clear_resolve_value_cache!
+      @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
     end
 
     # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an

@@ -306,6 +306,24 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           end
         end.not_to raise_error
       end
+
+      it "accepts a nil-tolerant merged non-model route even under a required grandchild (Fix B)" do
+        # The node carries a model route (rescued by the defaulted `:company_id` sibling) AND a
+        # nil-tolerant non-model route, with a REQUIRED grandchild `:name`. The sibling id rescues the
+        # whole node: the model route resolves the record which answers `:name`, and the optional
+        # non-model route tolerates nil — so neither tolerance is dead. The per-config loop must skip
+        # ANY nil-accepted config at the rescued node, not only the model route.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :meta, on: :payload, type: Hash, allow_nil: true
+            expects :company_id, on: :meta, type: Integer, default: 42
+            expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
+            expects "meta.company", on: :payload, type: DeadCo, optional: true
+            expects :name, on: :company, type: String
+          end
+        end.not_to raise_error
+      end
     end
 
     context "a blank-literal id default is never a lookup token" do

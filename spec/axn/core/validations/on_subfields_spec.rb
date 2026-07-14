@@ -2023,5 +2023,115 @@ RSpec.describe Axn do
         expect(action.call(payload: { company_id: 7 }).cid).to be_nil
       end
     end
+
+    context "resolve_value cache is scoped to the settled pipeline (Fix A, PRO-2889)" do
+      it "reads the settled wire value, not a value cached before preprocess/defaults settled" do
+        # An earlier field's preprocess touches the `company` reader, which (via
+        # resolve_model_via_sibling_id) resolves the dotted sibling `"meta.company_id"` through
+        # resolve_value BEFORE its own preprocess/default have run — caching the pre-pipeline default
+        # (42). Validation must read the SETTLED wire value (preprocess wrote 6), not the stale cache.
+        action = build_axn do
+          # kick's preprocess touches the `company` reader early (before the pipeline settles).
+          expects :kick, type: String, preprocess: lambda { |v|
+            company
+            v
+          }
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects "meta.company_id", on: :payload, type: Integer, default: 42,
+                                     preprocess: ->(v) { (v || 5) + 1 }, inclusion: { in: [6] }
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          def call = nil
+        end
+        expect(action.call(kick: "go", payload: { meta: {} })).to be_ok
+      end
+    end
+
+    context "a merged nil-tolerant non-model route at a sibling-id-rescued node (Fix B, PRO-2889)" do
+      it "runs after loading cleanly: the model route resolves via the sibling id, non-model nil tolerated" do
+        probe = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "answered"
+          def self.fetch(id) = new(id)
+        end
+        stub_const("ProbeCo", probe)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: ProbeCo, finder: :fetch }, allow_nil: true
+          expects "meta.company", on: :payload, type: ProbeCo, optional: true
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+    end
+
+    context "a leaf default must not clobber a model-routed wire key (Fix C, PRO-2889)" do
+      it "resolves the record via the sibling id, not the non-model route's written default" do
+        # `meta.company` (untyped, optional, default {x:1}) shares the wire key with the `:company`
+        # model route. Writing {x:1} onto that key would be read AS the record and fail ModelValidator,
+        # killing the sibling-id rescue. The write is skipped; the model route resolves via id 42 and the
+        # non-model route sees the default value-level.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
+          expects "meta.company", on: :payload, optional: true, default: { x: 1 }
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: {})
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+    end
+
+    context "an id-sibling default must not manufacture a model-consistency mismatch (Fix E, PRO-2889)" do
+      it "honors a present sibling record over axn's own id default" do
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("FindCo", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FindCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { meta: { company: FindCo.new(7) } })
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
+
+      it "still supplies the id default as a lookup token when the record is absent" do
+        finder_class = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("FindCo", finder_class)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash, allow_nil: true
+          expects :company_id, on: :meta, type: Integer, default: 42
+          expects :company, on: :meta, model: { klass: FindCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: {}).cid).to eq(42)
+      end
+    end
   end
 end

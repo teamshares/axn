@@ -93,7 +93,10 @@ module Axn
           node.configs.each do |config|
             next unless Schema.nil_accepted?(config)
             next if Schema.node_optional?(node, ann, [config], satisfiability: true)
-            next if config.validations[:model] && defaulted_id_sibling?(parent, key)
+            # Skip ANY nil-accepted config at a sibling-id-rescued node, not only the model route: a
+            # merged nil-tolerant non-model route (and a required grandchild the resolved record answers)
+            # is exercisable via the same rescue the annotation credit grants — one shared predicate.
+            next if Schema.sibling_id_rescued?(parent, key, node)
 
             # Name the declaration by the field the user wrote (config.field) — symmetric with the
             # top-level loop above; the `on:` parent is implied and the stranded descendant is named.
@@ -126,20 +129,6 @@ module Axn
         return true if Schema.usable_default?(config, subfield: false, satisfiability: true)
 
         Schema.optional_for_schema?(config, satisfiability: true) && !Schema.children_require_presence?(node.children, ann)
-      end
-
-      # A model SUBFIELD's analog of the explicit-id-sibling rescue: a sibling `<field>_id` subfield
-      # with a default that can serve as a lookup token supplies it when the model key is omitted.
-      # Judged by Schema.usable_id_token_default? — the SAME test credit_sibling_id_defaults! uses for
-      # the annotation credit, so the per-config tolerance loop and the ancestor-propagating derivation
-      # agree on which siblings rescue. That test rejects a blank literal ("" / {}): the model resolver
-      # blank-guards the id, so a blank default is APPLIED at runtime yet resolves no record — a
-      # blank-rescued tolerance is still dead.
-      def defaulted_id_sibling?(parent, key)
-        sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
-        return false unless sibling
-
-        sibling.configs.any? { |c| Schema.usable_id_token_default?(c) }
       end
 
       # The shallowest explicit required descendant's dotted path (for the message) — descends

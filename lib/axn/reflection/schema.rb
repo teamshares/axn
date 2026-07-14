@@ -160,22 +160,29 @@ module Axn
         Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
       end
 
-      # The builtin scalars whose reader-method surface is statically judgeable: for these exact
-      # families, an instance answers a segment read iff the class publicly defines the method
+      # The builtin scalars whose reader-method surface we judge as the class's own public methods:
+      # an instance answers a segment read iff the declared class publicly defines the method
       # (post-PRO-2886 extraction: a Hash-like source reads any key; everything else is a
       # public_send). Anything outside this list — Data/Struct/custom classes, model records —
       # may answer dynamically, so it is never judged (optimistic: rejection needs proof).
       #
-      # Judging requires that a CONTRACT-VALID instance is exactly the declared class, not merely
-      # a descendant — the membership test below is `k <= s` (declared class or a subclass matches
-      # an entry), so a declared class equal to (or a subclass of) a judged entry is still judged.
-      # `Numeric` and `Date` are excluded on the OTHER side of that same boundary: every
-      # contract-valid `type: Numeric` value is a strict subclass (Integer/Float/Rational/
-      # BigDecimal/…) whose method surface is wider than `Numeric` itself (e.g.
-      # `Integer#bit_length` exists but `Numeric.public_method_defined?(:bit_length)` is false),
-      # and `type: Date` admits `DateTime` (adding `hour`/`minute`/…). Judging on the declared
-      # abstract class would refute a segment a valid input can actually answer — an unanswerable
-      # contract false positive — so both are left optimistic, same as Data/Struct/unknown classes.
+      # ACCEPTED DIVERGENCE from the strict no-false-rejection doctrine. TypeValidator is `is_a?`, so
+      # a `type: String` value can be a String SUBCLASS that adds methods, or a plain String carrying a
+      # singleton method — either is contract-valid yet answers a segment this judgment refutes. We
+      # judge anyway, deliberately: the approved design takes the DECLARED class's method surface as the
+      # contract (`type: String` promises the String surface, not whatever an exotic subclass bolts on),
+      # so a subclass adding readers doesn't hold the declaration hostage. The conventional instance of
+      # each listed class IS exactly that class, so the judgment matches real inputs; the subclass/
+      # singleton case is the narrow, documented exception. The membership test below is `k <= s`, so a
+      # declared class equal to (or a subclass of) a judged entry is judged on that entry's surface.
+      #
+      # `Numeric` and `Date` are excluded — the boundary is drawn narrower there for a different reason:
+      # every contract-valid `type: Numeric` value is a STRICT subclass (Integer/Float/Rational/
+      # BigDecimal/…) whose surface is wider than `Numeric` itself (`Integer#bit_length` exists but
+      # `Numeric.public_method_defined?(:bit_length)` is false), and `type: Date` admits `DateTime`
+      # (adding `hour`/`minute`/…). There the subclass IS the conventional instance, so judging on the
+      # abstract class would refute a segment ordinary valid input answers — a real false positive — so
+      # both stay optimistic, same as Data/Struct/unknown classes.
       SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Array, DateTime, Time, TrueClass, FalseClass].freeze
 
       # Whether ONE admissible declared branch can answer reading `segment` off its value.
@@ -289,22 +296,32 @@ module Axn
       def credit_sibling_id_defaults!(node, ann)
         node.children.each do |key, child|
           next if child.implicit? || !ann[child].required
-          next unless child.configs.any? { |c| c.validations[:model] }
-
-          # The sibling id supplies ONLY the model lookup token; a NON-model route merged onto the same
-          # node reads the raw wire value the id can't provide. Credit the rescue only when every
-          # non-model route is own-level satisfiability-tolerant (a usable default or nil-accepting) —
-          # own-level only, no subtree term, because the model subtree is satisfied via the resolved
-          # record; it's the non-model route's OWN wire value the id can't supply. (A pure-model node
-          # has no non-model route, so the empty set trivially satisfies this.)
-          non_model = child.configs.reject { |c| c.validations[:model] }
-          next unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
-
-          sibling = node.children[Internal::FieldConfig.model_id_key(key)]
-          next unless sibling&.configs&.any? { |c| usable_id_token_default?(c) }
+          next unless sibling_id_rescued?(node, key, child)
 
           ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
         end
+      end
+
+      # Whether a node's model route is rescued by a sibling `<key>_id` default — the SINGLE source of
+      # truth for both the satisfiability annotation credit (credit_sibling_id_defaults!) and
+      # SubfieldContradictions' per-config tolerance loop, so the two can't drift on which nodes the
+      # id rescues. Three conjuncts:
+      #   * the node carries a `model:` route (the record it resolves answers the subtree at runtime);
+      #   * every NON-model route merged onto the node is own-level satisfiability-tolerant (a usable
+      #     default or nil-accepting) — own-level only, because the model subtree is satisfied via the
+      #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
+      #     node has no non-model route, so the empty set trivially satisfies this); AND
+      #   * a sibling `<key>_id` child carries a default usable as a lookup token (usable_id_token_default?
+      #     rejects a blank literal — the model resolver blank-guards the id).
+      # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
+      def sibling_id_rescued?(parent, key, node)
+        return false unless node.configs.any? { |c| c.validations[:model] }
+
+        non_model = node.configs.reject { |c| c.validations[:model] }
+        return false unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
+
+        sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
+        !!sibling&.configs&.any? { |c| usable_id_token_default?(c) }
       end
 
       # Whether a nil/absent parent leaves a required nested obligation unmet — so it can't validate and
@@ -516,8 +533,8 @@ module Axn
       end
 
       # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
-      # for all three id-rescue sites (credit_sibling_id_defaults!, and SubfieldContradictions'
-      # defaulted_id_sibling? / model_omittable?). usable_default? judges a default for the FIELD's OWN
+      # for every id-rescue site (sibling_id_rescued?, which serves both the annotation credit and the
+      # contradictions loop, and SubfieldContradictions' model_omittable?). usable_default? judges a default for the FIELD's OWN
       # omission, where a blank literal ("" / {}) is usable when no presence validator rejects it — but
       # the model resolver blank-guards the id (Model#derive_value: `return nil if id_value.blank?`), so
       # a blank id default can never resolve a record and never rescues an omitted model. It must
