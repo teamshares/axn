@@ -7,6 +7,12 @@ module Axn
     module FieldConfig
       module_function
 
+      # The ActiveModel shared-option keys that conditionally gate a declaration's validators
+      # (`expects :x, ..., if:`/`unless:`). They ride the validations hash as sibling keys but are
+      # not validators themselves: the tolerance push-down skips them, reflection treats them as
+      # neutral, and the contradiction detectors treat a gated declaration as relaxable.
+      CONDITIONAL_GATE_KEYS = %i[if unless].freeze
+
       # The generated `<field>_id` key for a `model:` field — the lookup-token reader Axn derives from
       # the model field's name. Single source of the `_id` suffix convention (the model resolver, the
       # `<field>_id` reader, sensitive-key/ambient filtering, and schema reflection all key off it).

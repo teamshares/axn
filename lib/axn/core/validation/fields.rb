@@ -61,8 +61,10 @@ module Axn
           def self.name = "Axn::Validation::Fields::OneOff"
 
           # A field may legitimately carry no validators at all (e.g. `optional: true` with no
-          # type/model), which `validates` rejects — an empty set means nothing to enforce.
-          validates field, **validations unless validations.empty?
+          # type/model), which `validates` rejects — an empty set means nothing to enforce. Gate
+          # keys (if:/unless:) don't count toward the set: with every validator gated away there
+          # is nothing to conditionally run either.
+          validates field, **validations unless validations.except(*Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS).empty?
         end
       end
 

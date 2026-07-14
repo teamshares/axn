@@ -772,9 +772,28 @@ module Axn
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil
-            validations.transform_values! do |v|
-              { allow_blank:, allow_nil: }.merge(v)
+            # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
+            # allow_blank/allow_nil would make the presence validator accept exactly the values it
+            # exists to reject — so the combination is dead machinery, rejected at declaration.
+            # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
+            if validations[:presence]
+              raise ArgumentError,
+                    "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
+                    "the tolerance is pushed into every validator, so the presence check could never fail. " \
+                    "Declare one requiredness signal (drop the flag, or drop presence:)."
             end
+
+            # `if:`/`unless:` are ActiveModel shared options riding the hash as sibling keys, not
+            # validators — there is nothing to push tolerance flags into.
+            gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+            validations.except!(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+            validations.transform_values! do |v|
+              # A falsy scalar (only `presence: false` survives the check above) isn't a validator
+              # options hash — there's nothing to push tolerance into, and `validates` treats a
+              # falsy value as "skip this validator" regardless, so it passes through unchanged.
+              v.is_a?(Hash) ? { allow_blank:, allow_nil: }.merge(v) : v
+            end
+            validations.merge!(gates)
           else
             # Apply default presence validation (unless the type is boolean or params)
             type_values = Array(validations.dig(:type, :klass))
