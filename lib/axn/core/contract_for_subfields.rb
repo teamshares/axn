@@ -2,6 +2,7 @@
 
 require "axn/core/validation/fields"
 require "axn/reflection/resolved_subfields"
+require "axn/reflection/schema"
 require "axn/reflection/subfield_contradictions"
 
 module Axn
@@ -111,7 +112,13 @@ module Axn
         return nil if path.nil?
 
         sibling = path.parent_node.children[id_key.to_sym]
-        sibling_config = sibling&.configs&.find(&:applied_default?)
+        # Select the sibling config with the SAME predicate the declaration credits
+        # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
+        # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
+        # applied at runtime but is blank-guarded by the model resolver, so it is not a usable token:
+        # picking it by applied_default? alone (blank route declared first) would supply no id and
+        # silently defeat the rescue the declaration accepted.
+        sibling_config = sibling&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
         return nil if sibling_config.nil?
 
         # A reader-less sibling (a dotted NAME with no `as:` alias) reads through the value-level

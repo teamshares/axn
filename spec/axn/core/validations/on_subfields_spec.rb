@@ -2133,5 +2133,83 @@ RSpec.describe Axn do
         expect(action.call(payload: {}).cid).to eq(42)
       end
     end
+
+    context "subfield reader memos are cleared at the pipeline boundary (Fix D, PRO-2889)" do
+      it "validates the settled parent value, not a value memoized before the parent was rewritten" do
+        # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
+        # a rewritten parent ({name: 123}). Without clearing the generated reader's memo at the boundary,
+        # validation public_sends `name` and sees the stale pre-rewrite "ok" — invalid input passes.
+        action = build_axn do
+          expects :payload, type: Hash, preprocess: lambda { |_v|
+            name
+            { name: 123 }
+          }
+          expects :name, on: :payload, type: String
+          def call = nil
+        end
+        result = action.call(payload: { name: "ok" })
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/Name is not a String/)
+      end
+
+      it "re-resolves a model subfield record against the rewritten parent id" do
+        # payload's preprocess reads the `company` model reader (resolving id 1's record), memoizing it,
+        # BEFORE returning a rewritten parent carrying company_id: 2. Without the boundary clear the
+        # memoized record (id 1) survives and the run exposes the stale record.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = new(id)
+        end
+        stub_const("MemoCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash, preprocess: lambda { |_v|
+            company
+            { company_id: 2 }
+          }
+          expects :company, on: :payload, model: { klass: MemoCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        expect(action.call(payload: { company_id: 1 }).cid).to eq(2)
+      end
+    end
+
+    context "runtime sibling selection mirrors the declaration credit predicate (Fix F, PRO-2889)" do
+      it "resolves via the usable-token id route, not a blank-applied route sharing the wire node" do
+        # Two routes land on the same thing.company_id wire node: a blank-token route (default "",
+        # declared FIRST) and a usable-token route (default 42). Declaration credits the node (42 is a
+        # usable token); runtime must resolve the SAME route. Selecting by applied_default? alone picks
+        # the blank "" route, whose blank token the model resolver guards → the record never resolves.
+        #
+        # The parent (`thing`) is an opaque non-Hash object, so the defaults write-back is refused and
+        # NEITHER default reaches the wire — both id routes supply their value LEVEL only, isolating the
+        # sibling SELECTION (a writable Hash chain would let the first-declared blank default clobber the
+        # shared wire key before selection, a separate write-order concern).
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def name = "acme"
+          def self.fetch(id) = new(id)
+        end
+        stub_const("SiblingCo", finder)
+        opaque = Class.new.new
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
+          expects "thing.company_id", on: :payload, optional: true, default: ""
+          expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
+          expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+        result = action.call(payload: { thing: opaque })
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
+      end
+    end
   end
 end

@@ -18,8 +18,11 @@ module Axn
       def read_attribute_for_validation(attr)
         # A subfield reads through the action's generated reader when one exists — the reader IS the
         # field's value (memoized, model-resolving, value-level-default-applying, PRO-2889), so
-        # validation sees exactly what user code sees. A dotted-name subfield has no reader and
-        # resolves through the same shared helper. Top-level fields keep reading their source facade.
+        # validation sees exactly what user code sees. The reader's memo can't be stale here: the
+        # executor clears every subfield reader memo at the inbound-pipeline boundary
+        # (_clear_pre_pipeline_memos!), so a value cached by an early pre-settlement read is discarded
+        # and this read resolves against the settled wire values. A dotted-name subfield has no reader
+        # and resolves through the same shared helper. Top-level fields keep reading their source facade.
         if @action && @reader && @action.respond_to?(@reader)
           @action.public_send(@reader)
         elsif @action && @config&.subfield?

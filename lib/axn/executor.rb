@@ -56,7 +56,7 @@ module Axn
       apply_inbound_coercion!
       apply_inbound_preprocessing!
       apply_defaults!(:inbound)
-      _clear_resolve_value_cache!
+      _clear_pre_pipeline_memos!
     rescue StandardError => e
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
     end
@@ -374,11 +374,12 @@ module Axn
       return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
 
       # An early read — a hook/preprocess touching a subfield reader (which may consult a dotted
-      # sibling's value-level default via resolve_model_via_sibling_id) — can populate
-      # ContractForSubfields' @__resolve_value_cache before coercion/preprocess/defaults have settled.
-      # The settled pipeline is the authoritative input state, so discard any pre-pipeline cache: the
-      # validation-time reads below then resolve against the settled wire values.
-      _clear_resolve_value_cache!
+      # sibling's value-level default via resolve_model_via_sibling_id) — can populate both
+      # ContractForSubfields' @__resolve_value_cache AND the reader's own memo before
+      # coercion/preprocess/defaults have settled. The settled pipeline is the authoritative input
+      # state, so discard any pre-pipeline cache: the validation-time reads below then resolve against
+      # the settled wire values.
+      _clear_pre_pipeline_memos!
 
       validate_contract!(:inbound)
 
@@ -860,11 +861,31 @@ module Axn
       @action_class._resolved_subfields.index[config]
     end
 
-    # Drop ContractForSubfields' per-instance value-level-default cache (see resolve_value). Called
-    # once the inbound pipeline has settled, so a value cached by an early pre-pipeline read can't
-    # outlive the inputs it was computed from.
-    def _clear_resolve_value_cache!
+    # Drop the per-instance caches an early pre-pipeline read may have populated before
+    # coercion/preprocess/defaults settled: ContractForSubfields' value-level-default cache
+    # (@__resolve_value_cache, see resolve_value) AND each SUBFIELD reader's memoized value
+    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called once the
+    # inbound pipeline has settled — the settled wire values are authoritative. Without this, a
+    # preprocess/default Proc that reads a subfield reader before its parent is rewritten caches the
+    # pre-rewrite value, and validation (which public_sends the reader — see Validation::Fields) then
+    # sees stale input, so invalid data passes. Same accepted trade as the resolve_value clear: a Proc
+    # default read early and re-read post-clear runs twice.
+    #
+    # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
+    # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
+    # The model `<field>_id` reader is an unmemoized define_method (nothing to clear), and the boolean
+    # `?` predicate is an alias of the primary reader (sharing its ivar), so neither needs its own clear.
+    # Top-level reader memos are deliberately NOT cleared: a top-level model record would re-run its
+    # finder — pre-existing behavior, out of scope here.
+    def _clear_pre_pipeline_memos!
       @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
+
+      @action_class.send(:subfield_configs).each do |config|
+        next unless config.generates_reader?
+
+        ivar = :"@_memoized_reader_#{config.reader_as}"
+        @action.remove_instance_variable(ivar) if @action.instance_variable_defined?(ivar)
+      end
     end
 
     # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
