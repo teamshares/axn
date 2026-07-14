@@ -207,6 +207,7 @@ end
 
 ::: tip Subfield Defaults
 Defaults work the same way for subfields as they do for top-level fields - they are applied when the subfield is missing or explicitly `nil`, but not for blank values.
+The default is guaranteed at the **value** level: the reader and validation see it even when the parent can't be written back into (a `model:` parent, a non-Hash parent, an id-resolved or caller-supplied record whose attribute is `nil`). A caller-supplied object is never mutated to apply a default — only a Hash chain the axn owns gets materialized (below).
 :::
 
 #### Reaching into nested parents
@@ -221,7 +222,7 @@ expects :zip, on: "address.billing", type: String  # validates address[:billing]
 The **root** segment (`address`) must be a declared field (or subfield). Resolution is canonical: the chain resolves through the deepest *declared* ancestor's reader (so `on: "payload.company"` where `:company` is a `model:` subfield sees the resolved record, exactly like `on: :company`), and only undeclared intermediate segments are dug as plain hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots. Nested keys are read indifferently: a parent holding either symbol or string keys resolves the same (symbol keys are checked first).
 
 ::: info Nested parents support the full kwarg surface
-`default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the default is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments.
+`default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the write-back is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments. Skipping the write-back doesn't skip the default itself — the axn's reader and validation still resolve it (see the tip above); only the materialized-object side effect is unavailable there.
 :::
 
 #### Subfield readers always generate
