@@ -72,6 +72,16 @@ module Axn
     # read in the action body).
     class UnextractableError < ContractViolation; end
 
+    # Raised by FieldResolvers::Extract when a segment can only be resolved by INVOKING it as a
+    # method (an Array method, a PORO reader, a Data behavioral method) but the declaration did not
+    # opt into method dispatch with `method_call: true`. Kept DISTINCT from UnextractableError so
+    # `extract_or_nil` does NOT swallow it to "absent" — a forgotten `method_call:` must surface
+    # loudly rather than silently validate the field against nil. As a plain ContractViolation (not
+    # a ValidationError, not user_facing:) it settles as a bug: the executor fires the global
+    # on_exception and result.error shows the generic headline, while the actionable fix rides on
+    # this exception's own #message (see the design at PRO-2898).
+    class MethodCallNotPermittedError < ContractViolation; end
+
     class UnknownExposure < ContractViolation
       def initialize(key)
         @key = key

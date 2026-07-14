@@ -44,8 +44,12 @@ module Axn
       # `prefix:` decouple them so the caller-facing contract stays `field` while the in-action
       # reader gets its own name. `on:` names the parent reader a subfield is extracted from;
       # `user_facing:` reclassifies a violation of the field into a user-facing failure.
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on) do
-        def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil)
+      # `method_call:` opts a subfield into the sharp path — resolving a segment by INVOKING it as a
+      # method (Array methods, PORO readers, Data behavioral methods) rather than reading declared
+      # data; it is threaded to the resolver as `permit_method_call:` (PRO-2898).
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
+        def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
+                       method_call: false)
           super
         end
 
@@ -113,6 +117,7 @@ module Axn
           as: nil,
           prefix: nil,
           user_facing: false,
+          method_call: false,
           **,
           &block
         )
@@ -140,6 +145,17 @@ module Axn
 
           _validate_user_facing!(user_facing)
 
+          # `method_call:` governs how a SUBFIELD's segment is resolved from its parent (invoke vs.
+          # read). A top-level field reads its literal wire key from the context Hash — it never
+          # method-dispatches — so `method_call: true` without `on:` could never take effect; reject
+          # it rather than accept a silently-inert option (matching the ambient default:/coerce:
+          # rejections). `method_call: false` is the default, so it's a harmless no-op anywhere.
+          if method_call && on.blank?
+            raise ArgumentError,
+                  "`method_call: true` is only meaningful on a subfield (declared with `on:`) — a top-level field " \
+                  "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
+          end
+
           reader_names = _resolve_reader_names(fields, as:, prefix:)
           _validate_reader_names!(reader_names)
 
@@ -158,7 +174,7 @@ module Axn
 
           if on.present?
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                               reader_names:, user_facing:, **validations)
+                                               reader_names:, user_facing:, method_call:, **validations)
           end
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
@@ -522,6 +538,7 @@ module Axn
           metadata: {},
           reader_names: {},
           user_facing: false,
+          method_call: false,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -532,7 +549,7 @@ module Axn
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
             FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
-                            reader_as: reader, user_facing:)
+                            reader_as: reader, user_facing:, method_call:)
           end
         end
 

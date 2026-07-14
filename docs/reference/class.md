@@ -225,6 +225,29 @@ The **root** segment (`address`) must be a declared field (or subfield). Resolut
 `default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the write-back is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments. Skipping the write-back doesn't skip the default itself — the axn's reader and validation still resolve it (see the tip above); only the materialized-object side effect is unavailable there.
 :::
 
+#### Resolving a subfield by calling a method (`method_call:`)
+
+By default a subfield is resolved by reading **declared data** off its parent: a Hash key, or a `Struct`/`OpenStruct`/`Data` member. That's the safe path, and it's all you need for the usual case of reaching into a nested payload.
+
+Sometimes the value you want isn't stored data but the result of **invoking a method** on the parent — an `Array` method (`items.count`), a plain object's reader (`event.data`), a `Data` object's computed method, or an attribute off a resolved `model:` record (`company.name`). Because invoking an arbitrary method can have side effects (and resolution runs during inbound validation), and because a method result has no JSON-schema representation, this is opt-in: declare `method_call: true`.
+
+```ruby
+expects :event
+expects :data, on: :event, method_call: true            # invokes event.data (a reader, not a key)
+
+expects :payload, type: Hash
+expects "items.count", on: :payload, type: Integer, as: :item_count, method_call: true  # invokes Array#count
+
+expects :company, model: Company
+expects :name, on: :company, method_call: true          # invokes company.name off the resolved record
+```
+
+Note the last example: reaching into a resolved `model:` record reads its attributes **by invoking methods**, so it needs `method_call: true` too — a record from a finder can expose computed or side-effecting readers just like any other object, so it isn't treated as automatically safe.
+
+Reaching a method-dispatch segment **without** `method_call: true` raises `Axn::ContractViolation::MethodCallNotPermittedError`. It settles as a bug (fires the global `on_exception`; `result.error` shows the generic headline) with the actionable fix — the field, the parent's runtime class, and "add `method_call: true`" — on the exception's own message. This is deliberately loud: it is never silently treated as an absent value.
+
+`method_call:` is a per-declaration property, so it's only valid on a subfield (a declaration with `on:`). It composes with `default:` — the method is invoked and a `nil` result falls back to the declared default (a value-level default, resolved on read). `preprocess:` and `coerce:` do **not** yet apply to a method-derived value: they transform by writing back into the inbound arguments, which a derived value is never read from, so on a `method_call:` subfield they're **skipped entirely** — the `preprocess` proc does not run (no side effects), and the value is left un-coerced (a coercible-but-wrong-type result then fails its `type:` check). Composing them with method dispatch is planned (PRO-2903).
+
 #### Subfield readers always generate
 
 Every subfield defines a top-level reader method (e.g., `random` in the example above). When a sub-key's name would collide with an existing reader, rename it with `as:`/`prefix:` (below) instead — the removed `readers: false` escape hatch suppressed access entirely, while a rename keeps both values reachable.

@@ -13,7 +13,13 @@ module Axn
         extract: FieldResolvers::Extract,
       }.freeze
 
-      def self.resolve(type:, field:, provided_data:, options: {})
+      # `permit_method_call:` opts a resolution into the sharp path — resolving a segment by INVOKING
+      # it as a method (Array methods, PORO readers, Data behavioral methods). It defaults to false so
+      # the safe default reads declared data only (Hash keys, Struct/OpenStruct/Data members); a
+      # segment that can only be method-dispatched raises MethodCallNotPermittedError unless permitted.
+      # The flag is a per-declaration fact (`expects ..., method_call: true`) threaded from the
+      # config-bearing call sites; see the PRO-2898 design.
+      def self.resolve(type:, field:, provided_data:, options: {}, permit_method_call: false)
         resolver_class = RESOLVERS[type]
         raise ArgumentError, "Unknown field resolver type: #{type}" unless resolver_class
 
@@ -23,7 +29,7 @@ module Axn
         # clean validation error) instead of the resolver blowing up mid-resolution (PRO-2857).
         return nil if provided_data.nil?
 
-        resolver_class.new(field:, options:, provided_data:).call
+        resolver_class.new(field:, options:, provided_data:, permit_method_call:).call
       end
 
       # THE tolerant read for the subfield contract machinery: a source that can't answer the named
@@ -33,8 +39,13 @@ module Axn
       # one doctrine, applied by every reader, validation source, and pre-validation pass, so
       # malformed caller input always settles as a contract error rather than a raw exception.
       # (Consumers that want the loud typed error call .resolve directly.)
-      def self.extract_or_nil(field:, provided_data:)
-        resolve(type: :extract, field:, provided_data:)
+      #
+      # `permit_method_call:` is forwarded so a config that opted into method dispatch still resolves
+      # here; the rescue is deliberately narrowed to UnextractableError, so a
+      # MethodCallNotPermittedError (a forgotten `method_call:`) is NOT swallowed to absent — it
+      # propagates loudly, exactly the "loud, never silent" guarantee the design requires.
+      def self.extract_or_nil(field:, provided_data:, permit_method_call: false)
+        resolve(type: :extract, field:, provided_data:, permit_method_call:)
       rescue Axn::ContractViolation::UnextractableError
         nil
       end
