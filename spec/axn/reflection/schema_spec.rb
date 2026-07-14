@@ -4528,5 +4528,92 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("data")
       expect(schema[:properties][:data][:required]).to match_array(%w[user role])
     end
+
+    describe "declarative Symbol conditions (allOf/if/then emission)" do
+      it "emits an exact conditional for a Symbol referencing a declared sibling field" do
+        action = build_axn do
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = action.input_schema
+        expect(schema[:required].to_a).not_to include("coupon_code")
+        expect(schema[:allOf]).to eq([{
+                                       if: {
+                                         required: ["promo_enabled"],
+                                         properties: { promo_enabled: { not: { enum: [false, nil] } } },
+                                       },
+                                       then: { required: ["coupon_code"] },
+                                     }])
+        expect(schema[:properties][:coupon_code][:type]).to eq("string")
+      end
+
+      it "emits else for unless:" do
+        action = build_axn do
+          expects :skip_check, type: :boolean
+          expects :coupon_code, type: String, unless: :skip_check
+        end
+        clause = action.input_schema[:allOf].first
+        expect(clause[:if][:required]).to eq(["skip_check"])
+        expect(clause[:else]).to eq({ required: ["coupon_code"] })
+        expect(clause).not_to have_key(:then)
+      end
+
+      it "falls back to unconditional required when any guard fails" do
+        fallback_required = lambda do |&decl|
+          schema = build_axn(&decl).input_schema
+          expect(schema[:allOf]).to be_nil
+          expect(schema[:required]).to include("coupon_code")
+        end
+
+        # Proc condition (opaque)
+        fallback_required.call do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, if: -> { flag }
+        end
+        # Symbol naming a non-field action method (opaque)
+        fallback_required.call do
+          expects :coupon_code, type: String, if: :some_method
+        end
+        # referenced field carries a default (settled value can diverge from the wire)
+        fallback_required.call do
+          expects :flag, type: :boolean, default: true
+          expects :coupon_code, type: String, if: :flag
+        end
+        # referenced field carries a preprocess
+        fallback_required.call do
+          expects :flag, preprocess: ->(v) { !v.nil? }, optional: true
+          expects :coupon_code, type: String, if: :flag
+        end
+        # referenced field is model:-routed (lookup success isn't wire-expressible)
+        fallback_required.call do
+          expects :user, model: { klass: Struct.new(:id), finder: :find }, optional: true
+          expects :coupon_code, type: String, if: :user
+        end
+        # both if: and unless: given
+        fallback_required.call do
+          expects :a, :b, type: :boolean
+          expects :coupon_code, type: String, if: :a, unless: :b
+        end
+      end
+
+      it "emits no clause for an already-optional gated field (nothing to make conditional)" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, optional: true, if: :flag
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required].to_a).not_to include("coupon_code")
+      end
+
+      it "matches the referenced field through an as: alias and emits its wire key" do
+        action = build_axn do
+          expects :promo, type: :boolean, as: :promotion
+          expects :coupon_code, type: String, if: :promotion
+        end
+        clause = action.input_schema[:allOf].first
+        expect(clause[:if][:required]).to eq(["promo"])
+      end
+    end
   end
 end

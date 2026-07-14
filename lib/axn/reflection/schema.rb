@@ -73,6 +73,7 @@ module Axn
         ann = resolved&.annotations || derive_annotations(tree.roots)
         properties = {}
         required = []
+        conditionals = []
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
@@ -89,7 +90,10 @@ module Axn
             apply_nested_subfields!(prop, node, ann)
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless field_optional?(config, node.children, ann)
+            unless field_optional?(config, node.children, ann)
+              clause = conditional_requiredness_clause(config, field_configs, node)
+              clause ? conditionals << clause : required << config.field.to_s
+            end
           end
         end
 
@@ -101,6 +105,7 @@ module Axn
         end
 
         schema = { type: "object", properties: }
+        schema[:allOf] = conditionals unless conditionals.empty?
         schema[:required] = required.uniq unless required.empty?
         schema
       end
@@ -418,6 +423,55 @@ module Axn
         # by its OWN signals (own default / own nil-tolerance, above) plus required-child stranding; a
         # child default fixes the child's nil, not the parent's own presence/blank obligation.
         false
+      end
+
+      # An exact JSON Schema conditional for a gated-but-otherwise-required top-level field whose
+      # single Symbol condition references a declared sibling field. Ruby truthiness on a JSON value
+      # is precisely "present, and neither false nor null", so the emitted clause matches the runtime
+      # gate exactly. Returns nil — fall back to unconditional `required`, the static-maximal safe
+      # direction — unless EVERY guard holds:
+      #   * exactly one gate (if: XOR unless:), and its rule is a Symbol;
+      #   * the Symbol resolves to a declared top-level inbound field's reader (condition_reference);
+      #   * the referenced field carries no default: and no preprocess: (either can make the settled
+      #     runtime value diverge from what the caller sent, flipping the gate relative to the wire —
+      #     wire coercion is fine: it can only flip a truthy wire literal to falsey, which leaves the
+      #     schema stricter, never looser) and is not model:-routed (lookup success isn't
+      #     wire-expressible) nor schema-excluded;
+      #   * the gated field is not model:-routed and has no subfields of its own (a required
+      #     descendant unconditionally forces the field, contradicting a conditional requirement).
+      def conditional_requiredness_clause(config, field_configs, node)
+        return nil if config.validations[:model] || node.children.any?
+
+        gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        return nil unless gates.size == 1
+
+        rule = gates.values.first
+        return nil unless rule.is_a?(Symbol)
+
+        ref = condition_reference(rule, field_configs)
+        return nil unless ref
+        return nil if ref.validations[:model] || !ref.default.nil? || ref.preprocess
+        return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
+
+        condition = {
+          required: [ref.field.to_s],
+          properties: { ref.field => { not: { enum: [false, nil] } } },
+        }
+        branch = gates.key?(:if) ? :then : :else
+        { if: condition, branch => { required: [config.field.to_s] } }
+      end
+
+      # The declared top-level inbound field a Symbol condition reads: an exact reader-name match,
+      # or — for a `?`-suffixed Symbol — the boolean field whose generated predicate alias it names.
+      # The condition reads the READER; the emitted schema keys by the field's WIRE key.
+      def condition_reference(rule, field_configs)
+        name = rule.to_s
+        exact = field_configs.find { |c| c.reader_as.to_s == name }
+        return exact if exact
+        return nil unless name.end_with?("?")
+
+        base = name.delete_suffix("?")
+        field_configs.find { |c| c.reader_as.to_s == base && c.boolean? }
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
