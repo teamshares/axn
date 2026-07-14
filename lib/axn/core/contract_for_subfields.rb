@@ -40,8 +40,13 @@ module Axn
         return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
 
         value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
-        path.ancestors[reader_index...path.parent_index].each do |hop|
-          value = Axn::Core::FieldResolvers.extract_or_nil(field: hop.last.to_s, provided_data: value)
+        (reader_index...path.parent_index).each do |i|
+          # Reading this hop's segment yields the NEXT node, so that child's own config governs whether
+          # the hop may method-dispatch — honoring a method_call: subfield crossed as a readerless hop
+          # (the same child-node decision the executor's pre-validation walkers make).
+          child = path.ancestors[i + 1].first
+          value = Axn::Core::FieldResolvers.extract_or_nil(field: path.ancestors[i].last.to_s, provided_data: value,
+                                                           permit_method_call: child.configs.any?(&:method_call))
         end
         value
       end

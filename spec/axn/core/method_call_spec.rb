@@ -179,6 +179,25 @@ RSpec.describe "expects ..., method_call: true" do
     end
   end
 
+  describe "a readerless dotted method_call ancestor crossed by another subfield" do
+    # A dotted-name method_call subfield generates no reader, so a deeper subfield's `on:` chain
+    # crosses it as a raw hop in resolve_parent. That hop must honor the ancestor's opt-in (its config
+    # carries method_call: true) rather than raise the gate error.
+    it "resolves through the opted-in dotted ancestor rather than raising" do
+      event_obj = Class.new { def data = { name: "Ada" } }.new
+      action = build_axn do
+        expects :payload, type: Hash
+        expects "event.data", on: :payload, method_call: true # dotted name, no as: -> no reader
+        expects :name, on: "payload.event.data", type: String
+        exposes :out, allow_nil: true
+        def call = expose(out: name)
+      end
+      result = action.call(payload: { event: event_obj })
+      expect(result).to be_ok
+      expect(result.out).to eq("Ada")
+    end
+  end
+
   describe "reader-vs-dotted parity with method_call: true (PR #162)" do
     it "resolves identically whether spelled `on:`-reader or dotted-name" do
       via_reader = build_axn do

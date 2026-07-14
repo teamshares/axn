@@ -109,6 +109,16 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
       obj = klass.new(zip: nil, city: "SF")
       expect(extract(:zip, obj)).to be_nil
     end
+
+    it "reads the declared member even when the Data subclass overrides #to_h" do
+      # A member read must not route through a custom serializer: it reads the built-in member hash,
+      # so a `to_h` override (returning a scalar, or a re-keyed/partial hash) can't break or misresolve
+      # a declared member.
+      overriding = Data.define(:name) do
+        def to_h = "not a hash"
+      end
+      expect(extract(:name, overriding.new(name: "Ada"))).to eq("Ada")
+    end
   end
 
   describe "method dispatch (sharp path) gated by permit_method_call" do

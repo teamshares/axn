@@ -58,12 +58,14 @@ module Axn
             return base.dig(segment) # rubocop:disable Style/SingleArgumentDig -- #[] raises NameError on an absent Struct member; #dig reads it as nil
           end
 
-          # Data isn't diggable, but its declared members are DATA, not behavior — read them through
-          # `#to_h` so no method is ever invoked (`d.to_h[:zip]` is a member lookup). A *behavioral*
-          # method (`d.computed`) is not in `to_h`, so it misses here and correctly falls to the gated
-          # method branch below. This keeps the safe/sharp axis honest at the mechanism level: the safe
-          # path never `public_send`s the segment.
-          return source.to_h[segment.to_sym] if source.is_a?(Data) && source.class.members.include?(segment.to_sym)
+          # Data isn't diggable, but its declared members are DATA, not behavior — read them from the
+          # member hash so no member reader is ever invoked. A *behavioral* method (`d.computed`) is not
+          # a declared member, so it misses here and correctly falls to the gated method branch below.
+          # This keeps the safe/sharp axis honest at the mechanism level: the safe path never
+          # `public_send`s the segment. The built-in `Data#to_h` is invoked via `bind_call` so a
+          # subclass that overrides `to_h` (returning a scalar, or a re-keyed hash) can't break or
+          # misresolve a declared member read.
+          return Data.instance_method(:to_h).bind_call(source)[segment.to_sym] if source.is_a?(Data) && source.class.members.include?(segment.to_sym)
 
           # Object/Array sources: the segment can only be reached by INVOKING it as a method. That's
           # the sharp path — it runs ONLY when the declaration opted in with `method_call: true`.
