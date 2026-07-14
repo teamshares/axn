@@ -165,7 +165,18 @@ module Axn
       # (post-PRO-2886 extraction: a Hash-like source reads any key; everything else is a
       # public_send). Anything outside this list — Data/Struct/custom classes, model records —
       # may answer dynamically, so it is never judged (optimistic: rejection needs proof).
-      SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Numeric, Array, Date, DateTime, Time, TrueClass, FalseClass].freeze
+      #
+      # Judging requires that a CONTRACT-VALID instance is exactly the declared class, not merely
+      # a descendant — the membership test below is `k <= s` (declared class or a subclass matches
+      # an entry), so a declared class equal to (or a subclass of) a judged entry is still judged.
+      # `Numeric` and `Date` are excluded on the OTHER side of that same boundary: every
+      # contract-valid `type: Numeric` value is a strict subclass (Integer/Float/Rational/
+      # BigDecimal/…) whose method surface is wider than `Numeric` itself (e.g.
+      # `Integer#bit_length` exists but `Numeric.public_method_defined?(:bit_length)` is false),
+      # and `type: Date` admits `DateTime` (adding `hour`/`minute`/…). Judging on the declared
+      # abstract class would refute a segment a valid input can actually answer — an unanswerable
+      # contract false positive — so both are left optimistic, same as Data/Struct/unknown classes.
+      SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Array, DateTime, Time, TrueClass, FalseClass].freeze
 
       # Whether ONE admissible declared branch can answer reading `segment` off its value.
       def branch_answers_segment?(branch, segment)

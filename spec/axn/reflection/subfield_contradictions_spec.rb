@@ -170,6 +170,26 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end
       end.not_to raise_error
     end
+
+    it "accepts a subclass-answerable segment on an abstract Numeric type (optimistic)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :num, on: :payload, type: Numeric
+          expects :bit_length, on: :num, type: Integer
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a DateTime-specific segment on a type: Date declaration (optimistic)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :when, on: :payload, type: Date
+          expects :hour, on: :when, type: Integer
+        end
+      end.not_to raise_error
+    end
   end
 
   describe "family 3: the model flavor" do
