@@ -77,7 +77,7 @@ The `allow_blank`/`allow_nil` push-down (`contract.rb:721-724`) runs `{ allow_bl
 |---|---|---|
 | tolerance flag (`optional:`/`allow_nil:`/`allow_blank:`) + declaration-level `if:`/`unless:` | `TypeError: no implicit conversion of Symbol into Hash` at declaration | **Works** — the push-down skips the shared-option keys (they are not validators; the tolerance flags land on the real validators, and AM distributes the condition). Semantics per example 4 |
 | tolerance flag + explicit truthy `presence:` (e.g. `presence: true`, `presence: { if: :cond }`) | `presence: true` crashes with the same bare `TypeError`; `presence: { if: :cond }` is silently neutered (the push-down merges `allow_blank: true` into the presence hash, and blank-tolerant presence always passes) | **Clear `ArgumentError` at declaration**: the tolerance contradicts the presence check — one requiredness signal per field. Same dead-machinery doctrine as PRO-2877/2889/2901. (`presence: false` + tolerance stays legal — redundant but coherent) |
-| `if:` + `unless:` together | Accepted, ANDed (AM) | Unchanged — matches AR, documented. (Note: message-handler `Matcher` forbids the combination; steps AND them. We follow AR here and leave the other subsystems alone) |
+| `if:` + `unless:` together | Accepted, ANDed (AM) | Unchanged — matches AR, documented. And the one subsystem that forbids the combination gets aligned (see "Companion change" below) |
 | shape member with `if:`/`unless:` | Would break at validation time (no action to resolve against) | `ArgumentError` at declaration |
 
 ## Schema reflection
@@ -127,7 +127,40 @@ This covers the canonical boolean-flag pattern exactly, degrades to the safe fal
 - the gated subfield stays in its parent's nested `required` array (own-level static-maximal), but
 - it does NOT propagate requiredness/non-nullability up the ancestor chain (`NodeAnnotation.required` = false for ancestor-forcing purposes).
 
-**Accepted divergence (documented):** for a NON-parent-presence condition (e.g. `if: :flag`), a call omitting the parent while the condition is true fails at runtime (the subfield resolves nil and presence fires) though the schema admits the omission. This is looser-than-runtime, surfaces as a normal recoverable validation error, and only arises when a condition references something other than its own parent's presence — the canonical pattern is exact. This is the same class of narrow, documented divergence as the invalid-non-blank-default case in the schema header.
+```ruby
+expects :data, optional: true
+expects :user, type: String, on: :data, if: -> { data.present? }
+```
+
+```json
+{
+  "properties": {
+    "data": {
+      "type": ["object", "null"],
+      "properties": { "user": { "type": "string" } },
+      "required": ["user"]
+    }
+  }
+}
+```
+
+`data` stays omittable and nullable (no top-level `required`, `null` admitted) — without the exception, the required child would force `data` into the top-level `required` with `type: "object"`, defeating the declared `optional: true`. The nested `required: ["user"]` binds only when a `data` object is actually sent — which is exactly when the canonical condition fires. For this shape, schema and runtime agree on every input.
+
+**Accepted divergence (documented):** for a NON-parent-presence condition, the schema can be looser than runtime in one corner — the parent omitted while the condition is true:
+
+```ruby
+expects :strict_mode, type: :boolean
+expects :data, optional: true
+expects :user, type: String, on: :data, if: :strict_mode
+```
+
+```ruby
+Action.call(strict_mode: true) # data omitted
+# schema:  accepts — data is optional, so the nested required: ["user"] never binds
+# runtime: rejects — strict_mode is truthy, so user's validators run, resolve nil, and presence fires
+```
+
+This surfaces as a normal recoverable validation error, and only arises when a condition references something other than its own parent's presence — the canonical pattern is exact. This is the same class of narrow, documented divergence as the invalid-non-blank-default case in the schema header.
 
 ## Contradiction detectors (the PRO-2877 seam)
 
@@ -145,7 +178,17 @@ This covers the canonical boolean-flag pattern exactly, degrades to the safe fal
 - **Duplicate-declaration refinements** (`expects :foo, ...` twice to split validations). Per-validator `if:` covers the motivating case in one line; the duplicate-field guard stays. Possible follow-up if the nested form proves cramped.
 - **A separate declarative condition DSL.** Symbol-references-a-field already reflects declaratively (see above) without new surface area; a hash-based condition language stays unbuilt unless demand appears.
 - **Consolidating `optional:`/`allow_nil:`/`allow_blank:`.** Separate ticket: it's a breaking change needing a downstream sweep, and `optional:` (omittability) vs `allow_nil:` (nullability) is the closest thing we have to JSON Schema's `required`-vs-`type: null` distinction — collapsing them forecloses ever separating those axes.
-- **Unifying the three existing `if:`/`unless:` evaluators** (Matcher, steps, and now fields). Out of scope; noted as a known inconsistency (Matcher forbids `if:`+`unless:` together, steps and fields AND them).
+- **Merging the `if:`/`unless:` evaluator implementations** (Matcher, steps, fields). Their receivers and rule vocabularies differ for good reason (matchers also match exception classes/strings and receive the exception; fields ride ActiveModel) — only the *combination rule* is aligned, per the companion change below.
+
+## Companion change: allow `if:` + `unless:` together on messages and callbacks
+
+The message/callback `Matcher` forbids combining `if:` and `unless:` — a simplicity shortcut, not a semantic necessity — while steps AND them and fields (this ticket) AND them per AR. That leaves one arbitrary odd-one-out, so we align it: combining becomes legal everywhere, uniformly meaning *every given condition must pass* (`if:` truthy AND `unless:` falsey).
+
+```ruby
+error "Payment declined", if: PaymentError, unless: :retryable?
+```
+
+Three sites currently reject the combination and change together: `Matcher.build` (`matcher.rb:93`, the core — `Matcher` grows independent if/unless rule sets, ANDed, instead of one rule list with a single global invert flag) plus the redundant early guards at `messages.rb:25` and `callbacks.rb:46`. Existing single-condition behavior (including multi-rule `if: [A, B]` requiring all, and `unless: [A, B]` requiring none) is unchanged. Purely additive: every declaration that raises `UnsupportedArgument`/`ArgumentError` today gains a meaning; nothing legal changes behavior.
 
 ## Implementation sketch
 
@@ -154,7 +197,8 @@ This covers the canonical boolean-flag pattern exactly, degrades to the safe fal
 3. `Schema.nil_accepted?`/`nil_tolerant_validation?`: skip `:if`/`:unless` keys.
 4. `Schema` annotation derivation: `conditionally_gated?` predicate; satisfiability mode treats gated configs as relaxable; strict mode keeps own-level required but suppresses ancestor-forcing for gated subfields.
 5. `SubfieldContradictions`: family-1 message gains the `if:` pointer.
-6. Docs: `docs/reference/class.md` (option table rows + new "Conditional validation" section, including the evaluation-receiver caveat and the defaults-are-ungated rule), `docs/usage/writing.md` cross-link, terminology alignment note with steps/messages.
+6. Companion change: `Matcher` grows independent if/unless rule sets (ANDed); drop the three both-given guards (`matcher.rb:93`, `messages.rb:25`, `callbacks.rb:46`).
+7. Docs: `docs/reference/class.md` (option table rows + new "Conditional validation" section, including the evaluation-receiver caveat and the defaults-are-ungated rule), `docs/usage/writing.md` cross-link + the messages `if:`+`unless:` combination, terminology alignment note with steps/messages.
 
 ## Testing
 
@@ -167,3 +211,4 @@ This covers the canonical boolean-flag pattern exactly, degrades to the safe fal
 - Direction audit: a matrix spec asserting schema-vs-runtime strictness direction (schema stricter or exact, never looser) across condition placements — top-level, subfield, exposes, tolerance combinations, declarative emission.
 - Defaults/preprocess apply regardless of condition state.
 - Evaluation-count and side-effect documentation backed by a spec pinning "condition may run more than once per validation pass".
+- Companion change: `error`/`success`/`fails_on`/`on_*` callbacks accept `if:` + `unless:` together (ANDed, both single rules and arrays); single-condition and array-rule behavior pinned unchanged.
