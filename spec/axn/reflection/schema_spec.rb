@@ -4552,6 +4552,56 @@ RSpec.describe Axn::Reflection::Schema do
       expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
     end
 
+    it "drops output requiredness for a shape member whose presence is only NESTED-gated (Codex round 13)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash, allow_blank: true do
+          field :note, presence: { if: :flag }
+        end
+        def call
+          expose payload: {}
+        end
+      end
+      # Runtime legitimately serializes an empty payload with the nested gate closed — the presence
+      # check on `note` never runs — proving an output `required: ["note"]` claim would be a lie.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq({})
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required].to_a).not_to include("note")
+
+      # INPUT stays static-maximal for the equivalent input shape: the nested-gated member is still
+      # required (a client is still expected to send it).
+      input_action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, presence: { if: :flag }
+        end
+      end
+      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+    end
+
+    it "keeps output requiredness for a shape member with an UNGATED presence alongside a nested-gated type" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash do
+          field :note, presence: true, type: { klass: Integer, if: :flag }
+        end
+        def call
+          expose payload: { note: "oops" }
+        end
+      end
+      # The nested-gated TYPE check can be skipped by a closed gate, but presence is ungated — the
+      # serializer can never emit `payload` without a `note` key — so requiredness is still owed.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq(note: "oops")
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required]).to include("note")
+    end
+
     it "does not force a gated required subfield's ancestors (own-level nested required kept)" do
       action = build_axn do
         expects :data, optional: true
