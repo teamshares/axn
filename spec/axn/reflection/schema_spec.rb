@@ -4575,6 +4575,26 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:data][:required]).to match_array(%w[user role])
     end
 
+    it "reflects a merged node's parent per its UNGATED optional route (ancestor-forcing ignores the gated route)" do
+      # `root.data.user` merges an UNGATED optional route and a gated required route. Ancestor-forcing
+      # uses the ungated subset, so the ungated-optional route leaves `data` omittable while the gated
+      # route's own-level obligation is still emitted in the node's nested `required`.
+      action = build_axn do
+        expects :strict, type: :boolean, default: false
+        expects :root, type: Hash, allow_blank: true
+        expects :data, on: :root, optional: true
+        expects :user, on: :data, type: String, optional: true
+        expects "data.user", on: :root, type: String, if: :strict
+      end
+      root = action.input_schema[:properties][:root]
+      # data is NOT forced required by the gated route
+      expect(root[:required].to_a).not_to include("data")
+      data = root[:properties][:data]
+      expect(data[:type]).to eq(%w[object null])
+      # the gated route's own-level nested requiredness is kept static-maximal
+      expect(data[:required]).to eq(["user"])
+    end
+
     it "reflects a blank `if:` as no gate at all: required, with no allOf clause emitted" do
       action = build_axn do
         expects :num, type: Integer, if: nil
@@ -4662,6 +4682,31 @@ RSpec.describe Axn::Reflection::Schema do
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
         expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "falls back for an unless: gate on a Symbol-branch reference (schema emits Symbol as string)" do
+        # `type: [:boolean, Symbol]` emits an `anyOf` including a `string` branch (Symbol -> "string"),
+        # so wire "false" is schema-admissible through it and truthy to the emitted `if`, while runtime
+        # boolean coercion flips it to `false`, opening the unless-gate. The string-shaped branch is
+        # derived from the emission logic (single_type_for), not a String/:uuid hand-list, so Symbol is
+        # correctly recognized as flippable and the clause falls back.
+        action = build_axn do
+          expects :skip_check, type: [:boolean, Symbol]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same Symbol-branch reference (stricter direction)" do
+        action = build_axn do
+          expects :skip_check, type: [:boolean, Symbol]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
       end
 
       it "falls back to unconditional required when any guard fails" do

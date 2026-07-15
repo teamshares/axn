@@ -269,21 +269,30 @@ module Axn
         node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
         credit_sibling_id_defaults!(node, ann) if satisfiability
 
-        # node_optional?'s own-level rule, always evaluated with the node's FULL config set — exactly
-        # what children_require_presence? has always asked of a child (never a subset), so this is a
-        # pure cache of that recursive call, not a new rule.
-        required = !node_optional?(node, ann, node.configs, satisfiability:)
-
-        # A node whose EVERY declaration is conditionally gated never forces its ancestors: the
-        # gates may all be closed at runtime, so an omitted/nil ancestor CAN validate. Own-level
-        # emission stays static-maximal (apply_children! consults node_optional? directly, so the
-        # nested `required` keeps the gated obligation) — this only stops requiredness from
-        # propagating upward. Mode-independent: satisfiability mode needs it so a declared
-        # tolerance above a gated child is exercisable (not dead), and strict mode honors the
-        # ancestor's own declared optionality instead of inventing strictness the declaration
-        # disavowed (see the design doc's "one deliberate exception"). An implicit node has no
-        # configs, so it is untouched (its required already follows its — now relaxed — subtree).
-        required &&= !(node.configs.any? && node.configs.all? { |c| conditionally_gated?(c) })
+        # ANCESTOR-FORCING is derived from the UNGATED subset of the node's configs: a route whose
+        # declaration is conditionally gated may have its gate closed at runtime, so it can't oblige an
+        # omitted/nil ancestor to be present — only an UNGATED, itself-non-omittable route can. Passing
+        # the ungated subset to node_optional? (rather than the full set, then subtracting an all-gated
+        # node afterward) is what makes a MIXED node correct: a node merged from an ungated-but-omittable
+        # route (e.g. `optional: true`) and a gated-required route forces nothing, because its only
+        # ancestor-relevant obligation — the ungated route — is itself omittable. The prior two-step form
+        # (full-set node_optional? then relax only when EVERY config is gated) over-forced exactly that
+        # shape, wrongly rejecting a runtime-valid contract in satisfiability mode.
+        #
+        # This is ONLY the ancestor-propagation signal. Own-level emission stays static-maximal: the
+        # emission sites (apply_children!/field_optional?) call node_optional? with the full or
+        # per-route config set directly, so a gated route's own nested `required` obligation is
+        # unchanged. Edge cases preserved: an implicit node ignores the `configs` param inside
+        # node_optional? (a pure subtree test), so its ancestor-forcing is untouched; an all-gated node
+        # yields an empty subset, and `[].all?` is vacuously true → node_optional? true → not required
+        # (same as the old all-gated relaxation); an all-ungated node passes its full set (unchanged).
+        # The satisfiability short-circuit inside node_optional? (the usable_default? line) still reads
+        # the FULL node.configs regardless of the param, so a node-level default keeps rescuing every
+        # route. Mode-independent: satisfiability mode needs it so a declared tolerance above a gated
+        # child is exercisable (not dead), and strict mode honors the ancestor's own declared optionality
+        # instead of inventing strictness the declaration disavowed (the design doc's "one deliberate
+        # exception").
+        required = !node_optional?(node, ann, node.configs.reject { |c| conditionally_gated?(c) }, satisfiability:)
 
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
@@ -510,13 +519,19 @@ module Axn
       # …) to a falsey Ruby value — Date/Time/Integer/Float/Symbol all yield a truthy value from a
       # truthy String. (TrueClass/FalseClass are not coercion targets — they're absent from SUPPORTED
       # — so `:boolean` is the sole flipper.) A flip is therefore possible only when the ref's declared
-      # type BOTH (a) admits the `:boolean` coercion branch AND (b) admits a String wire form the
-      # schema would accept (String or :uuid) — a plain `:boolean`-only property schema-rejects every
-      # string, so no schema-valid input can reach the coercer — AND (c) coercion isn't explicitly
-      # disabled. Explicit `coerce: false` can't flip; an explicit `coerce: true` can; an ABSENT flag
-      # with a coercible branch is treated as flippable (the class-level `coerce_input_types` override
-      # may enable coercion, and reflection must not resolve per-class config — conservative toward the
-      # safe fallback). Declared-config inspection only, side-effect-free.
+      # type BOTH (a) admits the `:boolean` coercion branch AND (b) admits a branch the schema emits as
+      # a JSON `string` — the SAME test the property emission uses (single_type_for(..)[:type] ==
+      # "string"), so this automatically tracks every string-shaped branch (String, :uuid, Symbol,
+      # Date/DateTime/Time, an unknown class's permissive "string" hint, and any future TYPE_MAP string
+      # entry) instead of a hand-list that silently drifts from emission. A `string`+format branch
+      # (Date/Time) still counts: JSON Schema treats `format` as annotation-only by default, so the
+      # schema still admits an arbitrary String wire value the coercer can reach. A plain `:boolean`-only
+      # property emits no `string` branch, so no schema-valid input can reach the coercer — no flip.
+      # AND (c) coercion isn't explicitly disabled: explicit `coerce: false` can't flip; an explicit
+      # `coerce: true` can; an ABSENT flag with a coercible branch is treated as flippable (the
+      # class-level `coerce_input_types` override may enable coercion, and reflection must not resolve
+      # per-class config — conservative toward the safe fallback). Declared-config inspection only,
+      # side-effect-free (single_type_for is pure).
       def boolean_coercion_can_flip_truthiness?(ref)
         type_opt = ref.validations[:type]
         return false unless type_opt
@@ -528,7 +543,7 @@ module Axn
           klasses = Array(type_opt)
         end
 
-        klasses.include?(:boolean) && (klasses.include?(String) || klasses.include?(:uuid))
+        klasses.include?(:boolean) && klasses.any? { |k| single_type_for(k, for_output: false)[:type] == "string" }
       end
 
       # Whether the method a Symbol condition names still resolves to the reader Axn generated (not a

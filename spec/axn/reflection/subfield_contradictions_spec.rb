@@ -122,6 +122,23 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
     end
 
+    it "accepts a merged node whose only UNGATED route is itself omittable (optional:)" do
+      # `root.data.user` is reached by two routes: an UNGATED `optional:` route (`:user on: :data`) and
+      # a gated required route (the dotted `"data.user"` under `:strict`). Ancestor-forcing derives from
+      # the ungated subset alone — the ungated route is omittable, so it strands nothing, and `:data`'s
+      # tolerance stays exercisable (gate closed + data omitted validates). The prior all-gated-only
+      # relaxation over-forced this and wrongly rejected it.
+      expect do
+        build_axn do
+          expects :strict, type: :boolean, default: false
+          expects :root, type: Hash, allow_blank: true
+          expects :data, on: :root, optional: true
+          expects :user, on: :data, type: String, optional: true
+          expects "data.user", on: :root, type: String, if: :strict
+        end
+      end.not_to raise_error
+    end
+
     it "points the rejection message at the conditional spelling" do
       expect do
         build_axn do
