@@ -303,6 +303,7 @@ module Axn
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                         metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
             _reject_ambient_coerce!(config)
+            _reject_ambient_shape!(config)
             _reject_dotted_model_name!(config, fields:)
           end
         end
@@ -318,6 +319,24 @@ module Axn
           raise ArgumentError,
                 "`coerce:` is not supported for an `on: :ambient_context` subfield " \
                 "(the ambient parent is resolved per-invocation, not read from provided_data)"
+        end
+
+        # A `shape:` block on an ambient subfield is rejected. Shape's primary job — input_schema
+        # emission — is moot here (ambient is excluded from the schema), and its members are reader-less
+        # validation-only declarations that the ambient filter would have to reconstruct from a SECOND
+        # tree merged with the subfield tree; declaring the same nested structure as SUBFIELDS
+        # (`expects :ip, on: :request`) gives the equivalent validation PLUS readers and `sensitive:`, so
+        # it's the supported path. Full shape symmetry on ambient is deferred (see the alpha-6 symmetry
+        # ticket). Gated on `_on_roots_at_ambient?`, so it fires on the ambient parent AND any nested
+        # ambient subfield.
+        def _reject_ambient_shape!(config)
+          return unless config.validations.key?(:shape)
+          return unless _on_roots_at_ambient?(config.on)
+
+          raise ArgumentError,
+                "a `shape:` block is not supported on an `on: :ambient_context` subfield — declare the " \
+                "nested structure with subfields instead (e.g. `expects :#{config.field}, on: :ambient_context`; " \
+                "`expects :<member>, on: :#{config.field}, ...`), which also gives you readers and `sensitive:`"
         end
 
         # A dotted field NAME with no `as:` alias generates no reader (see `_define_subfield_reader`'s

@@ -457,10 +457,14 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
-        # Field-level options a shape member supports (beyond validations + metadata). Shape members
-        # are validation/schema-only: they have no single value to default/preprocess, and the log
-        # filter can't redact a per-element member, so default:/preprocess:/sensitive: are rejected
-        # rather than silently dropped when converting to a ShapeConfig.
+        # Field-level options a shape member supports (beyond validations + metadata). Shape members are
+        # reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader, no participation
+        # in value resolution), so `default:`/`preprocess:` — which produce/transform a value that needs a
+        # resolution target to land on (resolved on the read path post-PRO-2903) — have nowhere to apply.
+        # `sensitive:` is rejected too, but only because the sensitive-name collectors don't yet descend
+        # into shape members; it is filterable in principle (ParameterFilter redacts by key name at any
+        # depth, array elements included) and is a planned addition. All three are rejected rather than
+        # silently dropped when converting to a ShapeConfig.
         SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
 

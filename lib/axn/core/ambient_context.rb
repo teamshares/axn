@@ -129,9 +129,10 @@ module Axn
 
       # Only the declared ambient LEAVES survive, each at its declared PATH — the hash never carries a
       # process-wide dump nor an undeclared sibling at any depth. Walks the ambient-scoped SubfieldTree
-      # (see ClassMethods#_ambient_subfield_tree): a leaf's value is copied; a node with declared inner
-      # structure is reconstructed from that structure only (never a whole sub-hash), so a deeply nested
-      # `request[:ip]` resolves while `request[:token]` is dropped (PRO-2909).
+      # (see ClassMethods#_ambient_subfield_tree): a leaf's value is copied; a node with declared children
+      # is reconstructed from those children only (never a whole sub-hash), so a deeply nested
+      # `request[:ip]` resolves while `request[:token]` is dropped (PRO-2909). `shape:` blocks are rejected
+      # on ambient subfields at declaration, so a node's declared structure is its subfields alone.
       def _filter_to_declared(source)
         root = self.class._ambient_subfield_tree.roots[PARENT]
         return {} if root.nil?
@@ -139,61 +140,28 @@ module Axn
         _filter_ambient_node(root, source)
       end
 
-      # Rebuild the declared subtree rooted at `node`, reading from `source`. A node's declared immediate
-      # keys come from BOTH its subfield-tree children AND its `shape:`-block members (PRO-2909); each is
-      # preserved at its key and undeclared siblings are dropped. Recurses so nesting is filtered at every
-      # depth (subfield-of-subfield and member-of-member alike).
+      # Rebuild the declared subtree rooted at `node`, reading from `source`. A leaf node — no declared
+      # children, OR a `model:` node (whose descendants read off the RESOLVED RECORD, not a nested ambient
+      # hash, so the source only ever carries its record/`<field>_id`) — copies its value; any other node
+      # WITH children is an intermediate, reconstructed from its source sub-hash keeping only declared
+      # descendants. A non-hash value under a DECLARED intermediate is copied raw so the node's own type
+      # validation can reject a malformed parent (PRO-2857 doctrine); under an IMPLICIT path segment it is
+      # omitted (nothing validates it, and copying would only leak undeclared ambient state).
       def _filter_ambient_node(node, source)
-        indifferent = _ambient_indifferent(source)
+        indifferent = source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
         return {} unless indifferent.respond_to?(:key?)
 
-        acc = {}
-        node.children.each { |key, child| _reconstruct_ambient_child!(acc, key, child, indifferent) }
-        # Shape members declared on this node's own configs are keys the subfield tree doesn't represent;
-        # preserve each (a subfield child of the same key already covers it) so a shape-declared key isn't
-        # dropped during reconstruction.
-        _ambient_shape_members(node).each do |member|
-          key = member.field.to_sym
-          next if node.children.key?(key) || !indifferent.key?(key)
-
-          acc[key] = _filter_ambient_shape_value(member, indifferent[key])
-        end
-        acc
-      end
-
-      # One subfield-tree child. A node with NO declared inner structure (no children and no shape
-      # members) is a genuine leaf — copy its whole value (plus a `model:` node's `<field>_id`, whose
-      # descendants read off the resolved RECORD, not a nested hash). Anything with declared inner
-      # structure is reconstructed from a hash source; a non-hash source value is copied raw when the node
-      # is DECLARED (so its own type validation can reject a malformed parent — PRO-2857 doctrine) and
-      # omitted when the node is an IMPLICIT path segment (nothing validates it, and copying would only
-      # leak undeclared ambient state).
-      def _reconstruct_ambient_child!(acc, key, child, indifferent)
-        if _ambient_model_node?(child) || (child.children.empty? && _ambient_shape_members(child).empty?)
-          _copy_ambient_leaf!(acc, key, child, indifferent)
-        elsif indifferent.key?(key)
-          sub = indifferent[key]
-          if sub.respond_to?(:to_hash)
-            acc[key] = _filter_ambient_node(child, sub)
-          elsif !child.implicit?
-            acc[key] = sub
+        node.children.each_with_object({}) do |(key, child), acc|
+          if child.children.empty? || _ambient_model_node?(child)
+            _copy_ambient_leaf!(acc, key, child, indifferent)
+          elsif indifferent.key?(key)
+            sub = indifferent[key]
+            if sub.respond_to?(:to_hash)
+              acc[key] = _filter_ambient_node(child, sub)
+            elsif !child.implicit?
+              acc[key] = sub
+            end
           end
-        end
-      end
-
-      # A shape member's value: reconstruct from its OWN nested shape members when the member declares
-      # them and the value is a hash (a member-of-a-member); otherwise copy it as-is (a scalar, array, or
-      # object member has no declared string-keyed inner structure to filter).
-      def _filter_ambient_shape_value(member, value)
-        nested = member.validations.dig(:shape, :members)
-        return value unless nested&.any? && value.respond_to?(:to_hash)
-
-        indifferent = _ambient_indifferent(value)
-        nested.each_with_object({}) do |m, acc|
-          key = m.field.to_sym
-          next unless indifferent.key?(key)
-
-          acc[key] = _filter_ambient_shape_value(m, indifferent[key])
         end
       end
 
@@ -212,15 +180,6 @@ module Axn
       # `<field>_id`) is copied whole, never reconstructed from children (they read off the record).
       def _ambient_model_node?(node)
         node.configs.any? { |c| c.validations[:model] }
-      end
-
-      # The `shape:`-block members declared across a node's configs (empty for an implicit node).
-      def _ambient_shape_members(node)
-        node.configs.flat_map { |c| Array(c.validations.dig(:shape, :members)) }
-      end
-
-      def _ambient_indifferent(source)
-        source.respond_to?(:with_indifferent_access) ? source.with_indifferent_access : source
       end
     end
   end

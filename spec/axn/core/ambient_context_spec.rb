@@ -368,35 +368,39 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
-  describe "shape-block members on an ambient parent are preserved (not dropped by reconstruction)" do
-    it "keeps a shape-declared key when the parent also has a nested subfield (drops undeclared siblings)" do
-      klass = Class.new do
-        include Axn
-        expects :request, on: :ambient_context, type: Hash do
-          field :token, type: String
+  describe "shape blocks are rejected on ambient subfields (nest via subfields instead)" do
+    it "rejects a shape block on the ambient parent" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash do
+            field :ip, type: String
+          end
         end
-        expects :ip, on: :request, type: String
-        exposes :req
-        def call = expose(req: request)
-      end
-      result = klass.call(ambient_context: { request: { token: "t", ip: "1.2.3.4", extra: "leak" } })
-      expect(result).to be_ok
-      expect(result.req).to eq(token: "t", ip: "1.2.3.4")
-      expect(result.req).not_to have_key(:extra)
+      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
     end
 
-    it "filters a shape-only ambient parent to its declared members" do
+    it "rejects a shape block on a nested ambient subfield" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash
+          expects :headers, on: :request, type: Hash do
+            field :auth, type: String
+          end
+        end
+      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
+    end
+
+    it "still allows the equivalent nested structure declared as subfields" do
       klass = Class.new do
         include Axn
-        expects :ctx, on: :ambient_context, type: Hash do
-          field :a, type: String
-        end
-        exposes :the_ctx
-        def call = expose(the_ctx: ctx)
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String
+        exposes :the_ip
+        def call = expose(the_ip: ip)
       end
-      result = klass.call(ambient_context: { ctx: { a: "1", b: "leak" } })
-      expect(result).to be_ok
-      expect(result.the_ctx).to eq(a: "1")
+      expect(klass.call(ambient_context: { request: { ip: "1.2.3.4" } }).the_ip).to eq("1.2.3.4")
     end
   end
 
@@ -612,35 +616,6 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     end
     inst = klass.send(:new)
     expect(inst.send(:_filter_to_declared, { company_id: 7 })).to eq(company_id: 7)
-  end
-
-  it "preserves shape-member keys (and drops undeclared siblings) when reconstructing an intermediate" do
-    klass = Class.new do
-      include Axn
-      expects :request, on: :ambient_context, type: Hash do
-        field :token, type: String
-      end
-      expects :ip, on: :request, type: String
-    end
-    inst = klass.send(:new)
-    filtered = inst.send(:_filter_to_declared, { request: { token: "t", ip: "1", extra: "x" } })
-    expect(filtered).to eq(request: { token: "t", ip: "1" })
-  end
-
-  it "reconstructs a member-of-a-member (nested shape) without leaking undeclared nested keys" do
-    klass = Class.new do
-      include Axn
-      expects :request, on: :ambient_context, type: Hash do
-        field :headers, type: Hash do
-          field :auth, type: String
-        end
-      end
-      expects :ip, on: :request, type: String
-    end
-    inst = klass.send(:new)
-    filtered = inst.send(:_filter_to_declared,
-                         { request: { ip: "1", headers: { auth: "Bearer x", cookie: "leak" } } })
-    expect(filtered).to eq(request: { ip: "1", headers: { auth: "Bearer x" } })
   end
 
   it "reconstructs a dotted-`on:` nested leaf" do
