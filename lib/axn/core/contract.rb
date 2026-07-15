@@ -662,9 +662,10 @@ module Axn
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
           # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
           # the caller's fault — and the outbound settlement path never consults `user_facing:`, so on an
-          # exposes shape member it would be silently inert. Reject it loudly (top-level `exposes` fields
-          # already reject `user_facing:` as an unknown key; this keeps shape members consistent).
-          if outbound && opts[:user_facing]
+          # exposes shape member it would be silently inert. Reject it loudly on key presence (even an
+          # explicit `user_facing: false`), matching top-level `exposes`, which rejects `user_facing:`
+          # as an unknown key regardless of value.
+          if outbound && opts.key?(:user_facing)
             raise ArgumentError,
                   "shape member `#{name}` does not support user_facing: on exposes — an outbound failure is a " \
                   "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
@@ -709,6 +710,20 @@ module Axn
 
           raise ArgumentError,
                 "a shape block requires a single structured type: (Array, Hash, or a class) — got #{klasses.inspect}"
+        end
+
+        # A raw `shape:` kwarg (as opposed to the `do…end` block, whose `_build_shape` derives
+        # `:container` from `type:`) may omit `:container`. Derive it from the declared type the same
+        # way the block form does, so a raw shape validates identically instead of reaching
+        # ShapeValidator with a nil container (`value.is_a?(nil)` → TypeError at call time). A
+        # block-built shape already carries `:container`, so this fires only for the raw form; a raw
+        # shape with an incompatible/missing `type:` raises the same declaration error the block form
+        # does (via `_shape_compatible_type!`). Mutates `validations`.
+        def _derive_raw_shape_container!(validations)
+          shape = validations[:shape]
+          return unless shape.is_a?(Hash) && !shape.key?(:container)
+
+          validations[:shape] = shape.merge(container: _shape_compatible_type!(validations))
         end
 
         def _partition_field_options(fields, **options)
@@ -989,6 +1004,8 @@ module Axn
             validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
             raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
+
+          _derive_raw_shape_container!(validations)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil

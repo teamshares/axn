@@ -330,6 +330,16 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
     end
 
+    it "rejects even an explicit user_facing: false on an exposes shape member (key presence, matching top-level exposes)" do
+      expect do
+        build_axn do
+          exposes :items, type: Array do
+            field :status, type: String, user_facing: false
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
+
     it "rejects user_facing: on a nested exposes shape member too" do
       expect do
         build_axn do
@@ -687,15 +697,21 @@ RSpec.describe "expects ..., user_facing:" do
         expect(messages).to include("sku")
       end
 
-      it "accepts a shape passed as a raw shape: kwarg on a user_facing field" do
-        # A raw shape: kwarg carries its own :container (the block form's _build_shape supplies it
-        # automatically; a container-less raw shape is malformed independently of user_facing).
-        expect do
-          build_axn do
-            expects :order, type: Hash, user_facing: true, shape: { members: [], container: Hash }
-            def call = nil
-          end
-        end.not_to raise_error
+      it "derives the container for a raw shape: kwarg (no explicit container:), so it validates instead of crashing" do
+        # A raw shape: kwarg bypasses the block form's _build_shape (which derives :container from
+        # type:); _parse_field_validations now derives it the same way, so a container-less raw shape
+        # validates like the block form instead of reaching ShapeValidator with a nil container
+        # (value.is_a?(nil) → TypeError at call time).
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order is required", shape: { members: [] }
+          def call = nil
+        end
+        # A non-blank Hash validates (zero members) — previously raised TypeError on the nil container
+        expect(action.call(order: { any: 1 }).outcome).to be_success
+        # An empty Hash now surfaces the field's own user_facing presence failure, not a dev-facing TypeError
+        result = action.call(order: {})
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Order is required")
       end
     end
 
