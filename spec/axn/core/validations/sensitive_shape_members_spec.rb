@@ -294,6 +294,42 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(inputs[:items]).to eq([{ ssn: "[FILTERED]", name: "Alice" }, "[FILTERED]"])
     end
 
+    it "masks an object-backed value under a shape declared on a subfield" do
+      klass = person
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :person, on: :payload, type: klass, method_call: true do
+          field :name, method_call: true
+          field :ssn, method_call: true, sensitive: true
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, payload: { person: klass.new(name: "Alice", ssn: "111-11-1111") }).send(:inputs_for_logging)
+      expect(inputs[:payload][:person]).to eq("[FILTERED]")
+
+      # A Hash value for the same subfield shape stays precise (per-member).
+      hash_inputs = action.send(:new, payload: { person: { name: "Alice", ssn: "111-11-1111" } }).send(:inputs_for_logging)
+      expect(hash_inputs[:payload][:person]).to eq({ name: "Alice", ssn: "[FILTERED]" })
+    end
+
+    it "masks a string-keyed nested object member (extraction accepts string keys)" do
+      klass = person
+      action = build_axn do
+        expects :order, type: Hash do
+          field :customer, type: klass, method_call: true do
+            field :ssn, method_call: true, sensitive: true
+          end
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, order: { "customer" => klass.new(name: "Z", ssn: "999-99-9999") }).send(:inputs_for_logging)
+      expect(inputs[:order]["customer"]).to eq("[FILTERED]")
+    end
+
     it "does NOT redact an object-backed shape whose members are all non-sensitive" do
       klass = person
       action = build_axn do

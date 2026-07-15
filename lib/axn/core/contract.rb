@@ -355,21 +355,62 @@ module Axn
         # Hash (or an Array of Hashes) is filtered precisely, siblings preserved. But the filter only
         # descends into Hashes: an object-backed shape value (a Data/Struct/PORO), or a malformed non-Hash
         # value where a Hash was expected (which reaches logging before inbound validation can reject it),
-        # is opaque to it and would print whole. So for any declared field carrying a sensitive member,
-        # this walks its value against the shape tree and replaces a non-Hash value in a member-bearing
-        # position with the mask — over-redacting the whole value (its non-sensitive siblings included)
-        # rather than risk leaking the secret. Applied to logs, exception context, and `inspect`.
-        def _mask_unfilterable_shape_value(field, value, action_instance)
-          config = (internal_field_configs + external_field_configs).find { |c| c.field == field && c.validations.key?(:shape) }
-          return value unless config && _shape_has_sensitive_member?(config.validations[:shape], action_instance)
+        # is opaque to it and would print whole. So for every field/subfield whose shape carries a
+        # sensitive member, this walks to the shaped value and replaces a non-Hash value in a
+        # member-bearing position with the mask — over-redacting the whole value (its non-sensitive
+        # siblings included) rather than risk leaking the secret. Applied to logs, exception context,
+        # and `inspect`.
+        def _mask_unfilterable_shapes(data, action_instance)
+          return data unless data.is_a?(Hash)
 
-          _mask_shape_value(value, config.validations[:shape], action_instance)
+          _sensitive_shape_paths(action_instance).reduce(data) do |acc, (wire_path, shape)|
+            _mask_value_at_path(acc, wire_path, shape, action_instance)
+          end
         end
 
-        # Map every field in `data` through `_mask_unfilterable_shape_value` (a no-op for fields without a
-        # sensitive-member shape). Used by the logging/exception-context slice.
-        def _mask_unfilterable_shapes(data, action_instance)
-          data.to_h { |field, value| [field, _mask_unfilterable_shape_value(field, value, action_instance)] }
+        # Single-field entry — inspect renders one field at a time. Reuses the whole-hash pass on a
+        # one-key hash so a subfield shape rooted under `field` is masked at its nested position too.
+        def _mask_unfilterable_shape_value(field, value, action_instance)
+          _mask_unfilterable_shapes({ field => value }, action_instance)[field]
+        end
+
+        # `[(wire_path, shape)]` for every field/subfield whose shape carries a sensitive member. A
+        # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
+        # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
+        # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
+        def _sensitive_shape_paths(action_instance)
+          (internal_field_configs + external_field_configs + subfield_configs).filter_map do |config|
+            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
+            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
+
+            wire_path = config.subfield? ? _resolved_subfields.index[config]&.wire_path : [config.field]
+            next unless wire_path
+
+            [wire_path, shape]
+          end
+        end
+
+        # Walk `wire_path` through `value` — Hash keys in either symbol or string form (extraction
+        # accepts both), mapping across arrays — and mask the shaped value at the leaf. An absent key is
+        # left alone (nothing there to mask).
+        def _mask_value_at_path(value, wire_path, shape, action_instance)
+          return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
+          return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
+          return value unless value.is_a?(Hash)
+
+          key = _hash_key_variant(value, wire_path.first)
+          return value unless value.key?(key)
+
+          value.merge(key => _mask_value_at_path(value[key], wire_path.drop(1), shape, action_instance))
+        end
+
+        # The symbol or string form of `key` actually present in `hash` (extraction accepts either);
+        # falls back to the given key when neither is present.
+        def _hash_key_variant(hash, key)
+          return key if hash.key?(key)
+
+          string_key = key.to_s
+          hash.key?(string_key) ? string_key : key
         end
 
         # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
@@ -405,15 +446,19 @@ module Axn
         # A non-Hash value where members are expected is opaque to ParameterFilter → mask it whole. A Hash
         # keeps its own keys (ParameterFilter redacts the sensitive ones); only recurse into a nested-shape
         # member's value when that nested shape actually carries a sensitive member, to avoid needless
-        # masking of an unrelated non-Hash deeper down.
+        # masking of an unrelated non-Hash deeper down. The member key is matched in either symbol or
+        # string form, since extraction accepts both.
         def _mask_shape_element(element, shape, action_instance)
           return SENSITIVE_FILTERED_MASK unless element.is_a?(Hash)
 
           (shape[:members] || []).each_with_object(element.dup) do |member, masked|
             nested = _member_shape(member)
-            next unless nested && masked.key?(member.field) && _shape_has_sensitive_member?(nested, action_instance)
+            next unless nested && _shape_has_sensitive_member?(nested, action_instance)
 
-            masked[member.field] = _mask_shape_value(masked[member.field], nested, action_instance)
+            key = _hash_key_variant(masked, member.field)
+            next unless masked.key?(key)
+
+            masked[key] = _mask_shape_value(masked[key], nested, action_instance)
           end
         end
 
