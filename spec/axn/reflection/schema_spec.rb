@@ -4485,13 +4485,30 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:note][:type]).to eq(%w[string null])
     end
 
-    it "admits null on a gated exposes property (a closed gate can emit nil)" do
+    it "leaves a gated exposes property untyped (a closed gate can emit any exposed value)" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :num, type: Integer, if: :flag
         def call; end
       end
-      expect(action.output_schema[:properties][:num][:type]).to eq(%w[integer null])
+      prop = action.output_schema[:properties][:num]
+      expect(prop).not_to have_key(:type)
+      expect(prop).not_to have_key(:format)
+      expect(prop).not_to have_key(:enum)
+    end
+
+    it "output_schema is a superset of what a closed outbound gate can emit (untyped, and the wrong-typed value passes)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :num, type: Integer, if: :flag
+        def call = expose(:num, "oops")
+      end
+      # Closed gate skips num's type validator, so a String flows through: the call succeeds…
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.num).to eq("oops")
+      # …and the output schema advertises no type the emitted value could contradict.
+      expect(action.output_schema[:properties][:num]).not_to have_key(:type)
     end
 
     it "reflects a gated shape member static-maximal (required inside its object)" do
@@ -4613,6 +4630,79 @@ RSpec.describe Axn::Reflection::Schema do
         end
         clause = action.input_schema[:allOf].first
         expect(clause[:if][:required]).to eq(["promo"])
+      end
+
+      it "falls back when the referenced reader is a user method, not the framework-generated one" do
+        # (a) user defines its own predicate BEFORE the boolean field: predicate generation defers to
+        # it, so runtime evaluates the USER method while the wire value could differ — must not emit.
+        pre = build_axn do
+          def promo_enabled? = true
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = pre.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+
+        # (a') user defines its own predicate AFTER the field declaration.
+        post_pred = build_axn do
+          expects :promo_enabled, type: :boolean
+          def promo_enabled? = true
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = post_pred.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+
+        # (b) user redefines the PLAIN reader after expects: same hazard, the def shadows the reader.
+        plain = build_axn do
+          expects :flag, type: :boolean
+          def flag = true
+          expects :coupon_code, type: String, if: :flag
+        end
+        schema = plain.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "still emits for the generated readers (source_location check does not false-positive)" do
+        # Generated plain reader.
+        plain = build_axn do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, if: :flag
+        end
+        expect(plain.input_schema[:allOf]).not_to be_nil
+        # Generated boolean predicate alias (shares the aliased reader's source_location).
+        pred = build_axn do
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        expect(pred.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back when a subfield default beneath the referenced field can synthesize it" do
+        action = build_axn do
+          expects :opts, optional: true
+          expects :mode, on: :opts, default: "x"
+          expects :coupon_code, type: String, if: :opts
+          def call; end
+        end
+        schema = action.input_schema
+        # The inbound defaults pass materializes opts to {mode: "x"} even when the wire omits it, so
+        # the runtime gate is truthy — the clause would be looser than runtime. Fall back to required.
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+        # Runtime agreement: omit everything → the synthesized opts opens the gate → coupon_code missing.
+        expect(action.call.ok?).to be false
+      end
+
+      it "still emits when the referenced field's subfield carries no default (nothing synthesizes it)" do
+        action = build_axn do
+          expects :opts, optional: true
+          expects :mode, on: :opts, optional: true
+          expects :coupon_code, type: String, if: :opts
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
       end
     end
   end

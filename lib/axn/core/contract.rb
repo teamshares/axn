@@ -26,6 +26,14 @@ module Axn
         end
       end
 
+      # Every top-level reader and boolean predicate alias is defined in this file, so reflection can
+      # verify a Symbol condition still resolves to the framework-generated reader — an alias shares
+      # its source_location with the aliased definition, so a user method of the same name (a
+      # pre-existing predicate target that suppressed generation, or a plain reader redefined after
+      # `expects`) reports a different source and is rejected (declarative-emission would otherwise
+      # condition on the wire value while runtime evaluates the user method — the looser direction).
+      GENERATED_READER_SOURCE_PATH = __FILE__
+
       # Optionality is shared by FieldConfig and ShapeConfig (axn-mcp derives `required` from BOTH —
       # field configs and nested shape members — through the same predicate).
       module FieldOptionality

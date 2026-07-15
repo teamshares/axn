@@ -68,7 +68,7 @@ module Axn
       # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
       # a repeated path skip the tree build + annotation derivation; it must have been built from the
       # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
-      def build_input(field_configs, subfield_configs = [], resolved: nil)
+      def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
         tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
         ann = resolved&.annotations || derive_annotations(tree.roots)
         properties = {}
@@ -91,7 +91,7 @@ module Axn
 
             properties[config.field] = prop.compact
             unless field_optional?(config, node.children, ann)
-              clause = conditional_requiredness_clause(config, field_configs, node)
+              clause = conditional_requiredness_clause(config, field_configs, node, tree.roots, klass)
               clause ? conditionals << clause : required << config.field.to_s
             end
           end
@@ -437,9 +437,21 @@ module Axn
       #     wire coercion is fine: it can only flip a truthy wire literal to falsey, which leaves the
       #     schema stricter, never looser) and is not model:-routed (lookup success isn't
       #     wire-expressible) nor schema-excluded;
+      #   * no subfield DEFAULT anywhere beneath the referenced field can synthesize it — an applied
+      #     default at any depth materializes the parent (apply_defaults_for_subfields! injects `{}`),
+      #     so a wire-omitted referenced field settles truthy and the runtime gate opens while the
+      #     emitted clause still sees it absent (schema looser than runtime). Only DEFAULTS matter: a
+      #     subfield preprocess never materializes an absent root (the executor drops the write when
+      #     the root is nil), so preprocess-at-depth cannot flip the gate;
+      #   * the referenced reader is the FRAMEWORK-GENERATED one — a Symbol condition names a reader
+      #     method, but a user can suppress predicate generation (a pre-existing `?` method) or
+      #     redefine a plain reader after `expects`, and runtime would then evaluate the USER method
+      #     against the settled value while the clause conditions on the wire value. Verified via
+      #     source_location against the generation site (framework_generated_reader?), pure
+      #     introspection. `klass` is nil for direct build_input callers → fall back (safe direction);
       #   * the gated field is not model:-routed and has no subfields of its own (a required
       #     descendant unconditionally forces the field, contradicting a conditional requirement).
-      def conditional_requiredness_clause(config, field_configs, node)
+      def conditional_requiredness_clause(config, field_configs, node, roots, klass)
         return nil if config.validations[:model] || node.children.any?
 
         gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
@@ -452,6 +464,10 @@ module Axn
         return nil unless ref
         return nil if ref.validations[:model] || !ref.default.nil? || ref.preprocess
         return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
+        return nil unless framework_generated_reader?(klass, rule)
+
+        ref_node = roots[ref.reader_as]
+        return nil if ref_node && subtree_has_applied_subfield_default?(ref_node.children)
 
         condition = {
           required: [ref.field.to_s],
@@ -472,6 +488,17 @@ module Axn
 
         base = name.delete_suffix("?")
         field_configs.find { |c| c.reader_as.to_s == base && c.boolean? }
+      end
+
+      # Whether the method a Symbol condition names still resolves to the reader Axn generated (not a
+      # user method that would evaluate against the settled value instead of the wire value). The
+      # generation site is recorded on Contract::GENERATED_READER_SOURCE_PATH; a generated reader —
+      # and a boolean predicate alias, which shares the aliased definition's source_location — reports
+      # that file, while a user `def` reports the declaring file. Pure introspection, side-effect-free.
+      def framework_generated_reader?(klass, rule_name)
+        return false unless klass.respond_to?(:method_defined?) && klass.method_defined?(rule_name)
+
+        klass.instance_method(rule_name).source_location&.first == Axn::Core::Contract::GENERATED_READER_SOURCE_PATH
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -796,12 +823,16 @@ module Axn
         prop = {}
         prop[:description] = config.description if config.description
 
+        # OUTPUT safety runs the other direction from input: the property must admit a SUPERSET of
+        # what the serializer can emit. A closed outbound gate skips EVERY validator (not just
+        # presence), so the exposed value can be anything the action assigned — no type/format/enum/
+        # default is assertable. Leave the property untyped (description only): untyped is the only
+        # superset of an unconstrained value. Mirrors the module's output doctrine of leaving a value
+        # untyped rather than asserting a type the serialized value could contradict.
+        return prop if for_output && conditionally_gated?(config)
+
         type_info = json_type_for(config.validations, for_output:)
-        # OUTPUT safety runs the other direction from input: the property must admit a superset of
-        # what the serializer can emit. A gated outbound field may skip its validators entirely
-        # (condition false), so nil can flow through — admit null regardless of the validators'
-        # own nil-tolerance.
-        nullable = nil_allowed?(config) || (for_output && conditionally_gated?(config))
+        nullable = nil_allowed?(config)
         apply_type_info!(prop, type_info, config, nullable:)
 
         if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
