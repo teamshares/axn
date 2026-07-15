@@ -229,7 +229,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
       it "calls Vernier.profile with a profile name and options" do
         expect(Vernier).to receive(:profile).with(
           hash_including(
-            out: match(/axn_Anonymous_Axn_\d+\.json$/),
+            out: match(/axn_anonymous_axn_\d+\.json$/),
             allocation_sample_rate: 100,
           ),
         ).and_yield
@@ -237,12 +237,23 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
         action.send(:_with_vernier_profiling) { "test" }
       end
 
-      it "sanitizes a namespaced/custom resolved_axn_name into a filename-safe segment" do
+      it "uses the canonical tool_name (not the raw resolved_axn_name) for a namespaced class" do
         stub_const("Some::Namespaced::Action", action_class)
         namespaced_action = action_class.send(:new, name: "World")
 
         expect(Vernier).to receive(:profile).with(
-          hash_including(out: match(/axn_Some_Namespaced_Action_\d+\.json$/)),
+          hash_including(out: match(/axn_some_namespaced_action_\d+\.json$/)),
+        ).and_yield
+
+        namespaced_action.send(:_with_vernier_profiling) { "test" }
+      end
+
+      it "uses the canonical tool_name, stripping a configured prefix segment" do
+        stub_const("AgentTools::ListCompanies", action_class)
+        namespaced_action = action_class.send(:new, name: "World")
+
+        expect(Vernier).to receive(:profile).with(
+          hash_including(out: match(/axn_list_companies_\d+\.json$/)),
         ).and_yield
 
         namespaced_action.send(:_with_vernier_profiling) { "test" }
@@ -289,7 +300,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
     it "profiles the complete action execution via around hook" do
       expect(Vernier).to receive(:profile).with(
         hash_including(
-          out: match(/axn_Anonymous_Axn_\d+\.json$/),
+          out: match(/axn_anonymous_axn_\d+\.json$/),
           allocation_sample_rate: 100,
         ),
       ).and_yield
@@ -297,10 +308,10 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
       action_class.call(name: "World")
     end
 
-    it "includes the action class name in the profile name" do
+    it "includes the action's tool_name in the profile name" do
       expect(Vernier).to receive(:profile).with(
         hash_including(
-          out: match(/axn_Anonymous_Axn_\d+\.json$/),
+          out: match(/axn_anonymous_axn_\d+\.json$/),
           allocation_sample_rate: 100,
         ),
       ).and_yield
