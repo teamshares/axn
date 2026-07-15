@@ -380,6 +380,21 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(inputs3[:order]).to eq({ "customer" => "[FILTERED]", customer: "[FILTERED]" })
     end
 
+    it "masks a malformed Array supplied to a Hash shape wholesale (not element-mapped)" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :ssn, sensitive: true
+        end
+
+        def call; end
+      end
+
+      # Array is malformed for a Hash shape; its arbitrary contents (undeclared `note`) must not leak by
+      # being treated as array elements with only `ssn` keys filtered.
+      inputs = action.send(:new, payload: [{ note: "secret", ssn: "111" }]).send(:inputs_for_logging)
+      expect(inputs[:payload]).to eq("[FILTERED]")
+    end
+
     it "preserves a nil shaped value (valid absent data) rather than masking it" do
       action = build_axn do
         expects :payload, type: Hash, allow_nil: true do

@@ -449,8 +449,13 @@ module Axn
           shape.is_a?(Hash) ? shape : nil
         end
 
+        # An Array is mapped element-by-element only when the shape actually describes an Array container
+        # (its members describe each element). An Array supplied to a Hash/class shape is malformed —
+        # its arbitrary contents (which reach logging before validation rejects them) can't be trusted to
+        # only hold declared member keys — so it falls through to `_mask_shape_element`, which masks the
+        # non-Hash value wholesale.
         def _mask_shape_value(value, shape, action_instance)
-          return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
+          return value.map { |element| _mask_shape_element(element, shape, action_instance) } if shape[:container] == Array && value.is_a?(Array)
 
           _mask_shape_element(value, shape, action_instance)
         end
