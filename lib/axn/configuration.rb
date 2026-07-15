@@ -55,6 +55,23 @@ module Axn
             overridable: true,
             validate: ->(v) { [true, false].include?(v) }
 
+    # Dedicated directories whose Axns auto-register as tools (membership) and which core
+    # eager-loads on demand to populate the registry. Security-sensitive and deliberately
+    # narrow: it must never include a broad dir like bare `actions`, which would auto-expose
+    # every business action. Resolved to `Rails.root/app/<path>` under Rails, else
+    # `File.expand_path(<path>)`. Distinct from tool_name_stripped_prefixes (naming, cosmetic).
+    setting :tool_paths,
+            default: %w[agent_tools actions/tools],
+            validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
+
+    # Leading namespace segments stripped when deriving a tool's `tool_name` from its
+    # class name. Cosmetic and broad (may safely include `actions`). Global by default,
+    # per-class overridable (a class can narrow/replace the set it derives against).
+    setting :tool_name_stripped_prefixes,
+            default: %w[actions tools agent_tools],
+            overridable: true,
+            validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
+
     attr_writer :logger, :env, :on_exception, :rails
 
     # Optional callable returning a Hash of ambient context data (e.g. from request-local state).

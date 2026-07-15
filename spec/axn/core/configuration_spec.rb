@@ -27,6 +27,30 @@ RSpec.describe Axn::Configuration do
     it { expect(config.additional_includes).to eq([]) }
     it { expect(config.logger).to be_a(Logger) }
     it { expect(config.env.test?).to eq(true) }
+    it { expect(config.tool_paths).to eq(%w[agent_tools actions/tools]) }
+    it { expect(config.tool_name_stripped_prefixes).to eq(%w[actions tools agent_tools]) }
+
+    describe "#tool_paths=" do
+      it "accepts an array of strings" do
+        config.tool_paths = %w[agent_tools]
+        expect(config.tool_paths).to eq(%w[agent_tools])
+      end
+
+      it "rejects a non-array" do
+        expect { config.tool_paths = "agent_tools" }.to raise_error(ArgumentError)
+      end
+    end
+
+    describe "#tool_name_stripped_prefixes=" do
+      it "accepts an array of strings" do
+        config.tool_name_stripped_prefixes = %w[actions]
+        expect(config.tool_name_stripped_prefixes).to eq(%w[actions])
+      end
+
+      it "rejects a non-array" do
+        expect { config.tool_name_stripped_prefixes = :actions }.to raise_error(ArgumentError)
+      end
+    end
   end
 
   describe "#logger" do
