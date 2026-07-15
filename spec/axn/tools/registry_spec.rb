@@ -41,6 +41,29 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".tools_for" do
+    before do
+      Axn.register_tool_adapter(:mcp)
+      Axn.register_tool_adapter(:ruby_llm)
+    end
+
+    it "returns only member classes for the adapter" do
+      mcp_only = stub_const("ToolsForSpec::McpOnly", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      both = stub_const("ToolsForSpec::Both", Class.new do
+        include Axn
+        tool
+      end)
+      stub_const("ToolsForSpec::NotATool", Class.new { include Axn })
+
+      expect(Axn.tools_for(:mcp)).to include(mcp_only, both)
+      expect(Axn.tools_for(:ruby_llm)).to include(both)
+      expect(Axn.tools_for(:ruby_llm)).not_to include(mcp_only)
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 

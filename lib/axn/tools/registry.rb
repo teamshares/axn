@@ -5,7 +5,6 @@ require "active_support/core_ext/string/inflections"
 module Axn
   module Tools
     # Process-global tool registry: the registered adapter keys and every include-Axn class.
-    # `tools_for` is currently a placeholder.
     module Registry
       extend self
 
@@ -32,8 +31,17 @@ module Axn
         _classes.select { |k| _currently_defined?(k) }
       end
 
-      def tools_for(_adapter)
-        [] # membership resolution added in a later step
+      def tools_for(adapter)
+        ensure_loaded!
+        all_classes.select { |klass| member?(klass, adapter) }
+      end
+
+      # Ensures tool classes under the configured tool_paths are loaded before enumeration.
+      # No-op placeholder: correct whenever every class is already loaded (production
+      # eager_load, or a test that defines classes inline). Per-environment eager-loading
+      # under tool_paths is filled in separately.
+      def ensure_loaded!
+        nil
       end
 
       # Fail-safe membership: an explicit declaration wins; else auto-register when the class's
