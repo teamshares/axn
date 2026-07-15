@@ -56,10 +56,18 @@ module Axn
                           value.inspect
                         end
 
-      # Handle subfield filtering for hash values
-      if value.is_a?(Hash) && sensitive_subfields?(field)
-        filtered_value = filter_subfields(field, value)
-        return filtered_value.inspect
+      # Sensitive subfields and shape members live nested inside a structured value; once it has been
+      # stringified above, `filter_param(field, ...)` (which matches on the top-level key only) can no
+      # longer reach the nested keys. So filter the structure itself first — Hash or Array, since an
+      # Array-element member redacts per element — then inspect the filtered result. If nothing nested
+      # matched, fall through so a sensitive top-level field (whose whole value is redacted by name) is
+      # still handled.
+      if value.is_a?(Hash) || value.is_a?(Array)
+        nested_keys = nested_sensitive_keys(field)
+        unless nested_keys.empty?
+          filtered = ActiveSupport::ParameterFilter.new(nested_keys).filter({ field => value })[field]
+          return filtered.inspect
+        end
       end
 
       inspection_filter.filter_param(field, inspected_value)
@@ -73,8 +81,15 @@ module Axn
                              end
     end
 
-    def sensitive_subfields?(field)
-      action.subfield_configs.any? { |config| sensitive_subfield_on?(config, field) }
+    # ParameterFilter keys for sensitive values nested inside `field`'s structured value: sensitive
+    # subfield wire paths (dotted, precise to their parent) plus sensitive shape-member names (flat —
+    # a member redacts by name wherever it appears, i.e. every array element and any nesting depth).
+    def nested_sensitive_keys(field)
+      subfield_paths = action.subfield_configs
+                             .select { |config| sensitive_subfield_on?(config, field) }
+                             .map { |config| action.class._resolved_subfields.index[config].wire_path.join(".") }
+
+      subfield_paths + sensitive_member_names(field)
     end
 
     # `field` is the top-level parent's wire key; the config's resolved wire path (from the per-class
@@ -85,19 +100,24 @@ module Axn
       path && path.wire_path.first == field && action.class._resolve_sensitive_value(config.sensitive, action)
     end
 
-    def filter_subfields(field, value)
-      nested_data = { field => value }
+    # Names of sensitive shape members declared within `field`'s shape tree (nested shapes included),
+    # with dynamic `sensitive:` predicates resolved against the action instance — matching how
+    # inputs_for_logging filters. A duck-typed member without #sensitive is treated as not sensitive
+    # (mirrors the ShapeValidator member contract for #method_call).
+    def sensitive_member_names(field)
+      config = (action.class.internal_field_configs + action.class.external_field_configs).find { |c| c.field == field }
+      return [] unless config
 
-      sensitive_subfield_paths = action.subfield_configs
-                                       .select { |config| sensitive_subfield_on?(config, field) }
-                                       .map { |config| action.class._resolved_subfields.index[config].wire_path.join(".") }
+      collect_sensitive_member_names(config)
+    end
 
-      return value if sensitive_subfield_paths.empty?
-
-      subfield_filter = ActiveSupport::ParameterFilter.new(sensitive_subfield_paths)
-      filtered_data = subfield_filter.filter(nested_data)
-
-      filtered_data[field]
+    def collect_sensitive_member_names(config)
+      members = config.validations.dig(:shape, :members) || []
+      members.flat_map do |member|
+        names = collect_sensitive_member_names(member)
+        names << member.field if member.respond_to?(:sensitive) && action.class._resolve_sensitive_value(member.sensitive, action)
+        names
+      end
     end
   end
 end

@@ -272,13 +272,14 @@ module Axn
 
         def _static_sensitive_fields
           _sensitive_candidate_configs
-            .select { |c| c.sensitive == true }
+            .select { |c| _config_sensitive(c) == true }
             .flat_map { |c| _sensitive_field_keys(c) }
         end
 
         def _has_dynamic_sensitive_fields?
           @_has_dynamic_sensitive_fields ||= _sensitive_candidate_configs.any? do |config|
-            config.sensitive.is_a?(Proc) || config.sensitive.is_a?(Symbol)
+            sensitive = _config_sensitive(config)
+            sensitive.is_a?(Proc) || sensitive.is_a?(Symbol)
           end
         end
 
@@ -286,8 +287,17 @@ module Axn
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
           _sensitive_candidate_configs
-            .select { |config| _resolve_sensitive_value(config.sensitive, action_instance) }
+            .select { |config| _resolve_sensitive_value(_config_sensitive(config), action_instance) }
             .flat_map { |c| _sensitive_field_keys(c) }
+        end
+
+        # A shape member's contract is duck-typed — ShapeValidator requires only #field/#validations,
+        # and `shape: { members: [...] }` may be supplied raw with member objects that implement no
+        # more than that. `#sensitive` is optional (absent on such a raw member), so read it defensively
+        # and treat a missing reader as `false`, mirroring how the validator treats a missing
+        # #method_call as not opted in.
+        def _config_sensitive(config)
+          config.respond_to?(:sensitive) ? config.sensitive : false
         end
 
         # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as

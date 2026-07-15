@@ -121,6 +121,86 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
   end
 
+  describe "inspect (ContextFacadeInspector) redaction" do
+    it "redacts a sensitive Array-element member in internal_context.inspect (not just logs)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :ssn, type: String, sensitive: true
+          field :name, type: String
+        end
+
+        def call; end
+      end
+
+      inspected = action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__.internal_context.inspect
+
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("111-11-1111")
+      expect(inspected).to include("Alice")
+    end
+
+    it "redacts a sensitive Hash member in internal_context.inspect" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :token, type: String, sensitive: true
+          field :user, type: String
+        end
+
+        def call; end
+      end
+
+      inspected = action.call(payload: { token: "s3cr3t", user: "alice" }).__action__.internal_context.inspect
+
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("s3cr3t")
+    end
+
+    it "redacts a sensitive member nested inside a nested shape in inspect" do
+      action = build_axn do
+        expects :order, type: Hash do
+          field :customer, type: Hash do
+            field :ssn, type: String, sensitive: true
+          end
+        end
+
+        def call; end
+      end
+
+      inspected = action.call(order: { customer: { ssn: "999-99-9999" } }).__action__.internal_context.inspect
+
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("999-99-9999")
+    end
+  end
+
+  describe "duck-typed raw shape members (no #sensitive reader)" do
+    # `shape: { members: [...] }` may be supplied raw with member objects implementing only the
+    # documented #field/#validations contract. The sensitive-name collectors must not assume #sensitive.
+    let(:raw_member) { Struct.new(:field, :validations).new(:name, { type: { klass: String } }) }
+
+    it "does not raise from sensitive_fields for a member lacking #sensitive" do
+      member = raw_member
+      action = build_axn do
+        expects :items, type: Array, shape: { members: [member], container: Array }
+      end
+
+      expect { action.sensitive_fields }.not_to raise_error
+      expect(action.sensitive_fields).to eq([])
+    end
+
+    it "does not raise from inspect for a member lacking #sensitive" do
+      member = raw_member
+      action = build_axn do
+        expects :items, type: Array, shape: { members: [member], container: Array }
+
+        def call; end
+      end
+
+      result = action.call(items: [{ name: "Alice" }])
+      expect { result.__action__.internal_context.inspect }.not_to raise_error
+    end
+  end
+
   describe "model: on a shape member" do
     it "is rejected (reader-less members cannot resolve an id or expose an _id companion)" do
       expect do
