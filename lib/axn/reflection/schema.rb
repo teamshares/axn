@@ -1214,7 +1214,8 @@ module Axn
       # input optionality and nullability (adding "null" to the emitted type). A lone validator's
       # allow_nil: doesn't count if another (presence, type, …) still rejects nil.
       #
-      # An entry is nil-tolerant if it's a disabled validator (`opt == false`), `absence` (nil is always
+      # An entry is nil-tolerant if it's a disabled validator (falsy `opt` — `false` or `nil`, both of
+      # which ActiveModel skips), `absence` (nil is always
       # "absent"), `acceptance` unless explicitly `allow_nil: false` (ActiveModel's acceptance is allow_nil
       # by default), a Hash allowing nil/blank, an `exclusion` set not containing nil, or an `inclusion`
       # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
@@ -1318,7 +1319,7 @@ module Axn
       end
 
       def nil_tolerant_validation?(key, opt)
-        return true if opt == false
+        return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
         return true if opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])
         return true if key == :absence
         return true if key == :acceptance && !(opt.is_a?(Hash) && opt[:allow_nil] == false)

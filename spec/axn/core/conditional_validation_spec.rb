@@ -106,6 +106,31 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.call(num: "not-a-number").ok?).to be true # numericality disabled
     end
 
+    it "keeps a nil-disabled validator OUT of input_schema[:required] (matches its omittable runtime)" do
+      action = build_axn do
+        expects :num, numericality: nil, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true # omittable at runtime
+      expect(action.input_schema[:required] || []).not_to include(:num, "num")
+    end
+
+    # `strict:` is an ActiveModel SHARED option, not a validator — the push-down must leave it intact
+    # rather than normalize it into an options hash (which would raise a bare `TypeError` at
+    # strict-raise time instead of the strict exception).
+    it "preserves strict: under a tolerance flag (raises the strict exception, not a TypeError)" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true, strict: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true # omittable (tolerance intact)
+      result = action.call(num: "nope")
+      expect(result.ok?).to be false
+      expect(result.exception).to be_a(ActiveModel::StrictValidationFailed)
+    end
+
     it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
       action = build_axn do
         expects :num, numericality: true, optional: true

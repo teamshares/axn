@@ -27,6 +27,13 @@ module Axn
       # TrueClass→{}, Hash→itself, Range/Array→{in:}, else→{with:}).
       def self.normalize_validator_options(value) = _parse_validates_options(value)
 
+      # ActiveModel's shared "default" validator options — keys that ride alongside validator entries
+      # in a `validates` call but are NOT validators themselves (if:/unless:/on:/strict:/allow_blank:/
+      # allow_nil:). Exposed so the tolerance push-down (contract.rb) can hold them OUT of the
+      # per-validator scalar normalization — merging tolerance into `strict: true`, say, would rewrite
+      # it to a Hash and break strict raising. Reuses AM's own canonical list so the set can't drift.
+      def self.shared_validation_option_keys = _validates_default_keys
+
       # Delegate unknown methods to the action instance so symbol-referenced validation arguments
       # (e.g. `inclusion: { in: :valid_channels_for_number }`) resolve against the action — for
       # top-level fields and subfields alike.

@@ -818,12 +818,17 @@ module Axn
                     "Declare one requiredness signal (drop the flag, or drop presence:)."
             end
 
-            # `if:`/`unless:` are ActiveModel shared options riding the hash as sibling keys, not
-            # validators — there is nothing to push tolerance flags into. Core-Ruby delete (not
-            # ActiveSupport's Hash#except!): axn runs outside Rails, where that core_ext may never
-            # be loaded.
-            gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-            Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each { |key| validations.delete(key) }
+            # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
+            # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
+            # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
+            # them (e.g. `strict: true` → `strict: { allow_blank:, allow_nil: }`, which then raises a
+            # bare `TypeError` at strict-raise time instead of `ActiveModel::StrictValidationFailed`).
+            # Slice them out (reusing AM's own canonical list so the set can't drift), transform only
+            # the real validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's
+            # Hash#except!): axn runs outside Rails, where that core_ext may never be loaded.
+            shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
+            shared_options = validations.slice(*shared_option_keys)
+            shared_option_keys.each { |key| validations.delete(key) }
             validations.transform_values! do |v|
               # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
               # disabled — `validates` skips it (`next unless options`), so there is nothing to push
@@ -836,7 +841,7 @@ module Axn
               # matching how they behave without a tolerance flag (PRO-2915).
               { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
             end
-            validations.merge!(gates)
+            validations.merge!(shared_options)
           else
             # Apply default presence validation (unless the type is boolean or params)
             type_values = Array(validations.dig(:type, :klass))
