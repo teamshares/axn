@@ -294,6 +294,22 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to eq("SKU is required")
     end
 
+    it "scopes each member's handler to its own error when two siblings fail together" do
+      # Both members fold into the SAME parent ContractFailure — the member-specific structural case
+      # (a field-level analog can't produce, since distinct fields are distinct configs). Each handler
+      # must see only its own member's error: were the aggregate passed, both parts would read "…a…and…b…".
+      action = build_axn do
+        expects :items, type: Array do
+          field :a, type: String, user_facing: ->(e) { "A: #{e.message}" }
+          field :b, type: String, user_facing: ->(e) { "B: #{e.message}" }
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ a: 1, b: 2 }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("A: Items element at index 0: a is not a String and B: Items element at index 0: b is not a String")
+    end
+
     it "rejects a non-parity user_facing value on a member at declaration" do
       expect do
         build_axn do
