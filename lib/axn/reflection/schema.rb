@@ -445,8 +445,9 @@ module Axn
       #     runtime value diverge from what the caller sent, flipping the gate relative to the wire)
       #     and is not model:-routed (lookup success isn't wire-expressible) nor schema-excluded;
       #   * for an unless: gate, the referenced field's type can't admit boolean coercion of a
-      #     schema-admissible String wire value (boolean_coercion_can_flip_truthiness?). Coercion only
-      #     flips a truthy wire value to falsey: for an if: gate that direction keeps the emitted `then`
+      #     schema-admissible wire value coerce_boolean maps to false — a falsy STRING or the integer 0
+      #     (boolean_coercion_can_flip_truthiness?). Coercion only flips a truthy wire value to falsey:
+      #     for an if: gate that direction keeps the emitted `then`
       #     stricter than runtime (safe — still emitted), but for an unless: gate it opens the runtime
       #     `else` gate the emitted clause left closed (looser than runtime — fall back);
       #   * no subfield DEFAULT anywhere beneath the referenced field can synthesize it — an applied
@@ -483,11 +484,12 @@ module Axn
 
         # An unless: gate treated static-maximally emits `else: required`, firing only when the
         # referenced wire value is FALSEY. But inbound boolean coercion can flip a schema-admissible
-        # truthy String wire value ("false"/"f"/"0") to a falsey settled value, opening the runtime
-        # gate while the emitted `if` still reads the wire value as truthy — so the schema would NOT
-        # require the gated field though the runtime does (looser than runtime). For an if: gate the
-        # same flip makes the schema stricter (the emitted `then` keeps requiring while the runtime
-        # gate closes), so only unless: must fall back to unconditional required.
+        # truthy wire value ("false"/"f"/"0" as a String, or the JSON number 0) to a falsey settled
+        # value, opening the runtime gate while the emitted `if` still reads the wire value as truthy —
+        # so the schema would NOT require the gated field though the runtime does (looser than
+        # runtime). For an if: gate the same flip makes the schema stricter (the emitted `then` keeps
+        # requiring while the runtime gate closes), so only unless: must fall back to unconditional
+        # required.
         return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
 
         condition = {
@@ -514,24 +516,27 @@ module Axn
       # Whether inbound coercion could flip the Ruby truthiness of the referenced field between its
       # wire value and its settled value — the ONLY way coercion changes a truthiness judgment, and
       # the reason an unless: gate can't be emitted declaratively for such a field. Coerce-or-leave
-      # (Coercion.coerce_value) transforms ONLY String wire values and never yields nil; among the
-      # coercible targets (Coercion::SUPPORTED) only `:boolean` maps a truthy String ("false"/"f"/"0"/
-      # …) to a falsey Ruby value — Date/Time/Integer/Float/Symbol all yield a truthy value from a
-      # truthy String. (TrueClass/FalseClass are not coercion targets — they're absent from SUPPORTED
-      # — so `:boolean` is the sole flipper.) A flip is therefore possible only when the ref's declared
-      # type BOTH (a) admits the `:boolean` coercion branch AND (b) admits a branch the schema emits as
-      # a JSON `string` — the SAME test the property emission uses (single_type_for(..)[:type] ==
-      # "string"), so this automatically tracks every string-shaped branch (String, :uuid, Symbol,
-      # Date/DateTime/Time, an unknown class's permissive "string" hint, and any future TYPE_MAP string
-      # entry) instead of a hand-list that silently drifts from emission. A `string`+format branch
-      # (Date/Time) still counts: JSON Schema treats `format` as annotation-only by default, so the
-      # schema still admits an arbitrary String wire value the coercer can reach. A plain `:boolean`-only
-      # property emits no `string` branch, so no schema-valid input can reach the coercer — no flip.
-      # AND (c) coercion isn't explicitly disabled: explicit `coerce: false` can't flip; an explicit
-      # `coerce: true` can; an ABSENT flag with a coercible branch is treated as flippable (the
-      # class-level `coerce_input_types` override may enable coercion, and reflection must not resolve
-      # per-class config — conservative toward the safe fallback). Declared-config inspection only,
-      # side-effect-free (single_type_for is pure).
+      # (Coercion.coerce_value) transforms String wire values through the parse-based COERCERS, and —
+      # for a `:boolean` target specifically — a non-String value too (Coercion#coerce_boolean also
+      # accepts an Integer, per its acceptance table: idempotent true/false, integer 0/1, and
+      # FALSY_STRINGS/TRUTHY_STRINGS). Among the coercible targets (Coercion::SUPPORTED) only
+      # `:boolean` maps a truthy wire value to a falsey Ruby value — Date/Time/Integer/Float/Symbol all
+      # yield a truthy value from a truthy String, and a schema-valid boolean is already true/false
+      # (idempotent, no flip). A flip is therefore possible only when the ref's declared type BOTH
+      # (a) admits the `:boolean` coercion branch AND (b) admits some OTHER branch whose schema-valid
+      # wire values include one coerce_boolean maps to false — i.e. a branch admitting a FALSY_STRINGS
+      # member (a JSON `string` branch) or admitting integer `0` (a JSON `integer`/`number` branch,
+      # since coerce_boolean checks `value.zero?` before any type-specific parse). A `string`+format
+      # branch (Date/Time) still counts: JSON Schema treats `format` as annotation-only by default, so
+      # the schema still admits an arbitrary String wire value the coercer can reach. A plain
+      # `:boolean`-only property emits no other branch, so no schema-valid input can reach the falsey
+      # path — no flip. AND (c) coercion isn't explicitly disabled: explicit `coerce: false` can't
+      # flip; an explicit `coerce: true` can; an ABSENT flag with a coercible branch is treated as
+      # flippable (the class-level `coerce_input_types` override may enable coercion, and reflection
+      # must not resolve per-class config — conservative toward the safe fallback). Declared-config
+      # inspection only, side-effect-free (single_type_for is pure).
+      FLIPPABLE_JSON_TYPES = %w[string integer number].freeze
+
       def boolean_coercion_can_flip_truthiness?(ref)
         type_opt = ref.validations[:type]
         return false unless type_opt
@@ -543,7 +548,7 @@ module Axn
           klasses = Array(type_opt)
         end
 
-        klasses.include?(:boolean) && klasses.any? { |k| single_type_for(k, for_output: false)[:type] == "string" }
+        klasses.include?(:boolean) && klasses.any? { |k| FLIPPABLE_JSON_TYPES.include?(single_type_for(k, for_output: false)[:type]) }
       end
 
       # Whether the method a Symbol condition names still resolves to the reader Axn generated (not a

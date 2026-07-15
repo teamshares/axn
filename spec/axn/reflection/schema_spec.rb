@@ -4709,6 +4709,42 @@ RSpec.describe Axn::Reflection::Schema do
         expect(action.input_schema[:allOf]).not_to be_nil
       end
 
+      it "falls back for an unless: gate on a Float-coercible reference (runtime coerces integer 0 to false)" do
+        # `coerce: [:boolean, Float]` emits an anyOf with a `number` branch. Runtime's coerce_boolean maps
+        # a non-String integer 0 to `false` BEFORE any Float parse is attempted, so wire `{skip_check: 0}`
+        # is schema-admissible (the number branch) and truthy to the emitted `if`, while runtime settles
+        # it falsey and opens the unless-gate. A number-shaped branch admits coerce_boolean's falsey path
+        # exactly like a string-shaped one, so this must fall back just like the String/Symbol cases above.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Float]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same Float-coercible reference (stricter direction)" do
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Float]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back for an unless: gate on an Integer-coercible reference (same integer-0 hazard)" do
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Integer]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
       it "falls back to unconditional required when any guard fails" do
         fallback_required = lambda do |&decl|
           schema = build_axn(&decl).input_schema
