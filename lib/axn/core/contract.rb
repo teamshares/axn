@@ -97,8 +97,8 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
-      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call) do
-        def initialize(field:, validations:, metadata: {}, method_call: false)
+      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive) do
+        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false)
           super
         end
 
@@ -255,24 +255,49 @@ module Axn
           _static_sensitive_fields
         end
 
-        def _static_sensitive_fields
+        # Every config whose `sensitive:` participates in redaction: the declared inbound/outbound fields
+        # and subfields, plus (recursively) the members of any shape block they carry. Shape members live
+        # in validations[:shape][:members] at every depth, so the walk is uniform — a sensitive member at
+        # any nesting level contributes its name to the ParameterFilter set (which redacts by key name at
+        # any depth, array elements included). Single-sources the traversal for all three collectors.
+        def _sensitive_candidate_configs
           (internal_field_configs + external_field_configs + subfield_configs)
-            .select { |c| c.sensitive == true }
+            .flat_map { |config| _flatten_sensitive_candidates(config) }
+        end
+
+        def _flatten_sensitive_candidates(config)
+          members = config.validations.dig(:shape, :members) || []
+          [config, *members.flat_map { |member| _flatten_sensitive_candidates(member) }]
+        end
+
+        def _static_sensitive_fields
+          _sensitive_candidate_configs
+            .select { |c| _config_sensitive(c) == true }
             .flat_map { |c| _sensitive_field_keys(c) }
         end
 
         def _has_dynamic_sensitive_fields?
-          @_has_dynamic_sensitive_fields ||= (internal_field_configs + external_field_configs + subfield_configs).any? do |config|
-            config.sensitive.is_a?(Proc) || config.sensitive.is_a?(Symbol)
+          @_has_dynamic_sensitive_fields ||= _sensitive_candidate_configs.any? do |config|
+            sensitive = _config_sensitive(config)
+            sensitive.is_a?(Proc) || sensitive.is_a?(Symbol)
           end
         end
 
         def _resolve_sensitive_fields(action_instance)
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
-          (internal_field_configs + external_field_configs + subfield_configs)
-            .select { |config| _resolve_sensitive_value(config.sensitive, action_instance) }
+          _sensitive_candidate_configs
+            .select { |config| _resolve_sensitive_value(_config_sensitive(config), action_instance) }
             .flat_map { |c| _sensitive_field_keys(c) }
+        end
+
+        # A shape member's contract is duck-typed — ShapeValidator requires only #field/#validations,
+        # and `shape: { members: [...] }` may be supplied raw with member objects that implement no
+        # more than that. `#sensitive` is optional (absent on such a raw member), so read it defensively
+        # and treat a missing reader as `false`, mirroring how the validator treats a missing
+        # #method_call as not opted in.
+        def _config_sensitive(config)
+          config.respond_to?(:sensitive) ? config.sensitive : false
         end
 
         # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as
@@ -321,7 +346,144 @@ module Axn
                    else
                      inspection_filter
                    end
-          filter.filter(data.slice(*_declared_fields(direction)))
+          sliced = _mask_unfilterable_shapes(data.slice(*_declared_fields(direction)), action_instance)
+          filter.filter(sliced)
+        end
+
+        # Per-element `sensitive:` redaction works by adding the member's key name to an
+        # `ActiveSupport::ParameterFilter`, which redacts Hash keys at any depth — so a member inside a
+        # Hash (or an Array of Hashes) is filtered precisely, siblings preserved. But the filter only
+        # descends into Hashes: an object-backed shape value (a Data/Struct/PORO), or a malformed non-Hash
+        # value where a Hash was expected (which reaches logging before inbound validation can reject it),
+        # is opaque to it and would print whole. So for every field/subfield whose shape carries a
+        # sensitive member, this walks to the shaped value and replaces a non-Hash value in a
+        # member-bearing position with the mask — over-redacting the whole value (its non-sensitive
+        # siblings included) rather than risk leaking the secret. Applied to logs, exception context,
+        # and `inspect`.
+        def _mask_unfilterable_shapes(data, action_instance)
+          return data unless data.is_a?(Hash)
+
+          _sensitive_shape_paths(action_instance).reduce(data) do |acc, (wire_path, shape)|
+            _mask_value_at_path(acc, wire_path, shape, action_instance)
+          end
+        end
+
+        # Single-field entry — inspect renders one field at a time. Reuses the whole-hash pass on a
+        # one-key hash so a subfield shape rooted under `field` is masked at its nested position too.
+        def _mask_unfilterable_shape_value(field, value, action_instance)
+          _mask_unfilterable_shapes({ field => value }, action_instance)[field]
+        end
+
+        # `[(wire_path, shape)]` for every field/subfield whose shape carries a sensitive member. A
+        # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
+        # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
+        # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
+        def _sensitive_shape_paths(action_instance)
+          (internal_field_configs + external_field_configs + subfield_configs).filter_map do |config|
+            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
+            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
+
+            wire_path = config.subfield? ? _resolved_subfields.index[config]&.wire_path : [config.field]
+            next unless wire_path
+
+            [wire_path, shape]
+          end
+        end
+
+        # Walk `wire_path` through `value` — Hash keys in either symbol or string form (extraction
+        # accepts both), mapping across arrays — and mask the shaped value at the leaf. Every present
+        # key form is masked (see `_present_key_variants`); an absent key is left alone. A non-Hash,
+        # non-Array intermediate with path still remaining is an object-backed parent (a `method_call:`
+        # subfield reads the sensitive shape off it) that ParameterFilter can't descend into — mask it
+        # wholesale rather than leak the sensitive member nested inside; a nil/scalar intermediate is
+        # preserved (nothing to reach or leak).
+        def _mask_value_at_path(value, wire_path, shape, action_instance)
+          return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
+          return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
+          return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
+
+          _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
+            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance))
+          end
+        end
+
+        # A non-Hash/Array value in a member-bearing position. `nil` is preserved — it is valid absent
+        # data (a nil-tolerant shape) with nothing to leak, and masking it would make absent data look
+        # redacted. Anything else is malformed for a shaped field (which expects a Hash/object with
+        # members) and ParameterFilter can't redact into it: a structured object could expose the member
+        # via `inspect`, and a bare scalar could itself BE the sensitive value the caller mis-supplied
+        # (`items: ["111-11-1111"]`). Both reach logging before validation rejects them, so mask.
+        def _mask_opaque_or_preserve(value)
+          value.nil? ? value : SENSITIVE_FILTERED_MASK
+        end
+
+        # Every form of `key` present in `hash` — the key as-is, its string form, and its symbol form.
+        # Extraction accepts symbol and string keys (reading symbol-first) and a member/wire-path name
+        # may be declared in either form, so a single logical key can appear under more than one form in
+        # the same Hash; mask them all, since every form is logged and any could hold the secret.
+        def _present_key_variants(hash, key)
+          [key, key.to_s, key.to_s.to_sym].uniq.select { |variant| hash.key?(variant) }
+        end
+
+        # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
+        # A nil action_instance (async reporting, no instance to resolve a dynamic predicate against)
+        # counts only static `sensitive: true`, matching the static `inspection_filter` used there.
+        def _shape_has_sensitive_member?(shape, action_instance)
+          (shape[:members] || []).any? do |member|
+            _member_sensitive?(member, action_instance) ||
+              (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance))
+          end
+        end
+
+        def _member_sensitive?(member, action_instance)
+          sensitive = _config_sensitive(member)
+          return sensitive == true if action_instance.nil?
+
+          _resolve_sensitive_value(sensitive, action_instance)
+        end
+
+        def _member_shape(member)
+          return nil unless member.respond_to?(:validations) && member.validations.is_a?(Hash)
+
+          shape = member.validations[:shape]
+          shape.is_a?(Hash) ? shape : nil
+        end
+
+        # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
+        # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
+        # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
+        # (Data/Struct/PORO) shape reads members off an object ParameterFilter can't descend into. Any
+        # value whose type doesn't match the container is masked wholesale rather than treated as a lone
+        # valid element/Hash — only declared member keys would be filtered, leaking arbitrary siblings.
+        # `nil` (valid absent data) is preserved throughout via `_mask_opaque_or_preserve`.
+        def _mask_shape_value(value, shape, action_instance)
+          container = shape[:container]
+          if container == Array
+            return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
+
+            return _mask_opaque_or_preserve(value)
+          end
+          return _mask_shape_element(value, shape, action_instance) if container == Hash
+
+          _mask_opaque_or_preserve(value)
+        end
+
+        # A non-Hash value where members are expected is opaque to ParameterFilter → mask it whole. A Hash
+        # keeps its own keys (ParameterFilter redacts the sensitive ones); only recurse into a nested-shape
+        # member's value when that nested shape actually carries a sensitive member, to avoid needless
+        # masking of an unrelated non-Hash deeper down. The member key is matched in either symbol or
+        # string form, since extraction accepts both.
+        def _mask_shape_element(element, shape, action_instance)
+          return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
+
+          (shape[:members] || []).each_with_object(element.dup) do |member, masked|
+            nested = _member_shape(member)
+            next unless nested && _shape_has_sensitive_member?(nested, action_instance)
+
+            _present_key_variants(masked, member.field).each do |key|
+              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+            end
+          end
         end
 
         private
@@ -466,16 +628,27 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
-        # Field-level options a shape member supports (beyond validations + metadata). Shape members are
-        # reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader, no participation
-        # in value resolution), so `default:`/`preprocess:` — which produce/transform a value that needs a
-        # resolution target to land on (resolved on the read path post-PRO-2903) — have nowhere to apply.
-        # `sensitive:` is rejected too, but only because the sensitive-name collectors don't yet descend
-        # into shape members; it is filterable in principle (ParameterFilter redacts by key name at any
-        # depth, array elements included) and is a planned addition. All three are rejected rather than
-        # silently dropped when converting to a ShapeConfig.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call].freeze
-        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
+        # Field-level options a shape member supports (beyond validations + metadata). `sensitive:` is
+        # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
+        # collectors, which descend into shape members via `_sensitive_candidate_configs`, and
+        # ParameterFilter redacts by key name at any depth (array elements included) — so a per-element
+        # or nested Hash member redacts precisely. When the value in a member-bearing position is NOT a
+        # Hash (an object-backed shape, or malformed input), ParameterFilter can't reach into it, so
+        # `_mask_unfilterable_shape_value` redacts that value wholesale before logging/inspect — see
+        # there for the safe-over-precise trade-off.
+        #
+        # Shape members are reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader,
+        # no participation in value resolution), so `default:`/`preprocess:` — which produce/transform a
+        # value that needs a resolution target to land on (resolved on the read path post-PRO-2903) —
+        # have nowhere to apply and are rejected rather than silently dropped when converting to a
+        # ShapeConfig. `model:` is rejected separately (see `_build_shape_member`) for the related but
+        # distinct reason that it resolves an id and exposes an `_id` companion reader a member lacks.
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive].freeze
+        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
+
+        # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
+        # so wholesale-masked values read identically to per-key-filtered ones.
+        SENSITIVE_FILTERED_MASK = "[FILTERED]"
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
@@ -503,6 +676,18 @@ module Axn
                   "(shape blocks declare validation/schema only)"
           end
 
+          # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
+          # in the reader/facade layer a reader-less member never routes through, so on a member it would
+          # only type-check the element in place (what `type: Klass` already does) while implying
+          # resolution/companion behavior that never happens. Reject it loudly rather than accept the
+          # degenerate form, pointing at the plain-type-check alternative.
+          if opts.key?(:model)
+            raise ArgumentError,
+                  "shape member `#{name}` does not support model: — a model field resolves a record from an id " \
+                  "and exposes a `#{Internal::FieldConfig.model_id_key(name)}` reader, but a shape member is " \
+                  "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
+          end
+
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
@@ -511,7 +696,8 @@ module Axn
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
-          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata, method_call: config.method_call)
+          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata,
+                          method_call: config.method_call, sensitive: config.sensitive)
         end
 
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.
