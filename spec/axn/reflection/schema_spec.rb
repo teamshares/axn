@@ -4613,6 +4613,57 @@ RSpec.describe Axn::Reflection::Schema do
         expect(clause).not_to have_key(:then)
       end
 
+      it "falls back for an unless: gate when boolean coercion can flip the referenced truthiness" do
+        # The referenced field admits both boolean coercion and a String wire form: wire "false" is
+        # schema-admissible (String branch) and truthy to the emitted `if`, but runtime coerces it to
+        # `false`, opening the unless-gate and requiring coupon_code. An emitted `else` clause would be
+        # looser than runtime, so fall back to unconditional required.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, String]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same flippable reference (stricter direction)" do
+        # A truthy->falsey flip on an if: gate keeps the emitted `then` requiring the field while the
+        # runtime gate closes — schema stricter than runtime, the safe direction, so the clause stays.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, String]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "STILL emits for a plain boolean unless: gate (a String wire value is schema-rejected)" do
+        # A plain `type: :boolean` property admits no string, so no schema-valid input can be coerced
+        # from truthy to falsey — no flip is possible, and the exact `else` clause is emitted.
+        action = build_axn do
+          expects :skip_check, type: :boolean
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back for an unless: gate on a coercible-typed reference with no explicit coerce flag" do
+        # `type: [:boolean, String]` carries no per-field coerce flag, but the class-level
+        # coerce_input_types override could enable coercion — reflection must not resolve per-class
+        # config, so it conservatively assumes a flip is possible and falls back.
+        action = build_axn do
+          expects :skip_check, type: [:boolean, String]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
       it "falls back to unconditional required when any guard fails" do
         fallback_required = lambda do |&decl|
           schema = build_axn(&decl).input_schema

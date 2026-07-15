@@ -73,4 +73,40 @@ RSpec.describe "conditional validation direction audit" do
     expect(action.call(strict: false).ok?).to be true
     expect(action.call(strict: true, data: { user: "x" }).ok?).to be true
   end
+
+  it "plain boolean unless: gate: schema and runtime agree on every quadrant" do
+    action = build_axn do
+      expects :skip, type: :boolean
+      expects :coupon, type: String, unless: :skip
+      def call; end
+    end
+    schema = action.input_schema
+    # gate CLOSED (skip truthy): coupon unvalidated — both accept omission
+    expect(schema_accepts_omission?(schema, { skip: true }, :coupon)).to be true
+    expect(action.call(skip: true).ok?).to be true
+    # gate OPEN (skip falsey): coupon required — both reject omission (exercises the else branch)
+    expect(schema_accepts_omission?(schema, { skip: false }, :coupon)).to be false
+    expect(action.call(skip: false).ok?).to be false
+  end
+
+  it "coerced-boolean unless: reference: schema is now stricter-or-exact, never looser" do
+    action = build_axn do
+      expects :skip, coerce: [:boolean, String]
+      expects :coupon, type: String, unless: :skip
+      def call; end
+    end
+    schema = action.input_schema
+    # The fix: the unless: clause falls back to unconditional required rather than emitting a looser
+    # `else`. So coupon is in top-level required and the schema never accepts its omission — the
+    # direction invariant holds for the wire value that used to slip through.
+    expect(schema[:required]).to include("coupon")
+    # wire "false" coerces to false at runtime -> gate opens -> coupon required. Schema rejects the
+    # omission too (stricter-or-exact), where the pre-fix schema wrongly accepted it (looser).
+    expect(schema_accepts_omission?(schema, { skip: "false" }, :coupon)).to be false
+    expect(action.call(skip: "false").ok?).to be false
+    # wire "true" coerces to true -> gate closes -> coupon unvalidated at runtime, but the schema
+    # still requires it: stricter, the documented safe direction.
+    expect(schema_accepts_omission?(schema, { skip: "true" }, :coupon)).to be false
+    expect(action.call(skip: "true").ok?).to be true
+  end
 end

@@ -433,10 +433,13 @@ module Axn
       #   * exactly one gate (if: XOR unless:), and its rule is a Symbol;
       #   * the Symbol resolves to a declared top-level inbound field's reader (condition_reference);
       #   * the referenced field carries no default: and no preprocess: (either can make the settled
-      #     runtime value diverge from what the caller sent, flipping the gate relative to the wire —
-      #     wire coercion is fine: it can only flip a truthy wire literal to falsey, which leaves the
-      #     schema stricter, never looser) and is not model:-routed (lookup success isn't
-      #     wire-expressible) nor schema-excluded;
+      #     runtime value diverge from what the caller sent, flipping the gate relative to the wire)
+      #     and is not model:-routed (lookup success isn't wire-expressible) nor schema-excluded;
+      #   * for an unless: gate, the referenced field's type can't admit boolean coercion of a
+      #     schema-admissible String wire value (boolean_coercion_can_flip_truthiness?). Coercion only
+      #     flips a truthy wire value to falsey: for an if: gate that direction keeps the emitted `then`
+      #     stricter than runtime (safe — still emitted), but for an unless: gate it opens the runtime
+      #     `else` gate the emitted clause left closed (looser than runtime — fall back);
       #   * no subfield DEFAULT anywhere beneath the referenced field can synthesize it — an applied
       #     default at any depth materializes the parent (apply_defaults_for_subfields! injects `{}`),
       #     so a wire-omitted referenced field settles truthy and the runtime gate opens while the
@@ -469,6 +472,15 @@ module Axn
         ref_node = roots[ref.reader_as]
         return nil if ref_node && subtree_has_applied_subfield_default?(ref_node.children)
 
+        # An unless: gate treated static-maximally emits `else: required`, firing only when the
+        # referenced wire value is FALSEY. But inbound boolean coercion can flip a schema-admissible
+        # truthy String wire value ("false"/"f"/"0") to a falsey settled value, opening the runtime
+        # gate while the emitted `if` still reads the wire value as truthy — so the schema would NOT
+        # require the gated field though the runtime does (looser than runtime). For an if: gate the
+        # same flip makes the schema stricter (the emitted `then` keeps requiring while the runtime
+        # gate closes), so only unless: must fall back to unconditional required.
+        return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
+
         condition = {
           required: [ref.field.to_s],
           properties: { ref.field => { not: { enum: [false, nil] } } },
@@ -488,6 +500,35 @@ module Axn
 
         base = name.delete_suffix("?")
         field_configs.find { |c| c.reader_as.to_s == base && c.boolean? }
+      end
+
+      # Whether inbound coercion could flip the Ruby truthiness of the referenced field between its
+      # wire value and its settled value — the ONLY way coercion changes a truthiness judgment, and
+      # the reason an unless: gate can't be emitted declaratively for such a field. Coerce-or-leave
+      # (Coercion.coerce_value) transforms ONLY String wire values and never yields nil; among the
+      # coercible targets (Coercion::SUPPORTED) only `:boolean` maps a truthy String ("false"/"f"/"0"/
+      # …) to a falsey Ruby value — Date/Time/Integer/Float/Symbol all yield a truthy value from a
+      # truthy String. (TrueClass/FalseClass are not coercion targets — they're absent from SUPPORTED
+      # — so `:boolean` is the sole flipper.) A flip is therefore possible only when the ref's declared
+      # type BOTH (a) admits the `:boolean` coercion branch AND (b) admits a String wire form the
+      # schema would accept (String or :uuid) — a plain `:boolean`-only property schema-rejects every
+      # string, so no schema-valid input can reach the coercer — AND (c) coercion isn't explicitly
+      # disabled. Explicit `coerce: false` can't flip; an explicit `coerce: true` can; an ABSENT flag
+      # with a coercible branch is treated as flippable (the class-level `coerce_input_types` override
+      # may enable coercion, and reflection must not resolve per-class config — conservative toward the
+      # safe fallback). Declared-config inspection only, side-effect-free.
+      def boolean_coercion_can_flip_truthiness?(ref)
+        type_opt = ref.validations[:type]
+        return false unless type_opt
+
+        if type_opt.is_a?(Hash)
+          klasses = Array(type_opt[:klass])
+          return false if type_opt[:coerce] == false
+        else
+          klasses = Array(type_opt)
+        end
+
+        klasses.include?(:boolean) && (klasses.include?(String) || klasses.include?(:uuid))
       end
 
       # Whether the method a Symbol condition names still resolves to the reader Axn generated (not a
