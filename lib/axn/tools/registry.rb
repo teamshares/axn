@@ -38,8 +38,8 @@ module Axn
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
       # Under Rails with eager_load off, hands each existing tool dir to the main Zeitwerk
-      # loader; outside Rails, requires every .rb under each existing tool dir. Best-effort:
-      # any failure is logged at debug and swallowed so it never raises into tools_for.
+      # loader; outside Rails, requires every .rb under each existing tool dir. Best-effort per
+      # file/dir: a single bad file or dir is logged at warn and skipped, never aborting the rest.
       def ensure_loaded!
         dirs = _tool_dirs.select { |dir| File.directory?(dir) }
         return if dirs.empty?
@@ -48,14 +48,24 @@ module Axn
           return if Rails.application.config.eager_load
 
           loader = Rails.autoloaders.main
-          dirs.each { |dir| loader.eager_load_dir(dir) if loader.respond_to?(:eager_load_dir) }
+          dirs.each do |dir|
+            next unless loader.respond_to?(:eager_load_dir)
+
+            loader.eager_load_dir(dir)
+          rescue StandardError => e
+            Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
+          end
         else
           dirs.each do |dir|
-            Dir.glob(File.join(dir, "**", "*.rb")).each { |file| require file }
+            Dir.glob(File.join(dir, "**", "*.rb")).each do |file|
+              require file
+            rescue StandardError => e
+              Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
+            end
           end
         end
       rescue StandardError => e
-        Axn.config.logger.debug { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
+        Axn.config.logger.warn { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
       end
 
       # Fail-safe membership: an explicit declaration wins; else auto-register when the class's

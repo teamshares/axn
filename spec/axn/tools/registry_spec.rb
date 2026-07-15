@@ -83,6 +83,28 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (non-Rails, isolates per-file load failures)", :aggregate_failures do
+    let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_mixed", __dir__) }
+
+    before do
+      Axn.register_tool_adapter(:mcp)
+      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+    end
+
+    it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
+      skip "fixture already loaded" if Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      tools = Axn.tools_for(:mcp)
+
+      expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
+      expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
+      expect(warnings).to include(a_string_matching(/bad_mixed_tool\.rb.*boom/))
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 
