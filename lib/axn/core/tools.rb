@@ -16,6 +16,29 @@ module Axn
       end
 
       module ClassMethods
+        # Declares tool membership.
+        #   tool                  -> member of every registered adapter (the common case)
+        #   tool :mcp, :ruby_llm  -> explicit per-adapter set
+        #   tool false            -> opt out (a helper Axn living under a tool_path)
+        #   tool name: "…"        -> membership in all adapters, with a provider-name override
+        # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
+        # here would be load-order-hostile) and simply never match tools_for.
+        def tool(*adapters, name: nil)
+          if adapters.include?(false)
+            raise ArgumentError, "`tool false` opts out; it can't be combined with adapters or `name:`" if adapters.length > 1 || !name.nil?
+
+            self._tool_declaration = false
+            return
+          end
+
+          non_symbols = adapters.reject { |a| a.is_a?(Symbol) }
+          raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
+
+          self._tool_name_override = name unless name.nil?
+          self._tool_declaration = adapters.empty? ? :all : adapters
+          nil
+        end
+
         # The provider-facing tool name (distinct from resolved_axn_name, the free-form display
         # name). An explicit `tool name:` override wins; otherwise derive from the class name by
         # stripping the leading run of configured prefixes, snake_casing the rest, and restricting
