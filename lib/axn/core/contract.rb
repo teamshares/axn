@@ -125,7 +125,6 @@ module Axn
         def expects(
           *fields,
           on: nil,
-          readers: true,
           allow_blank: false,
           allow_nil: false,
           optional: false,
@@ -154,12 +153,6 @@ module Axn
           # never-matching reader — reject it here with a pointer at `on:` (a dotted name IS valid
           # once `on:` names its parent).
           _reject_dotted_top_level!(fields, on:)
-
-          if readers == false
-            raise ArgumentError,
-                  "`readers: false` has been removed — every declared field generates a reader; " \
-                  "use `as:`/`prefix:` to rename a colliding subfield reader (see PRO-2883)"
-          end
 
           _validate_user_facing!(user_facing)
 

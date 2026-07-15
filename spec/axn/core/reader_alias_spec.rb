@@ -431,13 +431,13 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /dotted field name.*not valid for exposes/m)
     end
 
-    it "rejects readers: false (removed) with a pointer at as:/prefix:" do
+    it "rejects readers: as an unknown key (the kwarg is gone)" do
       expect do
         build_axn do
           expects :foo
           expects :id, on: :foo, readers: false
         end
-      end.to raise_error(ArgumentError, /`readers: false` has been removed/)
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
     end
 
     it "rejects a reserved reader name" do

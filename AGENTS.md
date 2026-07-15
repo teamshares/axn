@@ -85,6 +85,13 @@ explains the problem **and** the fix (see `UnknownExposure`). New messages meet 
   detail level.
 - **`[BREAKING]`**: state old vs new explicitly; if a silent old behavior becomes a raise, say so
   loudly. Prefer a non-breaking design when one exists.
+- **Pre-alpha: remove dead kwargs outright, no tombstone.** A removed option is simply *gone* from
+  the signature — passing it yields a plain unknown-key/option `ArgumentError`, not a curated "has
+  been removed" message. A tombstone (a removed kwarg kept solely to raise a helpful upgrade error)
+  earns its keep only *after* a public/stable release, when a user might carry an old kwarg across an
+  upgrade; reintroduce deprecation tombstones then. This is distinct from **misuse guards**
+  (`method_call: true` without `on:`, dotted-name rejections, reserved-name/collision checks), which
+  guard *live* behavior over current options and always stay ("fail at declaration, with a fix").
 - **Comments explain *why*, not *what*** — justify the non-obvious choice; skip comments that restate
   the code.
 

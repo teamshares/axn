@@ -9,16 +9,6 @@ module Axn
         module Descriptors
           # Data structure for message configuration - no behavior, just data
           class MessageDescriptor < BaseDescriptor
-            # Options removed in the nested-error-semantics change, mapped to the actionable
-            # migration hint. Enforced here (the construction chokepoint) so the direct/Factory
-            # `build` path raises the same hint the `error`/`success` DSL does — never a silent ignore.
-            REMOVED_OPTION_MESSAGES = {
-              from: "from: is no longer supported — run the child with `call` and " \
-                    '`fail!("context: #{result.error}") unless result.ok?`',
-              prefix: "prefix: is no longer supported — declare a base `error \"…\"` " \
-                      "(attaches reasons by default; opt out with standalone: true)",
-            }.freeze
-
             attr_reader :join
 
             def initialize(matcher:, handler:, standalone: false, join: nil)
@@ -29,15 +19,10 @@ module Axn
 
             def standalone? = @standalone
 
-            # Raise for any removed option (with its migration hint) or otherwise-unknown option,
-            # rather than silently dropping it.
+            # Raise for any unknown option rather than silently dropping it. Surface ALL unknown keys
+            # at once so the caller fixes them in one pass rather than one error at a time.
             def self.reject_unsupported_options!(options)
               return if options.empty?
-
-              # Prefer a removed-option migration hint (most actionable); otherwise surface ALL unknown
-              # keys at once so the caller fixes them in one pass rather than one error at a time.
-              removed = options.keys & REMOVED_OPTION_MESSAGES.keys
-              raise ArgumentError, REMOVED_OPTION_MESSAGES.fetch(removed.first) if removed.any?
 
               keys = options.keys.map(&:inspect).join(", ")
               label = options.size == 1 ? "Unknown #{keys} option" : "Unknown options #{keys}"

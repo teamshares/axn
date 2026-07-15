@@ -371,25 +371,25 @@ RSpec.describe "Axn join: Proc form" do
 end
 
 RSpec.describe "removed error options" do
-  it "rejects from:" do
-    expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, /from: is no longer supported/)
+  it "rejects from: as an unknown option (the kwarg is gone, not tombstoned)" do
+    expect { build_axn { error "x", from: Object } }.to raise_error(ArgumentError, %r{Unknown :from option for error/success message})
   end
 
-  it "rejects per-message prefix:" do
-    expect { build_axn { error "x", prefix: "P: " } }.to raise_error(ArgumentError, /prefix: is no longer supported/)
+  it "rejects per-message prefix: as an unknown option" do
+    expect { build_axn { error "x", prefix: "P: " } }.to raise_error(ArgumentError, %r{Unknown :prefix option for error/success message})
   end
 
-  # The DSL guard alone leaves the direct/Factory descriptor path able to silently swallow removed
-  # options; MessageDescriptor.build must reject them with the same hint (and reject unknown options too).
+  # The DSL guard alone leaves the direct/Factory descriptor path able to silently swallow unknown
+  # options; MessageDescriptor.build must reject them the same way (never a silent ignore).
   describe "directly via MessageDescriptor.build (the Factory/prebuilt path)" do
     let(:descriptor) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
 
-    it "rejects from: with the migration hint" do
-      expect { descriptor.build(handler: "x", from: Object) }.to raise_error(ArgumentError, /from: is no longer supported/)
+    it "rejects from: as an unknown option" do
+      expect { descriptor.build(handler: "x", from: Object) }.to raise_error(ArgumentError, %r{Unknown :from option for error/success message})
     end
 
-    it "rejects prefix: with the migration hint" do
-      expect { descriptor.build(handler: "x", prefix: "P: ") }.to raise_error(ArgumentError, /prefix: is no longer supported/)
+    it "rejects prefix: as an unknown option" do
+      expect { descriptor.build(handler: "x", prefix: "P: ") }.to raise_error(ArgumentError, %r{Unknown :prefix option for error/success message})
     end
 
     it "rejects an otherwise-unknown option rather than silently ignoring it" do
