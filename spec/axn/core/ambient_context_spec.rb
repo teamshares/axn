@@ -368,6 +368,69 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
+  describe "shape-block members on an ambient parent are preserved (not dropped by reconstruction)" do
+    it "keeps a shape-declared key when the parent also has a nested subfield (drops undeclared siblings)" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :token, type: String
+        end
+        expects :ip, on: :request, type: String
+        exposes :req
+        def call = expose(req: request)
+      end
+      result = klass.call(ambient_context: { request: { token: "t", ip: "1.2.3.4", extra: "leak" } })
+      expect(result).to be_ok
+      expect(result.req).to eq(token: "t", ip: "1.2.3.4")
+      expect(result.req).not_to have_key(:extra)
+    end
+
+    it "filters a shape-only ambient parent to its declared members" do
+      klass = Class.new do
+        include Axn
+        expects :ctx, on: :ambient_context, type: Hash do
+          field :a, type: String
+        end
+        exposes :the_ctx
+        def call = expose(the_ctx: ctx)
+      end
+      result = klass.call(ambient_context: { ctx: { a: "1", b: "leak" } })
+      expect(result).to be_ok
+      expect(result.the_ctx).to eq(a: "1")
+    end
+  end
+
+  describe "contradiction checks run for the ambient subtree (parity with non-ambient)" do
+    it "rejects a nested ambient contract whose parent type can never answer a required child" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: String
+          expects :ip, on: :request, type: String
+        end
+      end.to raise_error(ArgumentError, /can never resolve|cannot answer/)
+    end
+
+    it "rejects a nil-tolerant ambient parent with an unrescued required nested child" do
+      expect do
+        Class.new do
+          include Axn
+          expects :request, on: :ambient_context, type: Hash, allow_nil: true
+          expects :ip, on: :request, type: String
+        end
+      end.to raise_error(ArgumentError, /nil-tolerant|never be exercised/)
+    end
+
+    it "still allows a valid nested ambient contract (Hash parent, required child)" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash
+        expects :ip, on: :request, type: String
+      end
+      expect(klass).to be_a(Class)
+    end
+  end
+
   describe "malformed intermediate: a non-hash parent value is not masked" do
     let(:klass) do
       Class.new do
@@ -549,6 +612,35 @@ RSpec.describe "Axn::Core::AmbientContext#_filter_to_declared" do
     end
     inst = klass.send(:new)
     expect(inst.send(:_filter_to_declared, { company_id: 7 })).to eq(company_id: 7)
+  end
+
+  it "preserves shape-member keys (and drops undeclared siblings) when reconstructing an intermediate" do
+    klass = Class.new do
+      include Axn
+      expects :request, on: :ambient_context, type: Hash do
+        field :token, type: String
+      end
+      expects :ip, on: :request, type: String
+    end
+    inst = klass.send(:new)
+    filtered = inst.send(:_filter_to_declared, { request: { token: "t", ip: "1", extra: "x" } })
+    expect(filtered).to eq(request: { token: "t", ip: "1" })
+  end
+
+  it "reconstructs a member-of-a-member (nested shape) without leaking undeclared nested keys" do
+    klass = Class.new do
+      include Axn
+      expects :request, on: :ambient_context, type: Hash do
+        field :headers, type: Hash do
+          field :auth, type: String
+        end
+      end
+      expects :ip, on: :request, type: String
+    end
+    inst = klass.send(:new)
+    filtered = inst.send(:_filter_to_declared,
+                         { request: { ip: "1", headers: { auth: "Bearer x", cookie: "leak" } } })
+    expect(filtered).to eq(request: { ip: "1", headers: { auth: "Bearer x" } })
   end
 
   it "reconstructs a dotted-`on:` nested leaf" do
