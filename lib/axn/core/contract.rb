@@ -557,13 +557,35 @@ module Axn
           # Handle optional: true by setting allow_blank: true
           allow_blank ||= optional
 
-          _validate_model_batch!(fields, on:) if validations.key?(:model)
+          if validations.key?(:model)
+            _validate_model_batch!(fields, on:)
+            _reject_model_transform!(fields, on:, preprocess:, validations:)
+          end
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
             FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
                             reader_as: reader, user_facing:, method_call:)
           end
+        end
+
+        # `coerce:`/`preprocess:` transform a scalar WIRE value, but a `model:` field resolves a record
+        # from an id/record — its value is the record, not a scalar to coerce, and the class check `model:`
+        # already performs is not what `coerce:` does. So neither ever had a coherent meaning on a model
+        # field, and (now that subfield transforms resolve on the read path, which the model reader does
+        # not route through) applying them would silently do nothing. Reject at declaration — loud, never
+        # silently inert. To transform the lookup TOKEN, declare/transform the `<field>_id` field instead.
+        def _reject_model_transform!(fields, on:, preprocess:, validations:)
+          offending = []
+          offending << "coerce:" if validations.key?(:coerce) || (validations[:type].is_a?(Hash) && validations[:type][:coerce])
+          offending << "preprocess:" unless preprocess.nil?
+          return if offending.empty?
+
+          where = on ? "#{fields.map(&:to_s).inspect} with on: #{on}" : fields.map(&:to_s).inspect
+          raise ArgumentError,
+                "#{offending.join(' / ')} is not supported on a `model:` field (#{where}) — a model field resolves a " \
+                "record from an id, not a scalar to coerce/preprocess. To transform the lookup token, declare or " \
+                "transform the `<field>_id` field instead."
         end
 
         # A model: batch that also names a model field's own `<field>_id` companion (e.g.
