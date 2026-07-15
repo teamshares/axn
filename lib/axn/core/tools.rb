@@ -45,7 +45,19 @@ module Axn
           non_symbols = adapters.reject { |a| a.is_a?(Symbol) }
           raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
 
-          self._tool_name_override = name unless name.nil?
+          # A provided `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would
+          # yield a blank tool_name, violating the never-blank contract. Fail at declaration rather
+          # than silently accept an unusable override. A nil name (not provided) is not an error.
+          unless name.nil?
+            if _tool_name_sanitize(name).empty?
+              raise ArgumentError,
+                    "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
+                    "provide a name containing at least one such character"
+            end
+
+            self._tool_name_override = name
+          end
+
           self._tool_declaration = adapters.empty? ? :all : adapters
           nil
         end
@@ -55,8 +67,14 @@ module Axn
         # stripping the leading run of configured prefixes, snake_casing the rest, and restricting
         # to [a-z0-9_]. Never blank.
         def tool_name
+          # Defense-in-depth: the `tool` DSL rejects an override that sanitizes to empty, but an
+          # override set through some other path (a direct class_attribute write) must still never
+          # produce a blank name — sanitize first and fall through to derivation if nothing survives.
           override = _tool_name_override
-          return _tool_name_sanitize(override) if override && !override.to_s.strip.empty?
+          if override
+            sanitized_override = _tool_name_sanitize(override)
+            return sanitized_override unless sanitized_override.empty?
+          end
 
           segments = resolved_axn_name.split("::")
           kept = _tool_name_strip_leading_prefixes(segments)

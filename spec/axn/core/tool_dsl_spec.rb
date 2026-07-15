@@ -43,6 +43,22 @@ RSpec.describe "Axn `tool` DSL" do
     expect { axn { tool "mcp" } }.to raise_error(ArgumentError, /must be Symbols/)
   end
 
+  it "rejects a name that sanitizes to empty (no provider-safe characters)" do
+    expect { axn { tool name: "!!!" } }.to raise_error(ArgumentError, /provider-safe/)
+  end
+
+  it "rejects a whitespace-only name" do
+    expect { axn { tool name: "  " } }.to raise_error(ArgumentError, /provider-safe/)
+  end
+
+  it "rejects an empty-string name" do
+    expect { axn { tool name: "" } }.to raise_error(ArgumentError, /provider-safe/)
+  end
+
+  it "still accepts a name with at least one provider-safe character" do
+    expect(axn { tool name: "custom_name" }.tool_name).to eq("custom_name")
+  end
+
   it "inherits the declaration to subclasses" do
     parent = axn { tool :mcp }
     expect(Class.new(parent)._tool_declaration).to eq([:mcp])

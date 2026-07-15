@@ -46,4 +46,12 @@ RSpec.describe "Axn tool_name derivation" do
     k.tool_name_stripped_prefixes(%w[]) # no stripping
     expect(k.tool_name).to eq("agent_tools_list_companies")
   end
+
+  it "falls back to the derived name when a stored override sanitizes to empty (defense-in-depth)" do
+    # Bypass the `tool` DSL guard by writing the class_attribute directly: `tool_name` must
+    # still never return blank, so it falls through to the derived-name path.
+    k = tool_klass("AgentTools::ListCompanies")
+    k._tool_name_override = "!!!"
+    expect(k.tool_name).to eq("list_companies")
+  end
 end
