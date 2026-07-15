@@ -812,9 +812,11 @@ module Axn
             end
 
             # `if:`/`unless:` are ActiveModel shared options riding the hash as sibling keys, not
-            # validators — there is nothing to push tolerance flags into.
+            # validators — there is nothing to push tolerance flags into. Core-Ruby delete (not
+            # ActiveSupport's Hash#except!): axn runs outside Rails, where that core_ext may never
+            # be loaded.
             gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-            validations.except!(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+            Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each { |key| validations.delete(key) }
             validations.transform_values! do |v|
               # A disabled validator (only `presence: false` survives the check above) has nothing
               # to push tolerance into — `validates` treats a falsy value as "skip this validator"
