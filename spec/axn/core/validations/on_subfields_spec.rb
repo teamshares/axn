@@ -344,11 +344,11 @@ RSpec.describe Axn do
           expect(result.parent).to be_nil
         end
 
-        it "does not raise on a dotted subfield default when the nil parent isn't materialized" do
+        it "does not raise on a dotted-on: subfield default when the nil parent isn't materialized" do
           action = build_axn do
             expects :items, type: Array, optional: true
             # `first` is a real Array reader, so the segment is answerable at declaration
-            expects "first.b", on: :items, optional: true, type: String, default: "x"
+            expects :b, on: "items.first", optional: true, type: String, default: "x"
             def call = nil
           end
           result = action.call(items: nil)
@@ -371,12 +371,12 @@ RSpec.describe Axn do
             exposes :n, allow_nil: true
             def call = expose(n: count)
           end
-          # Dotted spelling generates no reader, but a required `type: Integer` on the path passes
-          # only if it resolves to the Integer 3 (before the fix it resolved to nil → validation
-          # failure), so validation success stands in for the resolved value.
+          # The dotted on: spelling names the same wire path via a single declaration. A required
+          # `type: Integer` on the path passes only if it resolves to the Integer 3 (before the fix it
+          # resolved to nil → validation failure), so validation success stands in for the resolved value.
           dotted = build_axn do
             expects :payload, type: Hash
-            expects "items.count", on: :payload, type: Integer, method_call: true
+            expects :count, on: "payload.items", type: Integer, method_call: true
             def call = nil
           end
 
@@ -560,7 +560,7 @@ RSpec.describe Axn do
       let(:action) do
         build_axn do
           expects :foo
-          expects "bar.baz", on: :foo
+          expects :baz, on: "foo.bar"
         end
       end
 
@@ -1250,8 +1250,8 @@ RSpec.describe Axn do
           expects :user_data
           expects :email, on: :user_data, preprocess: ->(email) { email.downcase.strip }
           expects :name, on: :user_data # No preprocessing
-          expects "profile.bio", on: :user_data, as: :bio, preprocess: lambda(&:upcase)
-          expects "profile.website", on: :user_data, as: :website, preprocess: ->(url) { url.gsub(%r{^https?://}, "") }
+          expects :bio, on: "user_data.profile", preprocess: lambda(&:upcase)
+          expects :website, on: "user_data.profile", preprocess: ->(url) { url.gsub(%r{^https?://}, "") }
         end
       end
 
@@ -1259,8 +1259,7 @@ RSpec.describe Axn do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # The readers return the preprocessed values (resolved value-level on the read path — a dotted
-        # subfield needs an `as:` alias to be readable).
+        # The readers return the preprocessed values (resolved value-level on the read path).
         expect(result.__action__.email).to eq("john@example.com")
         expect(result.__action__.name).to eq("John Doe") # unchanged (no preprocess)
         expect(result.__action__.bio).to eq("SOFTWARE DEVELOPER")
@@ -1415,8 +1414,8 @@ RSpec.describe Axn do
         build_axn do
           expects :user_data
           expects :bio, on: :user_data, default: "No bio provided"
-          expects "profile.website", on: :user_data, default: "No website"
-          expects "profile.location", on: :user_data, as: :location, default: "Unknown location"
+          expects :website, on: "user_data.profile", default: "No website"
+          expects :location, on: "user_data.profile", default: "Unknown location"
         end
       end
 
@@ -1432,7 +1431,7 @@ RSpec.describe Axn do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # The reader resolves the default on the read path (a dotted subfield needs `as:` to be readable)...
+        # The reader resolves the default on the read path...
         expect(result.__action__.location).to eq("Unknown location")
         # ...but the caller's nested parent is not mutated with the synthesized key.
         expect(result.__action__.user_data.dig(:profile, :location)).to be_nil
@@ -1477,7 +1476,7 @@ RSpec.describe Axn do
         build_axn do
           expects :user_data
           expects :bio, on: :user_data, default: -> { "Generated bio #{Time.now.to_i}" }
-          expects "profile.timestamp", on: :user_data, as: :timestamp, default: -> { "Generated at #{Time.now.to_i}" }
+          expects :timestamp, on: "user_data.profile", default: -> { "Generated at #{Time.now.to_i}" }
         end
       end
 
@@ -1572,7 +1571,7 @@ RSpec.describe Axn do
           build_axn do
             expects :user_data
             expects :bio, on: :user_data, default: default_value, allow_blank:, type: String
-            expects "profile.description", on: :user_data, as: :description, default: default_value, allow_blank:, type: String
+            expects :description, on: "user_data.profile", default: default_value, allow_blank:, type: String
           end
         end
 
@@ -1692,31 +1691,8 @@ RSpec.describe Axn do
     class FakeModel; def self.find(_id) = new; end
     # rubocop:enable Lint/ConstantDefinitionInBlock
 
-    describe "dotted-name model: subfield" do
-      it "raises without an alias, pointing at both working spellings" do
-        expect do
-          build_axn do
-            expects :payload
-            expects "org.company", on: :payload, model: FakeModel
-          end
-        end.to raise_error(
-          ArgumentError,
-          'a dotted-name model: subfield (["org.company"] with on: payload) has no consumable id — ' \
-          "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-          'Add an `as:` alias (e.g. as: :company), or use the reader spelling: expects :company, on: "payload.org", model: ...',
-        )
-      end
-
-      it "does not raise when an `as:` alias supplies the reader (PRO-2896)" do
-        expect do
-          build_axn do
-            expects :payload
-            expects "org.company", on: :payload, model: FakeModel, as: :company
-          end
-        end.not_to raise_error
-      end
-
-      it "does not raise for the reader spelling (dotted on:, single-level name)" do
+    describe "model: subfield via a dotted on:" do
+      it "does not raise for a model: subfield reached via a dotted on:" do
         expect do
           build_axn do
             expects :payload
@@ -1911,16 +1887,16 @@ RSpec.describe Axn do
       end
     end
 
-    context "with a dotted-name defaulted subfield under a refused chain" do
+    context "with a defaulted subfield reached via a dotted on: under a refused chain" do
       let(:action) do
         build_axn do
           expects :payload, type: Array, allow_nil: true
-          expects "first.count", on: :payload, type: Integer, default: 0 # `first` is a real Array reader, so the segment is answerable at declaration
+          expects :count, on: "payload.first", type: Integer, default: 0 # `first` is a real Array reader, so the segment is answerable at declaration
           def call = nil
         end
       end
 
-      it "validates the fallback value (no reader exists for a dotted name)" do
+      it "validates the fallback value" do
         expect(action.call(payload: nil)).to be_ok
       end
     end
@@ -1953,11 +1929,10 @@ RSpec.describe Axn do
         expect(calls).to eq(1)
       end
 
-      it "resolves a dotted-name Proc default exactly once per call (memoized across validators)" do
-        # A dotted-name subfield has no reader, so validation resolves it through resolve_value
-        # directly — once per ActiveModel validator (type + presence). A model parent refuses the
-        # write chain, so the Proc default is the only source; without value-level memoization it ran
-        # once per validator.
+      it "resolves a Proc default exactly once per call (memoized across validators)" do
+        # Validation resolves the subfield through resolve_value once per ActiveModel validator
+        # (type + presence). A model parent refuses the write chain, so the Proc default is the only
+        # source; without value-level memoization it ran once per validator.
         calls = 0
         counter = lambda {
           calls += 1
@@ -1965,7 +1940,7 @@ RSpec.describe Axn do
         }
         action = build_axn do
           expects :company, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects "settings.retries", on: :company, type: Integer, default: counter
+          expects :retries, on: "company.settings", type: Integer, default: counter
           def call = nil
         end
         expect(action.call).to be_ok
@@ -2043,10 +2018,9 @@ RSpec.describe Axn do
       end
     end
 
-    context "with a DOTTED-NAME aliased model subfield and dotted sibling id (PRO-2896 spelling, PRO-2889)" do
-      # `expects "meta.company", on: :payload, ..., as: :company` is a legal aliased dotted model
-      # subfield (PRO-2896). Its leaf's WIRE parent is the implicit `meta` node, NOT the `on:` target
-      # (`payload`), so sibling lookups must key off the leaf's wire parent, not `parent_node`.
+    context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do
+      # `expects :company, on: "payload.meta", model: ...` and `expects :company_id, on: "payload.meta", ...`
+      # are siblings under the `payload.meta` wire node, so sibling lookups key off that shared wire parent.
       let(:r4_class) do
         Class.new do
           attr_reader :id
@@ -2060,12 +2034,12 @@ RSpec.describe Axn do
 
       before { stub_const("R4Co", r4_class) }
 
-      it "resolves the record via the dotted sibling id's VALUE-LEVEL default when the write chain is refused (C7)" do
+      it "resolves the record via the sibling id's VALUE-LEVEL default when the write chain is refused (C7)" do
         opaque = Class.new.new
         action = build_axn do
           expects :payload, type: Hash
-          expects "meta.company_id", on: :payload, optional: true, default: 42
-          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :company_id, on: "payload.meta", optional: true, default: 42
+          expects :company, on: "payload.meta", model: { klass: R4Co, finder: :fetch }, allow_nil: true
           expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
@@ -2078,8 +2052,8 @@ RSpec.describe Axn do
       it "resolves via the wire write-back when the object-shaped chain omits the id (regression)" do
         action = build_axn do
           expects :payload, type: Hash
-          expects "meta.company_id", on: :payload, optional: true, default: 42
-          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+          expects :company_id, on: "payload.meta", optional: true, default: 42
+          expects :company, on: "payload.meta", model: { klass: R4Co, finder: :fetch }, allow_nil: true
           expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
@@ -2089,11 +2063,11 @@ RSpec.describe Axn do
         expect(action.call(payload: { meta: {} }).cid).to eq(42)
       end
 
-      it "skips the dotted id default when the sibling record is already present (C8)" do
+      it "skips the id default when the sibling record is already present (C8)" do
         action = build_axn do
           expects :payload, type: Hash
-          expects "meta.company_id", on: :payload, optional: true, default: 42
-          expects "meta.company", on: :payload, model: { klass: R4Co, finder: :find }, allow_nil: true, as: :company
+          expects :company_id, on: "payload.meta", optional: true, default: 42
+          expects :company, on: "payload.meta", model: { klass: R4Co, finder: :find }, allow_nil: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -2102,12 +2076,12 @@ RSpec.describe Axn do
         expect(result.cid).to eq(7)
       end
 
-      it "loads cleanly: the dotted sibling id credits the required descendant's rescue (declaration side)" do
+      it "loads cleanly: the sibling id credits the required descendant's rescue (declaration side)" do
         expect do
           build_axn do
             expects :payload, type: Hash
-            expects "meta.company_id", on: :payload, optional: true, default: 42
-            expects "meta.company", on: :payload, model: { klass: R4Co, finder: :fetch }, allow_nil: true, as: :company
+            expects :company_id, on: "payload.meta", optional: true, default: 42
+            expects :company, on: "payload.meta", model: { klass: R4Co, finder: :fetch }, allow_nil: true
             expects :name, on: :company, type: String
             def call = nil
           end
@@ -2118,7 +2092,7 @@ RSpec.describe Axn do
     context "resolve_value cache is scoped to the settled pipeline (PRO-2889)" do
       it "reads the settled wire value, not a value cached before preprocess/defaults settled" do
         # An earlier field's preprocess touches the `company` reader, which (via
-        # resolve_model_via_sibling_id) resolves the dotted sibling `"meta.company_id"` through
+        # resolve_model_via_sibling_id) resolves the sibling `company_id` through
         # resolve_value BEFORE its own preprocess/default have run — caching the pre-pipeline default
         # (42). Validation must read the SETTLED wire value (preprocess wrote 6), not the stale cache.
         action = build_axn do
@@ -2129,8 +2103,8 @@ RSpec.describe Axn do
           }
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, allow_nil: true
-          expects "meta.company_id", on: :payload, type: Integer, default: 42,
-                                     preprocess: ->(v) { (v || 5) + 1 }, inclusion: { in: [6] }
+          expects :company_id, on: "payload.meta", type: Integer, default: 42,
+                               preprocess: ->(v) { (v || 5) + 1 }, inclusion: { in: [6] }
           expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
           def call = nil
         end
@@ -2148,12 +2122,15 @@ RSpec.describe Axn do
           def self.fetch(id) = new(id)
         end
         stub_const("ProbeCo", probe)
+        # Two routes converge on the payload.meta.company wire node: the `:company` model route (on: :meta)
+        # and a nil-tolerant non-model route reaching the same node via a distinct `on:` (aliased so the
+        # readers don't collide). The model route resolves via the sibling id; the non-model route tolerates nil.
         action = build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, allow_nil: true
           expects :company_id, on: :meta, type: Integer, default: 42
           expects :company, on: :meta, model: { klass: ProbeCo, finder: :fetch }, allow_nil: true
-          expects "meta.company", on: :payload, type: ProbeCo, optional: true
+          expects :company, on: "payload.meta", type: ProbeCo, optional: true, as: :company_alt
           expects :name, on: :company, type: String, method_call: true
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
@@ -2166,16 +2143,17 @@ RSpec.describe Axn do
 
     context "a leaf default must not clobber a model-routed wire key (PRO-2889)" do
       it "resolves the record via the sibling id, not the non-model route's written default" do
-        # `meta.company` (untyped, optional, default {x:1}) shares the wire key with the `:company`
-        # model route. Nothing is written back on the read path, so the non-model route's default never
-        # lands on the shared key to be misread AS the record: the model route resolves via the sibling id
-        # 42, and the non-model route's default resolves value-level for its own reader.
+        # A non-model route (untyped, optional, default {x:1}) shares the payload.meta.company wire node
+        # with the `:company` model route via a distinct `on:` (aliased). Nothing is written back on the
+        # read path, so the non-model route's default never lands on the shared key to be misread AS the
+        # record: the model route resolves via the sibling id 42, and the non-model route's default
+        # resolves value-level for its own reader.
         action = build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, allow_nil: true
           expects :company_id, on: :meta, type: Integer, default: 42
           expects :company, on: :meta, model: { klass: FallbackCompany, finder: :fetch }, allow_nil: true
-          expects "meta.company", on: :payload, optional: true, default: { x: 1 }
+          expects :company, on: "payload.meta", optional: true, default: { x: 1 }, as: :company_alt
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
@@ -2273,11 +2251,12 @@ RSpec.describe Axn do
 
     context "two defaults on one sibling-id wire node are rejected at declaration (PRO-2901)" do
       it "rejects the blank-token + usable-token routes that shared the thing.company_id wire node" do
-        # Two routes land on the same thing.company_id wire node: a blank-token route (default "") and a
-        # usable-token route (default 42). PRO-2889's read-side selection made the RUNTIME survive this by
-        # resolving the usable route — but two explicit defaults for one wire value have no principled
-        # winner, so PRO-2901 now rejects the construction at declaration rather than papering over the
-        # write-order interaction. The error names both declarations and the fix.
+        # Two routes land on the same payload.thing.company_id wire node via distinct `on:` (aliased so
+        # their readers don't collide with each other or the model's `company_id` companion): a
+        # blank-token route (default "") and a usable-token route (default 42). PRO-2889's read-side
+        # selection made the RUNTIME survive this by resolving the usable route — but two explicit
+        # defaults for one wire value have no principled winner, so PRO-2901 rejects the construction at
+        # declaration rather than papering over the write-order interaction. The error names both routes.
         finder = Class.new do
           attr_reader :id
 
@@ -2290,10 +2269,10 @@ RSpec.describe Axn do
           build_axn do
             expects :payload, type: Hash
             expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
-            expects "thing.company_id", on: :payload, optional: true, default: ""
+            expects :company_id, on: "payload.thing", optional: true, default: "", as: :pt_company_id
             expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
             expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
-            expects :name, on: :company, type: String
+            expects :name, on: :company, type: String, method_call: true
             exposes :cid, allow_nil: true
             def call = expose(cid: company&.id)
           end

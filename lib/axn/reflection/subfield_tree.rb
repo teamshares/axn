@@ -10,14 +10,14 @@ module Axn
     # are keyed by wire key (`field`). This builder is the single place that translation happens: the
     # root `on:` segment is looked up among top-level readers first, then subfield readers (a subfield
     # anchor attaches the config beneath that subfield's own resolved node). Remaining dotted `on:`
-    # segments and any dotted prefix of the field name become IMPLICIT nodes — intermediate keys with
-    # no declaration of their own.
+    # segments become IMPLICIT nodes — intermediate keys with no declaration of their own.
     #
     # Side-effect-free: inspects declared configs only; never runs user code.
     module SubfieldTree
       # `configs` is empty for an implicit node. Multiple configs on one node means the same wire
-      # path was declared via two routes (e.g. `expects "bar.baz", on: :foo` and `expects :baz,
-      # on: :bar`); runtime validates each independently, so consumers must honor all of them.
+      # path was declared via two routes (e.g. `expects :baz, on: "foo.bar"` and `expects :baz,
+      # on: :bar` where `bar` is itself a subfield of `foo`); runtime validates each independently, so
+      # consumers must honor all of them.
       Node = Data.define(:configs, :children) do
         def config = configs.first
         def implicit? = configs.empty?
@@ -29,22 +29,14 @@ module Axn
       # `ancestors` is the hop chain ([Node, wire segment] pairs, outermost first — each hop's node is
       # the parent the segment is read from), so chain-aware write-backs can gate materialization on
       # every intermediate node's own declared type. `parent_index` is the chain index of the `on:`
-      # TARGET node (the value the config's own `field` — possibly dotted — is extracted from), which
-      # canonical parent resolution resolves through the deepest reader-bearing ancestor. A top-level
-      # config is the depth-0 case: wire_path is just [field], ancestors are empty, parent_index 0.
+      # TARGET node (the value the config's own `field` is extracted from), which canonical parent
+      # resolution resolves through the deepest reader-bearing ancestor. A top-level config is the
+      # depth-0 case: wire_path is just [field], ancestors are empty, parent_index 0.
       ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
-        # The `on:`-target Node (the config's immediate parent in contract terms).
+        # The `on:`-target Node (the config's immediate parent in contract terms). A field name is a
+        # single wire key, so the leaf sits DIRECTLY under this node — it is also the leaf's wire parent,
+        # and its wire key is `config.field`.
         def parent_node = ancestors[parent_index].first
-
-        # The leaf's immediate WIRE parent Node — the LAST hop's node. For a dotted subfield NAME the
-        # leaf sits below the `on:` target through implicit segments, so this differs from parent_node
-        # (the `on:` target); for a non-dotted subfield the two coincide. Sibling lookups (a
-        # `<field>_id` companion) key off this so both spellings agree (PRO-2896's aliased dotted model
-        # subfields made the two diverge for a legal declaration).
-        def leaf_parent_node = ancestors.last.first
-
-        # The leaf's own wire key — the last wire segment.
-        def leaf_key = wire_path.last
       end
 
       # The finished build: per-root node trees, the dropped-config list, and the per-config
@@ -84,9 +76,8 @@ module Axn
           index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
                                            ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
 
-          # Only a reader-bearing config can anchor a later `on:` (a dotted NAME without an `as:` alias
-          # generates no reader — see ContractForSubfields#_define_subfield_reader).
-          by_reader[config.reader_as.to_sym] = { node: leaf, hops: } if config.generates_reader?
+          # Every declared config bears a reader, so any subfield can anchor a later `on:`.
+          by_reader[config.reader_as.to_sym] = { node: leaf, hops: }
           # Shallow (single hop off a top-level root) configs are always representable; only deeper
           # paths are candidates for dropping.
           deep_paths << [config, hops] if hops.size > 1

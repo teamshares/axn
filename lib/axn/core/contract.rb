@@ -66,13 +66,6 @@ module Axn
 
         def subfield? = !on.nil?
 
-        # Whether this config generates an in-action reader method. The gate is the READER name, not
-        # the wire key: a dotted wire key can't name a method, but `as:` supplies a valid alias, so a
-        # dotted-key subfield declared with `as:` still gets a reader. Every "does this config have a
-        # reader" decision routes through here (reader/companion generation, uniqueness validation,
-        # canonical `on:` resolution, subfield-tree anchoring) so the answer is single-sourced.
-        def generates_reader? = !reader_as.to_s.include?(".")
-
         include FieldOptionality
 
         # Whether the field is declared `type: :boolean` (drives the generated `?` predicate reader).
@@ -148,11 +141,10 @@ module Axn
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
 
-          # A dotted field NAME denotes a nested path, which only a subfield resolves. A top-level
-          # reader reads a literal wire key, so a dotted top-level name would define an unspeakable,
-          # never-matching reader — reject it here with a pointer at `on:` (a dotted name IS valid
-          # once `on:` names its parent).
-          _reject_dotted_top_level!(fields, on:)
+          # A field's wire key always names a single key; the nested-path capability lives entirely in a
+          # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
+          # unconditionally, pointed at the dotted-`on:` spelling (PRO-2926). A dotted `on:` VALUE is fine.
+          _reject_dotted_field_name!(fields, on:)
 
           _validate_user_facing!(user_facing)
 
@@ -221,7 +213,7 @@ module Axn
           end
 
           # exposes has no `on:`/subfields, so a dotted name has no valid meaning at all (see expects).
-          _reject_dotted_top_level!(fields, on: nil, kind: "exposes")
+          _reject_dotted_field_name!(fields, on: nil, kind: "exposes")
 
           validations, metadata = _partition_field_options(fields, **)
 
@@ -481,20 +473,26 @@ module Axn
 
         private
 
-        # Field names that collide by wire key — against `existing` configs AND within `new_configs`
-        # itself (`expects :foo, "foo"` is a single batch, so its collision is intra-batch). Keys are
-        # symbol-canonical at declaration (PRO-2790), so `:note` and `"note"` are already the same
-        # field here; declaring both is a duplicate — otherwise two validations run on one field, the
-        # generated reader is clobbered, and per-field config (e.g. `user_facing:`) collapses
-        # ambiguously. Returns the offending names.
+        # A true duplicate is the SAME wire key declared under the SAME parent route — keyed on the
+        # `[on, field]` pair, against `existing` configs AND within `new_configs` itself (`expects :foo,
+        # "foo"` is a single batch, so its collision is intra-batch). Keys are symbol-canonical at
+        # declaration (PRO-2790), so `:note` and `"note"` are already the same field. For a top-level
+        # field `on:` is nil, so this reduces to wire-key identity. Two SUBFIELDS that share a leaf wire
+        # key but differ by `on:` are NOT duplicates: they are either two routes to one wire path (a
+        # merged node) or two distinct nested fields sharing a leaf key — both legitimate, and both
+        # gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved with
+        # `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
+        # field, the generated reader would be clobbered, and per-field config would collapse
+        # ambiguously. Returns the offending wire-key names.
         def _duplicate_fields(existing, new_configs)
-          taken = existing.map(&:field)
+          taken = existing.map { |c| [c.on, c.field] }
           seen = []
-          new_configs.map(&:field).select do |f|
-            collides = taken.include?(f) || seen.include?(f)
-            seen << f
+          new_configs.select do |c|
+            key = [c.on, c.field]
+            collides = taken.include?(key) || seen.include?(key)
+            seen << key
             collides
-          end
+          end.map(&:field)
         end
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
@@ -502,12 +500,10 @@ module Axn
         # `prefix:` is sugar that prepends to every field's reader (literal concatenation, so the
         # caller supplies the separator). The wire key (`field`) stays canonical regardless.
         #
-        # A dotted subfield wire key can't name a method, so its reader depends on the alias
-        # (top-level dotted names are already rejected upstream by _reject_dotted_top_level!):
-        # - `as:` supplies a valid alias whose subfield reader resolves the dotted path segment by
-        #   segment (via Extract), so it's allowed.
-        # - `prefix:` concatenates onto the wire key, so a dotted key stays dotted (`addr_billing.zip`)
-        #   and still names no method — there is no non-dotted base to prepend onto, so it's rejected.
+        # Wire keys are never dotted (dotted field NAMES are rejected upstream by
+        # _reject_dotted_field_name!), so a reader name is only ever renamed, never path-derived:
+        # `as:` renames a single field, `prefix:` prepends to each. The one dotted constraint left is on
+        # the `as:` VALUE itself — a reader name still can't be dotted.
         def _resolve_reader_names(fields, as:, prefix:)
           return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
 
@@ -518,19 +514,16 @@ module Axn
             raise ArgumentError, "`as:` reader name may not be dotted (#{as.inspect} would not name a method)" if as.to_s.include?(".")
 
             { fields.first => as.to_sym }
-          elsif fields.any? { |f| f.to_s.include?(".") }
-            raise ArgumentError, "`prefix:` is not supported for a dotted subfield key (the prefixed name stays dotted and names no reader)"
           else
             fields.to_h { |f| [f, :"#{prefix}#{f}"] }
           end
         end
 
-        # A dotted field NAME is meaningful only as a subfield (it denotes a nested path resolved via
-        # Extract). A top-level field (`on:` absent) or an outbound `exposes` field reads a literal
-        # wire key, so a dotted name there is a declaration error — surfaced with a pointer at `on:`.
-        def _reject_dotted_top_level!(fields, on:, kind: "a top-level field")
-          return if on.present?
-
+        # A field's wire key names one key; the nested-path capability lives entirely in a dotted `on:`
+        # (`expects :b, on: "a"`). A dotted field NAME is therefore never a valid declaration — reject it
+        # everywhere (top-level, subfield, or exposes) and point at the dotted-`on:` spelling. (A dotted
+        # `on:` VALUE is orthogonal and fine; only the field NAME is constrained.)
+        def _reject_dotted_field_name!(fields, on:, kind: "a top-level field")
           dotted = fields.select { |f| f.to_s.include?(".") }
           return if dotted.empty?
 
@@ -540,9 +533,12 @@ module Axn
                   "(outbound fields have no nested-path reader)"
           end
 
+          *parents, leaf = dotted.first.to_s.split(".")
+          suggested_on = [on, *parents].map(&:to_s).reject(&:empty?).join(".")
           raise ArgumentError,
-                "a dotted field name (#{dotted.map(&:to_s).inspect}) is only valid for a subfield — pass `on:` to name its parent " \
-                "(#{kind} reads a literal key, not a path)"
+                "a dotted field name (#{dotted.map(&:to_s).inspect}) is not supported — name the leaf and move the " \
+                "path into `on:` (e.g. `expects :#{leaf}, on: #{suggested_on.inspect}`). A dotted `on:` pulls a value " \
+                "out of a nested structure; a field's own name is always a single wire key."
         end
 
         # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
@@ -866,7 +862,7 @@ module Axn
 
         def _define_boolean_predicate_reader(field)
           field_name = field.to_s
-          return if field_name.end_with?("?") || field_name.include?(".")
+          return if field_name.end_with?("?")
 
           predicate_name = "#{field_name}?"
           return unless _reader_name_available?(predicate_name, kind: "boolean predicate")

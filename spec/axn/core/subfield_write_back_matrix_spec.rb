@@ -95,10 +95,10 @@ RSpec.describe "Subfield read-path resolution runtime truth (PRO-2903)" do
       expect(action.call(seed: 4, payload: { other: 1 }).got).to eq(8)
     end
 
-    it "resolves a dotted-name default under a present parent without adding the intermediate" do
+    it "resolves a deep subfield default under a present parent without adding the intermediate" do
       action = build_axn do
         expects :payload, type: Hash
-        expects "meta.note", on: :payload, optional: true, default: "d"
+        expects :note, on: "payload.meta", optional: true, default: "d"
         exposes :parent, optional: true
 
         def call = expose(parent: payload)
@@ -107,10 +107,10 @@ RSpec.describe "Subfield read-path resolution runtime truth (PRO-2903)" do
       expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1 })
     end
 
-    it "resolves a dotted-name default under a nil parent without materializing the chain" do
+    it "resolves a deep subfield default under a nil parent without materializing the chain" do
       action = build_axn do
         expects :payload, type: Hash, optional: true, allow_nil: true
-        expects "meta.note", on: :payload, optional: true, default: "d"
+        expects :note, on: "payload.meta", optional: true, default: "d"
         exposes :parent, optional: true, allow_nil: true
 
         def call = expose(parent: payload)
@@ -119,10 +119,10 @@ RSpec.describe "Subfield read-path resolution runtime truth (PRO-2903)" do
       expect(action.call.parent).to be_nil
     end
 
-    it "does not materialize the parent for interacting dotted defaults under a nil parent" do
+    it "does not materialize the parent for interacting deep defaults under a nil parent" do
       action = build_axn do
         expects :payload, type: Hash, optional: true, allow_nil: true
-        expects "meta.x", on: :payload, optional: true, default: 1
+        expects :x, on: "payload.meta", optional: true, default: 1
         expects :meta, on: :payload, optional: true, type: Hash, default: { y: 2 }
         exposes :parent, optional: true, allow_nil: true
 

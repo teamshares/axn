@@ -140,7 +140,7 @@ module Axn
 
     def _define_boolean_predicate_reader(field)
       field_name = field.to_s
-      return if field_name.end_with?("?") || field_name.include?(".")
+      return if field_name.end_with?("?")
 
       predicate_name = "#{field_name}?"
       return if singleton_class.method_defined?(predicate_name)

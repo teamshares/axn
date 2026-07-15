@@ -101,10 +101,10 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
       expect(path.ancestors.map(&:last)).to eq(%i[zip region])
     end
 
-    it "resolves a dotted field NAME into implicit intermediate hops" do
-      klass.expects "meta.request.id", on: :payload, type: String, optional: true
+    it "resolves a dotted on: path into implicit intermediate hops" do
+      klass.expects :id, on: "payload.meta.request", type: String, optional: true
 
-      path = path_for(:"meta.request.id")
+      path = path_for(:id)
       expect(path.wire_path).to eq(%i[payload meta request id])
       # The intermediate `request` node is implicit (no declaration of its own).
       request_node = path.ancestors[1].first.children[:request]

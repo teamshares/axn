@@ -77,8 +77,9 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       expect do
         build_axn do
           expects :payload, type: Hash, allow_nil: true
-          expects "meta.id", on: :payload, type: Integer, default: 5
-          expects :id, on: "payload.meta", type: Integer
+          expects :meta, on: :payload, type: Hash, optional: true, allow_nil: true
+          expects :id, on: "payload.meta", type: Integer, default: 5, as: :meta_id
+          expects :id, on: :meta, type: Integer
         end
       end.not_to raise_error
     end
@@ -124,17 +125,16 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
 
     it "accepts a merged node whose only UNGATED route is itself omittable (optional:)" do
       # `root.data.user` is reached by two routes: an UNGATED `optional:` route (`:user on: :data`) and
-      # a gated required route (the dotted `"data.user"` under `:strict`). Ancestor-forcing derives from
+      # a gated required route (`:user on: "root.data"` under `:strict`). Ancestor-forcing derives from
       # the ungated subset alone — the ungated route is omittable, so it strands nothing, and `:data`'s
-      # tolerance stays exercisable (gate closed + data omitted validates). The prior all-gated-only
-      # relaxation over-forced this and wrongly rejected it.
+      # tolerance stays exercisable (gate closed + data omitted validates).
       expect do
         build_axn do
           expects :strict, type: :boolean, default: false
           expects :root, type: Hash, allow_blank: true
           expects :data, on: :root, optional: true
           expects :user, on: :data, type: String, optional: true
-          expects "data.user", on: :root, type: String, if: :strict
+          expects :user, on: "root.data", type: String, if: :strict, as: :strict_user
         end
       end.not_to raise_error
     end
@@ -199,23 +199,23 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
   end
 
   describe "unanswerable-segment rejection" do
-    it "rejects a dotted name whose segment reads through a scalar shape member" do
+    it "rejects a segment that reads through a scalar shape member" do
       expect do
         build_axn do
           expects :payload, type: Hash do
             field :bar, type: String
           end
-          expects "bar.baz", on: :payload, type: Integer
+          expects :baz, on: "payload.bar", type: Integer
         end
-      end.to raise_error(ArgumentError, /"bar\.baz".*can never resolve.*baz/m)
+      end.to raise_error(ArgumentError, /:baz.*can never resolve.*baz/m)
     end
 
-    it "rejects a multi-segment name off a declared-scalar explicit parent" do
+    it "rejects a multi-segment path off a declared-scalar explicit parent" do
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :bar, on: :payload, type: String
-          expects "a.b", on: :bar, type: Integer
+          expects :b, on: "bar.a", type: Integer
         end
       end.to raise_error(ArgumentError, /can never resolve/)
     end
@@ -234,7 +234,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       expect do
         build_axn do
           expects :payload, type: Hash
-          expects "bar.baz", on: :payload, type: Integer
+          expects :baz, on: "payload.bar", type: Integer
           expects :bar, on: :payload, type: String
         end
       end.to raise_error(ArgumentError, /can never resolve/)
@@ -246,7 +246,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects :payload, type: Hash do
             field :bar, type: String
           end
-          expects "bar.baz", on: :payload, type: Integer, optional: true, default: 1
+          expects :baz, on: "payload.bar", type: Integer, optional: true, default: 1
         end
       end.to raise_error(ArgumentError, /can never resolve/)
     end
@@ -268,7 +268,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects :payload, type: Hash do
             field :bar, type: String
           end
-          expects "bar.length", on: :payload, type: Integer
+          expects :length, on: "payload.bar", type: Integer
         end
       end.not_to raise_error
     end
@@ -280,9 +280,9 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :thing, on: :payload, type: OpaqueThing
-          expects "a.b", on: :thing, type: Integer, optional: true
+          expects :b, on: "thing.a", type: Integer, optional: true
           expects :company, on: :payload, model: { klass: OpaqueThing, finder: :fetch }, optional: true
-          expects "x.y", on: :company, type: Integer, optional: true
+          expects :y, on: "company.x", type: Integer, optional: true
         end
       end.not_to raise_error
     end
@@ -386,7 +386,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
             expects :meta, on: :payload, type: Hash, allow_nil: true
             expects :company_id, on: :meta, type: Integer, default: 42
             expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
-            expects "meta.company", on: :payload, type: DeadCo
+            expects :company, on: "payload.meta", type: DeadCo, as: :meta_company
           end
         end.to raise_error(ArgumentError, /:meta is declared nil-tolerant/)
       end
@@ -398,7 +398,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
             expects :meta, on: :payload, type: Hash, allow_nil: true
             expects :company_id, on: :meta, type: Integer, default: 42
             expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
-            expects "meta.company", on: :payload, type: DeadCo, optional: true
+            expects :company, on: "payload.meta", type: DeadCo, optional: true, as: :meta_company
           end
         end.not_to raise_error
       end
@@ -415,7 +415,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
             expects :meta, on: :payload, type: Hash, allow_nil: true
             expects :company_id, on: :meta, type: Integer, default: 42
             expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
-            expects "meta.company", on: :payload, type: DeadCo, optional: true
+            expects :company, on: "payload.meta", type: DeadCo, optional: true, as: :meta_company
             expects :name, on: :company, type: String
           end
         end.not_to raise_error
@@ -467,14 +467,14 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
 
   describe "conflicting defaults rejection (PRO-2901)" do
     it "rejects two literal defaults on the same merged wire node" do
-      # The motivating case: `"meta.count"` (on :payload) and `:count` (on :meta, aliased) merge onto the
+      # The motivating case: `:count` (on "payload.meta") and `:count` (on :meta, aliased) merge onto the
       # payload.meta.count wire node, each carrying a default. Only one inbound default can win the shared
       # wire key; declaration order — not any principle — would pick it.
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: "", optional: true
+          expects :count, on: "payload.meta", default: "", optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
         end
       end.to raise_error(ArgumentError, /conflicting default:.*payload\.meta\.count/m)
@@ -485,10 +485,10 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: "", optional: true
+          expects :count, on: "payload.meta", default: "", optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
         end
-      end.to raise_error(ArgumentError, /"meta\.count".*on :payload.*default: a String value.*:count.*on :meta.*default: 42/m)
+      end.to raise_error(ArgumentError, /:count.*on "payload\.meta".*default: a String value.*:count.*on :meta.*default: 42/m)
     end
 
     it "rejects EQUAL literal defaults uniformly (agreement today drifts tomorrow)" do
@@ -496,7 +496,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: 5, optional: true
+          expects :count, on: "payload.meta", default: 5, optional: true
           expects :count, on: :meta, as: :meta_count, default: 5, optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:/)
@@ -507,7 +507,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: -> { 1 }, optional: true
+          expects :count, on: "payload.meta", default: -> { 1 }, optional: true
           expects :count, on: :meta, as: :meta_count, default: -> { 2 }, optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
@@ -526,7 +526,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: hostile, optional: true
+          expects :count, on: "payload.meta", default: hostile, optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:.*a non-literal default/m)
@@ -539,7 +539,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: hostile_string, optional: true
+          expects :count, on: "payload.meta", default: hostile_string, optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:.*a String value/m)
@@ -550,7 +550,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: 5, optional: true
+          expects :count, on: "payload.meta", default: 5, optional: true
           expects :count, on: :meta, as: :meta_count, default: -> { 1 }, optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:/)
@@ -562,7 +562,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
-          expects "meta.count", on: :payload, default: "", optional: true
+          expects :count, on: "payload.meta", default: "", optional: true
         end
       end.to raise_error(ArgumentError, /conflicting default:/)
     end
@@ -573,7 +573,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: 5, optional: true
+          expects :count, on: "payload.meta", default: 5, optional: true
           expects :count, on: :meta, as: :meta_count, optional: true
         end
       end.not_to raise_error
@@ -584,7 +584,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, optional: true
+          expects :count, on: "payload.meta", optional: true
           expects :count, on: :meta, as: :meta_count, optional: true
         end
       end.not_to raise_error
@@ -606,7 +606,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects "meta.count", on: :payload, default: nil, optional: true
+          expects :count, on: "payload.meta", default: nil, optional: true
           expects :count, on: :meta, as: :meta_count, default: 5, optional: true
         end
       end.not_to raise_error

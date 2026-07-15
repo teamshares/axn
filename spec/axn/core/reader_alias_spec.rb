@@ -97,7 +97,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     end
   end
 
-  describe "`model:` on a dotted subfield key + `as:` (PRO-2896)" do
+  describe "`model:` on a subfield reached via a dotted on:" do
     let(:widget_class) do
       Class.new do
         def self.name = "Widget"
@@ -113,7 +113,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       klass = widget_class
       action = build_axn do
         expects :payload, type: Hash
-        expects "order.widget", on: :payload, model: { klass:, finder: :find }, as: :widget
+        expects :widget, on: "payload.order", model: { klass:, finder: :find }
         exposes :got
 
         def call = expose(got: widget)
@@ -128,7 +128,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       klass = widget_class
       action = build_axn do
         expects :payload, type: Hash
-        expects "order.widget", on: :payload, model: { klass:, finder: :find }, as: :widget
+        expects :widget, on: "payload.order", model: { klass:, finder: :find }
         exposes :got
 
         def call = expose(got: widget_id)
@@ -137,11 +137,11 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(payload: { order: { widget_id: 7 } }).got).to eq(7)
     end
 
-    it "derives a defaulted klass from the leaf segment, not the dotted path" do
+    it "derives a defaulted klass from the field name" do
       stub_const("Widget", widget_class)
       action = build_axn do
         expects :payload, type: Hash
-        expects "order.widget", on: :payload, model: { finder: :find }, as: :widget
+        expects :widget, on: "payload.order", model: { finder: :find }
         exposes :got
 
         def call = expose(got: widget)
@@ -306,11 +306,11 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     end
   end
 
-  describe "`as:` on a dotted subfield key (PRO-2896)" do
+  describe "`as:` on a subfield reached via a dotted on:" do
     it "generates a reader under the alias that resolves the nested path" do
       action = build_axn do
         expects :order, type: Hash
-        expects "items.detail", on: :order, as: :item_detail
+        expects :detail, on: "order.items", as: :item_detail
         exposes :got
 
         def call = expose(got: item_detail)
@@ -322,7 +322,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     it "validates the nested value under the aliased reader" do
       action = build_axn do
         expects :order, type: Hash
-        expects "items.qty", on: :order, as: :item_qty, type: Integer
+        expects :qty, on: "order.items", as: :item_qty, type: Integer
 
         def call = nil
       end
@@ -335,7 +335,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     it "defines the `?` predicate under the aliased name" do
       action = build_axn do
         expects :order, type: Hash
-        expects "flags.active", on: :order, as: :active, type: :boolean
+        expects :active, on: "order.flags", type: :boolean
         exposes :got
 
         def call = expose(got: active?)
@@ -347,7 +347,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
     it "applies a default for the nested path" do
       action = build_axn do
         expects :order, type: Hash
-        expects "meta.tz", on: :order, as: :tz, optional: true, default: "UTC"
+        expects :tz, on: "order.meta", optional: true, default: "UTC"
         exposes :got
 
         def call = expose(got: tz)
@@ -356,10 +356,10 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(order: { meta: {} }).got).to eq("UTC")
     end
 
-    it "lets a later `on:` anchor on the aliased-dotted reader" do
+    it "lets a later `on:` anchor on the aliased reader" do
       action = build_axn do
         expects :order, type: Hash
-        expects "items.detail", on: :order, as: :detail, type: Hash
+        expects :detail, on: "order.items", type: Hash
         expects :label, on: :detail
         exposes :got
 
@@ -367,18 +367,6 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end
 
       expect(action.call(order: { items: { detail: { label: "hi" } } }).got).to eq("hi")
-    end
-
-    it "defines the reader under the alias, none under the dotted wire key" do
-      action = build_axn do
-        expects :order, type: Hash
-        expects "items.detail", on: :order, as: :item_detail, optional: true
-
-        def call = nil
-      end
-
-      expect(action.method_defined?(:item_detail)).to be(true)
-      expect(action.method_defined?(:"items.detail")).to be(false)
     end
   end
 
@@ -395,40 +383,52 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /as:.*prefix:|prefix:.*as:/)
     end
 
-    it "rejects `prefix:` on a dotted subfield key (concatenation stays dotted — no reader nameable)" do
-      expect do
-        build_axn do
-          expects :foo
-          expects "billing.zip", on: :foo, prefix: :addr_
-        end
-      end.to raise_error(ArgumentError, /prefix:.*dotted|dotted.*prefix:/)
-    end
-
     it "rejects a dotted `as:` alias (a reader name can't be dotted)" do
       expect do
         build_axn do
           expects :foo
-          expects "billing.zip", on: :foo, as: :"a.b"
+          expects :zip, on: :foo, as: :"a.b"
         end
       end.to raise_error(ArgumentError, /reader name may not be dotted/)
     end
 
-    it "rejects a dotted top-level field name (only a subfield resolves a nested path)" do
+    it "rejects a dotted top-level field name (the path belongs in on:, not the field name)" do
       expect do
         build_axn { expects "a.b" }
-      end.to raise_error(ArgumentError, /dotted field name.*only valid for a subfield/m)
+      end.to raise_error(ArgumentError, /dotted field name.*not supported.*on: "a"/m)
     end
 
     it "rejects a dotted top-level field name even with `as:` (top-level readers aren't path-aware)" do
       expect do
         build_axn { expects "a.b", as: :ab }
-      end.to raise_error(ArgumentError, /dotted field name.*only valid for a subfield/m)
+      end.to raise_error(ArgumentError, /dotted field name.*not supported/m)
     end
 
     it "rejects a dotted `exposes` field name (outbound fields have no nested-path reader)" do
       expect do
         build_axn { exposes "a.b" }
       end.to raise_error(ArgumentError, /dotted field name.*not valid for exposes/m)
+    end
+
+    it "rejects a dotted subfield field name even WITH on: (dotted names dropped, PRO-2926)" do
+      expect do
+        build_axn do
+          expects :foo
+          expects "billing.zip", on: :foo
+        end
+      end.to raise_error(ArgumentError, /dotted field name/m)
+    end
+
+    it "resolves the dotted-`on:` equivalent of a former dotted name" do
+      action = build_axn do
+        expects :foo, type: Hash
+        expects :zip, on: "foo.billing", type: String
+        exposes :out
+        def call = expose(out: zip)
+      end
+      result = action.call(foo: { billing: { zip: "90210" } })
+      expect(result).to be_ok
+      expect(result.out).to eq("90210")
     end
 
     it "rejects readers: as an unknown key (the kwarg is gone)" do
@@ -464,21 +464,6 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
           expects :foo
         end
       end.to raise_error(ArgumentError, /collision/i)
-    end
-
-    it "lets a later alias claim a dotted subfield's leaf name (no reader generated)" do
-      # A dotted subfield key generates no reader, so its leaf name stays free for a later alias
-      # to claim — it must not register a phantom collision.
-      action = build_axn do
-        expects :payload
-        expects "meta.id", on: :payload, optional: true, type: Integer
-        expects :raw_id, as: :id
-        exposes :got
-
-        def call = expose(got: id)
-      end
-
-      expect(action.call(payload: { meta: { id: 1 } }, raw_id: 99).got).to eq(99)
     end
 
     it "resolves a subfield whose wire key collides with a top-level reader via as: (the rename escape hatch)" do
