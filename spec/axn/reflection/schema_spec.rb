@@ -4850,7 +4850,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(pred.input_schema[:allOf]).not_to be_nil
       end
 
-      it "falls back when a subfield default beneath the referenced field can synthesize it" do
+      it "still emits when a subfield default sits beneath the referenced field (value-level defaults never synthesize the parent)" do
         action = build_axn do
           expects :opts, optional: true
           expects :mode, on: :opts, default: "x"
@@ -4858,15 +4858,18 @@ RSpec.describe Axn::Reflection::Schema do
           def call; end
         end
         schema = action.input_schema
-        # The inbound defaults pass materializes opts to {mode: "x"} even when the wire omits it, so
-        # the runtime gate is truthy — the clause would be looser than runtime. Fall back to required.
-        expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
-        # Runtime agreement: omit everything → the synthesized opts opens the gate → coupon_code missing.
-        expect(action.call.ok?).to be false
+        # A subfield default resolves the CHILD's value on the read path and never materializes the
+        # parent (PRO-2903), so a wire-omitted opts settles nil/falsey exactly as the clause reads it.
+        expect(schema[:allOf]).not_to be_nil
+        expect(schema[:required].to_a).not_to include("coupon_code")
+        # Runtime agreement: omit everything → opts stays nil, the gate is closed, the call passes.
+        expect(action.call.ok?).to be true
+        # And a present opts opens the gate exactly as the clause advertises.
+        expect(action.call(opts: { other: 1 }).ok?).to be false
+        expect(action.call(opts: { other: 1 }, coupon_code: "C").ok?).to be true
       end
 
-      it "still emits when the referenced field's subfield carries no default (nothing synthesizes it)" do
+      it "still emits when the referenced field's subfield carries no default" do
         action = build_axn do
           expects :opts, optional: true
           expects :mode, on: :opts, optional: true

@@ -91,7 +91,7 @@ module Axn
 
             properties[config.field] = prop.compact
             unless field_optional?(config, node.children, ann)
-              clause = conditional_requiredness_clause(config, field_configs, node, tree.roots, klass)
+              clause = conditional_requiredness_clause(config, field_configs, node, klass)
               clause ? conditionals << clause : required << config.field.to_s
             end
           end
@@ -450,12 +450,10 @@ module Axn
       #     for an if: gate that direction keeps the emitted `then`
       #     stricter than runtime (safe — still emitted), but for an unless: gate it opens the runtime
       #     `else` gate the emitted clause left closed (looser than runtime — fall back);
-      #   * no subfield DEFAULT anywhere beneath the referenced field can synthesize it — an applied
-      #     default at any depth materializes the parent (apply_defaults_for_subfields! injects `{}`),
-      #     so a wire-omitted referenced field settles truthy and the runtime gate opens while the
-      #     emitted clause still sees it absent (schema looser than runtime). Only DEFAULTS matter: a
-      #     subfield preprocess never materializes an absent root (the executor drops the write when
-      #     the root is nil), so preprocess-at-depth cannot flip the gate;
+      #   * (a subfield default BENEATH the referenced field needs no guard: value-level defaults
+      #     resolve the child's value on the read path and never synthesize the parent — PRO-2903 —
+      #     so a wire-omitted referenced field settles nil/falsey exactly as the clause reads it;
+      #     a subfield preprocess likewise never materializes an absent root);
       #   * the referenced reader is the FRAMEWORK-GENERATED one — a Symbol condition names a reader
       #     method, but a user can suppress predicate generation (a pre-existing `?` method) or
       #     redefine a plain reader after `expects`, and runtime would then evaluate the USER method
@@ -464,7 +462,7 @@ module Axn
       #     introspection. `klass` is nil for direct build_input callers → fall back (safe direction);
       #   * the gated field is not model:-routed and has no subfields of its own (a required
       #     descendant unconditionally forces the field, contradicting a conditional requirement).
-      def conditional_requiredness_clause(config, field_configs, node, roots, klass)
+      def conditional_requiredness_clause(config, field_configs, node, klass)
         return nil if config.validations[:model] || node.children.any?
 
         gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
@@ -478,9 +476,6 @@ module Axn
         return nil if ref.validations[:model] || !ref.default.nil? || ref.preprocess
         return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
         return nil unless framework_generated_reader?(klass, rule)
-
-        ref_node = roots[ref.reader_as]
-        return nil if ref_node && subtree_has_applied_subfield_default?(ref_node.children)
 
         # An unless: gate treated static-maximally emits `else: required`, firing only when the
         # referenced wire value is FALSEY. But inbound boolean coercion can flip a schema-admissible
