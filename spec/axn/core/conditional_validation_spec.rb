@@ -148,6 +148,19 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.call(note: "anything").ok?).to be true
     end
 
+    it "waives the shape unreadable-member pre-check when a member's only validator is disabled" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :note, numericality: nil, optional: true
+        end
+        def call; end
+      end
+
+      # `note` can't be read off a scalar element, but its only validator is disabled (never runs), so
+      # no "could not be read" error should fire.
+      expect(action.call(items: [1, 2, 3]).ok?).to be true
+    end
+
     it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
       action = build_axn do
         expects :num, numericality: true, optional: true
