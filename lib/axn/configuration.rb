@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/configurable"
+require "pathname"
 
 module Axn
   class RailsConfiguration
@@ -79,7 +80,16 @@ module Axn
       raise ArgumentError, "tool_paths must be an Array of Strings; got #{value.inspect}" unless array_of_strings
 
       value.each do |entry|
-        next unless TOOL_PATHS_BLOCKLIST.include?(_normalize_tool_path_entry(entry))
+        normalized = _normalize_tool_path_entry(entry)
+
+        if normalized == ".." || normalized.start_with?("../")
+          raise ArgumentError,
+                "tool_paths entry #{entry.inspect} escapes the app root via `..` traversal, which would " \
+                "resolve outside the app's own directories. Use a dedicated narrow subdir such as " \
+                "`agent_tools` or `actions/tools`."
+        end
+
+        next unless TOOL_PATHS_BLOCKLIST.include?(normalized)
 
         raise ArgumentError,
               "tool_paths entry #{entry.inspect} is too broad: it resolves to a root-like directory " \
@@ -218,9 +228,14 @@ module Axn
     private
 
     # Normalizes a tool_paths entry for the broad-entry blocklist check: strips surrounding
-    # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal.
+    # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal,
+    # then collapses `.`/`..` segments via `Pathname#cleanpath` so alternate spellings like
+    # `"./actions"`, `"actions/."`, and `"actions/../actions"` normalize to the same `"actions"`
+    # the blocklist already rejects (Pathname#cleanpath is a lexical collapse, no filesystem access).
+    # An empty string cleanpaths to `"."`, which the blocklist already covers.
     def _normalize_tool_path_entry(entry)
-      entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
+      stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
+      Pathname(stripped).cleanpath.to_s
     end
 
     # Apply async config to EnqueueAllOrchestrator if it's already loaded.

@@ -64,9 +64,30 @@ RSpec.describe Axn::Configuration do
         expect { config.tool_paths = ["  /actions/  "] }.to raise_error(ArgumentError)
       end
 
+      it "rejects `./actions` (a `.`-prefixed alternate spelling of the broad `actions` dir)" do
+        expect { config.tool_paths = ["./actions"] }.to raise_error(ArgumentError, %r{\./actions})
+      end
+
+      it "rejects `actions/.` (a trailing-`.` alternate spelling of the broad `actions` dir)" do
+        expect { config.tool_paths = ["actions/."] }.to raise_error(ArgumentError, %r{actions/\.})
+      end
+
+      it "rejects `actions/../actions` (a `..`-round-trip alternate spelling of the broad `actions` dir)" do
+        expect { config.tool_paths = ["actions/../actions"] }.to raise_error(ArgumentError, %r{actions/\.\./actions})
+      end
+
+      it "rejects a `..` traversal entry that escapes the app root" do
+        expect { config.tool_paths = ["../secret"] }.to raise_error(ArgumentError, %r{\.\./secret})
+      end
+
       it "still accepts legitimately narrow dirs" do
         config.tool_paths = %w[agent_tools actions/tools]
         expect(config.tool_paths).to eq(%w[agent_tools actions/tools])
+      end
+
+      it "still accepts legitimately narrow dirs (agent_tools, actions/tools, app/actions/tools)" do
+        config.tool_paths = %w[actions/tools app/actions/tools agent_tools]
+        expect(config.tool_paths).to eq(%w[actions/tools app/actions/tools agent_tools])
       end
 
       it "accepts app/actions/tools (a narrow subdir of app/actions)" do
