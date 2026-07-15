@@ -1221,10 +1221,14 @@ module Axn
       # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
       # `numericality: true`) — rejects nil.
       def nil_accepted?(config)
-        # Gate keys (if:/unless:) are shared options, not validators — neutral here. The judgment is
-        # static-maximal: the gated validators are counted as if their gates were open (a condition
-        # can only relax enforcement at runtime, never tighten it).
-        v = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        # ActiveModel's shared options (if:/unless:/on:/strict:/allow_blank:/allow_nil:) ride in the
+        # validations hash but are NOT validators — neutral here, so they must be excluded before
+        # judging the real validators (e.g. a restored `strict: true` under a tolerance flag would
+        # otherwise read as a nil-rejecting validator and wrongly mark the field required). Reuses AM's
+        # own shared-option list, the same set the tolerance push-down holds out (contract.rb). The
+        # judgment is static-maximal: gated validators are counted as if their gates were open (a
+        # condition can only relax enforcement at runtime, never tighten it).
+        v = config.validations.except(*Axn::Validation::Base.shared_validation_option_keys)
         return true if v.empty?
 
         v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
@@ -1308,7 +1312,10 @@ module Axn
       def requiredness_conditionally_relaxable?(config)
         gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
         decl_gates = config.validations.slice(*gate_keys)
-        entries = config.validations.except(*gate_keys)
+        # `entries` are the real VALIDATORS — exclude ALL of AM's shared options (gates plus
+        # strict:/on:/allow_*), not just the gate keys, so a non-validator like `strict: true` isn't
+        # mistaken for a nil-rejecting validator (see nil_accepted?).
+        entries = config.validations.except(*Axn::Validation::Base.shared_validation_option_keys)
 
         some_gate = decl_gates.any? || entries.any? { |_key, opt| nested_gated?(opt) }
         return false unless some_gate

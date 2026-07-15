@@ -129,6 +129,11 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       result = action.call(num: "nope")
       expect(result.ok?).to be false
       expect(result.exception).to be_a(ActiveModel::StrictValidationFailed)
+
+      # The restored strict: is a shared option, not a validator — reflection must not read it as a
+      # nil-rejecting validator and mark the (omittable) field required.
+      expect(action.input_schema[:required] || []).not_to include(:num, "num")
+      expect(action.input_schema.dig(:properties, :num, :type)).to contain_exactly("number", "null")
     end
 
     it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
