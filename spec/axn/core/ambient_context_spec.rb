@@ -475,6 +475,27 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       expect(result).to be_ok
       expect(result.ip_val).to eq("1.2.3.4")
     end
+
+    it "allows shape: on a model: ambient node with children (model node is a filter leaf)" do
+      model_klass = Class.new do
+        def self.find(id) = new(id)
+        def initialize(id) = (@id = id)
+        attr_reader :id
+
+        def name = "acme"
+      end
+      klass = build_axn do
+        expects :company, on: :ambient_context, model: model_klass, type: model_klass do
+          field :name, type: String, method_call: true
+        end
+        expects :name, on: :company, method_call: true
+        exposes :cn
+        def call = expose(cn: name)
+      end
+      result = with_ambient_context(company_id: 7) { klass.call }
+      expect(result).to be_ok
+      expect(result.cn).to eq("acme")
+    end
   end
 
   describe "contradiction checks run for the ambient subtree (parity with non-ambient)" do

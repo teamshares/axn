@@ -60,7 +60,10 @@ module Axn
 
         # A `shape:` on an ambient subfield validates the COPIED ambient value: a shape-carrying node
         # with no subfield children is a leaf in `_filter_ambient_node`, so its whole value is copied
-        # and shape validates against it — no filter-merge. A shape node WITH subfield children is not a
+        # and shape validates against it — no filter-merge. A `model:` node is ALSO a leaf there even
+        # WITH subfield children: its value (record or `<field>_id`) is copied whole and its children
+        # read off the RESOLVED RECORD, not a nested ambient hash, so a shape on a model node validates
+        # fine against that copy too. A plain (non-model) shape node WITH subfield children is not a
         # leaf: the filter rebuilds it from those children alone, dropping every shape-only member, so
         # the shape can't be validated there. Reject that at declaration (candidate tree, nothing
         # committed — same pattern as `_check_ambient_subfield_contradictions!`), pointing at declaring
@@ -71,8 +74,10 @@ module Axn
           return if ambient.empty?
 
           tree = Axn::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
+          # `roots[PARENT]` is guaranteed present: `ambient` is non-empty (checked above), and every
+          # config in it roots at `PARENT`, so `SubfieldTree.build` always creates that root node.
           _each_ambient_node(tree.roots[PARENT]) do |node|
-            next if node.children.empty?
+            next if node.children.empty? || _ambient_model_node?(node)
 
             shape_config = node.configs.find { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
             next unless shape_config
@@ -90,6 +95,14 @@ module Axn
         def _each_ambient_node(node, &block)
           yield node
           node.children.each_value { |child| _each_ambient_node(child, &block) }
+        end
+
+        # A node with a `model:` route on any of its configs resolves to a RECORD — its value (record or
+        # `<field>_id`) is copied whole, never reconstructed from children (they read off the record).
+        # Single-sourced here so the class-level placement check and the instance-level filter share
+        # IDENTICAL leaf semantics (the instance method below delegates to this).
+        def _ambient_model_node?(node)
+          node.configs.any? { |c| c.validations[:model] }
         end
 
         private
@@ -212,10 +225,10 @@ module Axn
         acc[id_key] = indifferent[id_key] if indifferent.key?(id_key)
       end
 
-      # A node with a `model:` route on any of its configs resolves to a RECORD — its value (record or
-      # `<field>_id`) is copied whole, never reconstructed from children (they read off the record).
+      # Delegates to the class-level predicate (see `ClassMethods#_ambient_model_node?`) so the filter
+      # and the declaration-time placement check share exactly one implementation.
       def _ambient_model_node?(node)
-        node.configs.any? { |c| c.validations[:model] }
+        self.class._ambient_model_node?(node)
       end
     end
   end
