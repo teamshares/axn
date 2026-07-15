@@ -4,7 +4,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
   describe "static sensitive members" do
     it "redacts a sensitive Array-element member in inputs_for_logging (every element)" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -50,7 +50,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts a sensitive member in execution_context inputs" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: true
         end
 
@@ -66,7 +66,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "includes the static sensitive member name in sensitive_fields (and not the plain sibling)" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -81,7 +81,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "redacts a Proc member only when the predicate resolves truthy against the instance" do
       action = build_axn do
         expects :redact, type: :boolean, default: false
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: -> { redact }
         end
       end
@@ -95,7 +95,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts a Symbol member resolved against an instance method" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: :hide_ssn?
         end
 
@@ -112,7 +112,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "reports dynamic sensitive members via _has_dynamic_sensitive_fields?" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, sensitive: -> { true }
         end
       end
@@ -124,7 +124,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
   describe "inspect (ContextFacadeInspector) redaction" do
     it "redacts a sensitive Array-element member in internal_context.inspect (not just logs)" do
       action = build_axn do
-        expects :items, type: Array do
+        expects :items, type: Array, of: Hash do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -174,7 +174,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts the whole value when the parent field is itself sensitive (not just the nested member)" do
       action = build_axn do
-        expects :items, type: Array, sensitive: true do
+        expects :items, type: Array, of: Hash, sensitive: true do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -249,7 +249,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
             field :ssn, sensitive: true, method_call: true
           end
         end
-      end.to raise_error(ArgumentError, /cannot be sensitive:.*object-backed/m)
+      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
     end
 
     it "is rejected on an Array-of-object shape" do
@@ -260,7 +260,27 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
             field :ssn, sensitive: true, method_call: true
           end
         end
-      end.to raise_error(ArgumentError, /cannot be sensitive:.*object-backed/m)
+      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
+    end
+
+    it "is rejected on a plain Array shape with no enforced Hash element type (may hold objects)" do
+      expect do
+        build_axn do
+          expects :people, type: Array do
+            field :ssn, sensitive: true
+          end
+        end
+      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
+    end
+
+    it "is rejected for a raw (non-block) object-backed shape declaration" do
+      klass = person
+      member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } }, sensitive: true)
+      expect do
+        build_axn do
+          expects :person, type: klass, shape: { members: [member], container: klass }
+        end
+      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
     end
 
     it "is rejected for a member nested inside a Hash that is itself nested in an object shape" do
@@ -274,6 +294,18 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
           end
         end
       end.to raise_error(ArgumentError, /`zip`.*cannot be sensitive:/m)
+    end
+
+    it "still allows a sensitive member declared inside a Hash nested in an Array-of-Hash shape" do
+      expect do
+        build_axn do
+          expects :orders, type: Array, of: Hash do
+            field :customer, type: Hash do
+              field :ssn, sensitive: true
+            end
+          end
+        end
+      end.not_to raise_error
     end
 
     it "still allows a NON-sensitive member on an object-backed shape" do
@@ -302,7 +334,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "is rejected (reader-less members cannot resolve an id or expose an _id companion)" do
       expect do
         build_axn do
-          expects :items, type: Array do
+          expects :items, type: Array, of: Hash do
             field :company, model: Struct.new(:id)
           end
         end
