@@ -30,7 +30,7 @@ module Axn
 
       module InputSchemaMethod
         def input_schema
-          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields).tap do
+          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields, klass: self).tap do
             _warn_dropped_deep_subfields
           end
         end

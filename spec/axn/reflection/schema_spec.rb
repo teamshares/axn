@@ -4462,4 +4462,596 @@ RSpec.describe Axn::Reflection::Schema do
       end
     end
   end
+
+  describe "conditional validation (if:/unless:) reflection" do
+    it "reflects a bare conditional field static-maximal (required, non-null) without executing the condition" do
+      ran = false
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :num, type: Integer, if: -> { ran = true }
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("num")
+      expect(schema[:properties][:num][:type]).to eq("integer")
+      expect(ran).to be false
+    end
+
+    it "keeps a tolerance-flagged conditional field optional (the static tolerance is unconditional)" do
+      action = build_axn do
+        expects :note, type: String, optional: true, if: :cond
+      end
+      schema = action.input_schema
+      expect(schema[:required].to_a).not_to include("note")
+      expect(schema[:properties][:note][:type]).to eq(%w[string null])
+    end
+
+    it "leaves a gated exposes property untyped (a closed gate can emit any exposed value)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :num, type: Integer, if: :flag
+        def call; end
+      end
+      prop = action.output_schema[:properties][:num]
+      expect(prop).not_to have_key(:type)
+      expect(prop).not_to have_key(:format)
+      expect(prop).not_to have_key(:enum)
+    end
+
+    it "output_schema is a superset of what a closed outbound gate can emit (untyped, and the wrong-typed value passes)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :num, type: Integer, if: :flag
+        def call = expose(:num, "oops")
+      end
+      # Closed gate skips num's type validator, so a String flows through: the call succeeds…
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.num).to eq("oops")
+      # …and the output schema advertises no type the emitted value could contradict.
+      expect(action.output_schema[:properties][:num]).not_to have_key(:type)
+    end
+
+    it "reflects a gated shape member static-maximal (required inside its object)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+      end
+      prop = action.input_schema[:properties][:payload]
+      expect(prop[:required]).to include("note")
+      expect(prop[:properties][:note][:type]).to eq("string")
+    end
+
+    it "drops output requiredness for a gated shape member when the outbound gate is closed (Codex round 2)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash, allow_blank: true do
+          field :note, type: String, if: :flag
+        end
+        def call
+          expose payload: {}
+        end
+      end
+      # Runtime legitimately serializes an empty payload with the gate closed — proving that an output
+      # `required: ["note"]` claim would otherwise be a lie about what the serializer can emit.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq({})
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required].to_a).not_to include("note")
+
+      # INPUT stays static-maximal for the equivalent input shape: the gated member is still required.
+      input_action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+      end
+      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+    end
+
+    it "drops output requiredness for a shape member whose presence is only NESTED-gated (Codex round 13)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash, allow_blank: true do
+          field :note, presence: { if: :flag }
+        end
+        def call
+          expose payload: {}
+        end
+      end
+      # Runtime legitimately serializes an empty payload with the nested gate closed — the presence
+      # check on `note` never runs — proving an output `required: ["note"]` claim would be a lie.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq({})
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required].to_a).not_to include("note")
+
+      # INPUT stays static-maximal for the equivalent input shape: the nested-gated member is still
+      # required (a client is still expected to send it).
+      input_action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, presence: { if: :flag }
+        end
+      end
+      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+    end
+
+    it "keeps output requiredness for a shape member with an UNGATED presence alongside a nested-gated type" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash do
+          field :note, presence: true, type: { klass: Integer, if: :flag }
+        end
+        def call
+          expose payload: { note: "oops" }
+        end
+      end
+      # The nested-gated TYPE check can be skipped by a closed gate, but presence is ungated — the
+      # serializer can never emit `payload` without a `note` key — so requiredness is still owed.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq(note: "oops")
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required]).to include("note")
+    end
+
+    it "does not force a gated required subfield's ancestors (own-level nested required kept)" do
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, type: String, on: :data, if: -> { data.present? }
+      end
+      schema = action.input_schema
+      expect(schema[:required].to_a).not_to include("data")
+      expect(schema[:properties][:data][:type]).to eq(%w[object null])
+      expect(schema[:properties][:data][:required]).to eq(["user"])
+      expect(schema[:properties][:data][:properties][:user][:type]).to eq("string")
+    end
+
+    it "keeps ancestor-forcing when any config at the node is ungated" do
+      action = build_axn do
+        expects :data, type: Hash
+        expects :user, type: String, on: :data, if: :cond
+        expects :role, type: String, on: :data
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("data")
+      expect(schema[:properties][:data][:required]).to match_array(%w[user role])
+    end
+
+    it "reflects a merged node's parent per its UNGATED optional route (ancestor-forcing ignores the gated route)" do
+      # `root.data.user` merges an UNGATED optional route and a gated required route. Ancestor-forcing
+      # uses the ungated subset, so the ungated-optional route leaves `data` omittable while the gated
+      # route's own-level obligation is still emitted in the node's nested `required`.
+      action = build_axn do
+        expects :strict, type: :boolean, default: false
+        expects :root, type: Hash, allow_blank: true
+        expects :data, on: :root, optional: true
+        expects :user, on: :data, type: String, optional: true
+        expects "data.user", on: :root, type: String, if: :strict
+      end
+      root = action.input_schema[:properties][:root]
+      # data is NOT forced required by the gated route
+      expect(root[:required].to_a).not_to include("data")
+      data = root[:properties][:data]
+      expect(data[:type]).to eq(%w[object null])
+      # the gated route's own-level nested requiredness is kept static-maximal
+      expect(data[:required]).to eq(["user"])
+    end
+
+    it "reflects a blank `if:` as no gate at all: required, with no allOf clause emitted" do
+      action = build_axn do
+        expects :num, type: Integer, if: nil
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("num")
+      expect(schema).not_to have_key(:allOf)
+    end
+
+    describe "per-validator (nested) gates reach reflection (Codex round 12)" do
+      it "does not force ancestors for a subfield gated by a nested presence condition (own-level required kept)" do
+        action = build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, presence: { if: -> { data.present? } }
+        end
+        schema = action.input_schema
+        expect(schema[:required].to_a).not_to include("data")
+        expect(schema[:properties][:data][:type]).to eq(%w[object null])
+        expect(schema[:properties][:data][:required]).to eq(["user"]) # own-level static-maximal
+      end
+
+      it "still forces ancestors when a nested-gated presence sits alongside an ungated nil-rejecting type" do
+        action = build_axn do
+          expects :data, type: Hash
+          expects :user, on: :data, type: String, presence: { if: -> { data.present? } }
+        end
+        expect(action.input_schema[:required]).to include("data")
+      end
+
+      it "leaves an exposed property untyped when its type is nested-gated" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :amount, type: { klass: Integer, if: :flag }
+          def call = expose(:amount, "oops")
+        end
+        prop = action.output_schema[:properties][:amount]
+        expect(prop).not_to have_key(:type)
+      end
+
+      it "drops a nested-gated inclusion's enum while keeping an UNGATED sibling type's contribution" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :name, type: String, inclusion: { in: %w[a b], if: :flag }
+          def call = expose(:name, "zzz")
+        end
+        prop = action.output_schema[:properties][:name]
+        expect(prop).not_to have_key(:enum)   # gated inclusion dropped
+        expect(prop[:type]).to eq("string")   # ungated sibling type kept
+      end
+
+      it "admits null on an exposed property whose only check is a nested-gated presence" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :note, presence: { if: :flag }
+          def call = expose(:note, nil)
+        end
+        prop = action.output_schema[:properties][:note]
+        expect(prop).not_to have_key(:type) # untyped → null admissible
+      end
+
+      it "keeps INPUT static-maximal for a nested-gated type (the gate only relaxes at runtime)" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :amount, type: { klass: Integer, if: :flag }
+        end
+        schema = action.input_schema
+        expect(schema[:required]).to include("amount")
+        expect(schema[:properties][:amount][:type]).to eq("integer")
+      end
+
+      it "output schema is a superset: a closed nested gate lets a wrong-typed value through while the property is untyped" do
+        action = build_axn do
+          expects :flag, type: :boolean, default: false
+          exposes :amount, type: { klass: Integer, if: :flag }
+          def call = expose(:amount, "oops")
+        end
+        result = action.call(flag: false) # closed gate skips the type check
+        expect(result).to be_ok
+        expect(result.amount).to eq("oops")
+        expect(action.output_schema[:properties][:amount]).not_to have_key(:type)
+      end
+    end
+
+    describe "declarative Symbol conditions (allOf/if/then emission)" do
+      it "emits an exact conditional for a Symbol referencing a declared sibling field" do
+        action = build_axn do
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = action.input_schema
+        expect(schema[:required].to_a).not_to include("coupon_code")
+        expect(schema[:allOf]).to eq([{
+                                       if: {
+                                         required: ["promo_enabled"],
+                                         properties: { promo_enabled: { not: { enum: [false, nil] } } },
+                                       },
+                                       then: { required: ["coupon_code"] },
+                                     }])
+        expect(schema[:properties][:coupon_code][:type]).to eq("string")
+      end
+
+      it "emits else for unless:" do
+        action = build_axn do
+          expects :skip_check, type: :boolean
+          expects :coupon_code, type: String, unless: :skip_check
+        end
+        clause = action.input_schema[:allOf].first
+        expect(clause[:if][:required]).to eq(["skip_check"])
+        expect(clause[:else]).to eq({ required: ["coupon_code"] })
+        expect(clause).not_to have_key(:then)
+      end
+
+      it "falls back for an unless: gate when boolean coercion can flip the referenced truthiness" do
+        # The referenced field admits both boolean coercion and a String wire form: wire "false" is
+        # schema-admissible (String branch) and truthy to the emitted `if`, but runtime coerces it to
+        # `false`, opening the unless-gate and requiring coupon_code. An emitted `else` clause would be
+        # looser than runtime, so fall back to unconditional required.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, String]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same flippable reference (stricter direction)" do
+        # A truthy->falsey flip on an if: gate keeps the emitted `then` requiring the field while the
+        # runtime gate closes — schema stricter than runtime, the safe direction, so the clause stays.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, String]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "STILL emits for a plain boolean unless: gate (a String wire value is schema-rejected)" do
+        # A plain `type: :boolean` property admits no string, so no schema-valid input can be coerced
+        # from truthy to falsey — no flip is possible, and the exact `else` clause is emitted.
+        action = build_axn do
+          expects :skip_check, type: :boolean
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back for an unless: gate on a coercible-typed reference with no explicit coerce flag" do
+        # `type: [:boolean, String]` carries no per-field coerce flag, but the class-level
+        # coerce_input_types override could enable coercion — reflection must not resolve per-class
+        # config, so it conservatively assumes a flip is possible and falls back.
+        action = build_axn do
+          expects :skip_check, type: [:boolean, String]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "falls back for an unless: gate on a Symbol-branch reference (schema emits Symbol as string)" do
+        # `type: [:boolean, Symbol]` emits an `anyOf` including a `string` branch (Symbol -> "string"),
+        # so wire "false" is schema-admissible through it and truthy to the emitted `if`, while runtime
+        # boolean coercion flips it to `false`, opening the unless-gate. The string-shaped branch is
+        # derived from the emission logic (single_type_for), not a String/:uuid hand-list, so Symbol is
+        # correctly recognized as flippable and the clause falls back.
+        action = build_axn do
+          expects :skip_check, type: [:boolean, Symbol]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same Symbol-branch reference (stricter direction)" do
+        action = build_axn do
+          expects :skip_check, type: [:boolean, Symbol]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back for an unless: gate on a Float-coercible reference (runtime coerces integer 0 to false)" do
+        # `coerce: [:boolean, Float]` emits an anyOf with a `number` branch. Runtime's coerce_boolean maps
+        # a non-String integer 0 to `false` BEFORE any Float parse is attempted, so wire `{skip_check: 0}`
+        # is schema-admissible (the number branch) and truthy to the emitted `if`, while runtime settles
+        # it falsey and opens the unless-gate. A number-shaped branch admits coerce_boolean's falsey path
+        # exactly like a string-shaped one, so this must fall back just like the String/Symbol cases above.
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Float]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "STILL emits for an if: gate with the same Float-coercible reference (stricter direction)" do
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Float]
+          expects :coupon_code, type: String, if: :skip_check
+          def call; end
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back for an unless: gate on an Integer-coercible reference (same integer-0 hazard)" do
+        action = build_axn do
+          expects :skip_check, coerce: [:boolean, Integer]
+          expects :coupon_code, type: String, unless: :skip_check
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "falls back to unconditional required when any guard fails" do
+        fallback_required = lambda do |&decl|
+          schema = build_axn(&decl).input_schema
+          expect(schema[:allOf]).to be_nil
+          expect(schema[:required]).to include("coupon_code")
+        end
+
+        # Proc condition (opaque)
+        fallback_required.call do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, if: -> { flag }
+        end
+        # Symbol naming a non-field action method (opaque)
+        fallback_required.call do
+          expects :coupon_code, type: String, if: :some_method
+        end
+        # referenced field carries a default (settled value can diverge from the wire)
+        fallback_required.call do
+          expects :flag, type: :boolean, default: true
+          expects :coupon_code, type: String, if: :flag
+        end
+        # referenced field carries a preprocess
+        fallback_required.call do
+          expects :flag, preprocess: ->(v) { !v.nil? }, optional: true
+          expects :coupon_code, type: String, if: :flag
+        end
+        # referenced field is model:-routed (lookup success isn't wire-expressible)
+        fallback_required.call do
+          expects :user, model: { klass: Struct.new(:id), finder: :find }, optional: true
+          expects :coupon_code, type: String, if: :user
+        end
+        # both if: and unless: given
+        fallback_required.call do
+          expects :a, :b, type: :boolean
+          expects :coupon_code, type: String, if: :a, unless: :b
+        end
+      end
+
+      it "emits no clause for an already-optional gated field (nothing to make conditional)" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, optional: true, if: :flag
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required].to_a).not_to include("coupon_code")
+      end
+
+      it "matches the referenced field through an as: alias and emits its wire key" do
+        action = build_axn do
+          expects :promo, type: :boolean, as: :promotion
+          expects :coupon_code, type: String, if: :promotion
+        end
+        clause = action.input_schema[:allOf].first
+        expect(clause[:if][:required]).to eq(["promo"])
+      end
+
+      it "falls back when the referenced reader is a user method, not the framework-generated one" do
+        # (a) user defines its own predicate BEFORE the boolean field: predicate generation defers to
+        # it, so runtime evaluates the USER method while the wire value could differ — must not emit.
+        pre = build_axn do
+          def promo_enabled? = true
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = pre.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+
+        # (a') user defines its own predicate AFTER the field declaration.
+        post_pred = build_axn do
+          expects :promo_enabled, type: :boolean
+          def promo_enabled? = true
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        schema = post_pred.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+
+        # (b) user redefines the PLAIN reader after expects: same hazard, the def shadows the reader.
+        plain = build_axn do
+          expects :flag, type: :boolean
+          def flag = true
+          expects :coupon_code, type: String, if: :flag
+        end
+        schema = plain.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("coupon_code")
+      end
+
+      it "still emits for the generated readers (source_location check does not false-positive)" do
+        # Generated plain reader.
+        plain = build_axn do
+          expects :flag, type: :boolean
+          expects :coupon_code, type: String, if: :flag
+        end
+        expect(plain.input_schema[:allOf]).not_to be_nil
+        # Generated boolean predicate alias (shares the aliased reader's source_location).
+        pred = build_axn do
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, if: :promo_enabled?
+        end
+        expect(pred.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "still emits when a subfield default sits beneath the referenced field (value-level defaults never synthesize the parent)" do
+        action = build_axn do
+          expects :opts, optional: true
+          expects :mode, on: :opts, default: "x"
+          expects :coupon_code, type: String, if: :opts
+          def call; end
+        end
+        schema = action.input_schema
+        # A subfield default resolves the CHILD's value on the read path and never materializes the
+        # parent (PRO-2903), so a wire-omitted opts settles nil/falsey exactly as the clause reads it.
+        expect(schema[:allOf]).not_to be_nil
+        expect(schema[:required].to_a).not_to include("coupon_code")
+        # Runtime agreement: omit everything → opts stays nil, the gate is closed, the call passes.
+        expect(action.call.ok?).to be true
+        # And a present opts opens the gate exactly as the clause advertises.
+        expect(action.call(opts: { other: 1 }).ok?).to be false
+        expect(action.call(opts: { other: 1 }, coupon_code: "C").ok?).to be true
+      end
+
+      it "still emits when the referenced field's subfield carries no default" do
+        action = build_axn do
+          expects :opts, optional: true
+          expects :mode, on: :opts, optional: true
+          expects :coupon_code, type: String, if: :opts
+        end
+        expect(action.input_schema[:allOf]).not_to be_nil
+      end
+
+      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry (Codex round 14)" do
+        # `presence: { if: nil }` OVERRIDES and drops the declaration `if: :flag` for the presence check
+        # (AM's measured per-key merge), so presence runs UNCONDITIONALLY — name is required for every
+        # call. An allOf conditioning name on `flag` would be looser than runtime (it would accept
+        # `{flag: false}` without name, which runtime rejects), so fall back to unconditional required.
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :name, type: String, if: :flag, presence: { if: nil }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("name")
+        # Runtime agreement: the gate is dropped, so name is required even when flag is false.
+        expect(action.call(flag: false).ok?).to be false
+        expect(action.call(flag: false, name: "x").ok?).to be true
+      end
+
+      it "falls back when a non-blank nested gate ties a nil-rejecting entry to a DIFFERENT condition" do
+        # `presence: { if: :other }` gates presence on `other`, not the declaration's `flag`, so an allOf
+        # keyed on `flag` would mis-model requiredness. Fall back to unconditional required.
+        action = build_axn do
+          expects :flag, :other, type: :boolean
+          expects :name, type: String, if: :flag, presence: { if: :other }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("name")
+      end
+
+      it "STILL emits when the nested-gated entry is nil-TOLERANT (harmless for requiredness)" do
+        # A gate on a nil-tolerant check (`length: { allow_nil: true, ... }`) never affects whether the
+        # field may be omitted — the field is nil-rejecting only via the ungated declaration-gated slot,
+        # so the clause conditioning name on `flag` stays exact.
+        action = build_axn do
+          expects :flag, :other, type: :boolean
+          expects :name, type: String, if: :flag, length: { allow_nil: true, minimum: 2, if: :other }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to eq([{
+                                       if: {
+                                         required: ["flag"],
+                                         properties: { flag: { not: { enum: [false, nil] } } },
+                                       },
+                                       then: { required: ["name"] },
+                                     }])
+        expect(schema[:required].to_a).not_to include("name")
+      end
+    end
+  end
 end

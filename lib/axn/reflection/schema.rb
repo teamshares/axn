@@ -68,11 +68,12 @@ module Axn
       # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
       # a repeated path skip the tree build + annotation derivation; it must have been built from the
       # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
-      def build_input(field_configs, subfield_configs = [], resolved: nil)
+      def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
         tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
         ann = resolved&.annotations || derive_annotations(tree.roots)
         properties = {}
         required = []
+        conditionals = []
 
         field_configs.each do |config|
           next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
@@ -89,7 +90,10 @@ module Axn
             apply_nested_subfields!(prop, node, ann)
 
             properties[config.field] = prop.compact
-            required << config.field.to_s unless field_optional?(config, node.children, ann)
+            unless field_optional?(config, node.children, ann)
+              clause = conditional_requiredness_clause(config, field_configs, node, klass)
+              clause ? conditionals << clause : required << config.field.to_s
+            end
           end
         end
 
@@ -101,6 +105,7 @@ module Axn
         end
 
         schema = { type: "object", properties: }
+        schema[:allOf] = conditionals unless conditionals.empty?
         schema[:required] = required.uniq unless required.empty?
         schema
       end
@@ -264,10 +269,33 @@ module Axn
         node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
         credit_sibling_id_defaults!(node, ann) if satisfiability
 
-        # node_optional?'s own-level rule, always evaluated with the node's FULL config set — exactly
-        # what children_require_presence? has always asked of a child (never a subset), so this is a
-        # pure cache of that recursive call, not a new rule.
-        required = !node_optional?(node, ann, node.configs, satisfiability:)
+        # ANCESTOR-FORCING is derived from the RELAXABLE-filtered subset of the node's configs: a route
+        # whose requiredness a conditional gate can relax at runtime can't oblige an omitted/nil
+        # ancestor to be present — only a route with an UNGATED nil-rejecting check can. That covers
+        # both a declaration-level gate (`if:`/`unless:` on the whole declaration) AND a per-validator
+        # nested gate on every check that could reject nil (e.g. `presence: { if: -> { data.present? } }`
+        # — the presence is gated off when the ancestor is absent, so the omitted ancestor validates).
+        # Passing the filtered subset to node_optional? (rather than the full set, then subtracting a
+        # fully-gated node afterward) is what makes a MIXED node correct: a node merged from an
+        # ungated-but-omittable route (e.g. `optional: true`) and a gated-required route forces nothing,
+        # because its only ancestor-relevant obligation — the ungated route — is itself omittable. The
+        # prior two-step form (full-set node_optional? then relax only when EVERY config is gated)
+        # over-forced exactly that shape, wrongly rejecting a runtime-valid contract in satisfiability mode.
+        #
+        # This is ONLY the ancestor-propagation signal. Own-level emission stays static-maximal: the
+        # emission sites (apply_children!/field_optional?) call node_optional? with the full or
+        # per-route config set directly, so a gated route's own nested `required` obligation is
+        # unchanged. Edge cases preserved: an implicit node ignores the `configs` param inside
+        # node_optional? (a pure subtree test), so its ancestor-forcing is untouched; a fully-relaxable
+        # node yields an empty subset, and `[].all?` is vacuously true → node_optional? true → not
+        # required; an all-ungated node passes its full set (unchanged).
+        # The satisfiability short-circuit inside node_optional? (the usable_default? line) still reads
+        # the FULL node.configs regardless of the param, so a node-level default keeps rescuing every
+        # route. Mode-independent: satisfiability mode needs it so a declared tolerance above a gated
+        # child is exercisable (not dead), and strict mode honors the ancestor's own declared optionality
+        # instead of inventing strictness the declaration disavowed (the design doc's "one deliberate
+        # exception").
+        required = !node_optional?(node, ann, node.configs.reject { |c| requiredness_conditionally_relaxable?(c) }, satisfiability:)
 
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
@@ -407,6 +435,145 @@ module Axn
         # by its OWN signals (own default / own nil-tolerance, above) plus required-child stranding; a
         # child default fixes the child's nil, not the parent's own presence/blank obligation.
         false
+      end
+
+      # An exact JSON Schema conditional for a gated-but-otherwise-required top-level field whose
+      # single Symbol condition references a declared sibling field. Ruby truthiness on a JSON value
+      # is precisely "present, and neither false nor null", so the emitted clause matches the runtime
+      # gate exactly. Returns nil — fall back to unconditional `required`, the static-maximal safe
+      # direction — unless EVERY guard holds:
+      #   * exactly one gate (if: XOR unless:), and its rule is a Symbol;
+      #   * the Symbol resolves to a declared top-level inbound field's reader (condition_reference);
+      #   * the referenced field carries no default: and no preprocess: (either can make the settled
+      #     runtime value diverge from what the caller sent, flipping the gate relative to the wire)
+      #     and is not model:-routed (lookup success isn't wire-expressible) nor schema-excluded;
+      #   * for an unless: gate, the referenced field's type can't admit boolean coercion of a
+      #     schema-admissible wire value coerce_boolean maps to false — a falsy STRING or the integer 0
+      #     (boolean_coercion_can_flip_truthiness?). Coercion only flips a truthy wire value to falsey:
+      #     for an if: gate that direction keeps the emitted `then`
+      #     stricter than runtime (safe — still emitted), but for an unless: gate it opens the runtime
+      #     `else` gate the emitted clause left closed (looser than runtime — fall back);
+      #   * (a subfield default BENEATH the referenced field needs no guard: value-level defaults
+      #     resolve the child's value on the read path and never synthesize the parent — PRO-2903 —
+      #     so a wire-omitted referenced field settles nil/falsey exactly as the clause reads it;
+      #     a subfield preprocess likewise never materializes an absent root);
+      #   * the referenced reader is the FRAMEWORK-GENERATED one — a Symbol condition names a reader
+      #     method, but a user can suppress predicate generation (a pre-existing `?` method) or
+      #     redefine a plain reader after `expects`, and runtime would then evaluate the USER method
+      #     against the settled value while the clause conditions on the wire value. Verified via
+      #     source_location against the generation site (framework_generated_reader?), pure
+      #     introspection. `klass` is nil for direct build_input callers → fall back (safe direction);
+      #   * the gated field is not model:-routed and has no subfields of its own (a required
+      #     descendant unconditionally forces the field, contradicting a conditional requirement);
+      #   * no NIL-REJECTING validator entry carries a per-validator (nested) gate key — blank or not.
+      #     The clause models the DECLARATION gate; a nested gate on a nil-rejecting entry un-ties that
+      #     entry from it (AM's measured per-key merge): a blank same-key override un-gates the entry
+      #     (unconditionally required — clause looser than runtime), and a non-blank nested gate ties it
+      #     to a different condition (also inexact). Nil-TOLERANT nested-gated entries are harmless.
+      def conditional_requiredness_clause(config, field_configs, node, klass)
+        return nil if config.validations[:model] || node.children.any?
+
+        gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        return nil unless gates.size == 1
+
+        # The emitted clause conditions requiredness on exactly this DECLARATION gate — exact only if
+        # every nil-rejecting validator entry inherits that gate unmodified. A nested gate KEY on such an
+        # entry breaks that (AM's measured per-key merge, fields.rb#validator_gate_open?): a BLANK
+        # same-key nested override un-gates the entry, making it unconditionally required (clause looser
+        # than runtime), while a NON-blank nested gate ties the entry to a DIFFERENT condition than the
+        # clause emits (also inexact). Either way fall back to unconditional required (the static-maximal
+        # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
+        # can't affect requiredness — don't fall back on those.
+        entries = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt) && entry_mentions_gate_key?(opt) }
+
+        rule = gates.values.first
+        return nil unless rule.is_a?(Symbol)
+
+        ref = condition_reference(rule, field_configs)
+        return nil unless ref
+        return nil if ref.validations[:model] || !ref.default.nil? || ref.preprocess
+        return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
+        return nil unless framework_generated_reader?(klass, rule)
+
+        # An unless: gate treated static-maximally emits `else: required`, firing only when the
+        # referenced wire value is FALSEY. But inbound boolean coercion can flip a schema-admissible
+        # truthy wire value ("false"/"f"/"0" as a String, or the JSON number 0) to a falsey settled
+        # value, opening the runtime gate while the emitted `if` still reads the wire value as truthy —
+        # so the schema would NOT require the gated field though the runtime does (looser than
+        # runtime). For an if: gate the same flip makes the schema stricter (the emitted `then` keeps
+        # requiring while the runtime gate closes), so only unless: must fall back to unconditional
+        # required.
+        return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
+
+        condition = {
+          required: [ref.field.to_s],
+          properties: { ref.field => { not: { enum: [false, nil] } } },
+        }
+        branch = gates.key?(:if) ? :then : :else
+        { if: condition, branch => { required: [config.field.to_s] } }
+      end
+
+      # The declared top-level inbound field a Symbol condition reads: an exact reader-name match,
+      # or — for a `?`-suffixed Symbol — the boolean field whose generated predicate alias it names.
+      # The condition reads the READER; the emitted schema keys by the field's WIRE key.
+      def condition_reference(rule, field_configs)
+        name = rule.to_s
+        exact = field_configs.find { |c| c.reader_as.to_s == name }
+        return exact if exact
+        return nil unless name.end_with?("?")
+
+        base = name.delete_suffix("?")
+        field_configs.find { |c| c.reader_as.to_s == base && c.boolean? }
+      end
+
+      # Whether inbound coercion could flip the Ruby truthiness of the referenced field between its
+      # wire value and its settled value — the ONLY way coercion changes a truthiness judgment, and
+      # the reason an unless: gate can't be emitted declaratively for such a field. Coerce-or-leave
+      # (Coercion.coerce_value) transforms String wire values through the parse-based COERCERS, and —
+      # for a `:boolean` target specifically — a non-String value too (Coercion#coerce_boolean also
+      # accepts an Integer, per its acceptance table: idempotent true/false, integer 0/1, and
+      # FALSY_STRINGS/TRUTHY_STRINGS). Among the coercible targets (Coercion::SUPPORTED) only
+      # `:boolean` maps a truthy wire value to a falsey Ruby value — Date/Time/Integer/Float/Symbol all
+      # yield a truthy value from a truthy String, and a schema-valid boolean is already true/false
+      # (idempotent, no flip). A flip is therefore possible only when the ref's declared type BOTH
+      # (a) admits the `:boolean` coercion branch AND (b) admits some OTHER branch whose schema-valid
+      # wire values include one coerce_boolean maps to false — i.e. a branch admitting a FALSY_STRINGS
+      # member (a JSON `string` branch) or admitting integer `0` (a JSON `integer`/`number` branch,
+      # since coerce_boolean checks `value.zero?` before any type-specific parse). A `string`+format
+      # branch (Date/Time) still counts: JSON Schema treats `format` as annotation-only by default, so
+      # the schema still admits an arbitrary String wire value the coercer can reach. A plain
+      # `:boolean`-only property emits no other branch, so no schema-valid input can reach the falsey
+      # path — no flip. AND (c) coercion isn't explicitly disabled: explicit `coerce: false` can't
+      # flip; an explicit `coerce: true` can; an ABSENT flag with a coercible branch is treated as
+      # flippable (the class-level `coerce_input_types` override may enable coercion, and reflection
+      # must not resolve per-class config — conservative toward the safe fallback). Declared-config
+      # inspection only, side-effect-free (single_type_for is pure).
+      FLIPPABLE_JSON_TYPES = %w[string integer number].freeze
+
+      def boolean_coercion_can_flip_truthiness?(ref)
+        type_opt = ref.validations[:type]
+        return false unless type_opt
+
+        if type_opt.is_a?(Hash)
+          klasses = Array(type_opt[:klass])
+          return false if type_opt[:coerce] == false
+        else
+          klasses = Array(type_opt)
+        end
+
+        klasses.include?(:boolean) && klasses.any? { |k| FLIPPABLE_JSON_TYPES.include?(single_type_for(k, for_output: false)[:type]) }
+      end
+
+      # Whether the method a Symbol condition names still resolves to the reader Axn generated (not a
+      # user method that would evaluate against the settled value instead of the wire value). The
+      # generation site is recorded on Contract::GENERATED_READER_SOURCE_PATH; a generated reader —
+      # and a boolean predicate alias, which shares the aliased definition's source_location — reports
+      # that file, while a user `def` reports the declaring file. Pure introspection, side-effect-free.
+      def framework_generated_reader?(klass, rule_name)
+        return false unless klass.respond_to?(:method_defined?) && klass.method_defined?(rule_name)
+
+        klass.instance_method(rule_name).source_location&.first == Axn::Core::Contract::GENERATED_READER_SOURCE_PATH
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -731,6 +898,28 @@ module Axn
         prop = {}
         prop[:description] = config.description if config.description
 
+        # OUTPUT safety runs the other direction from input: the property must admit a SUPERSET of
+        # what the serializer can emit. A closed outbound gate skips EVERY validator (not just
+        # presence), so the exposed value can be anything the action assigned — no type/format/enum/
+        # default is assertable. Leave the property untyped (description only): untyped is the only
+        # superset of an unconstrained value. Mirrors the module's output doctrine of leaving a value
+        # untyped rather than asserting a type the serialized value could contradict.
+        return prop if for_output && conditionally_gated?(config)
+
+        # OUTPUT-EFFECTIVE validations: a per-validator (nested) gate can skip an INDIVIDUAL check on a
+        # given call (`type: { klass: Integer, if: :flag }` with `flag` falsey lets a nonblank
+        # wrong-typed value through), so its constraint can't be promised outbound. View the config
+        # through the subset of validations that survive with EVERY gate closed — drop each entry that
+        # carries a nested gate (nested_gated?), keeping ungated entries (their contributions stay —
+        # a gated `inclusion:` alongside an ungated `type:` still emits the type) and any declaration-
+        # level gate keys (inert here). Composes with the whole-config early return above (a fully
+        # declaration-gated field is already untyped). INPUT is untouched (static-maximal). Rebuild only
+        # when for_output AND an entry would actually drop, to keep config identity/perf everywhere else.
+        if for_output
+          effective = config.validations.reject { |_key, opt| nested_gated?(opt) }
+          config = config.with(validations: effective) if effective.size != config.validations.size
+        end
+
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
         apply_type_info!(prop, type_info, config, nullable:)
@@ -871,7 +1060,14 @@ module Axn
         required = []
         members.each do |m|
           props[m.field.to_sym] = build_property(m, for_output:).compact
-          required << m.field.to_s unless optional_for_schema?(m)
+          # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
+          # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
+          # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
+          # closed gate (the serializer emits no key, or a nil/blank one, for it). requiredness_conditionally_relaxable?
+          # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
+          # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
+          # send the member) — stricter, and safe.
+          required << m.field.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
         end
         [props, required]
       end
@@ -1024,10 +1220,101 @@ module Axn
       # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
       # `numericality: true`) — rejects nil.
       def nil_accepted?(config)
-        v = config.validations
+        # Gate keys (if:/unless:) are shared options, not validators — neutral here. The judgment is
+        # static-maximal: the gated validators are counted as if their gates were open (a condition
+        # can only relax enforcement at runtime, never tighten it).
+        v = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         return true if v.empty?
 
         v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
+      end
+
+      # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
+      # that its enforcement (NOT its shape) is conditional at runtime.
+      def conditionally_gated?(config)
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| config.validations.key?(k) }
+      end
+
+      # Whether a single validator ENTRY's options carry a real per-validator (nested) if:/unless:
+      # gate — `opt` is a Hash AND some CONDITIONAL_GATE_KEYS key is present with a non-blank value
+      # (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`). A blank nested
+      # gate (`if: nil`/`false`/`""`/`[]`) is an ActiveModel no-op (its shared condition list is empty),
+      # so it does not count; a Symbol/Proc is never blank. Declaration-LEVEL blank gates are
+      # canonicalized away at declaration (_canonicalize_blank_gates!), but NESTED ones are not, so
+      # blankness is measured here — the same `value.blank?` rule AM applies.
+      def nested_gated?(opt)
+        return false unless opt.is_a?(Hash)
+
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) && !opt[k].blank? }
+      end
+
+      # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or
+      # not (contrast nested_gated?, which requires a NON-blank value). A blank nested gate is not inert
+      # for the declaration-level requiredness clause: per AM's measured per-key merge
+      # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
+      # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
+      # mentions ANY gate key no longer inherits the declaration gate verbatim.
+      def entry_mentions_gate_key?(opt)
+        return false unless opt.is_a?(Hash)
+
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) }
+      end
+
+      # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
+      # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
+      # Models AM's measured per-key precedence (fields.rb#validator_gate_open?: activemodel 7.2.2.2)
+      # STRUCTURALLY — which keys are present/blank — never by evaluating a condition (reflection is
+      # side-effect-free). Per key (:if/:unless): if the ENTRY carries the key, it counts iff its value
+      # is non-blank (a blank nested value drops the shared gate for that key and is then ignored, so the
+      # entry is UN-gated on that key); otherwise the declaration-level key counts if present. Blankness
+      # is the same measured predicate AM applies (`value.blank?` — a Proc/Symbol is never blank;
+      # nil/false/""/[] are). An entry is EFFECTIVELY GATED iff any returned key survives.
+      def entry_effective_gate_keys(entry_opts, decl_gates)
+        nested = entry_opts.is_a?(Hash) ? entry_opts : {}
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.select do |key|
+          if nested.key?(key)
+            !nested[key].blank?
+          else
+            decl_gates.key?(key)
+          end
+        end
+      end
+
+      # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
+      # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
+      # closed gate skips the check that would otherwise reject the nil ancestor. Reasoned on EFFECTIVE
+      # gates (entry_effective_gate_keys), which model AM's measured per-key merge of the declaration
+      # gate with each entry's nested gate — so the two tiers combine exactly as at runtime without ever
+      # evaluating a condition. Relaxable iff BOTH:
+      #   * some gate exists anywhere — a declaration-level one (already blank-canonicalized) or a real
+      #     (non-blank) nested one; AND
+      #   * every NIL-REJECTING entry is effectively gated — the gate a closed runtime pass would skip is
+      #     precisely the check that rejects the nil/absent ancestor, so nothing forces it. A nil-tolerant
+      #     entry never rejects nil, so it imposes no ancestor obligation to relax.
+      # The measured merge is what makes the corner cases correct: a declaration gate with a BLANK
+      # same-key nested override on the lone presence check leaves it effectively UN-gated (the override
+      # drops the shared gate, then AM ignores the blank), so an ungated nil-rejecting check still forces
+      # the ancestor — NOT relaxable. A DISTINCT-key declaration gate (`unless:`) surviving alongside a
+      # blank nested `if:` still gates the entry — relaxable.
+      #
+      # The "some gate exists" conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
+      # `allow_nil:`, no gate) must NOT be relaxed. Static tolerance does not skip a required child's
+      # validators (a nil optional parent still strands a required descendant — PRO-2857), so such a
+      # config stays in the subset for node_optional?'s subtree-stranding test to apply; dropping it would
+      # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
+      # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
+      # unaffected (this governs ancestor propagation only; see annotate_node!).
+      def requiredness_conditionally_relaxable?(config)
+        gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
+        decl_gates = config.validations.slice(*gate_keys)
+        entries = config.validations.except(*gate_keys)
+
+        some_gate = decl_gates.any? || entries.any? { |_key, opt| nested_gated?(opt) }
+        return false unless some_gate
+
+        entries.all? do |key, opt|
+          nil_tolerant_validation?(key, opt) || entry_effective_gate_keys(opt, decl_gates).any?
+        end
       end
 
       def nil_tolerant_validation?(key, opt)

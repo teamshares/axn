@@ -43,7 +43,6 @@ module Axn
           private
 
           def _add_callback(event_type, handler: nil, block: nil, **kwargs)
-            raise ArgumentError, "on_#{event_type} cannot be called with both :if and :unless" if kwargs.key?(:if) && kwargs.key?(:unless)
             raise ArgumentError, "on_#{event_type} cannot be called with both a block and a handler" if block && handler
             raise ArgumentError, "on_#{event_type} must be called with a block or symbol" unless block || handler
 

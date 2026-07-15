@@ -4,6 +4,7 @@ require "date"
 
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
+require "active_support/core_ext/object/blank"
 
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
@@ -25,6 +26,14 @@ module Axn
           include InstanceMethods
         end
       end
+
+      # Every top-level reader and boolean predicate alias is defined in this file, so reflection can
+      # verify a Symbol condition still resolves to the framework-generated reader — an alias shares
+      # its source_location with the aliased definition, so a user method of the same name (a
+      # pre-existing predicate target that suppressed generation, or a plain reader redefined after
+      # `expects`) reports a different source and is rejected (declarative-emission would otherwise
+      # condition on the wire value while runtime evaluates the user method — the looser direction).
+      GENERATED_READER_SOURCE_PATH = __FILE__
 
       # Optionality is shared by FieldConfig and ShapeConfig (axn-mcp derives `required` from BOTH —
       # field configs and nested shape members — through the same predicate).
@@ -740,6 +749,30 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
+        # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
+        # values ActiveModel ignores. AM resolves if:/unless: through
+        # ActiveSupport::Callbacks::Callback#check_conditionals, which early-returns an empty
+        # condition list `if conditionals.blank?` (activesupport 7.2.2.2, active_support/callbacks.rb)
+        # — so a blank condition is NO conditional at all and the validators run unconditionally.
+        # Measured against AM 7.2.2.2 via `validates :f, presence: true, if: <value>` with the field
+        # absent: `nil`, `false`, `""`, any whitespace-only String, and `[]` all RUN the validators
+        # (they are blank, hence ungated — `if: false` means "no condition", NOT "never run"), which
+        # is precisely `value.blank?`. We reuse that same predicate here, so a REMAINING gate key
+        # downstream — the push-down exemption in _parse_field_validations, reflection's
+        # conditionally_gated?, and the contradiction carve-outs — always denotes a REAL, enforced
+        # gate. Without this, a blank gate would be classified as gated though it runs
+        # unconditionally: ancestor-forcing would be wrongly relaxed, and the dead-tolerance check
+        # would wrongly accept a contradiction-shaped contract (schema looser than runtime). Only
+        # non-blank opaque values survive as gates (a Symbol, a Proc; a non-blank String survives
+        # here but AM then rejects it at validator build — loud, unchanged). Mutates `validations`.
+        def _canonicalize_blank_gates!(validations)
+          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each do |key|
+            next unless validations.key?(key)
+
+            validations.delete(key) if validations[key].blank?
+          end
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
@@ -748,6 +781,8 @@ module Axn
           allow_blank: false,
           **validations
         )
+          _canonicalize_blank_gates!(validations)
+
           # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
           # it is meaningless without one). Runs before the type: sugar so the resulting `{ klass: }`
           # hash flows through the normal path.
@@ -772,9 +807,36 @@ module Axn
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil
+            # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
+            # allow_blank/allow_nil would make the presence validator accept exactly the values it
+            # exists to reject — so the combination is dead machinery, rejected at declaration.
+            # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
+            if validations[:presence]
+              raise ArgumentError,
+                    "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
+                    "the tolerance is pushed into every validator, so the presence check could never fail. " \
+                    "Declare one requiredness signal (drop the flag, or drop presence:)."
+            end
+
+            # `if:`/`unless:` are ActiveModel shared options riding the hash as sibling keys, not
+            # validators — there is nothing to push tolerance flags into. Core-Ruby delete (not
+            # ActiveSupport's Hash#except!): axn runs outside Rails, where that core_ext may never
+            # be loaded.
+            gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+            Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each { |key| validations.delete(key) }
             validations.transform_values! do |v|
+              # A disabled validator (only `presence: false` survives the check above) has nothing
+              # to push tolerance into — `validates` treats a falsy value as "skip this validator"
+              # regardless, so it passes through unchanged. Any other non-Hash validator shape
+              # (e.g. `numericality: true`) has no options hash to merge the tolerance into either,
+              # but silently dropping the tolerance there would leave the field acting required
+              # despite optional:/allow_blank:/allow_nil: — worse than failing loudly, so it falls
+              # through to `.merge(v)` and keeps its pre-existing TypeError (unsupported, unchanged).
+              next v if v == false
+
               { allow_blank:, allow_nil: }.merge(v)
             end
+            validations.merge!(gates)
           else
             # Apply default presence validation (unless the type is boolean or params)
             type_values = Array(validations.dig(:type, :klass))

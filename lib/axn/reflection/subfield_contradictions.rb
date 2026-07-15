@@ -208,7 +208,8 @@ module Axn
               "#{stranded ? ":#{stranded}" : 'its subtree'} is required and nothing rescues an omitted :#{owner} — " \
               "the tolerance can never be exercised (every nil/omitted :#{owner} fails validation). " \
               "Drop the tolerance on :#{owner}, or mark #{stranded ? ":#{stranded}" : 'the subtree'} optional: or give it a " \
-              "default: (declare rescuing defaults BEFORE the dependent subfield).#{model_hint}"
+              "default: (declare rescuing defaults BEFORE the dependent subfield). If it is only required when " \
+              ":#{owner} is supplied, gate it conditionally: `expects ..., if: -> { #{owner}.present? }`.#{model_hint}"
       end
     end
   end

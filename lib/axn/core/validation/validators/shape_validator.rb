@@ -42,16 +42,59 @@ module Axn
       private
 
       def validate_members(record, attribute, source, prefix:)
+        # `record` is the parent field's one-off validator, which carries the action (threaded by
+        # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
+        # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
+        # condition is action-scoped, never element-scoped). Orthogonal to the dispatch gate:
+        # permission stays the member's own method_call: opt-in, never inferred from the action.
+        action = record.send(:_action_for_validation)
+
         members.each do |member|
           unless extractable?(source, member.field)
+            # A member all of whose validators are gated OFF is waived entirely — including this
+            # pre-check. For an extractable source AM skips each gated validator itself (below); a
+            # non-extractable source never reaches AM, so mirror that waiver here: emit the
+            # unreadable-member error iff AT LEAST ONE validator entry would still run.
+            next if member_gate_closed?(member, source, action)
+
             record.errors.add(attribute, "#{prefix}#{member.field} could not be read (got #{source.class})")
             next
           end
 
           errors = Axn::Validation::Fields.errors_for(
-            member_validator_classes[member.field], source:, validations: member.validations, permit_method_call: member_method_call?(member)
+            member_validator_classes[member.field],
+            source:, validations: member.validations,
+            action:, permit_method_call: member_method_call?(member)
           )
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
+        end
+      end
+
+      # Whether EVERY one of a non-extractable member's validator entries is gated OFF — in which case
+      # the unreadable-member error is suppressed, mirroring how AM, on an extractable source, adds no
+      # error when every validator is skipped. Conversely, if ANY entry would run, the read matters and
+      # the error stands. Each entry's effective gate is its OWN nested if:/unless: merged (per AM's
+      # tier precedence) with the member's declaration-level shared gate — the decision is ActiveModel's
+      # own (see Fields.validator_gate_open?), with the action threaded so a Symbol/Proc condition
+      # resolves against the same `self` its real validation would use, and permission kept to the
+      # member's own method_call: opt-in. Gate keys are not themselves validator entries, so they are
+      # excluded from the per-entry sweep. Key-presence on either tier is checked first, so an ungated
+      # member constructs nothing and stays byte-identical to the pre-gate path.
+      def member_gate_closed?(member, source, action)
+        gate_keys = Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS
+        entries = member.validations.except(*gate_keys)
+        has_shared_gate = gate_keys.any? { |key| member.validations.key?(key) }
+        has_nested_gate = entries.values.any? { |v| v.is_a?(Hash) && gate_keys.any? { |key| v.key?(key) } }
+        return false unless has_shared_gate || has_nested_gate
+
+        entries.none? do |_key, entry_options|
+          Axn::Validation::Fields.validator_gate_open?(
+            validations: member.validations,
+            entry_options:,
+            action:,
+            source:,
+            permit_method_call: member_method_call?(member),
+          )
         end
       end
 

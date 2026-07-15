@@ -102,6 +102,102 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
     end
   end
 
+  describe "conditionally gated required subfields (PRO-2881)" do
+    it "accepts a nil-tolerant parent whose required subfield is gated (the tolerance is exercisable)" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data, if: -> { data.present? }
+        end
+      end.not_to raise_error
+    end
+
+    it "still rejects when an UNGATED required sibling strands the parent" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data, if: -> { data.present? }
+          expects :role, type: String, on: :data
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "accepts a merged node whose only UNGATED route is itself omittable (optional:)" do
+      # `root.data.user` is reached by two routes: an UNGATED `optional:` route (`:user on: :data`) and
+      # a gated required route (the dotted `"data.user"` under `:strict`). Ancestor-forcing derives from
+      # the ungated subset alone — the ungated route is omittable, so it strands nothing, and `:data`'s
+      # tolerance stays exercisable (gate closed + data omitted validates). The prior all-gated-only
+      # relaxation over-forced this and wrongly rejected it.
+      expect do
+        build_axn do
+          expects :strict, type: :boolean, default: false
+          expects :root, type: Hash, allow_blank: true
+          expects :data, on: :root, optional: true
+          expects :user, on: :data, type: String, optional: true
+          expects "data.user", on: :root, type: String, if: :strict
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a nil-tolerant parent whose subfield is gated by a per-validator (nested) presence condition" do
+      # The documented per-validator form: `presence: { if: ... }` gates the lone nil-rejecting check,
+      # so the child can't force `:data` — the tolerance is exercisable and declaration must not reject.
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, presence: { if: -> { data.present? } }
+        end
+      end.not_to raise_error
+    end
+
+    it "still rejects a nested-gated presence sitting ALONGSIDE an ungated nil-rejecting type under an optional parent" do
+      # Only a FULLY-relaxable config relaxes: the ungated `type: String` still rejects a nil `user`, so
+      # the parent tolerance stays dead. (Contrast the accepted case above, where presence is the only check.)
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, type: String, presence: { if: -> { data.present? } }
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "points the rejection message at the conditional spelling" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data
+        end
+      end.to raise_error(ArgumentError, /gate it conditionally.*if: -> \{ data\.present\? \}/m)
+    end
+
+    it "REJECTS a blank same-key nested override that un-gates the presence check (Codex round 14)" do
+      # `presence: { if: nil }` drops the declaration `if: :flag` for the presence check (AM's measured
+      # per-key merge), so presence runs UNCONDITIONALLY — `:data` omitted makes `user` resolve nil and
+      # presence fails. The tolerance is dead, so the declaration must be rejected (runtime truth pinned
+      # in conditional_validation_spec: the equivalent top-level shape rejects an omitted value regardless
+      # of the gate).
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, if: :flag, presence: { if: nil }
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "ACCEPTS a DISTINCT-key declaration gate surviving alongside a blank nested override" do
+      # Declaration `unless: :flag` + nested `if: nil`: the blank `if:` is dropped, but the distinct
+      # `unless: :flag` still gates presence (per-key merge), so `:data` can be omitted when the gate is
+      # closed — the tolerance is exercisable and declaration must not reject.
+      expect do
+        build_axn do
+          expects :flag, type: :boolean, default: false
+          expects :data, optional: true
+          expects :user, on: :data, unless: :flag, presence: { if: nil }
+        end
+      end.not_to raise_error
+    end
+  end
+
   describe "unanswerable-segment rejection" do
     it "rejects a dotted name whose segment reads through a scalar shape member" do
       expect do

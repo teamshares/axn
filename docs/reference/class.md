@@ -17,6 +17,7 @@ Both `expects` and `exposes` support the same core options:
 | `optional` | `expects :foo, optional: true` | **Recommended**: Don't fail if the value is missing, nil, or blank. Equivalent to `allow_blank: true`
 | `allow_nil` | `expects :foo, allow_nil: true` | Don't fail if the value is `nil` (but will fail for blank strings)
 | `allow_blank` | `expects :foo, allow_blank: true` | Don't fail if the value is blank (nil, empty string, whitespace, etc.)
+| `if` / `unless` | `expects :coupon, type: String, if: :promo_enabled?` | Conditionally validate: gates **every** check in this declaration (including the implicit presence check) on an action method (Symbol) or Proc. See [Conditional validation](#conditional-validation-if-unless)
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
 | anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model)
 
@@ -168,6 +169,40 @@ When you specify `optional: true`, `allow_blank: true`, or `allow_nil: true` on 
 **Recommended approach**: Use `optional: true` instead of `allow_blank: true` for better clarity. The `optional` parameter is equivalent to `allow_blank: true` and makes the intent clearer.
 
 If neither `optional`, `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
+
+#### Conditional validation (`if:` / `unless:`)
+
+Both `expects` and `exposes` accept ActiveModel's `if:`/`unless:` as declaration-level options. The condition gates **every** validator in the declaration — including the automatically-added presence check — so a field can be *conditionally required*:
+
+```ruby
+expects :promo_enabled, type: :boolean
+expects :coupon_code, type: String, if: :promo_enabled?
+```
+
+When `promo_enabled` is falsey, `coupon_code` is wholly unvalidated (it may be omitted, and a supplied value is not type-checked); when truthy, it is required and must be a String. `unless:` is the negation. Both may be given together and combine with AND — every condition must pass for validation to run. This also composes with subfields, making "required only when the parent is supplied" expressible:
+
+```ruby
+expects :data, optional: true
+expects :user, type: String, on: :data, if: -> { data.present? }
+```
+
+To gate a *single* check instead of the whole declaration, nest the condition in that validator's own options — no duplicate declaration needed:
+
+```ruby
+expects :num, type: Integer, numericality: { greater_than: 100, if: :big_num_needed? }
+```
+
+Rules and caveats:
+
+- **Conditions gate validation only.** `default:` and `preprocess:` are pipeline stages, not validations — they still apply when the condition is false. Readers and `sensitive:` filtering are likewise ungated.
+- **Condition forms**: a Symbol names an action method or reader (a boolean field's generated `?` predicate works: `if: :promo_enabled?`); a Proc should be zero-arity and call reader methods (`if: -> { data.present? }`). Inside a Proc, method calls resolve to the action, but `self` is a validation-internal object — instance variables will not resolve; use readers.
+- **Conditions must be cheap and side-effect-free**: a declaration-level condition may be evaluated once *per validator* on the field during a single validation pass.
+- Combining a tolerance flag (`optional:`/`allow_nil:`/`allow_blank:`) with an explicit `presence:` raises at declaration — the tolerance would make the presence check unable to fire.
+- Shape-block members (`field :x` inside `do … end`) support `if:`/`unless:` too, with the same action-scoped semantics — the condition resolves against the action, **not** the element being validated (a condition cannot reference sibling members). This also means Symbol validator arguments (e.g. `inclusion: { in: :allowed_statuses }`) now resolve on members.
+
+::: warning Schema reflection advertises the maximal contract
+`input_schema` never executes conditions. It reflects every conditional field **as if every gate were open** — `if:` treated as true, `unless:` treated as false, every declared validator counted — so the schema may be *stricter* than the runtime (it can tell a caller a field is required when a closed gate would have accepted omission), but never looser. One narrow, documented exception: a gated required subfield whose condition does not reference its own parent's presence — omitting the parent while the condition is true passes the schema but fails at runtime with a normal validation error (the canonical `if: -> { parent.present? }` pattern is exact). Two refinements: a Symbol condition referencing a declared sibling field (like `if: :promo_enabled?` above) is emitted *exactly*, as a JSON Schema `allOf`/`if`/`then` conditional instead of an unconditional requirement; and a gated required subfield keeps its nested `required` without forcing its ancestors, so the parent's own declared optionality is honored. On `output_schema`, a gated exposed field is left untyped (a closed gate skips every validator, so the action can expose whatever it assigned — no type is assertable).
+:::
 
 ### Details specific to `.exposes`
 
@@ -514,9 +549,10 @@ def should_skip?
   # local decision based on inputs/outputs
   name == "temporary"
 end
+```
 
-::: warning
-You cannot use both `if:` and `unless:` for the same message - this will raise an `ArgumentError`.
+::: tip Combining `if:` and `unless:`
+`if:` and `unless:` may be given together on the same message; they combine with AND — the message only matches when every condition passes — the same combination rule used by [conditional steps](/usage/steps#conditional-steps) and by [conditional validation](#conditional-validation-if-unless) on field declarations. These are different mechanisms, though: a message's `if:`/`unless:` only selects which failure message renders, while a field's `if:`/`unless:` (see [Conditional validation](#conditional-validation-if-unless)) gates whether the field is validated at all.
 :::
 
 ## Composing error messages across actions
@@ -646,8 +682,8 @@ In addition to the [global exception handler](/reference/configuration#on-except
 - If the method accepts one positional argument, the exception is passed positionally
 - Otherwise, the method is called with no arguments
 
-::: warning
-You cannot use both `if:` and `unless:` for the same callback - this will raise an `ArgumentError`.
+::: tip Combining `if:` and `unless:`
+`if:` and `unless:` may be given together on the same callback; they combine with AND — the callback only fires when every condition passes — the same combination rule used by [messages](#conditional-messages), [conditional steps](/usage/steps#conditional-steps), and [conditional validation](#conditional-validation-if-unless) on field declarations.
 :::
 
 ### `on_success`
