@@ -1486,6 +1486,55 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  # PRO-2917 (archived not-reproducible): a self-referential Data.define type does NOT overflow the
+  # stack — the type-boundary expansion is one level deep (`klass.members.to_h { |m| [m, {}] }`), so a
+  # self-reference collapses to a permissive `{}` placeholder rather than recursing. This guards that
+  # invariant: if anyone later makes type-class expansion deep, these terminate-and-truncate assertions
+  # break loudly, resurfacing the cycle-guard question deliberately instead of silently overflowing.
+  describe "self-referential Data.define types terminate (PRO-2917)" do
+    it "reflects a directly self-referential type as a one-level placeholder on input and output" do
+      node = Data.define(:value, :children)
+      klass = Class.new do
+        include Axn
+        expects :root, type: node do
+          field :value, type: Integer
+          field :children, type: Array, of: node
+        end
+        exposes :root, type: node do
+          field :value, type: Integer
+          field :children, type: Array, of: node
+        end
+        def call = nil
+      end
+
+      input = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      output = described_class.build_output(klass.external_field_configs)
+
+      # The self-reference is truncated one level down on BOTH paths: the nested `children` is a bare
+      # `{}`, not a re-expanded object — proof the walk stops at the type boundary rather than recursing.
+      input_items = input[:properties][:root][:properties][:children][:items]
+      output_items = output[:properties][:root][:properties][:children][:items]
+      expect(input_items[:properties]).to eq(value: {}, children: {})
+      expect(output_items[:properties]).to eq(value: {}, children: {})
+    end
+
+    it "reflects a 2-hop type cycle (A -> B -> A) without overflowing" do
+      b = Data.define(:a_ref)
+      a = Data.define(:b_ref)
+      klass = Class.new do
+        include Axn
+        expects :root, type: a do
+          field :b_ref, type: Array, of: b
+        end
+      end
+
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      items = schema[:properties][:root][:properties][:b_ref][:items]
+      # B's members expand one level to `{}`; the cycle back to A never forms in the walk.
+      expect(items[:properties]).to eq(a_ref: {})
+    end
+  end
+
   describe "union type: [A, B]" do
     it "preserves all classes as anyOf, not just the first" do
       klass = Class.new do

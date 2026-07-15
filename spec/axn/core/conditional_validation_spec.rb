@@ -44,11 +44,133 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     it "still allows presence: false alongside a tolerance flag (explicit suppression, coherent)" do
       expect { build_axn { expects :note, optional: true, presence: false } }.not_to raise_error
     end
+  end
 
-    it "leaves other non-Hash validator values under a tolerance flag as a (pre-existing) declaration error" do
-      expect do
-        build_axn { expects :num, optional: true, numericality: true }
-      end.to raise_error(TypeError)
+  # A non-Hash scalar validator value (`numericality: true`, `inclusion: [..]`/`1..5`, `format: /re/`)
+  # normalizes exactly as ActiveModel's own `validates` would, then the tolerance rides on top — so the
+  # terse spelling combines transparently with optional:/allow_blank:/allow_nil: (PRO-2915). Previously
+  # this raised a bare `TypeError` from the tolerance push-down loop.
+  describe "tolerance flags + non-Hash scalar validator values" do
+    it "normalizes `numericality: true` and applies the tolerance" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true              # omitted (tolerance)
+      expect(action.call(num: 5).ok?).to be true      # numericality satisfied
+      expect(action.call(num: "nope").ok?).to be false # numericality enforced
+    end
+
+    it "normalizes an Array value to `in:` (inclusion) and applies the tolerance" do
+      action = build_axn do
+        expects :color, inclusion: %w[red green], optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(color: "red").ok?).to be true
+      expect(action.call(color: "blue").ok?).to be false
+    end
+
+    it "normalizes a Range value to `in:` (inclusion) and applies the tolerance" do
+      action = build_axn do
+        expects :n, inclusion: 1..5, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(n: 3).ok?).to be true
+      expect(action.call(n: 9).ok?).to be false
+    end
+
+    it "normalizes a Regexp value to `with:` (format) and applies the tolerance" do
+      action = build_axn do
+        expects :code, format: /\A\d+\z/, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(code: "123").ok?).to be true
+      expect(action.call(code: "abc").ok?).to be false
+    end
+
+    it "treats a falsy validator value as disabled (mirrors ActiveModel's falsy-skip)" do
+      expect { build_axn { expects :num, numericality: nil, optional: true } }.not_to raise_error
+      expect { build_axn { expects :num, numericality: false, optional: true } }.not_to raise_error
+
+      action = build_axn do
+        expects :num, numericality: false, optional: true
+        def call; end
+      end
+      expect(action.call(num: "not-a-number").ok?).to be true # numericality disabled
+    end
+
+    it "keeps a nil-disabled validator OUT of input_schema[:required] (matches its omittable runtime)" do
+      action = build_axn do
+        expects :num, numericality: nil, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true # omittable at runtime
+      expect(action.input_schema[:required] || []).not_to include(:num, "num")
+    end
+
+    # `strict:` is an ActiveModel SHARED option, not a validator — the push-down must leave it intact
+    # rather than normalize it into an options hash (which would raise a bare `TypeError` at
+    # strict-raise time instead of the strict exception).
+    it "preserves strict: under a tolerance flag (raises the strict exception, not a TypeError)" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true, strict: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true # omittable (tolerance intact)
+      result = action.call(num: "nope")
+      expect(result.ok?).to be false
+      expect(result.exception).to be_a(ActiveModel::StrictValidationFailed)
+
+      # The restored strict: is a shared option, not a validator — reflection must not read it as a
+      # nil-rejecting validator and mark the (omittable) field required.
+      expect(action.input_schema[:required] || []).not_to include(:num, "num")
+      expect(action.input_schema.dig(:properties, :num, :type)).to contain_exactly("number", "null")
+    end
+
+    it "declares an optional field carrying only a shared option (no real validator) without crashing" do
+      action = build_axn do
+        expects :note, optional: true, strict: true
+        def call; end
+      end
+
+      # A shared-only validations hash has no real validator, so `validates` is never called (it would
+      # raise "You need to supply at least one validation"); the field is a no-op, omittable.
+      expect(action.call.ok?).to be true
+      expect(action.call(note: "anything").ok?).to be true
+    end
+
+    it "waives the shape unreadable-member pre-check when a member's only validator is disabled" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :note, numericality: nil, optional: true
+        end
+        def call; end
+      end
+
+      # `note` can't be read off a scalar element, but its only validator is disabled (never runs), so
+      # no "could not be read" error should fire.
+      expect(action.call(items: [1, 2, 3]).ok?).to be true
+    end
+
+    it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true
+        expects :n2, numericality: { greater_than: 0 }, optional: true
+        def call; end
+      end
+
+      props = action.input_schema.fetch(:properties)
+      expect(props.fetch(:num)).to eq(props.fetch(:n2))
+      expect(props.dig(:num, :type)).to contain_exactly("number", "null")
     end
   end
 
