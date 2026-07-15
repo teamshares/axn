@@ -16,6 +16,7 @@ require "axn/exceptions"
 require "axn/core"
 require "axn/executor"
 require "axn/reflection"
+require "axn/tools/registry"
 
 # Internal utilities
 require "axn/internal/memoization"
@@ -54,6 +55,19 @@ module Axn
     exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
   end
 
+  def self.register_tool_adapter(key)
+    Axn::Tools::Registry.register_adapter(key)
+  end
+
+  def self.tools_for(adapter)
+    adapter = adapter.to_sym
+    unless Axn::Tools::Registry.adapters.include?(adapter)
+      raise ArgumentError, "#{adapter.inspect} is not a registered tool adapter (registered: #{Axn::Tools::Registry.adapters.to_a.inspect})"
+    end
+
+    Axn::Tools::Registry.tools_for(adapter)
+  end
+
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run
     # setup and reset the inheritance-aware class_attributes that hold field configs,
@@ -71,6 +85,8 @@ module Axn
       # Allow additional automatic includes to be configured
       Array(Axn.config.additional_includes).each { |mod| include mod }
     end
+
+    Axn::Tools::Registry.register_class(base)
   end
 end
 
