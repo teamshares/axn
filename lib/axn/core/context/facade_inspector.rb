@@ -44,6 +44,11 @@ module Axn
     def format_for_inspect(field, value)
       return value.inspect if value.nil?
 
+      # A sensitive shape member inside a non-Hash value (an object-backed shape, or malformed input) is
+      # opaque to the key-name filter below, so mask that value wholesale first; a Hash value is left for
+      # the per-key filtering path to redact precisely. See `_mask_unfilterable_shape_value`.
+      value = action.class._mask_unfilterable_shape_value(field, value, action)
+
       # Initially based on https://github.com/rails/rails/blob/800976975253be2912d09a80757ee70a2bb1e984/activerecord/lib/active_record/attribute_methods.rb#L527
       inspected_value = if value.is_a?(String) && value.length > 50
                           "#{value[0, 50]}...".inspect

@@ -4,7 +4,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
   describe "static sensitive members" do
     it "redacts a sensitive Array-element member in inputs_for_logging (every element)" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -50,7 +50,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts a sensitive member in execution_context inputs" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: true
         end
 
@@ -66,7 +66,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "includes the static sensitive member name in sensitive_fields (and not the plain sibling)" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -81,7 +81,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "redacts a Proc member only when the predicate resolves truthy against the instance" do
       action = build_axn do
         expects :redact, type: :boolean, default: false
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: -> { redact }
         end
       end
@@ -95,7 +95,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts a Symbol member resolved against an instance method" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: :hide_ssn?
         end
 
@@ -112,7 +112,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "reports dynamic sensitive members via _has_dynamic_sensitive_fields?" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, sensitive: -> { true }
         end
       end
@@ -124,7 +124,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
   describe "inspect (ContextFacadeInspector) redaction" do
     it "redacts a sensitive Array-element member in internal_context.inspect (not just logs)" do
       action = build_axn do
-        expects :items, type: Array, of: Hash do
+        expects :items, type: Array do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -174,7 +174,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
     it "redacts the whole value when the parent field is itself sensitive (not just the nested member)" do
       action = build_axn do
-        expects :items, type: Array, of: Hash, sensitive: true do
+        expects :items, type: Array, sensitive: true do
           field :ssn, type: String, sensitive: true
           field :name, type: String
         end
@@ -236,97 +236,79 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
   end
 
-  describe "sensitive: on an object-backed shape member" do
-    # An object value is logged/inspected whole (ParameterFilter only redacts Hash keys), so a
-    # sensitive member there would silently fail to redact — rejected at declaration instead.
+  describe "object-backed shapes (value isn't a Hash → wholesale masking)" do
+    # ParameterFilter only redacts Hash keys, so an object value can't be filtered per-member. When a
+    # shape member is sensitive but the value is an object (Data/Struct/PORO) or malformed input, the
+    # whole value is masked wholesale — over-redacting its non-sensitive siblings rather than leaking.
     let(:person) { Data.define(:name, :ssn) }
 
-    it "is rejected on a class-backed shape" do
+    it "masks a class-backed shape value wholesale in logs when it carries a sensitive member" do
       klass = person
-      expect do
-        build_axn do
-          expects :person, type: klass do
-            field :ssn, sensitive: true, method_call: true
-          end
+      action = build_axn do
+        expects :person, type: klass do
+          field :name, method_call: true
+          field :ssn, method_call: true, sensitive: true
         end
-      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
+
+        def call; end
+      end
+
+      instance = action.send(:new, person: klass.new(name: "Alice", ssn: "111-11-1111"))
+      inputs = instance.send(:inputs_for_logging)
+
+      expect(inputs[:person]).to eq("[FILTERED]")
     end
 
-    it "is rejected on an Array-of-object shape" do
+    it "masks a class-backed shape value wholesale in inspect" do
       klass = person
-      expect do
-        build_axn do
-          expects :people, type: Array, of: klass do
-            field :ssn, sensitive: true, method_call: true
-          end
+      action = build_axn do
+        expects :person, type: klass do
+          field :name, method_call: true
+          field :ssn, method_call: true, sensitive: true
         end
-      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
+
+        def call; end
+      end
+
+      inspected = action.call(person: klass.new(name: "Alice", ssn: "111-11-1111")).__action__.internal_context.inspect
+
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("111-11-1111")
+      # Over-redaction: the non-sensitive sibling is hidden too, because the object can't be filtered per-key.
+      expect(inspected).not_to include("Alice")
     end
 
-    it "is rejected on a plain Array shape with no enforced Hash element type (may hold objects)" do
-      expect do
-        build_axn do
-          expects :people, type: Array do
-            field :ssn, sensitive: true
-          end
+    it "masks only a malformed (non-Hash) element, leaving valid Hash elements filtered per-member" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :ssn, sensitive: true
+          field :name
         end
-      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
+
+        def call; end
+      end
+
+      instance = action.send(:new, items: [{ ssn: "111-11-1111", name: "Alice" }, person.new(name: "Bob", ssn: "222-22-2222")])
+      inputs = instance.send(:inputs_for_logging)
+
+      expect(inputs[:items]).to eq([{ ssn: "[FILTERED]", name: "Alice" }, "[FILTERED]"])
     end
 
-    it "is rejected for a raw (non-block) object-backed shape declaration" do
+    it "does NOT redact an object-backed shape whose members are all non-sensitive" do
       klass = person
-      member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } }, sensitive: true)
-      expect do
-        build_axn do
-          expects :person, type: klass, shape: { members: [member], container: klass }
+      action = build_axn do
+        expects :person, type: klass do
+          field :name, method_call: true
+          field :ssn, method_call: true
         end
-      end.to raise_error(ArgumentError, /`ssn`.*cannot be sensitive:/m)
-    end
 
-    it "is rejected for a member nested inside a Hash that is itself nested in an object shape" do
-      klass = person
-      expect do
-        build_axn do
-          expects :p, type: klass do
-            field :addr, type: Hash, method_call: true do
-              field :zip, sensitive: true
-            end
-          end
-        end
-      end.to raise_error(ArgumentError, /`zip`.*cannot be sensitive:/m)
-    end
+        def call; end
+      end
 
-    it "still allows a sensitive member declared inside a Hash nested in an Array-of-Hash shape" do
-      expect do
-        build_axn do
-          expects :orders, type: Array, of: Hash do
-            field :customer, type: Hash do
-              field :ssn, sensitive: true
-            end
-          end
-        end
-      end.not_to raise_error
-    end
+      instance = action.send(:new, person: klass.new(name: "Alice", ssn: "111-11-1111"))
 
-    it "still allows a NON-sensitive member on an object-backed shape" do
-      klass = person
-      expect do
-        build_axn do
-          expects :person, type: klass do
-            field :name, method_call: true
-          end
-        end
-      end.not_to raise_error
-    end
-
-    it "allows sensitive members on an explicit Array-of-Hash shape" do
-      expect do
-        build_axn do
-          expects :items, type: Array, of: Hash do
-            field :ssn, sensitive: true
-          end
-        end
-      end.not_to raise_error
+      # No sensitive member → the record is never in the redaction set → logged in full.
+      expect(instance.send(:inputs_for_logging)[:person]).to eq(klass.new(name: "Alice", ssn: "111-11-1111"))
     end
   end
 
@@ -334,7 +316,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "is rejected (reader-less members cannot resolve an id or expose an _id companion)" do
       expect do
         build_axn do
-          expects :items, type: Array, of: Hash do
+          expects :items, type: Array do
             field :company, model: Struct.new(:id)
           end
         end
