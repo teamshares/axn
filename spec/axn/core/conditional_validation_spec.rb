@@ -214,6 +214,39 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     end
   end
 
+  # AM merges the declaration-level shared gate with each entry's nested gate PER KEY (measured
+  # precedence, activemodel 7.2.2.2): the entry's own key overrides the shared one, distinct keys AND
+  # together, and a BLANK nested value drops the shared gate for that key and is then ignored. These
+  # pin the runtime truth reflection models structurally (Codex round 14).
+  describe "per-key merge of a declaration gate with a blank nested override" do
+    it "runs the nil-rejecting check UNCONDITIONALLY when a blank same-key nested override drops the shared gate" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :name, type: String, if: :flag, presence: { if: nil }
+        def call; end
+      end
+      # `presence: { if: nil }` overrides+drops `if: :flag` for presence, so presence runs regardless of
+      # flag — name is required for every call (schema reflects it unconditionally required, no allOf).
+      expect(action.call(flag: false).ok?).to be false
+      expect(action.call(flag: true).ok?).to be false
+      expect(action.call(flag: false, name: "x").ok?).to be true
+    end
+
+    it "keeps a DISTINCT-key declaration gate when a blank nested override drops only the same key" do
+      action = build_axn do
+        expects :flag, type: :boolean, default: false
+        expects :data, optional: true
+        expects :user, on: :data, unless: :flag, presence: { if: nil }
+        def call; end
+      end
+      # Blank nested `if:` dropped; distinct `unless: :flag` still gates presence. So `:data` may be
+      # omitted when the gate is CLOSED (flag truthy), and presence runs when it is OPEN (flag falsey).
+      expect(action.call(flag: true).ok?).to be true
+      expect(action.call(flag: false).ok?).to be false
+      expect(action.call(flag: false, data: { user: "x" }).ok?).to be true
+    end
+  end
+
   describe "shape members (action-scoped conditions and Symbol args)" do
     it "resolves a member's Symbol validator argument against the action" do
       action = build_axn do

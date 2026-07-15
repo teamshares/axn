@@ -169,6 +169,33 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
         end
       end.to raise_error(ArgumentError, /gate it conditionally.*if: -> \{ data\.present\? \}/m)
     end
+
+    it "REJECTS a blank same-key nested override that un-gates the presence check (Codex round 14)" do
+      # `presence: { if: nil }` drops the declaration `if: :flag` for the presence check (AM's measured
+      # per-key merge), so presence runs UNCONDITIONALLY — `:data` omitted makes `user` resolve nil and
+      # presence fails. The tolerance is dead, so the declaration must be rejected (runtime truth pinned
+      # in conditional_validation_spec: the equivalent top-level shape rejects an omitted value regardless
+      # of the gate).
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, if: :flag, presence: { if: nil }
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "ACCEPTS a DISTINCT-key declaration gate surviving alongside a blank nested override" do
+      # Declaration `unless: :flag` + nested `if: nil`: the blank `if:` is dropped, but the distinct
+      # `unless: :flag` still gates presence (per-key merge), so `:data` can be omitted when the gate is
+      # closed — the tolerance is exercisable and declaration must not reject.
+      expect do
+        build_axn do
+          expects :flag, type: :boolean, default: false
+          expects :data, optional: true
+          expects :user, on: :data, unless: :flag, presence: { if: nil }
+        end
+      end.not_to raise_error
+    end
   end
 
   describe "unanswerable-segment rejection" do

@@ -464,12 +464,28 @@ module Axn
       #     source_location against the generation site (framework_generated_reader?), pure
       #     introspection. `klass` is nil for direct build_input callers → fall back (safe direction);
       #   * the gated field is not model:-routed and has no subfields of its own (a required
-      #     descendant unconditionally forces the field, contradicting a conditional requirement).
+      #     descendant unconditionally forces the field, contradicting a conditional requirement);
+      #   * no NIL-REJECTING validator entry carries a per-validator (nested) gate key — blank or not.
+      #     The clause models the DECLARATION gate; a nested gate on a nil-rejecting entry un-ties that
+      #     entry from it (AM's measured per-key merge): a blank same-key override un-gates the entry
+      #     (unconditionally required — clause looser than runtime), and a non-blank nested gate ties it
+      #     to a different condition (also inexact). Nil-TOLERANT nested-gated entries are harmless.
       def conditional_requiredness_clause(config, field_configs, node, klass)
         return nil if config.validations[:model] || node.children.any?
 
         gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         return nil unless gates.size == 1
+
+        # The emitted clause conditions requiredness on exactly this DECLARATION gate — exact only if
+        # every nil-rejecting validator entry inherits that gate unmodified. A nested gate KEY on such an
+        # entry breaks that (AM's measured per-key merge, fields.rb#validator_gate_open?): a BLANK
+        # same-key nested override un-gates the entry, making it unconditionally required (clause looser
+        # than runtime), while a NON-blank nested gate ties the entry to a DIFFERENT condition than the
+        # clause emits (also inexact). Either way fall back to unconditional required (the static-maximal
+        # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
+        # can't affect requiredness — don't fall back on those.
+        entries = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt) && entry_mentions_gate_key?(opt) }
 
         rule = gates.values.first
         return nil unless rule.is_a?(Symbol)
@@ -1232,18 +1248,56 @@ module Axn
         Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) && !opt[k].blank? }
       end
 
+      # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or
+      # not (contrast nested_gated?, which requires a NON-blank value). A blank nested gate is not inert
+      # for the declaration-level requiredness clause: per AM's measured per-key merge
+      # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
+      # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
+      # mentions ANY gate key no longer inherits the declaration gate verbatim.
+      def entry_mentions_gate_key?(opt)
+        return false unless opt.is_a?(Hash)
+
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) }
+      end
+
+      # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
+      # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
+      # Models AM's measured per-key precedence (fields.rb#validator_gate_open?: activemodel 7.2.2.2)
+      # STRUCTURALLY — which keys are present/blank — never by evaluating a condition (reflection is
+      # side-effect-free). Per key (:if/:unless): if the ENTRY carries the key, it counts iff its value
+      # is non-blank (a blank nested value drops the shared gate for that key and is then ignored, so the
+      # entry is UN-gated on that key); otherwise the declaration-level key counts if present. Blankness
+      # is the same measured predicate AM applies (`value.blank?` — a Proc/Symbol is never blank;
+      # nil/false/""/[] are). An entry is EFFECTIVELY GATED iff any returned key survives.
+      def entry_effective_gate_keys(entry_opts, decl_gates)
+        nested = entry_opts.is_a?(Hash) ? entry_opts : {}
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.select do |key|
+          if nested.key?(key)
+            !nested[key].blank?
+          else
+            decl_gates.key?(key)
+          end
+        end
+      end
+
       # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
       # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
-      # closed gate skips the check that would otherwise reject the nil ancestor. True when:
-      #   * the declaration carries a declaration-level gate (conditionally_gated?) — the WHOLE
-      #     declaration (every validator) is gated off together; OR
-      #   * a per-validator (nested) gate covers every nil-rejecting check: at least one entry is
-      #     nested_gated? AND every non-gate entry is either already nil-tolerant (nil_tolerant_validation?
-      #     — never rejects nil anyway) or itself nested_gated? (the check that COULD reject nil is gated
-      #     off). E.g. `presence: { if: -> { data.present? } }` — the lone nil-rejecting check is gated.
-      # A config with an UNGATED nil-rejecting entry (e.g. a bare `type:`) still forces its ancestors.
+      # closed gate skips the check that would otherwise reject the nil ancestor. Reasoned on EFFECTIVE
+      # gates (entry_effective_gate_keys), which model AM's measured per-key merge of the declaration
+      # gate with each entry's nested gate — so the two tiers combine exactly as at runtime without ever
+      # evaluating a condition. Relaxable iff BOTH:
+      #   * some gate exists anywhere — a declaration-level one (already blank-canonicalized) or a real
+      #     (non-blank) nested one; AND
+      #   * every NIL-REJECTING entry is effectively gated — the gate a closed runtime pass would skip is
+      #     precisely the check that rejects the nil/absent ancestor, so nothing forces it. A nil-tolerant
+      #     entry never rejects nil, so it imposes no ancestor obligation to relax.
+      # The measured merge is what makes the corner cases correct: a declaration gate with a BLANK
+      # same-key nested override on the lone presence check leaves it effectively UN-gated (the override
+      # drops the shared gate, then AM ignores the blank), so an ungated nil-rejecting check still forces
+      # the ancestor — NOT relaxable. A DISTINCT-key declaration gate (`unless:`) surviving alongside a
+      # blank nested `if:` still gates the entry — relaxable.
       #
-      # The `any?(nested_gated?)` conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
+      # The "some gate exists" conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
       # `allow_nil:`, no gate) must NOT be relaxed. Static tolerance does not skip a required child's
       # validators (a nil optional parent still strands a required descendant — PRO-2857), so such a
       # config stays in the subset for node_optional?'s subtree-stranding test to apply; dropping it would
@@ -1251,11 +1305,16 @@ module Axn
       # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
       # unaffected (this governs ancestor propagation only; see annotate_node!).
       def requiredness_conditionally_relaxable?(config)
-        return true if conditionally_gated?(config)
+        gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
+        decl_gates = config.validations.slice(*gate_keys)
+        entries = config.validations.except(*gate_keys)
 
-        entries = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-        entries.any? { |_key, opt| nested_gated?(opt) } &&
-          entries.all? { |key, opt| nil_tolerant_validation?(key, opt) || nested_gated?(opt) }
+        some_gate = decl_gates.any? || entries.any? { |_key, opt| nested_gated?(opt) }
+        return false unless some_gate
+
+        entries.all? do |key, opt|
+          nil_tolerant_validation?(key, opt) || entry_effective_gate_keys(opt, decl_gates).any?
+        end
       end
 
       def nil_tolerant_validation?(key, opt)

@@ -89,6 +89,26 @@ RSpec.describe "conditional validation direction audit" do
     expect(action.call(skip: false).ok?).to be false
   end
 
+  it "blank same-key nested override: schema requires unconditionally (stricter-or-exact, never looser)" do
+    action = build_axn do
+      expects :flag, type: :boolean
+      expects :name, type: String, if: :flag, presence: { if: nil }
+      def call; end
+    end
+    schema = action.input_schema
+    # The nested `if: nil` drops the shared `if: :flag` for the presence check, so presence runs
+    # unconditionally — name is required for EVERY call. The clause falls back to unconditional required
+    # rather than emitting a `flag`-conditional allOf that would (looser) accept `{flag: false}` sans name.
+    expect(schema[:allOf]).to be_nil
+    expect(schema[:required]).to include("name")
+    # Direction holds on the wire value that used to slip through: schema rejects the omission, runtime does too.
+    expect(schema_accepts_omission?(schema, { flag: false }, :name)).to be false
+    expect(action.call(flag: false).ok?).to be false
+    # And when the gate is "open" runtime still requires name (gate is moot) — schema agrees, exact here.
+    expect(schema_accepts_omission?(schema, { flag: true }, :name)).to be false
+    expect(action.call(flag: true).ok?).to be false
+  end
+
   it "coerced-boolean unless: reference: schema is now stricter-or-exact, never looser" do
     action = build_axn do
       expects :skip, coerce: [:boolean, String]

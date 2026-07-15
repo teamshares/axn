@@ -5001,6 +5001,57 @@ RSpec.describe Axn::Reflection::Schema do
         end
         expect(action.input_schema[:allOf]).not_to be_nil
       end
+
+      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry (Codex round 14)" do
+        # `presence: { if: nil }` OVERRIDES and drops the declaration `if: :flag` for the presence check
+        # (AM's measured per-key merge), so presence runs UNCONDITIONALLY — name is required for every
+        # call. An allOf conditioning name on `flag` would be looser than runtime (it would accept
+        # `{flag: false}` without name, which runtime rejects), so fall back to unconditional required.
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :name, type: String, if: :flag, presence: { if: nil }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("name")
+        # Runtime agreement: the gate is dropped, so name is required even when flag is false.
+        expect(action.call(flag: false).ok?).to be false
+        expect(action.call(flag: false, name: "x").ok?).to be true
+      end
+
+      it "falls back when a non-blank nested gate ties a nil-rejecting entry to a DIFFERENT condition" do
+        # `presence: { if: :other }` gates presence on `other`, not the declaration's `flag`, so an allOf
+        # keyed on `flag` would mis-model requiredness. Fall back to unconditional required.
+        action = build_axn do
+          expects :flag, :other, type: :boolean
+          expects :name, type: String, if: :flag, presence: { if: :other }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to be_nil
+        expect(schema[:required]).to include("name")
+      end
+
+      it "STILL emits when the nested-gated entry is nil-TOLERANT (harmless for requiredness)" do
+        # A gate on a nil-tolerant check (`length: { allow_nil: true, ... }`) never affects whether the
+        # field may be omitted — the field is nil-rejecting only via the ungated declaration-gated slot,
+        # so the clause conditioning name on `flag` stays exact.
+        action = build_axn do
+          expects :flag, :other, type: :boolean
+          expects :name, type: String, if: :flag, length: { allow_nil: true, minimum: 2, if: :other }
+          def call; end
+        end
+        schema = action.input_schema
+        expect(schema[:allOf]).to eq([{
+                                       if: {
+                                         required: ["flag"],
+                                         properties: { flag: { not: { enum: [false, nil] } } },
+                                       },
+                                       then: { required: ["name"] },
+                                     }])
+        expect(schema[:required].to_a).not_to include("name")
+      end
     end
   end
 end
