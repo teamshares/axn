@@ -33,6 +33,26 @@ RSpec.describe Axn::Tools::Registry do
       anon = Class.new { include Axn }
       expect(described_class.all_classes).not_to include(anon)
     end
+
+    it "records a subclass of an Axn base (the ApplicationAction inheritance pattern)" do
+      base = stub_const("RegistrySpec::AppAction", Class.new { include Axn })
+      sub = stub_const("RegistrySpec::AppActionSub", Class.new(base))
+      expect(described_class.all_classes).to include(sub)
+    end
+
+    it "records a deeply-nested subclass chain" do
+      base = stub_const("RegistrySpec::DeepBase", Class.new { include Axn })
+      mid = stub_const("RegistrySpec::DeepMid", Class.new(base))
+      leaf = stub_const("RegistrySpec::DeepLeaf", Class.new(mid))
+      expect(described_class.all_classes).to include(mid, leaf)
+    end
+
+    it "contains no duplicates when a class is reached via multiple registration paths" do
+      klass = stub_const("RegistrySpec::DoubleReg", Class.new { include Axn })
+      # Simulate a second path reaching the same class (e.g. include + inherited).
+      described_class.register_class(klass)
+      expect(described_class.all_classes.count(klass)).to eq(1)
+    end
   end
 
   describe "Axn.tools_for validation" do
@@ -62,6 +82,18 @@ RSpec.describe Axn::Tools::Registry do
       expect(Axn.tools_for(:mcp)).not_to include(not_a_tool)
       expect(Axn.tools_for(:ruby_llm)).to include(both)
       expect(Axn.tools_for(:ruby_llm)).not_to include(mcp_only)
+    end
+
+    it "exposes a subclass of an Axn base that declares `tool` (inheritance pattern)" do
+      base = stub_const("ToolsForSpec::AppBase", Class.new { include Axn })
+      sub = stub_const("ToolsForSpec::ConcreteTool", Class.new(base) { tool })
+      expect(Axn.tools_for(:mcp)).to include(sub)
+    end
+
+    it "does NOT expose a subclass that declares `tool false`" do
+      base = stub_const("ToolsForSpec::AppBase2", Class.new { include Axn })
+      sub = stub_const("ToolsForSpec::OptedOutTool", Class.new(base) { tool false })
+      expect(Axn.tools_for(:mcp)).not_to include(sub)
     end
   end
 

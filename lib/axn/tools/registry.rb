@@ -20,7 +20,9 @@ module Axn
         @adapters = Set.new
       end
 
-      # Called at include-Axn time for every action class.
+      # Called at include-Axn time (direct include) and inherited time (subclasses) for every
+      # action class. Idempotent: the backing Set drops a class already present, so a class
+      # reachable via more than one path is never enumerated twice by tools_for.
       def register_class(klass)
         _classes << klass
       end
@@ -130,7 +132,7 @@ module Axn
       end
 
       def _classes
-        @classes ||= []
+        @classes ||= Set.new
       end
 
       def _currently_defined?(klass)

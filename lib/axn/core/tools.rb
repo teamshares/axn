@@ -16,6 +16,17 @@ module Axn
       end
 
       module ClassMethods
+        # A concrete tool commonly SUBCLASSES an Axn base (`class MyTool < ApplicationAction`)
+        # rather than including Axn directly, so `Axn.included` never re-fires for it and the
+        # registry would otherwise omit it. Register every subclass here too. `super` runs FIRST
+        # so other libraries' `inherited` hooks (ActiveSupport::DescendantsTracker, Mountable's
+        # own, a user base class's) stay intact — `Class#inherited` is a no-op by default, so
+        # keeping it in the chain is safe. Registration is idempotent (Registry uses a Set).
+        def inherited(subclass)
+          super
+          Axn::Tools::Registry.register_class(subclass)
+        end
+
         # Declares tool membership.
         #   tool                  -> member of every registered adapter (the common case)
         #   tool :mcp, :ruby_llm  -> explicit per-adapter set
