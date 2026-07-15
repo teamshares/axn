@@ -605,28 +605,58 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /not supported for an ambient_context subfield/)
     end
 
-    it "rejects a shape block on a user_facing field" do
-      # ShapeValidator reports nested member failures under the same top-level attribute, so a
-      # malformed-member error would otherwise be reclassified as user-facing — but nested member
-      # checks are structural and must stay dev-facing, exactly like subfields.
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true do
-            field :id, type: Integer
+    describe "user_facing: on a field that also carries a shape block" do
+      it "surfaces the field's own failure user-facing" do
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order details are required" do
+            field :sku, type: String
           end
-        end
-      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
-    end
-
-    it "rejects a shape passed as a raw shape: kwarg (not just the block form)" do
-      # The guard keys on the resolved validations[:shape], so a direct shape: option is caught too —
-      # ShapeValidator reports member failures under the same attribute either way.
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true, shape: { members: [] }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
+        result = action.call # :order omitted → the field's OWN presence fails
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Order details are required")
+      end
+
+      it "keeps a member failure dev-facing (does not leak) when the member fails alone" do
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order details are required" do
+            field :sku, type: String
+          end
+          def call = nil
+        end
+        result = action.call(order: { sku: 123 }) # field's own presence OK; member :sku invalid
+        expect(result.outcome).to be_exception
+        expect(result.error).to eq("Something went wrong")
+      end
+
+      it "lets dev-facing dominate and reports BOTH when the field's own check and a member both fail" do
+        action = build_axn do
+          # A custom `validate:` gives the field its OWN check that fails while the value is still a
+          # valid Hash whose member also fails — the only way to co-fail the field's own error and a
+          # member error in one call (an absent/wrong-type value would short-circuit ShapeValidator).
+          expects :order, type: Hash, user_facing: "Order details are required",
+                          validate: ->(v) { "order is not ready" unless v[:ready] } do
+            field :sku, type: String
+          end
+          def call = nil
+        end
+        result = action.call(order: { sku: 123 }) # own validate: fails AND member :sku is not a String
+        expect(result.outcome).to be_exception
+        expect(result.error).to eq("Something went wrong")
+        messages = result.exception.errors.full_messages.join(" ")
+        expect(messages).to include("order is not ready")
+        expect(messages).to include("sku")
+      end
+
+      it "accepts a shape passed as a raw shape: kwarg on a user_facing field" do
+        expect do
+          build_axn do
+            expects :order, type: Hash, user_facing: true, shape: { members: [] }
+            def call = nil
+          end
+        end.not_to raise_error
+      end
     end
 
     it "suppresses through an aliased user_facing parent (wire-key identification)" do

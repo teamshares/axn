@@ -165,16 +165,6 @@ module Axn
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
-          # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
-          # validates nested members, which `ShapeValidator` reports under this same attribute — so
-          # reclassifying the field user-facing would wrongly turn a malformed-member (structural)
-          # failure into a user-facing one. Nested member checks stay dev-facing at every level, so
-          # reject the combination. Keyed on the resolved `validations[:shape]`, not the block, so a
-          # direct `shape:` kwarg is caught too.
-          if user_facing && validations[:shape]
-            raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
-          end
-
           if on.present?
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                reader_names:, user_facing:, method_call:, **validations)
