@@ -207,7 +207,7 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
 
-          validations[:shape] = _build_shape(fields, validations:, &block) if block
+          validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
@@ -636,7 +636,7 @@ module Axn
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
         # trying to extract members from the wrong kind of value).
-        def _build_shape(fields, validations: nil, &)
+        def _build_shape(fields, validations: nil, outbound: false, &)
           raise ArgumentError, "a shape block can only be declared on a single field" if fields.size > 1
 
           container = _shape_compatible_type!(validations)
@@ -644,19 +644,30 @@ module Axn
           builder = ShapeBuilder.new
           builder.instance_exec(&)
 
-          members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock) }
+          members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock, outbound:) }
 
           { members:, container: }
         end
 
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
-        def _build_shape_member(name, opts, subblock)
+        def _build_shape_member(name, opts, subblock, outbound: false)
           unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
           if unsupported.any?
             raise ArgumentError,
                   "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
                   "(shape blocks declare validation/schema only)"
+          end
+
+          # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
+          # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
+          # the caller's fault — and the outbound settlement path never consults `user_facing:`, so on an
+          # exposes shape member it would be silently inert. Reject it loudly (top-level `exposes` fields
+          # already reject `user_facing:` as an unknown key; this keeps shape members consistent).
+          if outbound && opts[:user_facing]
+            raise ArgumentError,
+                  "shape member `#{name}` does not support user_facing: on exposes — an outbound failure is a " \
+                  "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
           end
 
           # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
@@ -674,7 +685,7 @@ module Axn
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
-          field_validations[:shape] = _build_shape([name], validations: field_validations, &subblock) if subblock
+          field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)

@@ -319,6 +319,28 @@ RSpec.describe "expects ..., user_facing:" do
         end
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
+
+    it "rejects user_facing: on an exposes shape member (outbound failures are always dev-facing)" do
+      expect do
+        build_axn do
+          exposes :items, type: Array do
+            field :status, type: String, user_facing: "surfaced"
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
+
+    it "rejects user_facing: on a nested exposes shape member too" do
+      expect do
+        build_axn do
+          exposes :order, type: Hash do
+            field :line, type: Hash do
+              field :sku, type: String, user_facing: "surfaced"
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
   end
 
   describe "mixed failure: dev-facing dominates" do
@@ -666,9 +688,11 @@ RSpec.describe "expects ..., user_facing:" do
       end
 
       it "accepts a shape passed as a raw shape: kwarg on a user_facing field" do
+        # A raw shape: kwarg carries its own :container (the block form's _build_shape supplies it
+        # automatically; a container-less raw shape is malformed independently of user_facing).
         expect do
           build_axn do
-            expects :order, type: Hash, user_facing: true, shape: { members: [] }
+            expects :order, type: Hash, user_facing: true, shape: { members: [], container: Hash }
             def call = nil
           end
         end.not_to raise_error
