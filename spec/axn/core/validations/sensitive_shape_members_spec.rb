@@ -394,7 +394,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(instance.execution_context[:inputs][:payload]).to be_nil
     end
 
-    it "preserves nil and scalar array elements while masking objects and filtering Hashes" do
+    it "preserves nil elements but masks malformed scalar/object elements (a scalar may BE the secret)" do
       action = build_axn do
         expects :items, type: Array do
           field :ssn, sensitive: true
@@ -404,8 +404,11 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      instance = action.send(:new, items: [{ ssn: "1", name: "A" }, nil, "oops", person.new(name: "B", ssn: "2")])
-      expect(instance.send(:inputs_for_logging)[:items]).to eq([{ ssn: "[FILTERED]", name: "A" }, nil, "oops", "[FILTERED]"])
+      # A caller could mis-supply the raw sensitive value as the element (items: ["111-11-1111"]), so a
+      # non-nil scalar in a member-bearing position is masked; nil (valid absent) is preserved; a Hash
+      # filters per-member; an object masks wholesale.
+      instance = action.send(:new, items: [{ ssn: "1", name: "A" }, nil, "111-11-1111", person.new(name: "B", ssn: "2")])
+      expect(instance.send(:inputs_for_logging)[:items]).to eq([{ ssn: "[FILTERED]", name: "A" }, nil, "[FILTERED]", "[FILTERED]"])
     end
 
     it "does NOT redact an object-backed shape whose members are all non-sensitive" do

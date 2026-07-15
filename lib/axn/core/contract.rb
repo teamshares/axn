@@ -407,12 +407,14 @@ module Axn
           end
         end
 
-        # A non-Hash/Array value in a member-bearing position: mask a structured object (opaque to the
-        # filter, could expose the member), preserve nil and primitive scalars (nothing to leak).
+        # A non-Hash/Array value in a member-bearing position. `nil` is preserved — it is valid absent
+        # data (a nil-tolerant shape) with nothing to leak, and masking it would make absent data look
+        # redacted. Anything else is malformed for a shaped field (which expects a Hash/object with
+        # members) and ParameterFilter can't redact into it: a structured object could expose the member
+        # via `inspect`, and a bare scalar could itself BE the sensitive value the caller mis-supplied
+        # (`items: ["111-11-1111"]`). Both reach logging before validation rejects them, so mask.
         def _mask_opaque_or_preserve(value)
-          return value if value.nil? || SENSITIVE_SCALAR_TYPES.any? { |type| value.is_a?(type) }
-
-          SENSITIVE_FILTERED_MASK
+          value.nil? ? value : SENSITIVE_FILTERED_MASK
         end
 
         # Every form of `key` present in `hash` — the key as-is, its string form, and its symbol form.
@@ -634,13 +636,6 @@ module Axn
         # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
         # so wholesale-masked values read identically to per-key-filtered ones.
         SENSITIVE_FILTERED_MASK = "[FILTERED]"
-
-        # Primitive value types that carry no shape member and render harmlessly, so they are preserved
-        # (never wholesale-masked) even in a member-bearing position — there is nothing inside a scalar
-        # to leak, and masking valid absent/scalar data would make it look redacted. `nil` is handled
-        # alongside these. Anything else non-Hash/Array is a structured object whose `inspect` could
-        # expose the member, so it is masked.
-        SENSITIVE_SCALAR_TYPES = [String, Symbol, Numeric, TrueClass, FalseClass, Date, Time].freeze
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
