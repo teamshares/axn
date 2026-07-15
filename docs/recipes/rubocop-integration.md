@@ -104,3 +104,35 @@ end
 ```
 
 For detailed configuration options, usage patterns, and troubleshooting, see the [technical documentation](https://github.com/teamshares/axn/blob/main/lib/rubocop/cop/axn/README.md).
+
+## Axn/AmbientContextBypass
+
+A second, **opt-in** cop that flags reading `Current.<attr>` / `::Current.<attr>` directly inside an Axn and steers you toward declaring the dependency explicitly with [`expects :<attr>, on: :ambient_context`](/reference/class#ambient-context-on-ambient-context). Reaching into `Current` inside an action hides a real dependency — the class's `expects` declarations no longer describe everything it needs, callers can't tell what ambient state is required, and tests have to set up `CurrentAttributes` instead of just passing a value.
+
+```ruby
+# ❌ bad — the dependency on the current company is invisible in the contract
+class ChargeCard
+  include Axn
+  def call = do_thing(Current.company)
+end
+
+# ✅ good — declared, validated, sensitive-filtered, and trivially testable
+class ChargeCard
+  include Axn
+  expects :company, on: :ambient_context
+  def call = do_thing(company)
+end
+```
+
+It fires **only** on reads inside a class/module that `include Axn` (the `on: :ambient_context` fix exists nowhere else, so a `Current` read in a controller, model, or plain job is left alone). Assignments (`Current.company = c`), calls with arguments (`Current.foo(bar)`), and unrelated receivers (`Time.current`) are ignored, as are the `CurrentAttributes` lifecycle methods (`reset`, `instance`, …).
+
+Axn ships no default config that enables it, so turn it on explicitly:
+
+```yaml
+require:
+  - axn/rubocop
+
+Axn/AmbientContextBypass:
+  Enabled: true
+  Severity: warning
+```

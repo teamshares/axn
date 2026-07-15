@@ -151,7 +151,7 @@ end
 
 * The block requires a single, **structured** `type:` (Array, Hash, or a class). Declaring it on a scalar type (`String`, `Integer`, `:boolean`, …), a union (`type: [Array, String]`), or with no `type:` raises `ArgumentError` at declaration time.
 * For `type: Array`, each element is validated and errors report the element's index (e.g. `element at index 2: status is not included in the list`). For a `type: Hash`/class, the single value's members are validated directly.
-* Members accept validations (`type`, `inclusion`, …), `optional`/`allow_blank`/`allow_nil`, and `description`, and **recurse** — a member with its own block validates its nested members at any depth. Members are validation/schema-only, so `default:`, `preprocess:`, and `sensitive:` are **not** supported on a member (they raise at declaration time).
+* Members accept validations (`type`, `inclusion`, …), `optional`/`allow_blank`/`allow_nil`, and `description`, and **recurse** — a member with its own block validates its nested members at any depth. Members are **reader-less, validation/schema-only** declarations, so `default:`, `preprocess:`, and `sensitive:` are **not** supported on a member (they raise at declaration time). `default:`/`preprocess:` produce or transform a value, which needs a resolution target (a reader) to land on — a member has none; declare it as an `expects … on:` subfield if you need those. `sensitive:` is a filtering-only marker that would be feasible on a member, but the sensitive-field collector does not yet descend into members; use a subfield (which supports `sensitive:`) if a member value must be redacted.
 * A member is read off the element by declared data only — a Hash key, or a `Struct`/`OpenStruct`/`Data` member (`Data` via `#to_h`, so no method is ever invoked). Reading a member off a non-`Data` object (a reader) or an Array (an Array method) invokes a method, so — like a subfield's [`method_call:`](#resolving-a-subfield-by-calling-a-method-method-call) — it's opt-in: `field :status, type: String, method_call: true`. Without the flag, reaching such a member raises `Axn::ContractViolation::MethodCallNotPermittedError` (loud, never silent — no method runs, so a mutating one like `field :pop` never mutates during validation). The rule applies at each depth of a nested shape.
 * Unlike `expects … on:` subfields, a shape block does **not** define reader methods — there is no single value to bind (an array has many elements). It is a contract on structure only.
 * Composes with `of:`: `of:` checks each element's *class*, while the block describes the element's *fields*. `of:` is optional.
@@ -225,6 +225,45 @@ The **root** segment (`address`) must be a declared field (or subfield). Resolut
 ::: info Nested parents support the full kwarg surface
 `default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. A nested `default:` materializes any missing intermediate objects top-down (only when every absent ancestor's declared type admits an object — a `type: Array` ancestor refuses, and the write-back is skipped); a nested `preprocess:` transforms in place and never synthesizes an absent parent; a nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is resolved per-invocation rather than read from the inbound arguments. Skipping the write-back doesn't skip the default itself — the axn's reader and validation still resolve it (see the tip above); only the materialized-object side effect is unavailable there.
 :::
+
+#### Ambient context (`on: :ambient_context`)
+
+`ambient_context` is a reserved, always-present parent whose subfield values are supplied **per-invocation by the framework** rather than by the caller's arguments. It's how an action declares a dependency on ambient request/tenant state — the current company, the acting user, a request id — as an explicit part of its contract:
+
+```ruby
+class ChargeCard
+  include Axn
+  expects :company, on: :ambient_context, model: Company   # framework-supplied, not a caller argument
+  expects :actor,   on: :ambient_context, model: User
+
+  def call = do_thing(company, actor)   # `company` / `actor` read like any other declared input
+end
+```
+
+Each declared ambient subfield resolves from the first source that provides it, checked in order:
+
+1. an explicit `ambient_context:` kwarg on the call (`ChargeCard.call(ambient_context: { company_id: 7 })`) — an explicit kwarg **replaces** the provider entirely (no merge), so passing `ambient_context: {}` or `nil` deliberately supplies nothing;
+2. otherwise the configured `Axn.config.ambient_context_provider` (a callable returning a Hash);
+3. otherwise, in a Rails app, a live view over every registered `ActiveSupport::CurrentAttributes`;
+4. otherwise `{}`.
+
+Whatever the source, the hash is **filtered to the declared ambient subfields, along their declared paths** — only keys you declared survive, so ambient state never carries a process-wide dump of `Current` into logs or exception context. Ambient subfields are validated like any other input (a required one that resolves absent fails the call) but are deliberately excluded from `input_schema` (they're framework-supplied, never client input).
+
+::: tip Declare the dependency — don't reach into `Current` directly
+Prefer `expects :company, on: :ambient_context` over reading `Current.company` inside `call`. A declared ambient subfield is visible in the contract (a caller can see what ambient state the action needs), is validated and sensitive-filtered, and is trivially driven in tests by passing `ambient_context:` (or the [`with_ambient_context`](/recipes/testing#ambient-context) helper) — no `CurrentAttributes` setup. Reading `Current` directly hides all of that. The optional [`Axn/AmbientContextBypass`](/recipes/rubocop-integration#axn-ambientcontextbypass) RuboCop cop flags a direct `Current.<attr>` read inside an Axn and points at the `on: :ambient_context` fix.
+:::
+
+Ambient subfields **nest to any depth**, exactly like a non-ambient parent — the source can be a nested object and subfields reach into it:
+
+```ruby
+expects :request, on: :ambient_context, type: Hash
+expects :ip,      on: :request, type: String   # resolves ambient_context[:request][:ip]
+
+# equivalently, without the intermediate reader:
+expects "request.ip", on: :ambient_context, type: String, as: :ip
+```
+
+The filter reconstructs only the declared leaves along their paths, never a whole sub-hash — so an undeclared sibling at any depth (`request[:token]` when only `request[:ip]` is declared) never reaches the resolved value, logs, or exception context. `sensitive:` composes down the path (mark a nested leaf, or an ancestor, and the reconstructed nested value is filtered). Because ambient values are resolved per-invocation and never read from the inbound arguments, `default:`, `preprocess:`, and `coerce:` are **not** supported on any ambient subfield (nested or not) and raise at declaration — shape those values in your `ambient_context_provider` instead (a `before` hook is too late: inbound validation resolves ambient before hooks run). `sensitive:` is supported. A `shape:` block is **not** supported on an ambient subfield either — declare the nested structure as subfields (`expects :ip, on: :request`), which give the same validation plus readers and `sensitive:`; shape's other job, schema emission, is moot for ambient (excluded from `input_schema`).
 
 #### Resolving a subfield by calling a method (`method_call:`)
 
