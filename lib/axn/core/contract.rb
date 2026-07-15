@@ -345,7 +345,7 @@ module Axn
                    else
                      inspection_filter
                    end
-          sliced = _mask_unfilterable_shapes(data.slice(*_declared_fields(direction)), action_instance)
+          sliced = _mask_unfilterable_shapes(data.slice(*_declared_fields(direction)), _sensitive_shape_paths(action_instance), action_instance)
           filter.filter(sliced)
         end
 
@@ -359,10 +359,10 @@ module Axn
         # member-bearing position with the mask — over-redacting the whole value (its non-sensitive
         # siblings included) rather than risk leaking the secret. Applied to logs, exception context,
         # and `inspect`.
-        def _mask_unfilterable_shapes(data, action_instance)
+        def _mask_unfilterable_shapes(data, shape_paths, action_instance)
           return data unless data.is_a?(Hash)
 
-          _sensitive_shape_paths(action_instance).reduce(data) do |acc, (wire_path, shape)|
+          shape_paths.reduce(data) do |acc, (wire_path, shape)|
             _mask_value_at_path(acc, wire_path, shape, action_instance)
           end
         end
@@ -370,7 +370,7 @@ module Axn
         # Single-field entry — inspect renders one field at a time. Reuses the whole-hash pass on a
         # one-key hash so a subfield shape rooted under `field` is masked at its nested position too.
         def _mask_unfilterable_shape_value(field, value, action_instance)
-          _mask_unfilterable_shapes({ field => value }, action_instance)[field]
+          _mask_unfilterable_shapes({ field => value }, _sensitive_shape_paths(action_instance), action_instance)[field]
         end
 
         # `[(wire_path, shape)]` for every field/subfield whose shape carries a sensitive member. A
@@ -386,6 +386,22 @@ module Axn
             next unless wire_path
 
             [wire_path, shape]
+          end
+        end
+
+        # The ambient analog of `_sensitive_shape_paths`: `[(wire_path_within_ambient, shape)]` for
+        # every ambient subfield whose shape carries a sensitive member. Ambient shapes are leaf nodes
+        # (`_check_ambient_shape_placement!`), so their value is copied whole and may be a non-Hash the
+        # ParameterFilter can't descend into — this feeds `_mask_unfilterable_shapes` to mask it. The
+        # ambient tree's wire paths are rooted at the synthetic `:ambient_context` segment; drop it,
+        # since the mask applies to the ambient VALUE the reader returns, not a hash wrapped under an
+        # `:ambient_context` key.
+        def _sensitive_ambient_shape_paths(action_instance)
+          _ambient_subfield_tree.index.filter_map do |config, path|
+            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
+            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
+
+            [path.wire_path.drop(1), shape]
           end
         end
 
@@ -1184,7 +1200,8 @@ module Axn
           # ambient_context here rather than propagate.
           ambient = _safe_execution_context_slice do
             ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
-            ambient_filter.filter(ambient_context)
+            masked = self.class._mask_unfilterable_shapes(ambient_context, self.class._sensitive_ambient_shape_paths(self), self)
+            ambient_filter.filter(masked)
           end
           ctx[:ambient_context] = ambient if ambient.present?
           ctx

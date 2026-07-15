@@ -585,6 +585,48 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       inst._run
       expect(inst.execution_context[:ambient_context][:request][:company_id]).to eq("[FILTERED]")
     end
+
+    it "masks a sensitive shape member on an ambient subfield (Hash value) in execution_context" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :ip, type: String
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4", token: "secret" } })
+      inst._run
+      ambient = inst.execution_context[:ambient_context]
+      expect(ambient[:request][:token]).to eq("[FILTERED]")
+      expect(ambient[:request][:ip]).to eq("1.2.3.4") # non-sensitive sibling preserved
+    end
+
+    it "masks a non-Hash ambient shape value wholesale when a member is sensitive" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: "111-11-1111" })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request]).to eq("[FILTERED]")
+    end
+
+    it "preserves nil absent data rather than masking it for a sensitive ambient shape" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: nil })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request]).to be_nil
+    end
   end
 
   describe "retained guards still fire on a nested ambient subfield" do
