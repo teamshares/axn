@@ -395,15 +395,24 @@ module Axn
         # key form is masked (see `_present_key_variants`); an absent key is left alone. A non-Hash,
         # non-Array intermediate with path still remaining is an object-backed parent (a `method_call:`
         # subfield reads the sensitive shape off it) that ParameterFilter can't descend into — mask it
-        # wholesale rather than leak the sensitive member nested inside.
+        # wholesale rather than leak the sensitive member nested inside; a nil/scalar intermediate is
+        # preserved (nothing to reach or leak).
         def _mask_value_at_path(value, wire_path, shape, action_instance)
           return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
           return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
-          return SENSITIVE_FILTERED_MASK unless value.is_a?(Hash)
+          return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
 
           _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
             acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance))
           end
+        end
+
+        # A non-Hash/Array value in a member-bearing position: mask a structured object (opaque to the
+        # filter, could expose the member), preserve nil and primitive scalars (nothing to leak).
+        def _mask_opaque_or_preserve(value)
+          return value if value.nil? || SENSITIVE_SCALAR_TYPES.any? { |type| value.is_a?(type) }
+
+          SENSITIVE_FILTERED_MASK
         end
 
         # Every form of `key` present in `hash` — the key as-is, its string form, and its symbol form.
@@ -450,7 +459,7 @@ module Axn
         # masking of an unrelated non-Hash deeper down. The member key is matched in either symbol or
         # string form, since extraction accepts both.
         def _mask_shape_element(element, shape, action_instance)
-          return SENSITIVE_FILTERED_MASK unless element.is_a?(Hash)
+          return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
 
           (shape[:members] || []).each_with_object(element.dup) do |member, masked|
             nested = _member_shape(member)
@@ -625,6 +634,13 @@ module Axn
         # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
         # so wholesale-masked values read identically to per-key-filtered ones.
         SENSITIVE_FILTERED_MASK = "[FILTERED]"
+
+        # Primitive value types that carry no shape member and render harmlessly, so they are preserved
+        # (never wholesale-masked) even in a member-bearing position — there is nothing inside a scalar
+        # to leak, and masking valid absent/scalar data would make it look redacted. `nil` is handled
+        # alongside these. Anything else non-Hash/Array is a structured object whose `inspect` could
+        # expose the member, so it is masked.
+        SENSITIVE_SCALAR_TYPES = [String, Symbol, Numeric, TrueClass, FalseClass, Date, Time].freeze
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than

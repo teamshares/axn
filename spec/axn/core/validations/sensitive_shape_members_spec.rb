@@ -380,6 +380,34 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(inputs3[:order]).to eq({ "customer" => "[FILTERED]", customer: "[FILTERED]" })
     end
 
+    it "preserves a nil shaped value (valid absent data) rather than masking it" do
+      action = build_axn do
+        expects :payload, type: Hash, allow_nil: true do
+          field :ssn, sensitive: true
+        end
+
+        def call; end
+      end
+
+      instance = action.send(:new, payload: nil)
+      expect(instance.send(:inputs_for_logging)[:payload]).to be_nil
+      expect(instance.execution_context[:inputs][:payload]).to be_nil
+    end
+
+    it "preserves nil and scalar array elements while masking objects and filtering Hashes" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :ssn, sensitive: true
+          field :name
+        end
+
+        def call; end
+      end
+
+      instance = action.send(:new, items: [{ ssn: "1", name: "A" }, nil, "oops", person.new(name: "B", ssn: "2")])
+      expect(instance.send(:inputs_for_logging)[:items]).to eq([{ ssn: "[FILTERED]", name: "A" }, nil, "oops", "[FILTERED]"])
+    end
+
     it "does NOT redact an object-backed shape whose members are all non-sensitive" do
       klass = person
       action = build_axn do
