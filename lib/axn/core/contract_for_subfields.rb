@@ -51,21 +51,6 @@ module Axn
         value
       end
 
-      # Whether resolving this config's value crosses any method_call hop — the config itself, or any
-      # ancestor on its chain. A method-derived value is resolved on the READ path (resolve_value),
-      # never written back into provided_data, so the executor's write-back passes skip such configs and
-      # resolve_value applies coerce:/preprocess: to the resolved value instead. Single-sourced here so
-      # the skip and the read-path branch stay exact complements. An unindexed config (ambient) has no
-      # path, so only its own flag applies.
-      def self.resolution_crosses_method_call?(action, config)
-        return true if config.method_call
-
-        path = action.class._resolved_subfields.index[config]
-        return false if path.nil?
-
-        path.ancestors.any? { |node, _seg| node.configs.any?(&:method_call) }
-      end
-
       # The chain index of the deepest reader-bearing ancestor at-or-before the `on:` target — the
       # node resolve_parent public_sends; the hops AFTER it are the ones the runtime actually digs.
       # Shared with the unanswerable-segment declaration check (SubfieldContradictions) so the two
@@ -115,10 +100,10 @@ module Axn
         parent = resolve_parent(action, config)
         value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
                                                          permit_method_call: config.method_call)
-        # A method-derived value is never written back into provided_data, so the write-back coercion/
-        # preprocess passes skip it; apply them here, to the resolved value, in the top-level pass order
-        # (coerce → preprocess). Non-mutating: transforms the resolved value, never the caller's object.
-        value = _apply_read_path_transforms(action, config, value, parent) if resolution_crosses_method_call?(action, config)
+        # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
+        # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
+        # value stays untouched, so axn never mutates a caller-supplied object during resolution.
+        value = _apply_read_path_transforms(action, config, value, parent)
         value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         cache[config] = value
       end
@@ -250,14 +235,13 @@ module Axn
           # undeclared siblings are still dropped. The `default:`/`preprocess:`/`coerce:` carve-outs below
           # remain (they're about per-invocation resolution, orthogonal to nesting).
 
-          # An ambient subfield's value comes from the ambient provider / CurrentAttributes
-          # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
-          # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /
-          # #apply_inbound_preprocessing_for_subfields!), which the per-invocation resolution never reads,
-          # so both would silently fail to affect the resolved value. Gated on `_on_roots_at_ambient?` so
-          # a NESTED ambient subfield (whose `on:` names an ambient parent, not ambient itself) is covered
-          # too. `sensitive:` is filter-only and unaffected — it's relied on for ambient_context
-          # observability, so it must stay allowed (composed down the declared path, PRO-2909).
+          # An ambient subfield's value is framework-supplied per-invocation (from the ambient provider /
+          # CurrentAttributes), not caller input — so `default:`/`preprocess:`, which transform
+          # caller-supplied inbound arguments, have no place to apply, and defaulting/preprocessing a
+          # framework value is a category error. Gated on `_on_roots_at_ambient?` so a NESTED ambient
+          # subfield (whose `on:` names an ambient parent, not ambient itself) is covered too. `sensitive:`
+          # is filter-only and unaffected — it's relied on for ambient_context observability, so it must
+          # stay allowed (composed down the declared path, PRO-2909).
           if _on_roots_at_ambient?(on) && (!default.nil? || !preprocess.nil?)
             raise ArgumentError,
                   "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
