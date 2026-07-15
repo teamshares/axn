@@ -82,3 +82,13 @@ At the end of commit 2: one resolution path for subfields, top-level unchanged, 
 ## Follow-up (separate ticket) — PRO-2908
 
 Migrate **top-level** fields off write-back too (the full "stop mutating caller-supplied objects" endgame). Larger: reroutes the context facade — the library's most fundamental input read — plus every remaining raw-`provided_data` consumer. Out of scope here.
+
+## As shipped (scope expanded from the original plan)
+
+Executing commit 2 surfaced coupling the initial de-risk under-counted (a tripwire in the plan caught it: 29 failures, not ~5). With the user's decision to own the full change in this PR, the shipped scope is:
+
+- **Full read-path move for all subfields** (not gated) + write-back passes made top-level-only, as planned.
+- **Read-path early-completion handling**: `validate_contract!(:inbound)` is wrapped so a `done!` inside a subfield `preprocess:`/`default:` (which now runs during validation-time resolution) still settles the call. Also closes the commit-1 `method_call` edge.
+- **PRO-2872 parent-synthesis reversal (bugfix)**: a subfield default no longer synthesizes an absent/blank parent, so it no longer satisfies the parent's OWN presence/blank validation. The schema derivation was updated to match — `field_optional?` drops the subtree-default parent-omittability credit, and `required_child?`'s shape-member hazard now keys on the parent's OWN applied default (which still materializes at runtime) rather than a subfield default. The sibling-`<field>_id` model rescue is preserved (resolves on the read path). One new documented reflection divergence: a `Proc` object-default on a nil-tolerant parent with a required shape member (strict schema ignores Procs → reflects omittable, runtime fills `{}` and enforces the member).
+- **Spec migrations**: ~27 examples across `schema_spec`, `on_subfields_spec`, `reader_alias_spec`, `subfield_write_back_matrix_spec` re-pinned to the new behavior (parent unchanged; child resolves value-level via a reader — a dotted subfield needs `as:` to be readable).
+- **Dead-code removal**: the whole write-back materialization apparatus plus `Internal::SubfieldPath` (its last caller, `_cow_write`, is gone).
