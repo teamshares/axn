@@ -325,6 +325,51 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(result.exception).to be_a(Axn::InboundValidationError)
       expect(result.exception.message).to match(/conflicts with company_id=9/)
     end
+
+    # The gate can also live NESTED inside the model: hash (a per-validator gate, the other blessed
+    # tier) rather than at the declaration level. AM skips the ModelValidator when that nested gate is
+    # closed, so the outside-AM model-consistency pass must skip too (Codex round 11).
+    it "skips the mismatch when the model:'s OWN nested gate is CLOSED, keeps it when OPEN" do
+      klass = co_class
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :company, model: { klass:, finder: :find, if: :flag }
+        def call; end
+      end
+
+      expect(action.call(flag: false, company: klass.new(5), company_id: 9)).to be_ok
+
+      opened = action.call(flag: true, company: klass.new(5), company_id: 9)
+      expect(opened).not_to be_ok
+      expect(opened.exception).to be_a(Axn::InboundValidationError)
+      expect(opened.exception.message).to match(/conflicts with company_id=9/)
+    end
+
+    # BOTH tiers present on one model field: a declaration-level shared gate AND a nested gate on the
+    # model: hash. AM's real precedence decides which runs — don't hardcode a winner. Instead pin that
+    # our outside-AM skip AGREES with whether the MODEL validator actually ran, observed on the SAME
+    # declaration. The signal isolates the ModelValidator (not the auto-injected presence, which the
+    # consistency check is orthogonal to): a PRESENT-but-invalid value (`company: Object.new`) passes
+    # presence and fails IFF the ModelValidator runs ("is not a Co"). Our record/id conflict must then
+    # raise IFF that same ModelValidator ran.
+    it "agrees with AM's real tier precedence when BOTH a shared and a nested gate are present" do
+      klass = co_class
+      # Distinct flags so the two tiers can disagree; AM's merge (nested key overrides shared key)
+      # then decides, and both the ModelValidator run and our mismatch skip must follow the SAME call.
+      [[false, false], [false, true], [true, false], [true, true]].each do |shared_on, nested_on|
+        action = build_axn do
+          expects :shared_flag, :nested_flag, type: :boolean
+          expects :company, model: { klass:, finder: :find, if: :nested_flag }, if: :shared_flag
+          def call; end
+        end
+
+        model_ran = !action.call(shared_flag: shared_on, nested_flag: nested_on, company: Object.new).ok?
+
+        conflict = action.call(shared_flag: shared_on, nested_flag: nested_on, company: klass.new(5), company_id: 9)
+        expect(conflict.ok?).to eq(!model_ran),
+                                "shared=#{shared_on} nested=#{nested_on}: model_ran=#{model_ran} but conflict.ok?=#{conflict.ok?}"
+      end
+    end
   end
 
   describe "closed gate also waives ShapeValidator's unreadable-member pre-check" do
@@ -381,6 +426,54 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       # A Hash element IS extractable (dig by key), so the read happens and AM itself skips the
       # gated `note` validators — no unreadable-member pre-check involved.
       expect(action.call(flag: false, items: [{ other: 1 }])).to be_ok
+    end
+
+    # Codex's exact shape: the gate is NESTED on a single validator entry (`presence: { if: :flag }`),
+    # not at the member's declaration level. AM merges/evaluates it per validator, so the unreadable
+    # pre-check must honor it too (Codex round 11).
+    it "suppresses the could-not-be-read error when the member's only entry carries a CLOSED nested gate" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, presence: { if: :flag }
+        end
+        def call; end
+      end
+
+      expect(action.call(flag: false, items: [42])).to be_ok
+    end
+
+    it "fires the could-not-be-read error when the member's only entry carries an OPEN nested gate" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, presence: { if: :flag }
+        end
+        def call; end
+      end
+
+      result = action.call(flag: true, items: [42])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 0: note could not be read \(got Integer\)/)
+    end
+
+    # A member with one GATED entry and one UNGATED entry on a non-extractable element: the ungated
+    # entry always runs, so the read matters regardless of the gated entry's state — the error fires
+    # whether or not the gated entry's condition is open (any single open entry keeps the error).
+    it "fires the could-not-be-read error when a member has an ungated entry alongside a gated one" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, type: String, presence: { if: :flag }
+        end
+        def call; end
+      end
+
+      [true, false].each do |flag|
+        result = action.call(flag:, items: [42])
+        expect(result).not_to be_ok, "flag=#{flag}: expected the ungated type: entry to keep the error"
+        expect(result.exception.message).to match(/element at index 0: note could not be read/)
+      end
     end
   end
 
@@ -486,11 +579,16 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
 
   # Drift-proof matrix: for the full condition-value matrix, axn's gate decision must AGREE with
   # ActiveModel's own. Both sides are derived from ONE built action — the runtime side by calling it
-  # with the gated field ABSENT (an open gate makes `presence: true` fire; a closed gate lets it
-  # through), the axn side by asking Fields.declaration_gate_open? on that action's canonicalized
-  # validations. No hardcoded expectations that could themselves drift: the assertion is purely that
-  # the two AM-derived decisions match, including which values RAISE (String/2-arity/arbitrary #call
-  # object) — pinning that axn delegates gating to ActiveModel rather than mirroring it.
+  # with the gated field ABSENT (an open gate makes `presence` fire; a closed gate lets it through),
+  # the axn side by asking the gate oracle on that action's canonicalized validations. No hardcoded
+  # expectations that could themselves drift: the assertion is purely that the two AM-derived
+  # decisions match, including which values RAISE (String/2-arity/arbitrary #call object) — pinning
+  # that axn delegates gating to ActiveModel rather than mirroring it.
+  #
+  # BOTH gate placements are swept: the declaration-level SHARED gate (`presence: true, if: value`,
+  # decided by declaration_gate_open?) AND the per-validator NESTED gate (`presence: { if: value }`,
+  # decided by validator_gate_open? on that entry). AM evaluates the nested placement through the
+  # same callback machinery, so axn agrees identically for both (Codex round 11).
   describe "axn's gate decision agrees with ActiveModel itself (drift-proof matrix)" do
     condition_matrix = {
       "nil" => nil,
@@ -530,29 +628,43 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       [:raised, e.class]
     end
 
-    # axn's decision from the SAME action's canonicalized validations, via the gate oracle.
-    def axn_decision(action)
+    # axn's decision from the SAME action's canonicalized validations, via the gate oracle. For a
+    # nested placement the gate lives inside the `presence:` entry hash, so the oracle is asked about
+    # that specific validator entry; for a shared placement there is no nested entry (entry_options
+    # nil), which is the declaration_gate_open? special case.
+    def axn_decision(action, placement)
       validations = action.internal_field_configs.find { |c| c.field == :probe_field }.validations
       stub = Object.new
       # Symbol :cond resolves against the action, mirrored here
       def stub.cond = true
-      open = Axn::Validation::Fields.declaration_gate_open?(validations:, action: stub)
+      open =
+        if placement == :nested
+          Axn::Validation::Fields.validator_gate_open?(validations:, entry_options: validations[:presence], action: stub)
+        else
+          Axn::Validation::Fields.declaration_gate_open?(validations:, action: stub)
+        end
       open ? :open : :closed
     rescue Exception => e # rubocop:disable Lint/RescueException
       [:raised, e.class]
     end
 
     %i[if unless].each do |gate|
-      context "gate: #{gate}" do
-        condition_matrix.each do |label, value|
-          it "matches ActiveModel for #{label}" do
-            action = build_axn do
-              expects(:probe_field, presence: true, **{ gate => value })
-              def cond = true
-              def call; end
-            end
+      %i[shared nested].each do |placement|
+        context "gate: #{gate} (#{placement} placement)" do
+          condition_matrix.each do |label, value|
+            it "matches ActiveModel for #{label}" do
+              action = build_axn do
+                if placement == :nested
+                  expects(:probe_field, presence: { gate => value })
+                else
+                  expects(:probe_field, presence: true, **{ gate => value })
+                end
+                def cond = true
+                def call; end
+              end
 
-            expect(runtime_decision(action)).to eq(axn_decision(action))
+              expect(runtime_decision(action)).to eq(axn_decision(action, placement))
+            end
           end
         end
       end

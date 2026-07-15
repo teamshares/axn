@@ -87,31 +87,40 @@ module Axn
         validator.errors
       end
 
-      # Whether a declaration-level if:/unless: gate is OPEN for this call — i.e. whether
-      # ActiveModel would run the declaration's validators this pass. Decided by ActiveModel
-      # ITSELF, never by a hand-rolled mirror of its condition resolution: we build a probe
-      # validator (subclassing this class, so it inherits the exact method_missing delegation to the
-      # action the real validators use) carrying a single custom validator gated by the config's own
-      # if:/unless: options, run `valid?`, and report whether that validator fired. AM applies the
-      # shared if:/unless: options through the identical ActiveSupport callback machinery for the
-      # probe and for the real validators, so the arity/String/callable resolution rules are AM's,
-      # not ours — the gate decision cannot drift from what the real validators experience. This is
-      # THE single gate oracle for the two axn-side checks that live OUTSIDE ActiveModel and must
-      # waive themselves when a closed gate has already waived the real validators: the executor's
-      # model-consistency pass and ShapeValidator's unreadable-member pre-check.
+      # Whether the gate for ONE validator ENTRY is OPEN for this call — i.e. whether ActiveModel
+      # would run that entry's validator this pass. Two gate tiers apply, and AM merges them inside
+      # `validates`: the declaration-level SHARED if:/unless: (`validations`'s own gate keys) and the
+      # ENTRY's OWN nested if:/unless: (the `if:` inside e.g. a `model: { ..., if: }` or
+      # `presence: { if: }` hash). Decided by ActiveModel ITSELF, never by a hand-rolled mirror of its
+      # merge/evaluation: we build a probe validator (subclassing this class, so it inherits the exact
+      # method_missing delegation to the action the real validators use) carrying a single custom
+      # validator whose NESTED options are the entry's own gates and whose SHARED options are the
+      # declaration-level gates — the identical `validates :attr, <gated validator>, **shared` shape
+      # the real declaration takes. AM applies its real `defaults.merge(per_validator_options)`
+      # precedence (measured against activemodel 7.2.2.2: the entry's OWN if:/unless: OVERRIDES the
+      # shared one PER KEY; distinct keys AND together) and the identical ActiveSupport callback
+      # machinery for the probe and the real validators, so the arity/String/callable resolution AND
+      # the tier precedence are AM's, not ours — the gate decision cannot drift. This is THE single
+      # gate oracle for the two axn-side checks that live OUTSIDE ActiveModel and must waive themselves
+      # exactly when AM would waive the real validator: the executor's model-consistency pass and
+      # ShapeValidator's unreadable-member pre-check.
       #
-      # An ungated declaration (no if:/unless: key) short-circuits to true and builds nothing —
-      # blank gates are canonicalized away at declaration, so a present key is always a real gate
-      # (and even were a blank value to reach here, AM's own check_conditionals treats it as no
-      # gate, opening it). A condition that raises propagates exactly as it would during the real
-      # valid?. The receiver context (@action/@reader/@config/@permit_method_call) is threaded onto
-      # the probe so a Symbol/Proc condition resolves against the same `self` and action delegation
-      # the real validators see.
-      def self.declaration_gate_open?(validations:, action: nil, source: nil, reader: nil, config: nil, permit_method_call: false)
+      # Zero-cost short-circuit: no gate key on EITHER tier → true, building nothing. Declaration-level
+      # blank gates are canonicalized away at declaration, so a present shared key is always a real
+      # gate. A blank NESTED gate needs no special handling — it is passed to the probe verbatim and
+      # AM's own check_conditionals treats it as no gate (and, per the measured merge, a blank nested
+      # same-key value still overrides/drops the shared gate before being ignored) — the probe reflects
+      # that automatically. A non-Hash entry value (`presence: true`) carries no nested gates. A
+      # condition that raises propagates exactly as during the real valid?. The receiver context
+      # (@action/@reader/@config/@permit_method_call) is threaded onto the probe so a Symbol/Proc
+      # condition resolves against the same `self` and action delegation the real validators see.
+      def self.validator_gate_open?(validations:, entry_options:, action: nil, source: nil, reader: nil, config: nil, permit_method_call: false)
         gate_keys = Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-        return true unless gate_keys.any? { |key| validations.key?(key) }
+        shared_gates = validations.slice(*gate_keys)
+        nested_gates = entry_options.is_a?(Hash) ? entry_options.slice(*gate_keys) : {}
+        return true if shared_gates.empty? && nested_gates.empty?
 
-        probe = gate_probe_class_for(validations.slice(*gate_keys)).new(source)
+        probe = gate_probe_class_for(shared: shared_gates, nested: nested_gates).new(source)
         probe.instance_variable_set(:@action, action)
         probe.instance_variable_set(:@validations, validations)
         probe.instance_variable_set(:@reader, reader)
@@ -121,31 +130,48 @@ module Axn
         probe.gate_open?
       end
 
-      # The probe validator class for a set of gate options (`{ if:, unless: }`), memoized by gate
-      # content: a subclass whose sole custom validator flips a flag iff ActiveModel decides the
-      # if:/unless: gate is open. Reusing the gate options verbatim on a real `validate` call is what
-      # makes AM the evaluator. Keyed by content, which is stable across calls (Symbols compare by
-      # value; the Procs off a frozen FieldConfig hash are the same object each call) — benign
-      # duplicate builds under concurrency are harmless (the classes are behaviorally identical).
-      # Building raises for a gate AM rejects (e.g. a non-blank String condition) exactly as the real
-      # validator build does — loud, matching runtime.
-      def self.gate_probe_class_for(gates)
-        (@gate_probe_classes ||= {})[gates] ||= build_gate_probe_class(gates)
+      # Whether the DECLARATION-level shared gate alone is OPEN — the special case of
+      # validator_gate_open? with no per-validator entry in view (nested gates empty). Asks "would ANY
+      # validator on this declaration run this pass", the right question when there is no single entry
+      # to isolate (e.g. the drift-proof matrix spec, which pins the shared-tier decision directly).
+      def self.declaration_gate_open?(validations:, action: nil, source: nil, reader: nil, config: nil, permit_method_call: false)
+        validator_gate_open?(validations:, entry_options: nil, action:, source:, reader:, config:, permit_method_call:)
+      end
+
+      # The custom validator the gate probe declares: it flips the flag and reads NO attribute (so it
+      # never resolves a model, trips the method_call gate, or touches the source), isolating the pure
+      # gate decision. A plain ActiveModel::Validator (NOT an EachValidator) so AM invokes `validate`
+      # once per record with no per-attribute read. Reachable from the probe subclass via const_get
+      # ancestor lookup, exactly like Base's other one-off validator constants.
+      class GateFlipValidator < ActiveModel::Validator
+        def validate(record) = record.__axn_flip_gate!
+      end
+
+      # The probe validator class for a (shared, nested) gate pair, memoized by gate content: a
+      # subclass whose sole custom validator (GateFlipValidator) flips a flag iff ActiveModel decides
+      # the merged gate is open. Declaring `validates :attr, gate_flip: nested, **shared` is what makes
+      # AM the evaluator — it runs its own `defaults.merge(per_validator_options)` tier precedence and
+      # the ActiveSupport callback conditionals. Keyed by content, which is stable across calls
+      # (Symbols compare by value; the Procs off a frozen FieldConfig hash are the same object each
+      # call) — benign duplicate builds under concurrency are harmless (the classes are behaviorally
+      # identical). Building raises for a gate AM rejects (e.g. a non-blank String condition) exactly
+      # as the real validator build does — loud, matching runtime.
+      def self.gate_probe_class_for(shared:, nested:)
+        (@gate_probe_classes ||= {})[[shared, nested]] ||= build_gate_probe_class(shared:, nested:)
       end
       private_class_method :gate_probe_class_for
 
-      def self.build_gate_probe_class(gates)
+      def self.build_gate_probe_class(shared:, nested:)
         Class.new(self) do
           def self.name = "Axn::Validation::Fields::GateProbe"
 
           def gate_open? = instance_variable_defined?(:@__axn_gate_open)
           def __axn_flip_gate! = @__axn_gate_open = true
 
-          # The probe's ONLY validator flips the flag; it reads no attribute (so it never resolves a
-          # model, trips the method_call gate, or touches the source), isolating the pure gate
-          # decision. AM evaluates the shared if:/unless: options against this validator before
-          # invoking it — the flag flips iff the gate is open.
-          validate :__axn_flip_gate!, **gates
+          # AM merges the shared (declaration-level) options into the nested (per-validator) options
+          # for the callback conditions, so the flag flips iff the merged gate is open. GateFlipValidator
+          # reads no attribute — the flip is the pure gate decision, isolated from any source read.
+          validates :__axn_gate_probe, gate_flip: nested, **shared
         end
       end
       private_class_method :build_gate_probe_class
