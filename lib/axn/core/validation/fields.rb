@@ -87,6 +87,46 @@ module Axn
         validator.errors
       end
 
+      # Whether a declaration-level if:/unless: gate is OPEN for this validator — i.e. whether
+      # ActiveModel would run the declaration's validators this pass. THE single mirror of AM's
+      # shared-option gating, for the two axn-side checks that live OUTSIDE ActiveModel and must
+      # waive themselves when a closed gate has already waived the real validators: the executor's
+      # model-consistency pass and ShapeValidator's unreadable-member pre-check. An ungated
+      # declaration (no if:/unless: key) short-circuits to true and evaluates nothing — blank gates
+      # are canonicalized away at declaration, so a present key is always a real gate. Combination
+      # tracks AM/ActiveSupport callback conditionals: open iff every if: rule resolves truthy AND no
+      # unless: rule does. A condition that raises propagates exactly as it would during valid?.
+      def self.declaration_gate_open?(validator)
+        validations = validator.instance_variable_get(:@validations) || {}
+        return true unless Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| validations.key?(key) }
+
+        Array(validations[:if]).all? { |rule| resolve_gate_condition(rule, validator) } &&
+          Array(validations[:unless]).none? { |rule| resolve_gate_condition(rule, validator) }
+      end
+
+      # Resolve one if:/unless: rule against the validator, tracking ActiveModel::Validations'
+      # condition resolution (ActiveSupport::Callbacks::CallTemplate.build): a Symbol names a method
+      # on the receiver; a Proc is instance_exec'd against it (an arity-1/-2 Proc also receives the
+      # receiver as the AR "record" argument, an arity-2 Proc a nil block slot too). The receiver is
+      # the one-off validator, so `self` and its method_missing delegation to the action match what
+      # AM sees when it runs the validators — a Symbol condition and a bare method call inside a Proc
+      # resolve against the action identically to a real validator's own arguments.
+      def self.resolve_gate_condition(rule, receiver)
+        case rule
+        when Symbol
+          receiver.send(rule)
+        when Proc
+          case rule.arity
+          when 1, -2 then receiver.instance_exec(receiver, &rule)
+          when 2 then receiver.instance_exec(receiver, nil, &rule)
+          else receiver.instance_exec(&rule)
+          end
+        else
+          rule.call(receiver)
+        end
+      end
+      private_class_method :resolve_gate_condition
+
       private
 
       def _action_for_validation = @action

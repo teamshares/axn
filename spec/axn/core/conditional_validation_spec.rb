@@ -252,6 +252,180 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     end
   end
 
+  # A closed declaration-level gate means the declaration is WHOLLY unvalidated. Two axn-side checks
+  # live OUTSIDE ActiveModel and must honor the gate too (Codex round 4): the executor's model
+  # record/id consistency pass, and ShapeValidator's unreadable-member pre-check. Both route through
+  # the one shared mirror of AM's condition resolution (Fields.declaration_gate_open?).
+  describe "closed gate also waives the model-consistency check (outside ActiveModel)" do
+    # Plain PORO with a pk finder, so this runs outside Rails (mirrors model_id_reader_spec).
+    let(:co_class) do
+      Class.new do
+        def self.name = "Co"
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+      end
+    end
+
+    it "skips the record/id mismatch when a Symbol gate is CLOSED, but keeps it when OPEN" do
+      klass = co_class
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :company, model: { klass:, finder: :find }, if: :flag
+        def call; end
+      end
+
+      # gate CLOSED: the whole company declaration is waived, so the record/id conflict is not a
+      # mismatch (the model validator itself is gated off too) — the call succeeds.
+      expect(action.call(flag: false, company: klass.new(5), company_id: 9)).to be_ok
+
+      # gate OPEN: the mismatch is preserved — same conflict now pages.
+      opened = action.call(flag: true, company: klass.new(5), company_id: 9)
+      expect(opened).not_to be_ok
+      expect(opened.exception).to be_a(Axn::InboundValidationError)
+      expect(opened.exception.message).to match(/conflicts with company_id=9/)
+    end
+
+    it "skips the record/id mismatch when a Proc gate is CLOSED" do
+      klass = co_class
+      action = build_axn do
+        expects :company, model: { klass:, finder: :find }, if: -> { false }
+        def call; end
+      end
+
+      expect(action.call(company: klass.new(5), company_id: 9)).to be_ok
+    end
+
+    it "honors a CLOSED gate on a subfield model config (mismatch under a gated subfield is waived)" do
+      klass = co_class
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload
+        expects :company, on: :payload, model: { klass:, finder: :find }, if: :flag
+        def call; end
+      end
+
+      expect(action.call(flag: false, payload: { company: klass.new(5), company_id: 9 })).to be_ok
+
+      opened = action.call(flag: true, payload: { company: klass.new(5), company_id: 9 })
+      expect(opened).not_to be_ok
+      expect(opened.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "still raises the mismatch for an UNGATED model config (pins zero regression)" do
+      klass = co_class
+      action = build_axn do
+        expects :company, model: { klass:, finder: :find }
+        def call; end
+      end
+
+      result = action.call(company: klass.new(5), company_id: 9)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to match(/conflicts with company_id=9/)
+    end
+  end
+
+  describe "closed gate also waives ShapeValidator's unreadable-member pre-check" do
+    # An Array container validates every element regardless of type, so a scalar element is a
+    # non-Hash shaped value lacking the declared member reader — the case the pre-check guards.
+    it "suppresses the could-not-be-read error when the member's gate is CLOSED" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, type: String, if: :flag
+        end
+        def call; end
+      end
+
+      expect(action.call(flag: false, items: [42])).to be_ok
+    end
+
+    it "fires the could-not-be-read error when the member's gate is OPEN" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, type: String, if: :flag
+        end
+        def call; end
+      end
+
+      result = action.call(flag: true, items: [42])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 0: note could not be read \(got Integer\)/)
+    end
+
+    it "fires the could-not-be-read error for an UNGATED member (pins zero regression)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :note, type: String
+        end
+        def call; end
+      end
+
+      result = action.call(items: [42])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/element at index 0: note could not be read/)
+    end
+
+    it "was already fine for an extractable (Hash) source with a closed gate (AM skips the gated validator)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        expects :items, type: Array do
+          field :note, type: String, if: :flag
+        end
+        def call; end
+      end
+
+      # A Hash element IS extractable (dig by key), so the read happens and AM itself skips the
+      # gated `note` validators — no unreadable-member pre-check involved.
+      expect(action.call(flag: false, items: [{ other: 1 }])).to be_ok
+    end
+  end
+
+  describe "shared gate-evaluation helper (mirror of AM's condition resolution)" do
+    it "resolves a Symbol gate through the action (exercised by both outside-AM checks)" do
+      klass = Class.new do
+        def self.name = "Co"
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+      end
+      action = build_axn do
+        expects :company, model: { klass:, finder: :find }, if: :gate_open?
+        def gate_open? = false
+        def call; end
+      end
+
+      # :gate_open? resolves against the action (via method_missing on the one-off validator) → the
+      # model-consistency check is waived even with a conflicting record/id.
+      expect(action.call(company: klass.new(5), company_id: 9)).to be_ok
+    end
+
+    it "propagates a raising gate condition as the call's exception (matches raising inside AM validation)" do
+      # A gate that raises surfaces as result.exception of the raised class — the same behavior as a
+      # condition that raises during a normal valid? pass (verified: an AM-path raise surfaces
+      # identically). Here the non-extractable shape-member path routes exclusively through the
+      # shared helper (AM never runs, the element isn't extractable), so this pins the helper itself.
+      boom = Class.new(StandardError)
+      action = build_axn do
+        # `boom` is closed over by the Proc (instance_exec preserves the closure — same mechanism as
+        # the evaluation-count example above), so no action method or constant lookup is needed.
+        expects :items, type: Array do
+          field :note, type: String, if: -> { raise boom, "gate boom" }
+        end
+        def call; end
+      end
+
+      result = action.call(items: [42])
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(boom)
+      expect(result.exception.message).to eq("gate boom")
+    end
+  end
+
   describe "blank gate values (nil/empty if:/unless: canonicalize away — a blank gate is no gate)" do
     it "rejects a nil-tolerant parent whose required subfield carries `if: nil`, exactly as if if: were absent" do
       expect do

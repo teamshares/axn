@@ -646,6 +646,7 @@ module Axn
 
       @action_class.send(:internal_field_configs).each do |config|
         next unless _id_based_model?(config)
+        next if _declaration_gate_closed?(config) { @action.internal_context }
 
         msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field, permit_method_call: config.method_call)
         mismatches << msg if msg
@@ -654,12 +655,36 @@ module Axn
       @action_class.send(:subfield_configs).each do |config|
         next unless _id_based_model?(config)
         next if (path = _resolved_path_for(config)) && _suppressed_by_failed_ancestor?(path, failed_nodes)
+        next if _declaration_gate_closed?(config) { _resolved_parent_value(config) }
 
         msg = _model_record_id_mismatch(source: _resolved_parent_value(config), field: config.field, permit_method_call: config.method_call)
         mismatches << msg if msg
       end
 
       mismatches
+    end
+
+    # A config whose declaration-level if:/unless: gate is CLOSED for this call: ActiveModel has
+    # already waived its validators, so the model-consistency check (which lives outside AM) must
+    # waive too — otherwise a gated-off model field would still raise on a record/id conflict, the
+    # one check that survives a closed gate. Key-presence first, and the `source` is yielded lazily,
+    # so an ungated config constructs nothing and resolves nothing — zero cost off the gated path.
+    def _declaration_gate_closed?(config)
+      return false unless Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
+
+      !Axn::Validation::Fields.declaration_gate_open?(_gate_validator_for(config, yield))
+    end
+
+    # The one-off validator collect_errors would build for this config, receiver-shaped for gate
+    # evaluation only (no valid? run): the action threaded, plus the subfield reader/config, so a
+    # Symbol/Proc gate resolves against the same `self` the real validators see.
+    def _gate_validator_for(config, source)
+      validator = Axn::Validation::Fields.validator_class_for(field: config.field, validations: config.validations).new(source)
+      validator.instance_variable_set(:@action, @action)
+      validator.instance_variable_set(:@validations, config.validations)
+      validator.instance_variable_set(:@reader, config.subfield? ? config.reader_as : nil)
+      validator.instance_variable_set(:@config, config.subfield? ? config : nil)
+      validator
     end
 
     def _id_based_model?(config)

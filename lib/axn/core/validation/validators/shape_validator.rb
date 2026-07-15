@@ -42,24 +42,47 @@ module Axn
       private
 
       def validate_members(record, attribute, source, prefix:)
+        # `record` is the parent field's one-off validator, which carries the action (threaded by
+        # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
+        # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
+        # condition is action-scoped, never element-scoped). Orthogonal to the dispatch gate:
+        # permission stays the member's own method_call: opt-in, never inferred from the action.
+        action = record.send(:_action_for_validation)
+
         members.each do |member|
           unless extractable?(source, member.field)
+            # A closed declaration-level gate waives the member entirely — every validator, and so
+            # this pre-check too. For an extractable source AM skips the gated validators itself
+            # (below); a non-extractable source never reaches AM, so mirror that waiver here.
+            next if member_gate_closed?(member, source, action)
+
             record.errors.add(attribute, "#{prefix}#{member.field} could not be read (got #{source.class})")
             next
           end
 
-          # `record` is the parent field's one-off validator, which carries the action (threaded by
-          # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
-          # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
-          # condition is action-scoped, never element-scoped). Orthogonal to the dispatch gate:
-          # permission stays the member's own method_call: opt-in, never inferred from the action.
           errors = Axn::Validation::Fields.errors_for(
             member_validator_classes[member.field],
             source:, validations: member.validations,
-            action: record.send(:_action_for_validation), permit_method_call: member_method_call?(member)
+            action:, permit_method_call: member_method_call?(member)
           )
           errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
         end
+      end
+
+      # Whether a non-extractable member's declaration-level if:/unless: gate is CLOSED — in which
+      # case the unreadable-member error is suppressed, mirroring how AM skips a gated validator on
+      # an extractable source. Key-presence first so an ungated member constructs nothing and stays
+      # byte-identical. The receiver is the member's own one-off validator (built once, reused) with
+      # the action threaded — the same `self` its real validation would use — via the shared mirror
+      # of AM's condition resolution.
+      def member_gate_closed?(member, source, action)
+        return false unless Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| member.validations.key?(key) }
+
+        validator = member_validator_classes[member.field].new(source)
+        validator.instance_variable_set(:@action, action)
+        validator.instance_variable_set(:@validations, member.validations)
+        validator.instance_variable_set(:@permit_method_call, member_method_call?(member))
+        !Axn::Validation::Fields.declaration_gate_open?(validator)
       end
 
       def members = options[:members] || []
