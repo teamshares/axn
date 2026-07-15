@@ -508,14 +508,14 @@ RSpec.describe Axn do
         end
       end
 
-      context "readers: false (removed)" do
-        it "raises at declaration pointing at the as:/prefix: rename escape hatch" do
+      context "readers: (removed kwarg)" do
+        it "raises the generic unknown-key error (the kwarg is gone, not tombstoned)" do
           expect do
             build_axn do
               expects :payload
               expects :bar, on: :payload, readers: false
             end
-          end.to raise_error(ArgumentError, /`readers: false` has been removed.*as:.*prefix:/)
+          end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
         end
 
         # Every subfield generates a reader now, so the duplicate-sub-keys collision check fires

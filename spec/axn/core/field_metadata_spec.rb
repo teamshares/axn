@@ -194,22 +194,22 @@ RSpec.describe "Field metadata" do
     end
   end
 
-  describe "readers: option (removed)" do
-    it "raises ArgumentError pointing at as:/prefix: when readers: false is used" do
+  describe "readers: option (removed kwarg)" do
+    it "raises the generic unknown-key error when readers: false is used" do
       expect do
         build_axn do
           expects :parent, type: Hash
           expects :child, on: :parent, readers: false
         end
-      end.to raise_error(ArgumentError, /`readers: false` has been removed.*as:.*prefix:/)
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
     end
 
-    it "allows readers: true (no-op but valid)" do
+    it "raises the generic unknown-key error for readers: true too (the kwarg is gone entirely)" do
       expect do
         build_axn do
           expects :value, readers: true
         end
-      end.not_to raise_error
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
     end
   end
 

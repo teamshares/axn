@@ -867,7 +867,7 @@ RSpec.describe Axn do
         build_axn do
           success Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(handler: "Success"), prefix: "user"
         end
-      end.to raise_error(ArgumentError, /prefix: is no longer supported/)
+      end.to raise_error(ArgumentError, %r{Unknown :prefix option for error/success message})
     end
   end
 
