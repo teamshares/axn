@@ -209,6 +209,11 @@ module Axn
 
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
+          # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
+          # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
+          # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
+          _reject_outbound_shape_user_facing!(validations[:shape])
+
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
@@ -422,6 +427,27 @@ module Axn
 
           shape = member.validations[:shape]
           shape.is_a?(Hash) ? shape : nil
+        end
+
+        # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
+        # catches it in `_build_shape_member` on key presence; a raw `shape:` kwarg supplies pre-built
+        # member objects that bypass that path, so walk the resolved members (and nested shapes) here.
+        # Truthy-based (not key-presence): a pre-built member exposes only its resolved `#user_facing`
+        # value, whose `false` default is indistinguishable from unset — only a truthy value is a real
+        # opt-in (the block form, seeing the literal opts, still rejects an explicit `user_facing: false`).
+        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in.
+        def _reject_outbound_shape_user_facing!(shape)
+          return unless shape.is_a?(Hash)
+
+          (shape[:members] || []).each do |member|
+            if member.respond_to?(:user_facing) && member.user_facing
+              field = member.respond_to?(:field) ? member.field : member.inspect
+              raise ArgumentError,
+                    "shape member `#{field}` does not support user_facing: on exposes — an outbound failure is a " \
+                    "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+            end
+            _reject_outbound_shape_user_facing!(_member_shape(member))
+          end
         end
 
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches

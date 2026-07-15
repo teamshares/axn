@@ -351,6 +351,25 @@ RSpec.describe "expects ..., user_facing:" do
         end
       end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
     end
+
+    it "rejects a user_facing: member supplied via a raw shape: kwarg on exposes (bypasses the block path)" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } }, user_facing: "surfaced")
+      expect do
+        build_axn do
+          exposes :items, type: Array, shape: { members: [member], container: Array }
+        end
+      end.to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+    end
+
+    it "rejects a user_facing: member nested inside a raw exposes shape (any depth)" do
+      leaf = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }, user_facing: "surfaced")
+      line = Axn::Core::Contract::ShapeConfig.new(field: :line, validations: { type: { klass: Hash }, shape: { members: [leaf], container: Hash } })
+      expect do
+        build_axn do
+          exposes :order, type: Hash, shape: { members: [line], container: Hash }
+        end
+      end.to raise_error(ArgumentError, /`sku` does not support user_facing: on exposes/)
+    end
   end
 
   describe "mixed failure: dev-facing dominates" do
