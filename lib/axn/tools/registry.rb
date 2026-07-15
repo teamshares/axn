@@ -37,11 +37,25 @@ module Axn
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
-      # No-op placeholder: correct whenever every class is already loaded (production
-      # eager_load, or a test that defines classes inline). Per-environment eager-loading
-      # under tool_paths is filled in separately.
+      # Under Rails with eager_load off, hands each existing tool dir to the main Zeitwerk
+      # loader; outside Rails, requires every .rb under each existing tool dir. Best-effort:
+      # any failure is logged at debug and swallowed so it never raises into tools_for.
       def ensure_loaded!
-        nil
+        dirs = _tool_dirs.select { |dir| File.directory?(dir) }
+        return if dirs.empty?
+
+        if _rails_app?
+          return if Rails.application.config.eager_load
+
+          loader = Rails.autoloaders.main
+          dirs.each { |dir| loader.eager_load_dir(dir) if loader.respond_to?(:eager_load_dir) }
+        else
+          dirs.each do |dir|
+            Dir.glob(File.join(dir, "**", "*.rb")).each { |file| require file }
+          end
+        end
+      rescue StandardError => e
+        Axn.config.logger.debug { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
       end
 
       # Fail-safe membership: an explicit declaration wins; else auto-register when the class's
@@ -60,6 +74,10 @@ module Axn
       end
 
       private
+
+      def _rails_app?
+        defined?(Rails) && Rails.respond_to?(:application) && Rails.application
+      end
 
       def _under_tool_path?(klass)
         return false unless klass.name

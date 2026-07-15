@@ -56,11 +56,30 @@ RSpec.describe Axn::Tools::Registry do
         include Axn
         tool
       end)
-      stub_const("ToolsForSpec::NotATool", Class.new { include Axn })
+      not_a_tool = stub_const("ToolsForSpec::NotATool", Class.new { include Axn })
 
       expect(Axn.tools_for(:mcp)).to include(mcp_only, both)
+      expect(Axn.tools_for(:mcp)).not_to include(not_a_tool)
       expect(Axn.tools_for(:ruby_llm)).to include(both)
       expect(Axn.tools_for(:ruby_llm)).not_to include(mcp_only)
+    end
+  end
+
+  describe ".ensure_loaded! (non-Rails require fallback)", :aggregate_failures do
+    let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools", __dir__) }
+
+    before do
+      Axn.register_tool_adapter(:mcp)
+      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+    end
+
+    it "requires .rb files under a configured tool dir and exposes them as tools" do
+      skip "fixture already loaded" if Object.const_defined?("RegistryFixtures::LazyRegistryTool")
+
+      tools = Axn.tools_for(:mcp)
+      expect(Object.const_defined?("RegistryFixtures::LazyRegistryTool")).to be(true)
+      expect(tools).to include(RegistryFixtures::LazyRegistryTool)
+      expect(RegistryFixtures::LazyRegistryTool.tool_name).to eq("registry_fixtures_lazy_registry_tool")
     end
   end
 
