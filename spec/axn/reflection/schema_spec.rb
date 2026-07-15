@@ -4604,6 +4604,80 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema).not_to have_key(:allOf)
     end
 
+    describe "per-validator (nested) gates reach reflection (Codex round 12)" do
+      it "does not force ancestors for a subfield gated by a nested presence condition (own-level required kept)" do
+        action = build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, presence: { if: -> { data.present? } }
+        end
+        schema = action.input_schema
+        expect(schema[:required].to_a).not_to include("data")
+        expect(schema[:properties][:data][:type]).to eq(%w[object null])
+        expect(schema[:properties][:data][:required]).to eq(["user"]) # own-level static-maximal
+      end
+
+      it "still forces ancestors when a nested-gated presence sits alongside an ungated nil-rejecting type" do
+        action = build_axn do
+          expects :data, type: Hash
+          expects :user, on: :data, type: String, presence: { if: -> { data.present? } }
+        end
+        expect(action.input_schema[:required]).to include("data")
+      end
+
+      it "leaves an exposed property untyped when its type is nested-gated" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :amount, type: { klass: Integer, if: :flag }
+          def call = expose(:amount, "oops")
+        end
+        prop = action.output_schema[:properties][:amount]
+        expect(prop).not_to have_key(:type)
+      end
+
+      it "drops a nested-gated inclusion's enum while keeping an UNGATED sibling type's contribution" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :name, type: String, inclusion: { in: %w[a b], if: :flag }
+          def call = expose(:name, "zzz")
+        end
+        prop = action.output_schema[:properties][:name]
+        expect(prop).not_to have_key(:enum)   # gated inclusion dropped
+        expect(prop[:type]).to eq("string")   # ungated sibling type kept
+      end
+
+      it "admits null on an exposed property whose only check is a nested-gated presence" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          exposes :note, presence: { if: :flag }
+          def call = expose(:note, nil)
+        end
+        prop = action.output_schema[:properties][:note]
+        expect(prop).not_to have_key(:type) # untyped → null admissible
+      end
+
+      it "keeps INPUT static-maximal for a nested-gated type (the gate only relaxes at runtime)" do
+        action = build_axn do
+          expects :flag, type: :boolean
+          expects :amount, type: { klass: Integer, if: :flag }
+        end
+        schema = action.input_schema
+        expect(schema[:required]).to include("amount")
+        expect(schema[:properties][:amount][:type]).to eq("integer")
+      end
+
+      it "output schema is a superset: a closed nested gate lets a wrong-typed value through while the property is untyped" do
+        action = build_axn do
+          expects :flag, type: :boolean, default: false
+          exposes :amount, type: { klass: Integer, if: :flag }
+          def call = expose(:amount, "oops")
+        end
+        result = action.call(flag: false) # closed gate skips the type check
+        expect(result).to be_ok
+        expect(result.amount).to eq("oops")
+        expect(action.output_schema[:properties][:amount]).not_to have_key(:type)
+      end
+    end
+
     describe "declarative Symbol conditions (allOf/if/then emission)" do
       it "emits an exact conditional for a Symbol referencing a declared sibling field" do
         action = build_axn do

@@ -139,6 +139,28 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.not_to raise_error
     end
 
+    it "accepts a nil-tolerant parent whose subfield is gated by a per-validator (nested) presence condition" do
+      # The documented per-validator form: `presence: { if: ... }` gates the lone nil-rejecting check,
+      # so the child can't force `:data` — the tolerance is exercisable and declaration must not reject.
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, presence: { if: -> { data.present? } }
+        end
+      end.not_to raise_error
+    end
+
+    it "still rejects a nested-gated presence sitting ALONGSIDE an ungated nil-rejecting type under an optional parent" do
+      # Only a FULLY-relaxable config relaxes: the ungated `type: String` still rejects a nil `user`, so
+      # the parent tolerance stays dead. (Contrast the accepted case above, where presence is the only check.)
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, type: String, presence: { if: -> { data.present? } }
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
     it "points the rejection message at the conditional spelling" do
       expect do
         build_axn do

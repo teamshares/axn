@@ -122,13 +122,39 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.call(data: { role: "admin" }).ok?).to be false        # parent present, user missing
     end
 
+    it "gates a subfield's PRESENCE via a per-validator (nested) condition (required-when-parent-present)" do
+      # The nested `presence: { if: ... }` form is the other blessed tier: the presence check is the
+      # only thing gated, so an omitted parent skips it and the call validates, while a present parent
+      # without the subfield fails. The reflection layer must accept this at declaration (Finding A).
+      action = build_axn do
+        expects :data, optional: true
+        expects :user, on: :data, presence: { if: -> { data.present? } }
+        def call; end
+      end
+      expect(action.call.ok?).to be true                                  # parent omitted → gate closed
+      expect(action.call(data: { user: "kali" }).ok?).to be true
+      expect(action.call(data: { role: "admin" }).ok?).to be false        # parent present, user missing
+    end
+
+    it "still rejects a nested-gated presence sitting alongside an UNGATED nil-rejecting check under an optional parent" do
+      # Only a FULLY-relaxable subfield relaxes: the ungated `type: String` can still reject a nil
+      # `user` when `data` is present-but-userless, so the dead-tolerance contradiction stands.
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, on: :data, type: String, presence: { if: -> { data.present? } }
+          def call; end
+        end
+      end.to raise_error(ArgumentError, /tolerance can never be exercised/)
+    end
+
     it "gates an exposes field's outbound validation" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :num, type: Integer, if: :flag
         def call; end
       end
-      expect(action.call(flag: false).ok?).to be true                     # nothing exposed, gate closed
+      expect(action.call(flag: false).ok?).to be true # nothing exposed, gate closed
       failed = action.call(flag: true)
       expect(failed.ok?).to be false
       expect(failed.exception).to be_a(Axn::OutboundValidationError)

@@ -269,30 +269,33 @@ module Axn
         node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
         credit_sibling_id_defaults!(node, ann) if satisfiability
 
-        # ANCESTOR-FORCING is derived from the UNGATED subset of the node's configs: a route whose
-        # declaration is conditionally gated may have its gate closed at runtime, so it can't oblige an
-        # omitted/nil ancestor to be present — only an UNGATED, itself-non-omittable route can. Passing
-        # the ungated subset to node_optional? (rather than the full set, then subtracting an all-gated
-        # node afterward) is what makes a MIXED node correct: a node merged from an ungated-but-omittable
-        # route (e.g. `optional: true`) and a gated-required route forces nothing, because its only
-        # ancestor-relevant obligation — the ungated route — is itself omittable. The prior two-step form
-        # (full-set node_optional? then relax only when EVERY config is gated) over-forced exactly that
-        # shape, wrongly rejecting a runtime-valid contract in satisfiability mode.
+        # ANCESTOR-FORCING is derived from the RELAXABLE-filtered subset of the node's configs: a route
+        # whose requiredness a conditional gate can relax at runtime can't oblige an omitted/nil
+        # ancestor to be present — only a route with an UNGATED nil-rejecting check can. That covers
+        # both a declaration-level gate (`if:`/`unless:` on the whole declaration) AND a per-validator
+        # nested gate on every check that could reject nil (e.g. `presence: { if: -> { data.present? } }`
+        # — the presence is gated off when the ancestor is absent, so the omitted ancestor validates).
+        # Passing the filtered subset to node_optional? (rather than the full set, then subtracting a
+        # fully-gated node afterward) is what makes a MIXED node correct: a node merged from an
+        # ungated-but-omittable route (e.g. `optional: true`) and a gated-required route forces nothing,
+        # because its only ancestor-relevant obligation — the ungated route — is itself omittable. The
+        # prior two-step form (full-set node_optional? then relax only when EVERY config is gated)
+        # over-forced exactly that shape, wrongly rejecting a runtime-valid contract in satisfiability mode.
         #
         # This is ONLY the ancestor-propagation signal. Own-level emission stays static-maximal: the
         # emission sites (apply_children!/field_optional?) call node_optional? with the full or
         # per-route config set directly, so a gated route's own nested `required` obligation is
         # unchanged. Edge cases preserved: an implicit node ignores the `configs` param inside
-        # node_optional? (a pure subtree test), so its ancestor-forcing is untouched; an all-gated node
-        # yields an empty subset, and `[].all?` is vacuously true → node_optional? true → not required
-        # (same as the old all-gated relaxation); an all-ungated node passes its full set (unchanged).
+        # node_optional? (a pure subtree test), so its ancestor-forcing is untouched; a fully-relaxable
+        # node yields an empty subset, and `[].all?` is vacuously true → node_optional? true → not
+        # required; an all-ungated node passes its full set (unchanged).
         # The satisfiability short-circuit inside node_optional? (the usable_default? line) still reads
         # the FULL node.configs regardless of the param, so a node-level default keeps rescuing every
         # route. Mode-independent: satisfiability mode needs it so a declared tolerance above a gated
         # child is exercisable (not dead), and strict mode honors the ancestor's own declared optionality
         # instead of inventing strictness the declaration disavowed (the design doc's "one deliberate
         # exception").
-        required = !node_optional?(node, ann, node.configs.reject { |c| conditionally_gated?(c) }, satisfiability:)
+        required = !node_optional?(node, ann, node.configs.reject { |c| requiredness_conditionally_relaxable?(c) }, satisfiability:)
 
         if node.implicit?
           # An implicit node's nullability has no config of its own to consult (required IS the transitive
@@ -887,6 +890,20 @@ module Axn
         # untyped rather than asserting a type the serialized value could contradict.
         return prop if for_output && conditionally_gated?(config)
 
+        # OUTPUT-EFFECTIVE validations: a per-validator (nested) gate can skip an INDIVIDUAL check on a
+        # given call (`type: { klass: Integer, if: :flag }` with `flag` falsey lets a nonblank
+        # wrong-typed value through), so its constraint can't be promised outbound. View the config
+        # through the subset of validations that survive with EVERY gate closed — drop each entry that
+        # carries a nested gate (nested_gated?), keeping ungated entries (their contributions stay —
+        # a gated `inclusion:` alongside an ungated `type:` still emits the type) and any declaration-
+        # level gate keys (inert here). Composes with the whole-config early return above (a fully
+        # declaration-gated field is already untyped). INPUT is untouched (static-maximal). Rebuild only
+        # when for_output AND an entry would actually drop, to keep config identity/perf everywhere else.
+        if for_output
+          effective = config.validations.reject { |_key, opt| nested_gated?(opt) }
+          config = config.with(validations: effective) if effective.size != config.validations.size
+        end
+
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
         apply_type_info!(prop, type_info, config, nullable:)
@@ -1197,6 +1214,45 @@ module Axn
       # that its enforcement (NOT its shape) is conditional at runtime.
       def conditionally_gated?(config)
         Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| config.validations.key?(k) }
+      end
+
+      # Whether a single validator ENTRY's options carry a real per-validator (nested) if:/unless:
+      # gate — `opt` is a Hash AND some CONDITIONAL_GATE_KEYS key is present with a non-blank value
+      # (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`). A blank nested
+      # gate (`if: nil`/`false`/`""`/`[]`) is an ActiveModel no-op (its shared condition list is empty),
+      # so it does not count; a Symbol/Proc is never blank. Declaration-LEVEL blank gates are
+      # canonicalized away at declaration (_canonicalize_blank_gates!), but NESTED ones are not, so
+      # blankness is measured here — the same `value.blank?` rule AM applies.
+      def nested_gated?(opt)
+        return false unless opt.is_a?(Hash)
+
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) && !opt[k].blank? }
+      end
+
+      # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
+      # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
+      # closed gate skips the check that would otherwise reject the nil ancestor. True when:
+      #   * the declaration carries a declaration-level gate (conditionally_gated?) — the WHOLE
+      #     declaration (every validator) is gated off together; OR
+      #   * a per-validator (nested) gate covers every nil-rejecting check: at least one entry is
+      #     nested_gated? AND every non-gate entry is either already nil-tolerant (nil_tolerant_validation?
+      #     — never rejects nil anyway) or itself nested_gated? (the check that COULD reject nil is gated
+      #     off). E.g. `presence: { if: -> { data.present? } }` — the lone nil-rejecting check is gated.
+      # A config with an UNGATED nil-rejecting entry (e.g. a bare `type:`) still forces its ancestors.
+      #
+      # The `any?(nested_gated?)` conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
+      # `allow_nil:`, no gate) must NOT be relaxed. Static tolerance does not skip a required child's
+      # validators (a nil optional parent still strands a required descendant — PRO-2857), so such a
+      # config stays in the subset for node_optional?'s subtree-stranding test to apply; dropping it would
+      # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
+      # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
+      # unaffected (this governs ancestor propagation only; see annotate_node!).
+      def requiredness_conditionally_relaxable?(config)
+        return true if conditionally_gated?(config)
+
+        entries = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        entries.any? { |_key, opt| nested_gated?(opt) } &&
+          entries.all? { |key, opt| nil_tolerant_validation?(key, opt) || nested_gated?(opt) }
       end
 
       def nil_tolerant_validation?(key, opt)
