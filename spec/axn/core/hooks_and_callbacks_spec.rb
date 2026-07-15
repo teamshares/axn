@@ -421,6 +421,32 @@ RSpec.describe Axn do
         end
       end
 
+      context "with a bare falsey condition (e.g. a forwarded feature flag)" do
+        it "fires the callback as if no if: condition were given" do
+          action = build_axn do
+            on_failure(if: false) { puts "on_failure_bare_false_if" }
+
+            def call
+              fail!("nope")
+            end
+          end
+
+          expect { action.call }.to output("on_failure_bare_false_if\n").to_stdout
+        end
+
+        it "fires the callback as if no unless: condition were given" do
+          action = build_axn do
+            on_failure(unless: false) { puts "on_failure_bare_false_unless" }
+
+            def call
+              fail!("nope")
+            end
+          end
+
+          expect { action.call }.to output("on_failure_bare_false_unless\n").to_stdout
+        end
+      end
+
       context "with symbol method auto-expansion in conditional callbacks" do
         let(:action) do
           build_axn do

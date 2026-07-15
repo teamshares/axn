@@ -530,6 +530,32 @@ RSpec.describe Axn do
             expect(action.call(flagged: false, suppressed: false).error).not_to eq("combined message")
           end
         end
+
+        context "when given a bare falsey condition (e.g. a forwarded feature flag)" do
+          it "applies the message as if no if: condition were given" do
+            action = build_axn do
+              error "Custom error", if: false
+
+              def call
+                raise "boom"
+              end
+            end
+
+            expect(action.call.error).to eq("Custom error")
+          end
+
+          it "applies the message as if no unless: condition were given" do
+            action = build_axn do
+              error "Custom error", unless: false
+
+              def call
+                raise "boom"
+              end
+            end
+
+            expect(action.call.error).to eq("Custom error")
+          end
+        end
       end
     end
 

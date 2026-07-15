@@ -88,9 +88,16 @@ module Axn
 
           # Class method to build matcher from kwargs
           def self.build(if: nil, unless: nil)
+            if_condition = binding.local_variable_get(:if)
+            unless_condition = binding.local_variable_get(:unless)
+
+            # A bare falsey condition value (e.g. a forwarded feature flag that's currently `false`)
+            # means "no condition" -- matching both the pre-existing `||`-based behavior and the
+            # field-declaration gates' measured ActiveModel semantics. A falsey element *inside* an
+            # array (e.g. `if: [false, :other]`) is left alone and still hits the invalid-matcher path.
             new(
-              if_rules: Array(binding.local_variable_get(:if)).compact,
-              unless_rules: Array(binding.local_variable_get(:unless)).compact,
+              if_rules: if_condition ? Array(if_condition).compact : [],
+              unless_rules: unless_condition ? Array(unless_condition).compact : [],
             )
           end
 
