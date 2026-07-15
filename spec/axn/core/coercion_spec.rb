@@ -80,9 +80,15 @@ RSpec.describe "coerce: DSL" do
       expect(result.got).to eq(Date.new(2026, 7, 8))
     end
 
-    it "rejects coerce: on an ambient_context subfield (never read from provided_data)" do
-      expect { build_axn { expects :when, on: :ambient_context, coerce: Date } }
-        .to raise_error(ArgumentError, /`coerce:` is not supported for an `on: :ambient_context` subfield/)
+    it "applies coerce: on an ambient_context subfield value" do
+      action = build_axn do
+        expects :when, on: :ambient_context, coerce: Date
+        exposes :w
+        def call = expose(w: self.when)
+      end
+      result = with_ambient_context(when: "2026-07-15") { action.call }
+      expect(result).to be_ok
+      expect(result.w).to eq(Date.new(2026, 7, 15))
     end
 
     it "rejects coerce: on a shape member" do

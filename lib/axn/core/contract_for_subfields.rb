@@ -229,25 +229,12 @@ module Axn
           # Deep ambient nesting — a dotted `on:` rooted at ambient (`on: "ambient_context.request"`),
           # a dotted subfield NAME on an ambient parent (`expects "request.ip", on: :ambient_context`),
           # and a subfield nested UNDER an ambient subfield (`expects :ip, on: :request`) — is fully
-          # supported (PRO-2909): runtime resolution already walked these, and `_filter_to_declared` now
-          # rebuilds the filtered ambient hash along each declared PATH, so a nested leaf resolves while
-          # undeclared siblings are still dropped. The `default:`/`preprocess:`/`coerce:` carve-outs below
-          # remain (they're about per-invocation resolution, orthogonal to nesting).
-
-          # An ambient subfield's value is framework-supplied per-invocation (from the ambient provider /
-          # CurrentAttributes), not caller input — so `default:`/`preprocess:`, which transform
-          # caller-supplied inbound arguments, have no place to apply, and defaulting/preprocessing a
-          # framework value is a category error. Gated on `_on_roots_at_ambient?` so a NESTED ambient
-          # subfield (whose `on:` names an ambient parent, not ambient itself) is covered too. `sensitive:`
-          # is filter-only and unaffected — it's relied on for ambient_context observability, so it must
-          # stay allowed (composed down the declared path, PRO-2909).
-          if _on_roots_at_ambient?(on) && (!default.nil? || !preprocess.nil?)
-            raise ArgumentError,
-                  "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
-                  "(the ambient parent is resolved per-invocation, not read from provided_data) — " \
-                  "shape those values in your ambient_context_provider instead (a before hook runs after " \
-                  "inbound validation has already resolved ambient, so it's too late). `sensitive:` is supported."
-          end
+          # supported (PRO-2909): runtime resolution walks these, and `_filter_to_declared` rebuilds the
+          # filtered ambient hash along each declared PATH, so a nested leaf resolves while undeclared
+          # siblings are dropped. `default:`/`preprocess:`/`coerce:` resolve on the same non-mutating read
+          # path (`resolve_value`) as every other subfield, so they apply here too — no write-back to
+          # `provided_data` is involved. `user_facing:` stays rejected (above): an ambient value is
+          # framework-supplied, so there is no caller to face regardless of resolution mechanism.
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
@@ -316,22 +303,8 @@ module Axn
           # case); the checks below are pure reads of the built configs, raised before anything commits.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                         metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
-            _reject_ambient_coerce!(config)
             _reject_ambient_shape!(config)
           end
-        end
-
-        # An ambient subfield's value is resolved per-invocation, never read from provided_data —
-        # which is the only place coercion writes — so a `coerce:` there would silently never
-        # apply. Reject it like ambient default:/preprocess:, and (post-PRO-2909) for a NESTED ambient
-        # subfield too — hence `_on_roots_at_ambient?` rather than an exact-root check.
-        def _reject_ambient_coerce!(config)
-          return unless config.validations.dig(:type, :coerce)
-          return unless _on_roots_at_ambient?(config.on)
-
-          raise ArgumentError,
-                "`coerce:` is not supported for an `on: :ambient_context` subfield " \
-                "(the ambient parent is resolved per-invocation, not read from provided_data)"
         end
 
         # A `shape:` block on an ambient subfield is rejected. Shape's primary job — input_schema

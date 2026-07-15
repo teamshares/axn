@@ -119,22 +119,62 @@ RSpec.describe "Axn::Core::AmbientContext.default_source" do
 end
 
 RSpec.describe "Axn ambient_context subfield restrictions" do
-  it "rejects preprocess: on an ambient_context subfield" do
-    expect do
-      Class.new do
-        include Axn
-        expects :company, on: :ambient_context, preprocess: ->(v) { v }
-      end
-    end.to raise_error(ArgumentError, /preprocess/)
+  it "applies default: to an absent ambient subfield on read and at validation" do
+    klass = build_axn do
+      expects :locale, on: :ambient_context, type: String, default: "en"
+      exposes :loc
+      def call = expose(loc: locale)
+    end
+    result = with_ambient_context { klass.call }
+    expect(result).to be_ok
+    expect(result.loc).to eq("en")
   end
 
-  it "rejects default: on an ambient_context subfield" do
-    expect do
-      Class.new do
-        include Axn
-        expects :company, on: :ambient_context, default: 5
-      end
-    end.to raise_error(ArgumentError, /default/)
+  it "applies coerce: to an ambient subfield value on read and at validation" do
+    klass = build_axn do
+      expects :count, on: :ambient_context, type: { klass: Integer, coerce: true }
+      exposes :c
+      def call = expose(c: count)
+    end
+    result = with_ambient_context(count: "5") { klass.call }
+    expect(result).to be_ok
+    expect(result.c).to eq(5)
+  end
+
+  it "applies preprocess: to an ambient subfield value on read" do
+    klass = build_axn do
+      expects :tag, on: :ambient_context, type: String, preprocess: ->(v) { v&.strip }
+      exposes :t
+      def call = expose(t: tag)
+    end
+    result = with_ambient_context(tag: "  x  ") { klass.call }
+    expect(result).to be_ok
+    expect(result.t).to eq("x")
+  end
+
+  it "applies default:/preprocess:/coerce: on a subfield nested under ambient_context" do
+    klass = build_axn do
+      expects :request, on: :ambient_context, type: Hash
+      expects :ip, on: :request, type: String, default: "0.0.0.0"
+      expects :port, on: :request, type: { klass: Integer, coerce: true }
+      exposes :ip_val, :port_val
+      def call = expose(ip_val: ip, port_val: port)
+    end
+    result = with_ambient_context(request: { port: "8080" }) { klass.call }
+    expect(result).to be_ok
+    expect(result.ip_val).to eq("0.0.0.0")
+    expect(result.port_val).to eq(8080)
+  end
+
+  it "applies default: on a dotted `on:` path rooted at ambient_context" do
+    klass = build_axn do
+      expects :session, on: "ambient_context.request", type: String, default: "anon"
+      exposes :s
+      def call = expose(s: session)
+    end
+    result = with_ambient_context(request: {}) { klass.call }
+    expect(result).to be_ok
+    expect(result.s).to eq("anon")
   end
 
   it "still allows sensitive: on an ambient_context subfield" do
@@ -494,43 +534,13 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
   end
 
   describe "retained guards still fire on a nested ambient subfield" do
-    it "rejects default: on a subfield nested under ambient_context" do
+    it "rejects user_facing: on a subfield nested under ambient_context" do
       expect do
-        Class.new do
-          include Axn
+        build_axn do
           expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, default: "0.0.0.0"
+          expects :ip, on: :request, user_facing: "nope"
         end
-      end.to raise_error(ArgumentError, /default/)
-    end
-
-    it "rejects preprocess: on a subfield nested under ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, preprocess: ->(v) { v }
-        end
-      end.to raise_error(ArgumentError, /preprocess/)
-    end
-
-    it "rejects coerce: on a subfield nested under ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, type: Integer, coerce: true
-        end
-      end.to raise_error(ArgumentError, /coerce/)
-    end
-
-    it "rejects default: on a dotted `on:` path rooted at ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :session, on: "ambient_context.request", default: "x"
-        end
-      end.to raise_error(ArgumentError, /default/)
+      end.to raise_error(ArgumentError, /user_facing.*ambient|ambient.*user_facing/)
     end
   end
 end
