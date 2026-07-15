@@ -107,7 +107,7 @@ module Axn
         end
 
         def arity_error?(error)
-          error.message.start_with?("wrong number of arguments", "missing keyword")
+          error.message.start_with?("wrong number of arguments")
         end
 
         # The actionable text rides on this exception's own #message (see MethodCallNotPermittedError):
