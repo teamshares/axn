@@ -748,6 +748,24 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
+        # A blank gate is canonicalized away at declaration — ActiveModel runs the validators
+        # unconditionally for a nil condition (`if: nil`/`unless: nil`, e.g. a condition forwarded
+        # conditionally: `if: maybe_cond` where `maybe_cond` is nil) or an empty rule list
+        # (`if: []`/`unless: []`), so key PRESENCE downstream — the push-down exemption in
+        # _parse_field_validations, reflection's conditionally_gated?, and the contradiction
+        # carve-outs — must mean a REAL gate. Without this, a blank gate would be classified as
+        # gated though it runs unconditionally: ancestor-forcing would be wrongly relaxed, and the
+        # dead-tolerance check would wrongly accept a contradiction-shaped contract (schema looser
+        # than runtime). Mutates `validations` in place.
+        def _canonicalize_blank_gates!(validations)
+          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each do |key|
+            next unless validations.key?(key)
+
+            value = validations[key]
+            validations.delete(key) if value.nil? || (value.is_a?(Array) && value.empty?)
+          end
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
@@ -756,6 +774,8 @@ module Axn
           allow_blank: false,
           **validations
         )
+          _canonicalize_blank_gates!(validations)
+
           # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
           # it is meaningless without one). Runs before the type: sugar so the resulting `{ klass: }`
           # hash flows through the normal path.

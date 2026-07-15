@@ -4575,6 +4575,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:properties][:data][:required]).to match_array(%w[user role])
     end
 
+    it "reflects a blank `if:` as no gate at all: required, with no allOf clause emitted" do
+      action = build_axn do
+        expects :num, type: Integer, if: nil
+      end
+      schema = action.input_schema
+      expect(schema[:required]).to include("num")
+      expect(schema).not_to have_key(:allOf)
+    end
+
     describe "declarative Symbol conditions (allOf/if/then emission)" do
       it "emits an exact conditional for a Symbol referencing a declared sibling field" do
         action = build_axn do

@@ -251,4 +251,35 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(result.exception).to be_a(NameError)
     end
   end
+
+  describe "blank gate values (nil/empty if:/unless: canonicalize away — a blank gate is no gate)" do
+    it "rejects a nil-tolerant parent whose required subfield carries `if: nil`, exactly as if if: were absent" do
+      expect do
+        build_axn do
+          expects :data, optional: true
+          expects :user, type: String, on: :data, if: nil
+        end
+      end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "still enforces a field declared with `if: nil` unconditionally at runtime" do
+      action = build_axn do
+        expects :num, type: Integer, if: nil
+        def call; end
+      end
+      omitted = action.call
+      expect(omitted.ok?).to be false
+      expect(omitted.exception).to be_a(Axn::InboundValidationError)
+      expect(action.call(num: 5).ok?).to be true
+    end
+
+    it "also canonicalizes an empty rule list (`if: []`/`unless: []`) away as no gate" do
+      action = build_axn do
+        expects :num, type: Integer, if: []
+        def call; end
+      end
+      expect(action.call.ok?).to be false
+      expect(action.call(num: 5).ok?).to be true
+    end
+  end
 end
