@@ -104,5 +104,34 @@ RSpec.describe Axn::Tools::Registry do
       expect(described_class.member?(k, :mcp)).to be(true)
       expect(described_class.member?(k, :ruby_llm)).to be(false)
     end
+
+    it "an undeclared class under a sibling dir whose name merely prefixes the tool dir is not a member" do
+      allow(Axn.config).to receive(:tool_paths).and_return([File.expand_path("spec/support")])
+      k = stub_const("MemberSpec::SiblingPrefix", Class.new { include Axn })
+      allow(Object).to receive(:const_source_location).with("MemberSpec::SiblingPrefix")
+                                                      .and_return([File.expand_path("spec/support_helpers/x.rb"), 1])
+      expect(described_class.member?(k, :mcp)).to be(false)
+    end
+
+    it "a class with a `configure(:foo)` bag is not a member for an unregistered :foo adapter" do
+      allow(Axn.config).to receive(:tool_paths).and_return([])
+      allow(Object).to receive(:const_source_location).and_return(nil)
+      k = stub_const("MemberSpec::UnregisteredAdapter", Class.new do
+        include Axn
+        configure(:foo) { |c| c.some_setting = 1 }
+      end)
+      expect(described_class.member?(k, :foo)).to be(false)
+    end
+
+    it "a subclass of a class with `configure(:mcp)` is an implicit member via the inherited bag" do
+      allow(Axn.config).to receive(:tool_paths).and_return([])
+      allow(Object).to receive(:const_source_location).and_return(nil)
+      parent = Class.new do
+        include Axn
+        configure(:mcp) { |c| c.some_setting = 1 }
+      end
+      subclass = stub_const("MemberSpec::InheritedConfig", Class.new(parent))
+      expect(described_class.member?(subclass, :mcp)).to be(true)
+    end
   end
 end
