@@ -87,7 +87,7 @@ expects :foo, on: :request                 # non-overlapping child
 
 No key overlaps, yet `request` is now non-leaf, so `_filter_ambient_node` reconstructs it from children only (`{foo: ...}`) and the shape's `token` member validates against a hash the filter already dropped `token` from → a spurious "token could not be read." The leaf-only rule catches this and the overlap case (`shape: {token:}` + `expects :token, on: :request`) together — closing the whole class rather than the one flagged instance.
 
-**Implementation.** Fold the check into the ambient candidate-tree pass that already runs at declaration (`_check_ambient_subfield_contradictions!`, `ambient_context.rb:54`): build the candidate ambient `SubfieldTree` once, then reject any node whose configs carry a `:shape` validation **and** whose `children` is non-empty. Rename/extend that method to a single `_check_ambient_subfield_declarations!(candidate_subfields)` that runs both the contradiction check and the shape-leaf check off one tree build (no second `SubfieldTree.build`). The message points at declaring the nested structure **one** way: shape-only for validation, or subfields for validation + readers + `sensitive:` — never both on one ambient node.
+**Implementation.** Add a sibling declaration check alongside the existing `_check_ambient_subfield_contradictions!` (`ambient_context.rb:54`), reusing the same candidate-tree machinery: `_check_ambient_shape_placement!(candidate_subfields)` builds the candidate ambient `SubfieldTree` (`SubfieldTree.build([_synthetic_ambient_root], ambient)`, exactly as `_ambient_subfield_tree` does for committed configs) and rejects any node whose configs carry a `:shape` validation **and** whose `children` is non-empty. It's called from the same declaration site (`contract_for_subfields.rb:269`), right after the contradiction check. (Kept a sibling rather than folded in because `SubfieldContradictions.check!` builds its tree internally; the extra candidate-tree build is declaration-time only and O(configs), and each method stays single-purpose.) The message points at declaring the nested structure **one** way: shape-only for validation, or subfields for validation + readers + `sensitive:` — never both on one ambient node.
 
 Then remove `_reject_ambient_shape!` (`contract_for_subfields.rb:347`), its call site (`:321`), and the line-344 deferral comment.
 
@@ -128,14 +128,14 @@ This reuses the exact PR #176 masking helpers (`_mask_value_at_path`, `_mask_opa
 **Step 2**
 
 - Shape-only ambient parent validates: leaf, via-implicit-intermediate, and nested-member forms — success and a failing-member case each.
-- Non-leaf shape node rejected at declaration: overlap-key form AND non-overlapping-child form, in both declaration orders (shape-then-child, child-then-shape).
+- Non-leaf shape node rejected at declaration: overlap-key form AND non-overlapping-child form. (Only the shape-then-child order is reachable — a child's `on:` requires its parent already declared, so the shape-carrying parent must come first; the check is order-independent regardless.)
 - Sensitive shape member on ambient masked in exception context: Hash-valued (ParameterFilter path) AND non-Hash/object-backed (wholesale-mask path); a non-sensitive sibling survives the Hash case; `nil` absent data is preserved, not masked.
 - The existing shape-rejection specs (`ambient_context_spec.rb:371–392`) flip to acceptance / non-leaf-rejection.
 
 ## Files touched
 
 - `lib/axn/core/contract_for_subfields.rb` — remove three guards + stale comments; update the nesting comment.
-- `lib/axn/core/ambient_context.rb` — add the shape-leaf declaration check to the candidate-tree pass.
+- `lib/axn/core/ambient_context.rb` — add the `_check_ambient_shape_placement!` sibling declaration check (candidate-tree walk).
 - `lib/axn/core/contract.rb` — parametrize `_mask_unfilterable_shapes`; add `_sensitive_ambient_shape_paths`; wire wholesale-masking into `execution_context`'s ambient slice.
 - `spec/axn/core/ambient_context_spec.rb`, `spec/axn/core/coercion_spec.rb` — flip rejections; add read/validation/shape/sensitive coverage.
 - `CHANGELOG.md` — feature entry (restored ambient symmetry).
