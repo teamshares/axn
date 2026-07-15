@@ -180,7 +180,7 @@ RSpec.describe "Axn tool_name derivation" do
   end
 
   it "restricts to a provider-safe charset and collapses separators" do
-    expect(tool_klass("Weird::Na me!!Thing").tool_name).to eq("na_me_thing")
+    expect(tool_klass("Weird::Na me!!Thing").tool_name).to eq("weird_na_me_thing")
   end
 
   it "falls back to `tool` when derivation is empty" do
