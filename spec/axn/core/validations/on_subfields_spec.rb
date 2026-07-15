@@ -250,9 +250,9 @@ RSpec.describe Axn do
         end
 
         it "leaves the subfield absent when the parent is nil (the preprocess does not synthesize a parent)" do
-          # A nil/absent parent means the subfield is absent — the preprocess result has nowhere to land and
-          # is dropped, rather than materializing the parent. (A present-but-empty `{}` parent differs: the
-          # subfield is present there, so the preprocess runs and its result — "" — is stored.)
+          # A nil/absent parent means the subfield is absent — the preprocess is skipped, rather than
+          # synthesizing the parent. (A present-but-empty `{}` parent differs: the subfield is present there,
+          # so the preprocess runs and its result — "" — is resolved on the read path for the reader.)
           expect(action.call(payload: nil).name_val).to be_nil
           expect(action.call.name_val).to be_nil
           expect(action.call(payload: {}).name_val).to eq("")
@@ -278,8 +278,10 @@ RSpec.describe Axn do
           expect(result.exception.message).to include("can't be blank")
         end
 
-        it "runs the subfield preprocess normally when the required parent IS provided" do
-          expect(action.call(payload: {})).to be_ok
+        it "runs the subfield preprocess normally when the required parent IS provided (non-blank)" do
+          # A present-but-empty `{}` is blank and fails the parent's own presence — a subfield preprocess no
+          # longer launders it non-blank. A genuinely-present parent passes, and the preprocess still runs.
+          expect(action.call(payload: { other: 1 })).to be_ok
         end
       end
 
@@ -670,16 +672,18 @@ RSpec.describe Axn do
           expect(action.call(settings: { other: 1 }).got).to be(false)
         end
 
-        it "materializes the whole chain (root included) for a nested default under an absent parent" do
+        it "resolves a nested default value-level under an absent parent without materializing the chain" do
           action = build_axn do
             expects :address, type: Hash, optional: true, allow_nil: true
             expects :postcode, on: "address.billing", optional: true, default: "00000"
-            exposes :parent, optional: true, allow_nil: true
+            exposes :parent, :got, optional: true, allow_nil: true
 
-            def call = expose(parent: address)
+            def call = expose(parent: address, got: postcode)
           end
 
-          expect(action.call.parent).to eq({ billing: { postcode: "00000" } })
+          result = action.call
+          expect(result.got).to eq("00000") # child resolves its default on the read path
+          expect(result.parent).to be_nil   # parent is never synthesized
         end
 
         it "skips a nested default when an absent intermediate ancestor is declared non-object" do
@@ -757,33 +761,37 @@ RSpec.describe Axn do
           expect(result.parent).to eq({ other: 1 })
         end
 
-        it "still applies a nested default through an implicit intermediate matching an OBJECT shape member" do
+        it "resolves a nested default value-level through an implicit OBJECT-shape intermediate without materializing it" do
           action = build_axn do
             expects :payload, type: Hash do
               field :settings, type: Hash, optional: true
             end
             expects :enabled, on: "payload.settings", optional: true, type: :boolean, default: true
-            exposes :parent, optional: true
+            exposes :parent, :got, optional: true, allow_nil: true
 
-            def call = expose(parent: payload)
+            def call = expose(parent: payload, got: enabled)
           end
 
           result = action.call(payload: { other: 1 })
           expect(result).to be_ok
-          expect(result.parent).to eq({ other: 1, settings: { enabled: true } })
+          expect(result.got).to be(true)             # child resolves its default on the read path
+          expect(result.parent).to eq({ other: 1 })  # parent is not materialized with `settings`
         end
 
-        it "shares one materialized intermediate across two nested defaults (no re-materialization race)" do
+        it "resolves two nested defaults value-level under an absent parent without materializing the intermediate" do
           action = build_axn do
             expects :payload, type: Hash, optional: true, allow_nil: true
             expects :width, on: "payload.dims", optional: true, default: 1
             expects :height, on: "payload.dims", optional: true, default: 2
-            exposes :parent, optional: true, allow_nil: true
+            exposes :parent, :w, :h, optional: true, allow_nil: true
 
-            def call = expose(parent: payload)
+            def call = expose(parent: payload, w: width, h: height)
           end
 
-          expect(action.call.parent).to eq({ dims: { width: 1, height: 2 } })
+          result = action.call
+          expect(result.w).to eq(1)         # each child resolves its default on the read path
+          expect(result.h).to eq(2)
+          expect(result.parent).to be_nil   # the shared intermediate is never materialized
         end
 
         it "preprocesses through a nested on: path without synthesizing an absent root" do
@@ -1242,25 +1250,26 @@ RSpec.describe Axn do
           expects :user_data
           expects :email, on: :user_data, preprocess: ->(email) { email.downcase.strip }
           expects :name, on: :user_data # No preprocessing
-          expects "profile.bio", on: :user_data, preprocess: lambda(&:upcase) # Nested subfield from profile.bio
-          expects "profile.website", on: :user_data, preprocess: ->(url) { url.gsub(%r{^https?://}, "") } # Nested subfield from profile.website
+          expects "profile.bio", on: :user_data, as: :bio, preprocess: lambda(&:upcase)
+          expects "profile.website", on: :user_data, as: :website, preprocess: ->(url) { url.gsub(%r{^https?://}, "") }
         end
       end
 
-      it "preprocesses subfield values" do
+      it "preprocesses subfield values on the read path without mutating the caller's parent" do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # Check that preprocessing was applied by accessing the action instance
+        # The readers return the preprocessed values (resolved value-level on the read path — a dotted
+        # subfield needs an `as:` alias to be readable).
         expect(result.__action__.email).to eq("john@example.com")
-        expect(result.__action__.name).to eq("John Doe") # Unchanged
+        expect(result.__action__.name).to eq("John Doe") # unchanged (no preprocess)
+        expect(result.__action__.bio).to eq("SOFTWARE DEVELOPER")
+        expect(result.__action__.website).to eq("example.com")
 
-        # Check nested subfield preprocessing by accessing the context data
-        user_data = result.__action__.user_data
-
-        # Check if the nested structure is correctly updated (symbol keys)
-        expect(user_data.dig(:profile, :bio)).to eq("SOFTWARE DEVELOPER") # Should be preprocessed
-        expect(user_data.dig(:profile, :website)).to eq("example.com") # Should be preprocessed
+        # The caller's parent hash is NOT mutated — preprocess resolves the child value, never writing back.
+        expect(user_data.dig(:profile, :bio)).to eq("Software developer")
+        expect(user_data.dig(:profile, :website)).to eq("https://example.com")
+        expect(user_data[:email]).to eq("  JOHN@EXAMPLE.COM  ")
       end
 
       it "preserves original parent field structure" do
@@ -1379,12 +1388,12 @@ RSpec.describe Axn do
         end
       end
 
-      it "handles object-based parent fields with setter methods" do
+      it "resolves an object-parent subfield's preprocess on the read path without mutating the object" do
         result = action.call(user: user_object)
         expect(result).to be_ok
 
-        expect(result.__action__.email).to eq("john@example.com")
-        expect(user_object.email).to eq("john@example.com") # Modified in place
+        expect(result.__action__.email).to eq("john@example.com") # reader returns the preprocessed value
+        expect(user_object.email).to eq("JOHN@EXAMPLE.COM") # the caller's object is NOT mutated in place
       end
     end
   end
@@ -1407,7 +1416,7 @@ RSpec.describe Axn do
           expects :user_data
           expects :bio, on: :user_data, default: "No bio provided"
           expects "profile.website", on: :user_data, default: "No website"
-          expects "profile.location", on: :user_data, default: "Unknown location"
+          expects "profile.location", on: :user_data, as: :location, default: "Unknown location"
         end
       end
 
@@ -1419,13 +1428,14 @@ RSpec.describe Axn do
         expect(result.__action__.bio).to eq("No bio provided")
       end
 
-      it "applies defaults for missing nested subfields" do
+      it "resolves a nested subfield default value-level without writing it into the parent" do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # Check that the default was applied to nested structure
-        user_data = result.__action__.user_data
-        expect(user_data.dig(:profile, :location)).to eq("Unknown location")
+        # The reader resolves the default on the read path (a dotted subfield needs `as:` to be readable)...
+        expect(result.__action__.location).to eq("Unknown location")
+        # ...but the caller's nested parent is not mutated with the synthesized key.
+        expect(result.__action__.user_data.dig(:profile, :location)).to be_nil
       end
 
       it "does not apply defaults when field already exists" do
@@ -1467,21 +1477,20 @@ RSpec.describe Axn do
         build_axn do
           expects :user_data
           expects :bio, on: :user_data, default: -> { "Generated bio #{Time.now.to_i}" }
-          expects "profile.timestamp", on: :user_data, default: -> { "Generated at #{Time.now.to_i}" }
+          expects "profile.timestamp", on: :user_data, as: :timestamp, default: -> { "Generated at #{Time.now.to_i}" }
         end
       end
 
-      it "evaluates callable defaults in action context" do
+      it "evaluates callable defaults in action context (value-level, not written into the parent)" do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # Check that callable defaults were evaluated
-        bio = result.__action__.bio
-        expect(bio).to match(/Generated bio \d+/)
+        # Callable defaults resolve on the read path...
+        expect(result.__action__.bio).to match(/Generated bio \d+/)
+        expect(result.__action__.timestamp).to match(/Generated at \d+/)
 
-        user_data = result.__action__.user_data
-        timestamp = user_data.dig(:profile, :timestamp)
-        expect(timestamp).to match(/Generated at \d+/)
+        # ...and the caller's nested parent is not mutated with the generated value.
+        expect(result.__action__.user_data.dig(:profile, :timestamp)).to be_nil
       end
     end
 
@@ -1517,12 +1526,14 @@ RSpec.describe Axn do
         end
       end
 
-      it "creates parent field and applies default" do
+      it "resolves a subfield default value-level without creating the absent parent field" do
         result = action.call(user_data:)
         expect(result).to be_ok
 
-        # Check that the parent field was created and default applied
-        expect(result.__action__.missing_profile).to eq({ bio: "Default bio" })
+        # The child resolves its default on the read path...
+        expect(result.__action__.bio).to eq("Default bio")
+        # ...but the absent parent field is not synthesized into existence.
+        expect(result.__action__.missing_profile).to be_nil
       end
     end
 
@@ -1561,7 +1572,7 @@ RSpec.describe Axn do
           build_axn do
             expects :user_data
             expects :bio, on: :user_data, default: default_value, allow_blank:, type: String
-            expects "profile.description", on: :user_data, default: default_value, allow_blank:, type: String
+            expects "profile.description", on: :user_data, as: :description, default: default_value, allow_blank:, type: String
           end
         end
 
@@ -1571,8 +1582,9 @@ RSpec.describe Axn do
             if expected_behavior[:missing][:success]
               expect(result).to be_ok
               expect(result.__action__.bio).to eq default_value
-              expect(result.__action__.user_data.dig(:profile, :description)).to eq default_value
-              # Copy-on-write: the caller's own hash is never mutated by the nested default.
+              # The nested default resolves value-level through its `as:` reader...
+              expect(result.__action__.description).to eq default_value
+              # ...and the caller's own hash is never written by it (read-path resolution, no materialization).
               expect(user_data.dig(:profile, :description)).to be_nil
             else
               expect(result).not_to be_ok
@@ -1593,8 +1605,9 @@ RSpec.describe Axn do
             if expected_behavior[:nil][:success]
               expect(result).to be_ok
               expect(result.__action__.bio).to eq default_value
-              expect(result.__action__.user_data.dig(:profile, :description)).to eq default_value
-              # Copy-on-write: the caller's own hash is never mutated by the nested default.
+              # The nested default resolves value-level through its `as:` reader...
+              expect(result.__action__.description).to eq default_value
+              # ...and the caller's own hash is never written by it (the explicit nil stays nil).
               expect(user_data.dig(:profile, :description)).to be_nil
             else
               expect(result).not_to be_ok
@@ -1984,7 +1997,9 @@ RSpec.describe Axn do
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
-        expect(action.call(payload: {}).cid).to eq(42)
+        # The chain is present but omits the id; the sibling `<field>_id` default supplies the lookup
+        # token on the read path (a blank `payload: {}` would now fail the parent's own presence).
+        expect(action.call(payload: { meta: {} }).cid).to eq(42)
       end
 
       it "resolves the record via the sibling id's VALUE-LEVEL default when the write chain is refused" do
@@ -2069,7 +2084,9 @@ RSpec.describe Axn do
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
-        expect(action.call(payload: {}).cid).to eq(42)
+        # The chain is present but omits the id; the sibling `<field>_id` default supplies the lookup
+        # token on the read path (a blank `payload: {}` would now fail the parent's own presence).
+        expect(action.call(payload: { meta: {} }).cid).to eq(42)
       end
 
       it "skips the dotted id default when the sibling record is already present (C8)" do
@@ -2141,16 +2158,18 @@ RSpec.describe Axn do
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
-        expect(action.call(payload: {}).cid).to eq(42)
+        # The chain is present but omits the id; the sibling `<field>_id` default supplies the lookup
+        # token on the read path (a blank `payload: {}` would now fail the parent's own presence).
+        expect(action.call(payload: { meta: {} }).cid).to eq(42)
       end
     end
 
     context "a leaf default must not clobber a model-routed wire key (PRO-2889)" do
       it "resolves the record via the sibling id, not the non-model route's written default" do
         # `meta.company` (untyped, optional, default {x:1}) shares the wire key with the `:company`
-        # model route. Writing {x:1} onto that key would be read AS the record and fail ModelValidator,
-        # killing the sibling-id rescue. The write is skipped; the model route resolves via id 42 and the
-        # non-model route sees the default value-level.
+        # model route. Nothing is written back on the read path, so the non-model route's default never
+        # lands on the shared key to be misread AS the record: the model route resolves via the sibling id
+        # 42, and the non-model route's default resolves value-level for its own reader.
         action = build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, allow_nil: true
@@ -2160,7 +2179,7 @@ RSpec.describe Axn do
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
-        result = action.call(payload: {})
+        result = action.call(payload: { meta: {} })
         expect(result).to be_ok
         expect(result.cid).to eq(42)
       end
@@ -2204,7 +2223,9 @@ RSpec.describe Axn do
           exposes :cid, allow_nil: true
           def call = expose(cid: company&.id)
         end
-        expect(action.call(payload: {}).cid).to eq(42)
+        # The chain is present but omits the id; the sibling `<field>_id` default supplies the lookup
+        # token on the read path (a blank `payload: {}` would now fail the parent's own presence).
+        expect(action.call(payload: { meta: {} }).cid).to eq(42)
       end
     end
 

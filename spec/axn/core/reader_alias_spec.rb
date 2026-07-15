@@ -218,18 +218,20 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(channel: { sub: 42 }).got).to eq(42)
     end
 
-    it "applies a subfield default into the wire-key parent (not the alias)" do
-      # The default-mutation path writes into provided_data, which is keyed by the wire key
-      # (`channel`), even though `on:` references the parent's alias (`raw_channel`).
+    it "resolves a subfield default through an aliased parent value-level, without writing into the parent" do
+      # `on:` references the parent's alias (`raw_channel`); the default resolves the child's value on the
+      # read path — it is never written back into the parent (keyed by the wire key `channel`).
       action = build_axn do
         expects :channel, type: Hash, as: :raw_channel
         expects :token, on: :raw_channel, default: "x"
-        exposes :got
+        exposes :got, :parent
 
-        def call = expose(got: token)
+        def call = expose(got: token, parent: raw_channel)
       end
 
-      expect(action.call(channel: {}).got).to eq("x")
+      result = action.call(channel: { other: 1 })
+      expect(result.got).to eq("x")              # child resolves its default on the read path
+      expect(result.parent).to eq({ other: 1 })  # the aliased parent is not mutated with `token`
     end
 
     it "applies subfield preprocessing through an aliased parent" do
@@ -285,19 +287,22 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       expect(action.call(payload: { settings: { enabled: true } }).got).to be(true)
     end
 
-    it "applies a default on a subfield declared `on:` an aliased subfield parent (chain-aware write)" do
-      # The parent (`raw_settings`) is itself a subfield reached through an alias; the resolved wire
-      # path (payload → settings → enabled) drives the nested write.
+    it "resolves a default through an aliased subfield parent value-level, without materializing it (chain-aware read)" do
+      # The parent (`raw_settings`) is itself a subfield reached through an alias; the resolved wire path
+      # (payload → settings → enabled) drives the read, and the default resolves the child's value without
+      # writing the intermediate into the parent.
       action = build_axn do
         expects :payload
         expects :settings, on: :payload, as: :raw_settings, optional: true
         expects :enabled, on: :raw_settings, optional: true, default: true
-        exposes :parent, optional: true
+        exposes :parent, :got, optional: true, allow_nil: true
 
-        def call = expose(parent: payload)
+        def call = expose(parent: payload, got: enabled)
       end
 
-      expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1, settings: { enabled: true } })
+      result = action.call(payload: { other: 1 })
+      expect(result.got).to be(true)             # child resolves its default on the read path
+      expect(result.parent).to eq({ other: 1 })  # the parent is not materialized with `settings`
     end
   end
 

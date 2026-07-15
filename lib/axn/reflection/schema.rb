@@ -126,11 +126,11 @@ module Axn
         object_type_branches(config).any? { |k| [Hash, :params].include?(k) }
       end
 
-      # Whether the runtime may synthesize `{}` for this config's ABSENT value (the Executor's
-      # write-chain gate consults this per node): its declared type must admit an object AND it must
-      # not be a `model:` route — a synthesized `{}` would be preferred by the model resolver over a
-      # caller-supplied `<field>_id` (clobbering a valid id-based call) and is rejected by
-      # ModelValidator regardless.
+      # Whether an object (`{}`) could stand in for this config's value: its declared type must admit an
+      # object AND it must not be a `model:` route (a `{}` there is rejected by ModelValidator and would
+      # be preferred by the model resolver over a caller-supplied `<field>_id`). `required_child?` uses
+      # this to decide whether the parent's OWN applied default materializes an object that would then
+      # enforce its required shape members.
       def synthesizable?(config)
         object_shaped?(config) && !config.validations[:model]
       end
@@ -330,26 +330,17 @@ module Axn
       # Two sources:
       #   * a required subfield ANYWHERE in the subtree — a nil parent yields every descendant absent
       #     (PRO-2857), so a required grandchild is stranded exactly like a required child; OR
-      #   * a required shape (`do…end`) member WHEN a subfield default ANYWHERE in the subtree synthesizes
-      #     the parent: that default makes apply_defaults_for_subfields! materialize `{}`, so ShapeValidator
-      #     no longer short-circuits on nil and enforces the member. A dotted-NAME default lands on a deeper
-      #     node yet still materializes the parent, so this walks the whole subtree; and it counts ANY
-      #     applied default (a Proc included) because materialization fires before the default's value
-      #     matters — the applicability hazard, not reflective usability (subtree_has_applied_subfield_default?).
-      #
-      # `ann` supplies the already-derived children_require_presence? result for `children` (derive_annotations
-      # computes it bottom-up once); this itself is still evaluated fresh per call since it depends on
-      # `config`, which varies by call site (the top-level field vs. a node's own representative).
+      #   * a required shape (`do…end`) member WHEN the parent has its OWN applied default that
+      #     materializes it: a top-level parent default still writes `{}` (that write-back is unchanged),
+      #     so ShapeValidator runs against the materialized value and enforces the member — omission can't
+      #     be rescued by the parent's nil-tolerance. Counts a Proc default (materialization fires before
+      #     the Proc's value matters — the applicability hazard). A SUBFIELD default no longer triggers
+      #     this: it resolves the child's value on the read path and never synthesizes the parent, so a
+      #     nil parent short-circuits ShapeValidator regardless of any descendant default.
       def required_child?(config, children, ann)
         return true if children_require_presence?(children, ann)
 
-        # A subfield default synthesizes the parent only when the parent is object-shaped — runtime injects
-        # `{}` for Hash/`:params`/untyped parents but refuses for a non-object type (`type: Array`), which
-        # stays nil so ShapeValidator skips (mirrors Executor#_materialize_object_parent!). Walks the WHOLE
-        # subtree: a dotted-NAME default lands on a deeper node and still materializes the parent, firing
-        # the shape-member hazard.
-        synthesizer = synthesizable?(config) && subtree_has_applied_subfield_default?(children)
-        synthesizer && required_shape_member?(config)
+        config.applied_default? && synthesizable?(config) && required_shape_member?(config)
       end
 
       # Whether any direct child node may NOT be omitted from the parent object — a read of each child's
@@ -392,44 +383,6 @@ module Axn
         configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
       end
 
-      # Whether any config ANYWHERE in the subtree (at any depth) carries a USABLE default — the
-      # synthesis-RESCUE signal for parent omittability. Runtime synthesizes a COMPLETE parent
-      # (materializes `{}`, then writes the default) from a usable default at any depth: a dotted-NAME
-      # default lands on a deeper node yet still materializes the parent, so it rescues omission just
-      # like a direct child's default. Whether a Proc default counts follows usable_default?'s mode
-      # split: strict (schema) mode EXCLUDES Procs, unlike subtree_has_applied_subfield_default? (the
-      # hazard predicate, which always counts Procs) — here the Proc's SUCCESS is what would rescue
-      # omission, and a raising Proc would instead make omission FAIL, so counting it would reflect the
-      # parent omittable though runtime rejects the omitted call (the looser, unsafe direction), while
-      # satisfiability mode (the declaration-rejection detector) COUNTS the Proc since it does apply at
-      # runtime. The hazard predicate always counts Procs because materialization fires before the Proc
-      # runs, so the `{}` hazard is triggered regardless of the Proc's outcome.
-      def subtree_has_usable_subfield_default?(children, satisfiability: false)
-        children.values.any? do |node|
-          node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability:) } ||
-            subtree_has_usable_subfield_default?(node.children, satisfiability:)
-        end
-      end
-
-      # Whether any config ANYWHERE in the subtree (at any depth) carries a subfield default runtime would
-      # APPLY. Under an omitted nil-tolerant model, such a default makes apply_defaults_for_subfields!
-      # materialize `{}` under the model's wire key BEFORE the default is even evaluated, and ModelValidator
-      # then rejects that `{}` (not a model instance) — so the model id can't be omitted. What strands the
-      # id is mere applicability, NOT reflective usability: runtime applies ANY truthy default (a Proc
-      # included, since `next unless config.default` passes a Proc), and the `{}`-synthesis hazard fires
-      # before the default's value matters — so this uses FieldConfig#applied_default? (side-effect-free:
-      # `!!config.default`, never calls the Proc), unlike usable_default? which excludes a Proc in strict
-      # (schema) mode because it judges whether a default's VALUE satisfies the contract (irrelevant here).
-      # This HAZARD walk is mode-independent: it ALWAYS counts Procs. Companion to
-      # subtree_has_usable_subfield_default? (the RESCUE walk, which excludes Procs only in strict mode):
-      # both walk the whole subtree so a dotted-NAME default on a deeper node is counted.
-      def subtree_has_applied_subfield_default?(children)
-        children.values.any? do |node|
-          node.configs.any?(&:applied_default?) ||
-            subtree_has_applied_subfield_default?(node.children)
-        end
-      end
-
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
       def required_shape_member?(config)
         Array(config.validations.dig(:shape, :members)).any? { |m| !optional_for_schema?(m) }
@@ -448,20 +401,12 @@ module Axn
         # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
         return true if nil_accepted?(config) && !has_required_child
 
-        # No parent-level omission signal: the parent is omittable only if runtime can synthesize a
-        # COMPLETE parent from subfield defaults — a usable default ANYWHERE in the subtree supplies a
-        # value (a dotted-NAME default lands on a deeper node yet still materializes the parent) and none
-        # of the subtree is required (a required descendant has no default and can't be synthesized).
-        # Whether a Proc default counts follows subtree_has_usable_subfield_default?'s mode split: strict
-        # (schema) mode excludes Procs (a Proc default is uninspectable and a raising one would make
-        # omission FAIL, so counting it would reflect the parent omittable though runtime rejects the
-        # omitted call — the looser, unsafe direction), while satisfiability mode counts them. This
-        # synthesis only rescues an OBJECT-shaped parent: `apply_defaults_for_subfields!` injects `{}`,
-        # which satisfies a Hash/`:params`/untyped parent but not a non-object one (`type: Array`, a typed
-        # class) whose top-level type validator rejects the `{}`.
-        return false unless object_shaped?(config)
-
-        subtree_has_usable_subfield_default?(children, satisfiability:) && !has_required_child
+        # No parent-level omission signal remains. A subfield default resolves only the CHILD's value on
+        # the read path (ContractForSubfields.resolve_value) — it never synthesizes the parent — so a
+        # descendant default cannot rescue the parent's own omission. The parent's requiredness is decided
+        # by its OWN signals (own default / own nil-tolerance, above) plus required-child stranding; a
+        # child default fixes the child's nil, not the parent's own presence/blank obligation.
+        false
       end
 
       # Optional (client may omit) iff a usable default exists, or — with no usable default — the
@@ -592,7 +537,7 @@ module Axn
         prop[:required] = prop[:required].uniq
         # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
         # accepts nil and no required nested obligation is stranded (required_child? — which counts a
-        # required shape member only when a defaulted subfield synthesizes the parent). Read from the
+        # required shape member only when the parent's OWN default materializes it). Read from the
         # precomputed annotation (derive_annotations already applied this same rule to `node`), NOT
         # `prop[:required]`, which also carries shape members that a bare nil parent never triggers.
         prop[:type] = ann[node].nullable ? %w[object null] : "object"

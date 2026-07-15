@@ -139,6 +139,26 @@ module Axn
         klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
         Array(klass).select { |k| SUPPORTED.include?(k) }
       end
+
+      # Whether a field coerces this run: its own `coerce:` tri-state wins (explicit true/false), else the
+      # resolved coerce_input_types flag. Single-sourced so the write-back pass and the read path
+      # (ContractForSubfields.resolve_value) decide identically.
+      def field_coerces?(type_opt, coerce_input_types)
+        explicit = type_opt.is_a?(Hash) ? type_opt[:coerce] : nil
+        explicit.nil? ? coerce_input_types : explicit
+      end
+
+      # Coerce a config's value when the field has ≥1 coercible member AND opts in (field_coerces?);
+      # otherwise return it untouched. The one place both the write-back coercion pass and the read path
+      # decide-and-coerce, so they can't drift.
+      def coerce_config_value(value, config, coerce_input_types:)
+        type_opt = config.validations[:type]
+        klasses = coercible_klasses(type_opt)
+        return value if klasses.empty?
+        return value unless field_coerces?(type_opt, coerce_input_types)
+
+        coerce_value(value, klasses)
+      end
     end
   end
 end

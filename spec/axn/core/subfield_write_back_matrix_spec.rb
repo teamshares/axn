@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-# Runtime-truth matrix for the subfield write-back paths (defaults + preprocess), pinned BEFORE the
-# PRO-2883 chain-aware refactor so the refactor is verified against observed behavior, not intended
-# behavior. Every example here must hold identically before and after.
-RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
+# Runtime-truth matrix for subfield resolution. Subfield coerce:/preprocess:/default: resolve on the
+# READ path (non-materializing, value-level): the child resolves on read while the parent reader
+# returns the caller's value unchanged, and no wire write-back mutates a caller-supplied object.
+RSpec.describe "Subfield read-path resolution runtime truth (PRO-2903)" do
   describe "defaults" do
-    it "materializes a nil untyped parent as {} so the default lands" do
+    it "resolves a nil-parent subfield default without materializing the parent" do
       action = build_axn do
         expects :payload, allow_nil: true
         expects :note, on: :payload, optional: true, type: String, default: "d"
@@ -16,8 +16,8 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
 
       result = action.call(payload: nil)
       expect(result).to be_ok
-      expect(result.got).to eq("d")
-      expect(result.parent).to eq({ note: "d" })
+      expect(result.got).to eq("d")       # child resolves via the read path (value-level default)
+      expect(result.parent).to be_nil     # parent is the caller's value, unmaterialized
     end
 
     it "materializes an absent Hash-typed parent" do
@@ -95,7 +95,7 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
       expect(action.call(seed: 4, payload: { other: 1 }).got).to eq(8)
     end
 
-    it "creates intermediate hashes for a dotted-name default under a present parent" do
+    it "resolves a dotted-name default under a present parent without adding the intermediate" do
       action = build_axn do
         expects :payload, type: Hash
         expects "meta.note", on: :payload, optional: true, default: "d"
@@ -104,10 +104,10 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
         def call = expose(parent: payload)
       end
 
-      expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1, meta: { note: "d" } })
+      expect(action.call(payload: { other: 1 }).parent).to eq({ other: 1 })
     end
 
-    it "materializes the whole chain for a dotted-name default under a nil parent" do
+    it "resolves a dotted-name default under a nil parent without materializing the chain" do
       action = build_axn do
         expects :payload, type: Hash, optional: true, allow_nil: true
         expects "meta.note", on: :payload, optional: true, default: "d"
@@ -116,12 +116,10 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
         def call = expose(parent: payload)
       end
 
-      expect(action.call.parent).to eq({ meta: { note: "d" } })
+      expect(action.call.parent).to be_nil
     end
 
-    it "applies interacting dotted defaults in declaration order (deeper-first declaration wins the skip)" do
-      # `meta.x`'s default runs first (declaration order) and creates `meta`, so `meta`'s own default
-      # sees a present value and skips. Pinned: the defaults pass runs in declaration order.
+    it "does not materialize the parent for interacting dotted defaults under a nil parent" do
       action = build_axn do
         expects :payload, type: Hash, optional: true, allow_nil: true
         expects "meta.x", on: :payload, optional: true, default: 1
@@ -131,10 +129,10 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
         def call = expose(parent: payload)
       end
 
-      expect(action.call.parent).to eq({ meta: { x: 1 } })
+      expect(action.call.parent).to be_nil
     end
 
-    it "writes through a setter when the parent is an object (not a Hash)" do
+    it "resolves a default off an object parent without mutating it (no setter write-back)" do
       holder = Struct.new(:note, :other)
       action = build_axn do
         expects :payload, type: holder
@@ -144,7 +142,9 @@ RSpec.describe "Subfield write-back runtime truth (PRO-2883)" do
         def call = expose(got: note)
       end
 
-      expect(action.call(payload: holder.new(nil, 1)).got).to eq("d")
+      obj = holder.new(nil, 1)
+      expect(action.call(payload: obj).got).to eq("d")
+      expect(obj.note).to be_nil # the caller's object is untouched
     end
   end
 

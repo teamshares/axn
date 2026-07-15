@@ -235,4 +235,45 @@ RSpec.describe "model: id reader and consistency" do
       expect(result.cid).to be_nil
     end
   end
+
+  describe "rejects coerce:/preprocess: on a model: field (they transform a scalar, not a record)" do
+    it "rejects coerce: on a top-level model field" do
+      klass = co_class
+      expect do
+        build_axn { expects :company, model: { klass: }, coerce: Integer }
+      end.to raise_error(ArgumentError, /coerce:.*not supported on a `model:` field.*<field>_id/m)
+    end
+
+    it "rejects preprocess: on a top-level model field" do
+      klass = co_class
+      expect do
+        build_axn { expects :company, model: { klass: }, preprocess: ->(v) { v } }
+      end.to raise_error(ArgumentError, /preprocess:.*not supported on a `model:` field/)
+    end
+
+    it "rejects coerce: on a model subfield" do
+      klass = co_class
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: }, coerce: Integer
+        end
+      end.to raise_error(ArgumentError, /coerce:.*not supported on a `model:` field.*with on: payload/m)
+    end
+
+    it "rejects preprocess: on a model subfield" do
+      klass = co_class
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: }, preprocess: ->(v) { v }
+        end
+      end.to raise_error(ArgumentError, /preprocess:.*not supported on a `model:` field/)
+    end
+
+    it "still allows a plain model field (no transform)" do
+      klass = co_class
+      expect { build_axn { expects :company, model: { klass: } } }.not_to raise_error
+    end
+  end
 end

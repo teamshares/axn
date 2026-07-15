@@ -97,10 +97,26 @@ module Axn
                 end
         return cache[config] if cache.key?(config)
 
-        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: resolve_parent(action, config),
+        parent = resolve_parent(action, config)
+        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
                                                          permit_method_call: config.method_call)
+        # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
+        # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
+        # value stays untouched, so axn never mutates a caller-supplied object during resolution.
+        value = _apply_read_path_transforms(action, config, value, parent)
         value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         cache[config] = value
+      end
+
+      # coerce → preprocess, applied to a resolved subfield value on the read path (the top-level pass
+      # order, minus default: which the caller applies after). Preprocess is skipped when the parent is
+      # absent (nil): an absent subfield has no value to transform, matching the write-back's
+      # drop-on-nil-parent. coerce_value no-ops on a nil/non-String value, so coercion needs no guard.
+      def self._apply_read_path_transforms(action, config, value, parent)
+        coerce_input_types = Axn::Configuration.resolve_override_for(action.class, :coerce_input_types)
+        value = Axn::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
+        value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
+        value
       end
 
       # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
@@ -219,14 +235,13 @@ module Axn
           # undeclared siblings are still dropped. The `default:`/`preprocess:`/`coerce:` carve-outs below
           # remain (they're about per-invocation resolution, orthogonal to nesting).
 
-          # An ambient subfield's value comes from the ambient provider / CurrentAttributes
-          # per-invocation, not from `@context.provided_data[parent]` — but `default:`/`preprocess:` are
-          # applied by mutating `provided_data[parent]` (see Executor#apply_defaults_for_subfields! /
-          # #apply_inbound_preprocessing_for_subfields!), which the per-invocation resolution never reads,
-          # so both would silently fail to affect the resolved value. Gated on `_on_roots_at_ambient?` so
-          # a NESTED ambient subfield (whose `on:` names an ambient parent, not ambient itself) is covered
-          # too. `sensitive:` is filter-only and unaffected — it's relied on for ambient_context
-          # observability, so it must stay allowed (composed down the declared path, PRO-2909).
+          # An ambient subfield's value is framework-supplied per-invocation (from the ambient provider /
+          # CurrentAttributes), not caller input — so `default:`/`preprocess:`, which transform
+          # caller-supplied inbound arguments, have no place to apply, and defaulting/preprocessing a
+          # framework value is a category error. Gated on `_on_roots_at_ambient?` so a NESTED ambient
+          # subfield (whose `on:` names an ambient parent, not ambient itself) is covered too. `sensitive:`
+          # is filter-only and unaffected — it's relied on for ambient_context observability, so it must
+          # stay allowed (composed down the declared path, PRO-2909).
           if _on_roots_at_ambient?(on) && (!default.nil? || !preprocess.nil?)
             raise ArgumentError,
                   "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \

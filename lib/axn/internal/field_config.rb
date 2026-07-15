@@ -32,6 +32,22 @@ module Axn
           config.default.respond_to?(:call) ? action.instance_exec(&config.default) : config.default
         end
       end
+
+      # Run a config's preprocess proc against an action instance, wrapping failures as
+      # PreprocessingError. Single source for the write-back pass AND the read-path resolution
+      # (ContractForSubfields.resolve_value), so the two can't drift on error semantics — mirrors
+      # resolve_default.
+      def resolve_preprocess(action, config, value)
+        descriptor = config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
+        identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
+        Axn::Internal::ContractErrorHandling.with_contract_error_handling(
+          exception_class: Axn::ContractViolation::PreprocessingError,
+          message: ->(_field, error) { "Error preprocessing #{descriptor}: #{error.message}" },
+          field_identifier: identifier,
+        ) do
+          action.instance_exec(value, &config.preprocess)
+        end
+      end
     end
   end
 end

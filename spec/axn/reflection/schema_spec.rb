@@ -741,7 +741,8 @@ RSpec.describe Axn::Reflection::Schema do
     expect(serialized["z"]).to be_a(String) # "1+2i" — would fail a { type: "number" } schema
   end
 
-  it "requires a parent when a shallow subfield has a default but a sibling shallow subfield is required (the synthesized parent misses the sibling)" do
+  it "requires a Hash parent whether a sibling is required or every sibling is defaulted " \
+     "(a subfield default resolves only the child, never synthesizing the parent)" do
     partial = Class.new do
       include Axn
       expects :payload, type: Hash
@@ -754,8 +755,10 @@ RSpec.describe Axn::Reflection::Schema do
       expects :a, on: :payload, type: String, default: "x"
       expects :b, on: :payload, type: Integer, default: 1
     end
+    # `partial` is required because `a` is a required child; `covered` is required because its own
+    # presence obligation stands — the child defaults resolve on the read path and do not synthesize payload.
     expect(described_class.build_input(partial.internal_field_configs, partial.subfield_configs)[:required]).to include("payload")
-    expect(Array(described_class.build_input(covered.internal_field_configs, covered.subfield_configs)[:required])).not_to include("payload")
+    expect(Array(described_class.build_input(covered.internal_field_configs, covered.subfield_configs)[:required])).to include("payload")
   end
 
   it "keeps a non-object parent's declared type and omits its subfield shape (a type: Array parent is not rewritten to object)" do
@@ -1867,12 +1870,11 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(payload: nil)).not_to be_ok # runtime agreement: nil fails
     end
 
-    it "leaves the parent omittable when a DEEP (dotted-name) usable subfield default synthesizes it and " \
-       "nothing is required (rescue walks the subtree, PRO-2872)" do
-      # `expects "address.zip", on: :payload, default: "x"` on a plain Hash parent with no required member:
-      # runtime synthesizes a complete `payload` from the deep default, so omission PASSES. The rescue walk
-      # must count a usable default at ANY depth (not just direct children), so the schema agrees — payload
-      # is omittable.
+    it "requires the parent when a DEEP (dotted-name) subfield default would land under it (the default " \
+       "resolves only the child on the read path, never synthesizing the parent, PRO-2903)" do
+      # `expects "address.zip", on: :payload, default: "x"` on a plain Hash parent: the deep default resolves
+      # only the child's value when read — it never synthesizes `payload` — so the parent keeps its own
+      # presence obligation. The schema marks it required and runtime rejects omission.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -1880,8 +1882,8 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("payload")
-      expect(klass.call).to be_ok # runtime agreement: omission passes (deep default synthesizes payload)
+      expect(schema[:required] || []).to include("payload")
+      expect(klass.call).not_to be_ok # runtime agreement: omission fails the parent's own presence
     end
 
     it "keeps the parent required when the only DEEP (dotted-name) subfield default is a Proc (rescue " \
@@ -2210,7 +2212,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required] || []).to include("items")
     end
 
-    it "does NOT require the Hash-typed analog (the synthesized Hash satisfies a Hash parent, so it may be omitted)" do
+    it "requires the Hash-typed analog too (a subfield default resolves only the child, never synthesizing the Hash parent)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -2218,7 +2220,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:required] || []).to include("payload")
     end
   end
 
@@ -2769,8 +2771,8 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a subfield's truthy default materializes the parent, making it omittable (Bug Z3)" do
-    it "does not require the parent when a subfield default materializes it and no child is required" do
+  describe "a subfield default resolves only the child (value-level on the read path), never materializing the parent" do
+    it "still requires the parent when a subfield carries a default and no child is required" do
       klass = Class.new do
         include Axn
         expects :payload
@@ -2778,7 +2780,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:required]).to include("payload")
     end
 
     it "still requires the parent when the subfield has no default at all" do
@@ -2792,7 +2794,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "does not require the parent when a subfield carries a false default (applied at runtime, so it materializes the parent)" do
+    it "still requires the parent when a subfield carries a false default (the default resolves the child's value, not the parent)" do
       klass = Class.new do
         include Axn
         expects :payload
@@ -2800,7 +2802,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:required]).to include("payload")
     end
   end
 
@@ -4289,6 +4291,7 @@ RSpec.describe Axn::Reflection::Schema do
             },
           },
         },
+        required: ["payload"],
       )
     end
 

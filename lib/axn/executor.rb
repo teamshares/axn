@@ -381,7 +381,12 @@ module Axn
       # the settled wire values.
       _clear_pre_pipeline_memos!
 
-      validate_contract!(:inbound)
+      # Subfield coerce:/preprocess:/default: resolve lazily on the read path (ContractForSubfields
+      # .resolve_value), first triggered as inbound validation reads each subfield reader — not in the
+      # write-back passes above (which are top-level-only). A `done!` raised inside a subfield
+      # preprocess/default therefore surfaces here, during validation, so this read is wrapped to settle
+      # the early completion the same way the top-level passes above do.
+      return if handle_early_completion_if_raised { validate_contract!(:inbound) }
 
       # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
       # resolve — wrap the body so in-flight log lines inherit them under a SemanticLogger.
@@ -424,41 +429,24 @@ module Axn
       true
     end
 
-    # Wire→Ruby coercion for declared-inbound fields, for those that opted in via `coerce:` (a
+    # Wire→Ruby coercion for declared-inbound TOP-LEVEL fields, for those that opted in via `coerce:` (a
     # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
-    # every coercible-typed field that didn't opt out (see #coerce_field_inbound?). Runs first in the
+    # every coercible-typed field that didn't opt out (see Axn::Reflection::Coercion.field_coerces?). Runs first in the
     # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
-    # see the Ruby value. One depth-generalized pass over both stores (a top-level field is the
-    # depth-0 case of its ResolvedPath). Coerce-or-leave (Axn::Reflection::Coercion): only String
-    # values are transformed, an unparseable string passes through to the normal TypeValidator error,
-    # and a present real object is untouched — so an absent/nil value never writes back and coercion
-    # never materializes anything. Ambient subfields reject `coerce:` at declaration and aren't
-    # indexed, so they never reach the write-back.
+    # see the Ruby value. Subfield coercion resolves on the read path (ContractForSubfields.resolve_value),
+    # not here. Coerce-or-leave (Axn::Reflection::Coercion): only String values are transformed, an
+    # unparseable string passes through to the normal TypeValidator error, and a present real object is
+    # untouched — so an absent/nil value never writes back and coercion never materializes anything.
     def apply_inbound_coercion!
       coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
 
-      _inbound_configs.each do |config|
-        next if _resolution_crosses_method_call?(config) # method-derived value: resolved on the read path, not coerced here
-
-        type_opt = config.validations[:type]
-        klasses = Axn::Reflection::Coercion.coercible_klasses(type_opt)
-        next if klasses.empty?
-        next unless coerce_field_inbound?(type_opt, coerce_input_types)
+      @action_class.send(:internal_field_configs).each do |config|
         next unless (path = _resolved_path_for(config))
 
         current = _current_value_at(path)
-        coerced = Axn::Reflection::Coercion.coerce_value(current, klasses)
+        coerced = Axn::Reflection::Coercion.coerce_config_value(current, config, coerce_input_types:)
         _write_value_at!(path, coerced) unless coerced.equal?(current)
       end
-    end
-
-    # Whether a field coerces this run. A field's own `coerce` flag is a tri-state (true/false/absent)
-    # and always wins: explicit true coerces, explicit false opts out (even when coerce_input_types is
-    # on), and absent follows the resolved coerce_input_types flag. Only reached for a field with ≥1
-    # coercible member, so a coerce_input_types-on action still leaves non-coercible types untouched.
-    def coerce_field_inbound?(type_opt, coerce_input_types)
-      explicit = type_opt.is_a?(Hash) ? type_opt[:coerce] : nil
-      explicit.nil? ? coerce_input_types : explicit
     end
 
     # With coerce_input_types resolved on, surface `coerce: true` in the type bag for a coercible field
@@ -476,34 +464,17 @@ module Axn
       field_validations.merge(type: type_hash.merge(coerce: true))
     end
 
-    # One depth-generalized pass over both stores. For a subfield, a nil parent has nowhere to write
-    # the result, so _write_value_at! no-ops and the preprocess output is dropped — deliberately: a
-    # nil/absent parent means the subfield is absent (PRO-2857), and a preprocess must NOT synthesize
-    # the parent into existence (unlike a subfield `default:`, which does). Materializing here would
-    # make an absent parent present — masking a required parent, and tripping shape/type validation
-    # the schema then can't mirror. (A top-level field is its own root, so its result always writes.)
+    # Preprocessing for declared-inbound TOP-LEVEL fields (a top-level field is its own root, so its
+    # result always writes). Subfield preprocess resolves on the read path
+    # (ContractForSubfields.resolve_value), where it applies to the resolved value without touching the
+    # parent — a subfield preprocess never synthesizes or mutates its parent.
     def apply_inbound_preprocessing!
-      _inbound_configs.each do |config|
+      @action_class.send(:internal_field_configs).each do |config|
         next unless config.preprocess
-        # A method-derived value can't be written back, so preprocess can't apply (PRO-2903). Skip it
-        # entirely rather than run the proc for a discarded result (which would fire its side effects /
-        # raise a PreprocessingError on a value the reader never sees).
-        next if _resolution_crosses_method_call?(config)
         next unless (path = _resolved_path_for(config))
 
         current_value = _current_value_at(path)
-        preprocessed_value = Internal::ContractErrorHandling.with_contract_error_handling(
-          exception_class: ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing #{_field_descriptor(config)}: #{error.message}" },
-          field_identifier: _field_identifier(config),
-        ) do
-          @action.instance_exec(current_value, &config.preprocess)
-        end
-        # The write may synthesize missing IMPLICIT intermediates (never the root — a nil root
-        # drops the value, see _write_value_at!), so it obeys the same synthesis gate as defaults:
-        # an intermediate whose declared types/shape members can't hold an object is not created,
-        # and the preprocess result is dropped (nowhere to land).
-        _write_value_at!(path, preprocessed_value) if _write_chain_materializable?(path)
+        _write_value_at!(path, Internal::FieldConfig.resolve_preprocess(@action, config, current_value))
       end
     end
 
@@ -610,20 +581,6 @@ module Axn
 
     # Whether a tree node is produced by a method_call: subfield. Single source for "is this hop sharp?"
     def _node_dispatches?(node) = node.configs.any?(&:method_call)
-
-    # Whether resolving this config's value crosses any method_call hop — the config itself, or any
-    # ancestor on its chain. The write-back pre-validation passes (defaults/preprocess/coercion) skip
-    # such configs: a method-derived value is resolved on the READ path (ContractForSubfields
-    # .resolve_value — which applies default: there), never read back from provided_data, so a
-    # write-back can't affect it. Skipping also keeps preprocess/coerce genuinely inert on a
-    # method_call: subfield (they don't compose yet — PRO-2903) rather than running their proc for a
-    # discarded result. An unindexed config (ambient) has no path, so only its own flag applies.
-    def _resolution_crosses_method_call?(config)
-      return true if config.method_call
-      return false unless (path = _resolved_path_for(config))
-
-      path.ancestors.any? { |node, _seg| _node_dispatches?(node) }
-    end
 
     def _suppressed_by_failed_ancestor?(path, failed_nodes)
       path.ancestors.any? { |node, _seg| failed_nodes.key?(node) }
@@ -741,48 +698,19 @@ module Axn
       end
     end
 
-    # One depth-generalized pass over both stores (a top-level field is the depth-0 case: no
-    # ancestors, so the chain gate is vacuous and the default value itself becomes the root value —
-    # no `{}` synthesis). A default applies when the current value is nil/absent, matching key-absence
-    # semantics at every depth.
+    # Defaults for declared-inbound TOP-LEVEL fields: the default value itself becomes the root value
+    # when the current value is nil/absent, matching key-absence semantics. Subfield defaults resolve
+    # on the read path (ContractForSubfields.resolve_value) as value-level defaults (PRO-2889), where
+    # they never materialize or mutate the parent.
     def apply_inbound_defaults!
-      _inbound_configs.each do |config|
+      @action_class.send(:internal_field_configs).each do |config|
         next unless config.applied_default?
-        # A method-derived value is resolved on the read path, where resolve_value already applies the
-        # default (value-level, PRO-2889); the write-back here can't reach it, so skip it (also avoids a
-        # redundant method invocation during this pass).
-        next if _resolution_crosses_method_call?(config)
         next unless (path = _resolved_path_for(config))
         next unless _current_value_at(path).nil?
-        next if _default_clobbers_model_route?(path)
         next if _id_default_would_conflict_with_present_record?(path)
-
-        # A nil non-object ancestor anywhere along the chain can't hold the nested structure —
-        # materialization refuses to inject `{}` where it would fail that ancestor's own declared
-        # type — so the subfield is absent. Skip evaluating/writing its default: a Proc default would
-        # run its side effects for nothing, and the write would synthesize a type-violating value.
-        next unless _write_chain_materializable?(path)
-        next unless _default_chain_hash_writable?(path)
-
-        @context.provided_data[path.wire_path.first] = {} if path.wire_path.size > 1 && @context.provided_data[path.wire_path.first].nil?
 
         _write_value_at!(path, _resolve_default(config))
       end
-    end
-
-    # Whether a subfield default's WIRE write would clobber a model route sharing the same wire key.
-    # A merged non-model route (or the model config's own default) at a node that also carries a
-    # `model:` route must NOT write its value onto the shared key: the model resolver prefers a
-    # written value over a caller-supplied/sibling `<field>_id`, so the written default is read AS the
-    # record and fails ModelValidator — killing the sibling-id rescue. The value-level fallback
-    # (ContractForSubfields.resolve_value) still serves the non-model route's readers and validation,
-    # and the model route resolves via id/sibling untouched. Only a depth>0 write shares a nested key;
-    # a top-level (depth-0) model default supplies the record itself and keeps writing. This is the
-    # same clobbering class `_synthesizable_node?` documents for `{}` synthesis.
-    def _default_clobbers_model_route?(path)
-      return false if path.wire_path.size <= 1
-
-      path.node.configs.any? { |c| c.validations[:model] }
     end
 
     # Whether writing this config's `<field>_id` default would fabricate a model-consistency mismatch.
@@ -799,28 +727,13 @@ module Axn
       !_current_value_at(model_path).nil?
     end
 
-    # The sibling `model:` route whose companion `<field>_id` node this path lands on, or nil. Keyed on
-    # the id node's own leaf wire key (`path.leaf_key`), matched against `model_id_key(<sibling leaf
-    # wire key>)` — the tree keys each child by its own leaf wire key, so this matches the id however it
-    # was declared (`:company_id` or a dotted `"meta.company_id"`), the same way credit_sibling_id_defaults!
-    # locates the pair by node key. Siblings come from the id's own WIRE parent at depth (not the `on:`
-    # target — the two diverge for a dotted subfield name, PRO-2896), or the top-level field configs at
-    # depth 0.
+    # The sibling top-level `model:` route whose companion `<field>_id` this path is — matched by
+    # model_id_key on the field — or nil. Guards a top-level `<field>_id` default from being written
+    # when the sibling record is already present (a fabricated consistency mismatch).
     def _sibling_model_route_for_id(path)
       id_key = path.leaf_key
-      if path.wire_path.size > 1
-        siblings = path.leaf_parent_node&.children || {}
-        siblings.each do |key, child|
-          next unless Internal::FieldConfig.model_id_key(key) == id_key
-
-          model_config = child.configs.find { |c| c.validations[:model] }
-          return model_config if model_config
-        end
-        nil
-      else
-        @action_class.send(:internal_field_configs).find do |c|
-          c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
-        end
+      @action_class.send(:internal_field_configs).find do |c|
+        c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
       end
     end
 
@@ -934,99 +847,9 @@ module Axn
       end
     end
 
-    # The current inbound value at a resolved path: the root value itself at depth 0, otherwise an
-    # Extract dig from the root value (nil-safe: a nil root yields nil). Walked one segment at a time
-    # so each crossed hop honors its own `method_call:` opt-in — a segment produced by a method_call
-    # subfield is read by method, plain/implicit intermediates stay safe — matching runtime resolution.
-    # Malformed sources read as absent (one doctrine — see FieldResolvers.extract_or_nil): the
-    # pre-validation passes skip/no-op and the source's own validation classifies the bad value.
+    # The current inbound value at a top-level field (depth 0): the root wire key's value.
     def _current_value_at(path)
-      value = @context.provided_data[path.wire_path.first]
-      (1...path.wire_path.size).each do |k|
-        break if value.nil?
-
-        value = Core::FieldResolvers.extract_or_nil(field: path.wire_path[k].to_s, provided_data: value,
-                                                    permit_method_call: _segment_permits_method_call?(path, k))
-      end
-      value
-    end
-
-    # Human identifiers for contract-error reporting, matching each level's historical wording.
-    def _field_descriptor(config)
-      config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
-    end
-
-    def _field_identifier(config)
-      config.subfield? ? "#{config.field} on #{config.on}" : config.field
-    end
-
-    # Whether a subfield default's ancestor chain can be fully materialized: every nil/absent node
-    # along the chain (the top-level root included) must tolerate `{}` per its declared types.
-    # An EXPLICIT node is judged by its own configs (Schema.object_shaped?, the same gate
-    # reflection's requiredness derivation uses — a `type: Array` node refuses). An IMPLICIT node
-    # (a dotted intermediate with no declaration of its own) is judged by any `shape:` member its
-    # key collides with — synthesizing `{}` where the parent's shape declares a scalar member would
-    # turn an optional-absent member into a shape violation — via the SAME member locator and
-    # nestability predicate the tree's drop pass uses (Schema.shape_members_at /
-    # nestable_as_object?, carrying merged members so a member-of-a-member is tested at depth).
-    # Present values are not judged here (the write path digs through whatever the caller supplied).
-    def _write_chain_materializable?(path)
-      # Depth 0: the default value IS the root — nothing is synthesized, so there is nothing to gate.
-      return true if path.ancestors.empty?
-
-      value = @context.provided_data[path.wire_path.first]
-      return false if value.nil? && !_synthesizable_node?(path.ancestors.first.first)
-
-      carried = []
-      path.ancestors.each_cons(2) do |(parent, seg), (child, _next_seg)|
-        # Reading `seg` yields `child`, so `child`'s own config governs whether that hop may dispatch.
-        unless value.nil?
-          value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value,
-                                               permit_method_call: _node_dispatches?(child))
-        end
-
-        members = child.implicit? ? Axn::Reflection::Schema.shape_members_at(parent.configs + carried, seg) : []
-        if value.nil?
-          return false unless _synthesizable_node?(child)
-          return false if members.any? { |m| !Axn::Reflection::Schema.nestable_as_object?(m) }
-        end
-        carried = members.select { |m| Axn::Reflection::Schema.nestable_as_object?(m) }
-      end
-      true
-    rescue Axn::ContractViolation::UnextractableError
-      # A malformed (present but key-less) intermediate can't be written into — the default is
-      # skipped and the intermediate's own validation classifies the bad value.
-      false
-    end
-
-    # Whether an ABSENT node may be synthesized as `{}`: every config's declared type must admit an
-    # object (Schema.object_shaped?, any-branch — `{}` satisfies a union that includes Hash), and no
-    # config may be a `model:` route — a synthesized `{}` would be preferred by the model resolver
-    # over a caller-supplied `<field>_id`, clobbering a valid id-based call (and it rescues
-    # nothing: ModelValidator rejects a `{}` regardless, PRO-2877). Mirrors the model
-    # half of Schema.node_configs_block_nesting?, which reflection's nesting path gates on.
-    def _synthesizable_node?(node)
-      node.configs.all? { |c| Axn::Reflection::Schema.object_shaped?(c) && !c.validations[:model] }
-    end
-
-    # A default: writes only into Hash chains (copy-on-write) or materializes absent ones. A
-    # PRESENT non-Hash level anywhere along the write path (a caller-supplied record, a Struct)
-    # is never mutated by a declared default (PRO-2889) — the write is skipped (before the
-    # default is even evaluated, so a Proc runs once, at read) and the value-level fallback
-    # supplies the default to readers and validation instead. Depth 0 assigns the root key
-    # directly (no object mutation), so it always writes.
-    def _default_chain_hash_writable?(path)
-      return true if path.wire_path.size == 1
-
-      value = @context.provided_data[path.wire_path.first]
-      path.wire_path[1..-2].each do |seg|
-        return true if value.nil? # absent from here down — materialized fresh, nothing to mutate
-
-        return false unless value.is_a?(Hash)
-
-        value = Core::FieldResolvers.extract_or_nil(field: seg.to_s, provided_data: value)
-      end
-      value.nil? || value.is_a?(Hash)
+      @context.provided_data[path.wire_path.first]
     end
 
     # The parent value a subfield validates against, resolved once per distinct `on:` target per
@@ -1040,58 +863,9 @@ module Axn
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
 
+    # A top-level field (depth 0): the value IS the root key — assign directly (key-materializing).
     def _write_value_at!(path, new_value)
-      root_key = path.wire_path.first
-      below = path.wire_path[1..]
-      # Depth 0: the value IS the root — assign directly (key-materializing, as top-level
-      # preprocess/defaults always did).
-      return @context.provided_data[root_key] = new_value if below.empty?
-
-      parent_value = @context.provided_data[root_key]
-      # A nil root has nowhere to write into — the value is deliberately dropped (a preprocess never
-      # synthesizes its parent; a default materialized the root before reaching here).
-      return if parent_value.nil?
-
-      written = _cow_write(parent_value, below, new_value)
-      @context.provided_data[root_key] = written unless written.nil? || written.equal?(parent_value)
-    end
-
-    # Copy-on-write nested write: the Hash levels along the path are REBUILT (siblings shared
-    # structurally), so neither the caller's own input hash nor a literal default object stored in
-    # a config is ever mutated by axn's write-back — a literal `default: { meta: {} }` must not
-    # accumulate one call's subfield writes into the next call's default. Missing intermediates
-    # materialize as fresh hashes. A non-Hash level falls back to the legacy behavior: a leaf
-    # parent with a setter (e.g. a Struct) is written in place — an object can't be merged — and a
-    # navigable object intermediate is walked in place; a level that can't hold the path drops the
-    # write (nil return; the ancestor's own validation classifies the bad value, mirroring the
-    # UnextractableError handling on the read side).
-    def _cow_write(current, segments, new_value)
-      seg, *rest = segments
-
-      if current.is_a?(Hash)
-        # Preserve the key form the caller used (a string-keyed hash keeps its string key rather
-        # than gaining a duplicate symbol entry); a missing/falsey child synthesizes fresh under
-        # the symbol form, exactly as the legacy navigation did.
-        key = [seg, seg.to_s].find { |k| current.key?(k) } || seg
-        return current.merge(key => new_value) if rest.empty?
-
-        new_child = _cow_write(current[key] || {}, rest, new_value)
-        return nil if new_child.nil?
-
-        current.merge(key => new_child)
-      elsif rest.empty? && current.respond_to?("#{seg}=")
-        Internal::SubfieldPath.update_object(current, seg, new_value)
-        current
-      elsif rest.any?
-        begin
-          target = Internal::SubfieldPath.navigate_to_parent(current, segments)
-          target[segments.last] = new_value
-          current
-        rescue TypeError, NoMethodError, FrozenError
-          # Tightly scoped: navigate + the single []= run no user code.
-          nil
-        end
-      end
+      @context.provided_data[path.wire_path.first] = new_value
     end
   end
 end
