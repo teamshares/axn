@@ -4523,6 +4523,35 @@ RSpec.describe Axn::Reflection::Schema do
       expect(prop[:properties][:note][:type]).to eq("string")
     end
 
+    it "drops output requiredness for a gated shape member when the outbound gate is closed (Codex round 2)" do
+      action = build_axn do
+        expects :flag, type: :boolean
+        exposes :payload, type: Hash, allow_blank: true do
+          field :note, type: String, if: :flag
+        end
+        def call
+          expose payload: {}
+        end
+      end
+      # Runtime legitimately serializes an empty payload with the gate closed — proving that an output
+      # `required: ["note"]` claim would otherwise be a lie about what the serializer can emit.
+      result = action.call(flag: false)
+      expect(result).to be_ok
+      expect(result.payload).to eq({})
+
+      payload_prop = action.output_schema[:properties][:payload]
+      expect(payload_prop[:required].to_a).not_to include("note")
+
+      # INPUT stays static-maximal for the equivalent input shape: the gated member is still required.
+      input_action = build_axn do
+        expects :flag, type: :boolean
+        expects :payload, type: Hash do
+          field :note, type: String, if: :flag
+        end
+      end
+      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+    end
+
     it "does not force a gated required subfield's ancestors (own-level nested required kept)" do
       action = build_axn do
         expects :data, optional: true

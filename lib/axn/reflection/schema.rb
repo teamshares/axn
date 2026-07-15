@@ -971,7 +971,11 @@ module Axn
         required = []
         members.each do |m|
           props[m.field.to_sym] = build_property(m, for_output:).compact
-          required << m.field.to_s unless optional_for_schema?(m)
+          # On OUTPUT, a conditionally-gated member can be skipped wholesale by a closed gate (the
+          # serializer emits no key for it at all — same superset doctrine that leaves its property
+          # untyped above), so its requiredness is dropped along with its type constraints. INPUT stays
+          # static-maximal (a client is still expected to send the member) — stricter, and safe.
+          required << m.field.to_s unless optional_for_schema?(m) || (for_output && conditionally_gated?(m))
         end
         [props, required]
       end
