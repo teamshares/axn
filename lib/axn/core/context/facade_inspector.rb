@@ -66,7 +66,10 @@ module Axn
         nested_keys = nested_sensitive_keys(field)
         unless nested_keys.empty?
           filtered = ActiveSupport::ParameterFilter.new(nested_keys).filter({ field => value })[field]
-          return filtered.inspect
+          # Route the filtered structure back through the top-level filter (same as the scalar path
+          # below) so a field that is ITSELF sensitive redacts wholesale by name — otherwise the
+          # partially-filtered structure would expose the parent's non-sensitive keys.
+          return inspection_filter.filter_param(field, filtered.inspect)
         end
       end
 
@@ -100,15 +103,25 @@ module Axn
       path && path.wire_path.first == field && action.class._resolve_sensitive_value(config.sensitive, action)
     end
 
-    # Names of sensitive shape members declared within `field`'s shape tree (nested shapes included),
-    # with dynamic `sensitive:` predicates resolved against the action instance — matching how
-    # inputs_for_logging filters. A duck-typed member without #sensitive is treated as not sensitive
-    # (mirrors the ShapeValidator member contract for #method_call).
+    # Names of sensitive shape members that render inside `field`'s displayed value (nested shapes
+    # included), with dynamic `sensitive:` predicates resolved against the action instance — matching
+    # how inputs_for_logging filters. A duck-typed member without #sensitive is treated as not
+    # sensitive (mirrors the ShapeValidator member contract for #method_call).
     def sensitive_member_names(field)
-      config = (action.class.internal_field_configs + action.class.external_field_configs).find { |c| c.field == field }
-      return [] unless config
+      shape_bearing_configs_under(field).flat_map { |config| collect_sensitive_member_names(config) }
+    end
 
-      collect_sensitive_member_names(config)
+    # Configs whose shape members would appear inside `field`'s value: the top-level field config
+    # itself, plus any subfield config resolving to a wire path rooted at `field` (a shape block
+    # declared on a subfield). Logging redacts both because `_sensitive_candidate_configs` walks
+    # `subfield_configs`; inspect must match rather than only covering top-level shapes.
+    def shape_bearing_configs_under(field)
+      top_level = (action.class.internal_field_configs + action.class.external_field_configs).select { |c| c.field == field }
+      subfields = action.subfield_configs.select do |config|
+        path = action.class._resolved_subfields.index[config]
+        path && path.wire_path.first == field
+      end
+      top_level + subfields
     end
 
     def collect_sensitive_member_names(config)

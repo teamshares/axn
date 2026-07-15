@@ -171,6 +171,41 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("999-99-9999")
     end
+
+    it "redacts the whole value when the parent field is itself sensitive (not just the nested member)" do
+      action = build_axn do
+        expects :items, type: Array, sensitive: true do
+          field :ssn, type: String, sensitive: true
+          field :name, type: String
+        end
+
+        def call; end
+      end
+
+      inspected = action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__.internal_context.inspect
+
+      expect(inspected).to include("items: [FILTERED]")
+      # The non-sensitive sibling must not leak out of a wholesale-redacted parent.
+      expect(inspected).not_to include("Alice")
+    end
+
+    it "redacts a sensitive member declared inside a subfield's shape block" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :details, on: :payload, type: Hash do
+          field :token, type: String, sensitive: true
+          field :user, type: String
+        end
+
+        def call; end
+      end
+
+      inspected = action.call(payload: { details: { token: "s3cr3t", user: "alice" } }).__action__.internal_context.inspect
+
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("s3cr3t")
+      expect(inspected).to include("alice")
+    end
   end
 
   describe "duck-typed raw shape members (no #sensitive reader)" do
