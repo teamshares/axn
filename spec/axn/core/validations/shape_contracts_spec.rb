@@ -235,7 +235,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
   end
 
   describe "unsupported member options" do
-    %i[sensitive default preprocess].each do |opt|
+    %i[default preprocess].each do |opt|
       it "raises when a member declares #{opt}:" do
         value = opt == :preprocess ? ->(v) { v } : true
         expect do

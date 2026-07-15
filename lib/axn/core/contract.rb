@@ -97,8 +97,8 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
-      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call) do
-        def initialize(field:, validations:, metadata: {}, method_call: false)
+      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive) do
+        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false)
           super
         end
 
@@ -255,14 +255,29 @@ module Axn
           _static_sensitive_fields
         end
 
-        def _static_sensitive_fields
+        # Every config whose `sensitive:` participates in redaction: the declared inbound/outbound fields
+        # and subfields, plus (recursively) the members of any shape block they carry. Shape members live
+        # in validations[:shape][:members] at every depth, so the walk is uniform — a sensitive member at
+        # any nesting level contributes its name to the ParameterFilter set (which redacts by key name at
+        # any depth, array elements included). Single-sources the traversal for all three collectors.
+        def _sensitive_candidate_configs
           (internal_field_configs + external_field_configs + subfield_configs)
+            .flat_map { |config| _flatten_sensitive_candidates(config) }
+        end
+
+        def _flatten_sensitive_candidates(config)
+          members = config.validations.dig(:shape, :members) || []
+          [config, *members.flat_map { |member| _flatten_sensitive_candidates(member) }]
+        end
+
+        def _static_sensitive_fields
+          _sensitive_candidate_configs
             .select { |c| c.sensitive == true }
             .flat_map { |c| _sensitive_field_keys(c) }
         end
 
         def _has_dynamic_sensitive_fields?
-          @_has_dynamic_sensitive_fields ||= (internal_field_configs + external_field_configs + subfield_configs).any? do |config|
+          @_has_dynamic_sensitive_fields ||= _sensitive_candidate_configs.any? do |config|
             config.sensitive.is_a?(Proc) || config.sensitive.is_a?(Symbol)
           end
         end
@@ -270,7 +285,7 @@ module Axn
         def _resolve_sensitive_fields(action_instance)
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
-          (internal_field_configs + external_field_configs + subfield_configs)
+          _sensitive_candidate_configs
             .select { |config| _resolve_sensitive_value(config.sensitive, action_instance) }
             .flat_map { |c| _sensitive_field_keys(c) }
         end
@@ -466,16 +481,20 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
-        # Field-level options a shape member supports (beyond validations + metadata). Shape members are
-        # reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader, no participation
-        # in value resolution), so `default:`/`preprocess:` — which produce/transform a value that needs a
-        # resolution target to land on (resolved on the read path post-PRO-2903) — have nowhere to apply.
-        # `sensitive:` is rejected too, but only because the sensitive-name collectors don't yet descend
-        # into shape members; it is filterable in principle (ParameterFilter redacts by key name at any
-        # depth, array elements included) and is a planned addition. All three are rejected rather than
-        # silently dropped when converting to a ShapeConfig.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call].freeze
-        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess sensitive].freeze
+        # Field-level options a shape member supports (beyond validations + metadata). `sensitive:` is
+        # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
+        # collectors, which descend into shape members via `_sensitive_candidate_configs`, and
+        # ParameterFilter redacts by key name at any depth (array elements included) — so a per-element
+        # or nested member redacts without a reader.
+        #
+        # Shape members are reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader,
+        # no participation in value resolution), so `default:`/`preprocess:` — which produce/transform a
+        # value that needs a resolution target to land on (resolved on the read path post-PRO-2903) —
+        # have nowhere to apply and are rejected rather than silently dropped when converting to a
+        # ShapeConfig. `model:` is rejected separately (see `_build_shape_member`) for the related but
+        # distinct reason that it resolves an id and exposes an `_id` companion reader a member lacks.
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive].freeze
+        SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
@@ -503,6 +522,18 @@ module Axn
                   "(shape blocks declare validation/schema only)"
           end
 
+          # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
+          # in the reader/facade layer a reader-less member never routes through, so on a member it would
+          # only type-check the element in place (what `type: Klass` already does) while implying
+          # resolution/companion behavior that never happens. Reject it loudly rather than accept the
+          # degenerate form, pointing at the plain-type-check alternative.
+          if opts.key?(:model)
+            raise ArgumentError,
+                  "shape member `#{name}` does not support model: — a model field resolves a record from an id " \
+                  "and exposes a `#{Internal::FieldConfig.model_id_key(name)}` reader, but a shape member is " \
+                  "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
+          end
+
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
@@ -511,7 +542,8 @@ module Axn
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
-          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata, method_call: config.method_call)
+          ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata,
+                          method_call: config.method_call, sensitive: config.sensitive)
         end
 
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.
