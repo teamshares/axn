@@ -314,9 +314,10 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(hash_inputs[:payload][:person]).to eq({ name: "Alice", ssn: "[FILTERED]" })
     end
 
-    it "masks a string-keyed nested object member (extraction accepts string keys)" do
+    it "masks a nested object member regardless of symbol/string key form on either side" do
       klass = person
-      action = build_axn do
+      # symbol member name × string data key
+      sym_member = build_axn do
         expects :order, type: Hash do
           field :customer, type: klass, method_call: true do
             field :ssn, method_call: true, sensitive: true
@@ -325,9 +326,21 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
         def call; end
       end
-
-      inputs = action.send(:new, order: { "customer" => klass.new(name: "Z", ssn: "999-99-9999") }).send(:inputs_for_logging)
+      inputs = sym_member.send(:new, order: { "customer" => klass.new(name: "Z", ssn: "999-99-9999") }).send(:inputs_for_logging)
       expect(inputs[:order]["customer"]).to eq("[FILTERED]")
+
+      # string member name × symbol data key (the mirror combination)
+      str_member = build_axn do
+        expects :order, type: Hash do
+          field "customer", type: klass, method_call: true do
+            field :ssn, method_call: true, sensitive: true
+          end
+        end
+
+        def call; end
+      end
+      inputs2 = str_member.send(:new, order: { customer: klass.new(name: "Z", ssn: "999-99-9999") }).send(:inputs_for_logging)
+      expect(inputs2[:order][:customer]).to eq("[FILTERED]")
     end
 
     it "does NOT redact an object-backed shape whose members are all non-sensitive" do

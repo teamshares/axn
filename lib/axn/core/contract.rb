@@ -404,13 +404,11 @@ module Axn
           value.merge(key => _mask_value_at_path(value[key], wire_path.drop(1), shape, action_instance))
         end
 
-        # The symbol or string form of `key` actually present in `hash` (extraction accepts either);
-        # falls back to the given key when neither is present.
+        # The form of `key` actually present in `hash` — extraction accepts symbol and string keys, and a
+        # member/wire-path name may itself be declared in either form, so try both directions (the key
+        # as-is, its string form, its symbol form). Falls back to the given key when none is present.
         def _hash_key_variant(hash, key)
-          return key if hash.key?(key)
-
-          string_key = key.to_s
-          hash.key?(string_key) ? string_key : key
+          [key, key.to_s, key.to_s.to_sym].find { |variant| hash.key?(variant) } || key
         end
 
         # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
