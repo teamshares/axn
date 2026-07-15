@@ -72,17 +72,18 @@ module Axn
       # Whether a non-extractable member's declaration-level if:/unless: gate is CLOSED — in which
       # case the unreadable-member error is suppressed, mirroring how AM skips a gated validator on
       # an extractable source. Key-presence first so an ungated member constructs nothing and stays
-      # byte-identical. The receiver is the member's own one-off validator (built once, reused) with
-      # the action threaded — the same `self` its real validation would use — via the shared mirror
-      # of AM's condition resolution.
+      # byte-identical. The gate decision is ActiveModel's own (see Fields.declaration_gate_open?),
+      # with the action threaded so a Symbol/Proc condition resolves against the same `self` its
+      # real validation would use, and permission kept to the member's own method_call: opt-in.
       def member_gate_closed?(member, source, action)
         return false unless Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| member.validations.key?(key) }
 
-        validator = member_validator_classes[member.field].new(source)
-        validator.instance_variable_set(:@action, action)
-        validator.instance_variable_set(:@validations, member.validations)
-        validator.instance_variable_set(:@permit_method_call, member_method_call?(member))
-        !Axn::Validation::Fields.declaration_gate_open?(validator)
+        !Axn::Validation::Fields.declaration_gate_open?(
+          validations: member.validations,
+          action:,
+          source:,
+          permit_method_call: member_method_call?(member),
+        )
       end
 
       def members = options[:members] || []

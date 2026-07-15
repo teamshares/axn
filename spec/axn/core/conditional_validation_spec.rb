@@ -255,7 +255,7 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
   # A closed declaration-level gate means the declaration is WHOLLY unvalidated. Two axn-side checks
   # live OUTSIDE ActiveModel and must honor the gate too (Codex round 4): the executor's model
   # record/id consistency pass, and ShapeValidator's unreadable-member pre-check. Both route through
-  # the one shared mirror of AM's condition resolution (Fields.declaration_gate_open?).
+  # the one gate oracle (Fields.declaration_gate_open?), which asks ActiveModel itself.
   describe "closed gate also waives the model-consistency check (outside ActiveModel)" do
     # Plain PORO with a pk finder, so this runs outside Rails (mirrors model_id_reader_spec).
     let(:co_class) do
@@ -384,7 +384,7 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     end
   end
 
-  describe "shared gate-evaluation helper (mirror of AM's condition resolution)" do
+  describe "shared gate oracle (ActiveModel itself decides — no hand-rolled mirror)" do
     it "resolves a Symbol gate through the action (exercised by both outside-AM checks)" do
       klass = Class.new do
         def self.name = "Co"
@@ -426,7 +426,12 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     end
   end
 
-  describe "blank gate values (nil/empty if:/unless: canonicalize away — a blank gate is no gate)" do
+  # The set of "blank" condition values ActiveModel IGNORES (runs the validators unconditionally) is
+  # measured against the bundled activemodel 7.2.2.2, not guessed: `check_conditionals` early-returns
+  # an empty condition list `if conditionals.blank?`, so `nil`, `false`, `""`, any whitespace-only
+  # String, and `[]` are each NO conditional at all. axn canonicalizes exactly that set away with the
+  # same `value.blank?` predicate, so a remaining gate key always denotes a real, enforced gate.
+  describe "blank gate values (AM-ignored conditions canonicalize away — a blank gate is no gate)" do
     it "rejects a nil-tolerant parent whose required subfield carries `if: nil`, exactly as if if: were absent" do
       expect do
         build_axn do
@@ -434,6 +439,17 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
           expects :user, type: String, on: :data, if: nil
         end
       end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+    end
+
+    it "rejects the same dead-tolerance shape for `if: false` and `if: \"\"` (both blank, hence no gate)" do
+      [false, ""].each do |blank|
+        expect do
+          build_axn do
+            expects :data, optional: true
+            expects :user, type: String, on: :data, if: blank
+          end
+        end.to raise_error(ArgumentError, /:data is declared nil-tolerant/)
+      end
     end
 
     it "still enforces a field declared with `if: nil` unconditionally at runtime" do
@@ -447,6 +463,17 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.call(num: 5).ok?).to be true
     end
 
+    it "enforces `if: false`/`if: \"\"`/`if: \" \"` unconditionally at runtime (blank == no gate, NOT never-run)" do
+      [false, "", " "].each do |blank|
+        action = build_axn do
+          expects :num, type: Integer, if: blank
+          def call; end
+        end
+        expect(action.call.ok?).to be false # required, gate absent
+        expect(action.call(num: 5).ok?).to be true
+      end
+    end
+
     it "also canonicalizes an empty rule list (`if: []`/`unless: []`) away as no gate" do
       action = build_axn do
         expects :num, type: Integer, if: []
@@ -454,6 +481,81 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       end
       expect(action.call.ok?).to be false
       expect(action.call(num: 5).ok?).to be true
+    end
+  end
+
+  # Drift-proof matrix: for the full condition-value matrix, axn's gate decision must AGREE with
+  # ActiveModel's own. Both sides are derived from ONE built action — the runtime side by calling it
+  # with the gated field ABSENT (an open gate makes `presence: true` fire; a closed gate lets it
+  # through), the axn side by asking Fields.declaration_gate_open? on that action's canonicalized
+  # validations. No hardcoded expectations that could themselves drift: the assertion is purely that
+  # the two AM-derived decisions match, including which values RAISE (String/2-arity/arbitrary #call
+  # object) — pinning that axn delegates gating to ActiveModel rather than mirroring it.
+  describe "axn's gate decision agrees with ActiveModel itself (drift-proof matrix)" do
+    condition_matrix = {
+      "nil" => nil,
+      "false" => false,
+      "true" => true,
+      "empty String" => "",
+      "whitespace String" => " ",
+      "[]" => [],
+      "[nil]" => [nil],
+      "[false]" => [false],
+      "Symbol :cond" => :cond,
+      "non-blank String" => "names_nothing",
+      "proc {}" => proc {},
+      "proc {|r|}" => proc { |_r| },
+      "proc {|r,*| (arity -2)}" => proc { |_r, *| },
+      "proc {|*| (arity -1)}" => proc { |*| },
+      "lambda {}" => -> {},
+      "lambda {|r|}" => ->(_r) {},
+      "->(r,*){} (arity -2 lambda)" => ->(_r, *) {},
+      "proc {|a,b| (arity 2)}" => proc { |_a, _b| },
+      "object#call" => Class.new { def call(*) = true }.new,
+    }.freeze
+
+    # Runtime truth: call the action with `probe_field` absent. Open gate → presence fires
+    # (InboundValidationError); closed gate → ok; a raising condition surfaces as a non-validation
+    # exception (or escapes .call for a non-StandardError like SystemStackError — caught here).
+    def runtime_decision(action)
+      result = action.call
+      if result.ok?
+        :closed
+      elsif result.exception.is_a?(Axn::InboundValidationError)
+        :open
+      else
+        [:raised, result.exception.class]
+      end
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      [:raised, e.class]
+    end
+
+    # axn's decision from the SAME action's canonicalized validations, via the gate oracle.
+    def axn_decision(action)
+      validations = action.internal_field_configs.find { |c| c.field == :probe_field }.validations
+      stub = Object.new
+      # Symbol :cond resolves against the action, mirrored here
+      def stub.cond = true
+      open = Axn::Validation::Fields.declaration_gate_open?(validations:, action: stub)
+      open ? :open : :closed
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      [:raised, e.class]
+    end
+
+    %i[if unless].each do |gate|
+      context "gate: #{gate}" do
+        condition_matrix.each do |label, value|
+          it "matches ActiveModel for #{label}" do
+            action = build_axn do
+              expects(:probe_field, presence: true, **{ gate => value })
+              def cond = true
+              def call; end
+            end
+
+            expect(runtime_decision(action)).to eq(axn_decision(action))
+          end
+        end
+      end
     end
   end
 end

@@ -672,19 +672,17 @@ module Axn
     def _declaration_gate_closed?(config)
       return false unless Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
 
-      !Axn::Validation::Fields.declaration_gate_open?(_gate_validator_for(config, yield))
-    end
-
-    # The one-off validator collect_errors would build for this config, receiver-shaped for gate
-    # evaluation only (no valid? run): the action threaded, plus the subfield reader/config, so a
-    # Symbol/Proc gate resolves against the same `self` the real validators see.
-    def _gate_validator_for(config, source)
-      validator = Axn::Validation::Fields.validator_class_for(field: config.field, validations: config.validations).new(source)
-      validator.instance_variable_set(:@action, @action)
-      validator.instance_variable_set(:@validations, config.validations)
-      validator.instance_variable_set(:@reader, config.subfield? ? config.reader_as : nil)
-      validator.instance_variable_set(:@config, config.subfield? ? config : nil)
-      validator
+      # The gate oracle asks ActiveModel itself (see Fields.declaration_gate_open?): the action is
+      # threaded, plus the subfield reader/config, so a Symbol/Proc gate resolves against the same
+      # `self` and action delegation the real validators see. `source` is yielded only past the
+      # key-presence guard, so an ungated config resolves nothing — zero cost off the gated path.
+      !Axn::Validation::Fields.declaration_gate_open?(
+        validations: config.validations,
+        action: @action,
+        source: yield,
+        reader: config.subfield? ? config.reader_as : nil,
+        config: config.subfield? ? config : nil,
+      )
     end
 
     def _id_based_model?(config)

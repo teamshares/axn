@@ -4,6 +4,7 @@ require "date"
 
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
+require "active_support/core_ext/object/blank"
 
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
@@ -748,21 +749,27 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
-        # A blank gate is canonicalized away at declaration — ActiveModel runs the validators
-        # unconditionally for a nil condition (`if: nil`/`unless: nil`, e.g. a condition forwarded
-        # conditionally: `if: maybe_cond` where `maybe_cond` is nil) or an empty rule list
-        # (`if: []`/`unless: []`), so key PRESENCE downstream — the push-down exemption in
-        # _parse_field_validations, reflection's conditionally_gated?, and the contradiction
-        # carve-outs — must mean a REAL gate. Without this, a blank gate would be classified as
-        # gated though it runs unconditionally: ancestor-forcing would be wrongly relaxed, and the
-        # dead-tolerance check would wrongly accept a contradiction-shaped contract (schema looser
-        # than runtime). Mutates `validations` in place.
+        # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
+        # values ActiveModel ignores. AM resolves if:/unless: through
+        # ActiveSupport::Callbacks::Callback#check_conditionals, which early-returns an empty
+        # condition list `if conditionals.blank?` (activesupport 7.2.2.2, active_support/callbacks.rb)
+        # — so a blank condition is NO conditional at all and the validators run unconditionally.
+        # Measured against AM 7.2.2.2 via `validates :f, presence: true, if: <value>` with the field
+        # absent: `nil`, `false`, `""`, any whitespace-only String, and `[]` all RUN the validators
+        # (they are blank, hence ungated — `if: false` means "no condition", NOT "never run"), which
+        # is precisely `value.blank?`. We reuse that same predicate here, so a REMAINING gate key
+        # downstream — the push-down exemption in _parse_field_validations, reflection's
+        # conditionally_gated?, and the contradiction carve-outs — always denotes a REAL, enforced
+        # gate. Without this, a blank gate would be classified as gated though it runs
+        # unconditionally: ancestor-forcing would be wrongly relaxed, and the dead-tolerance check
+        # would wrongly accept a contradiction-shaped contract (schema looser than runtime). Only
+        # non-blank opaque values survive as gates (a Symbol, a Proc; a non-blank String survives
+        # here but AM then rejects it at validator build — loud, unchanged). Mutates `validations`.
         def _canonicalize_blank_gates!(validations)
           Internal::FieldConfig::CONDITIONAL_GATE_KEYS.each do |key|
             next unless validations.key?(key)
 
-            value = validations[key]
-            validations.delete(key) if value.nil? || (value.is_a?(Array) && value.empty?)
+            validations.delete(key) if validations[key].blank?
           end
         end
 
