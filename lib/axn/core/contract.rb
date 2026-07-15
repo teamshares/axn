@@ -392,11 +392,14 @@ module Axn
 
         # Walk `wire_path` through `value` — Hash keys in either symbol or string form (extraction
         # accepts both), mapping across arrays — and mask the shaped value at the leaf. Every present
-        # key form is masked (see `_present_key_variants`); an absent key is left alone.
+        # key form is masked (see `_present_key_variants`); an absent key is left alone. A non-Hash,
+        # non-Array intermediate with path still remaining is an object-backed parent (a `method_call:`
+        # subfield reads the sensitive shape off it) that ParameterFilter can't descend into — mask it
+        # wholesale rather than leak the sensitive member nested inside.
         def _mask_value_at_path(value, wire_path, shape, action_instance)
           return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
           return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
-          return value unless value.is_a?(Hash)
+          return SENSITIVE_FILTERED_MASK unless value.is_a?(Hash)
 
           _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
             acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance))

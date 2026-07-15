@@ -314,6 +314,37 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(hash_inputs[:payload][:person]).to eq({ name: "Alice", ssn: "[FILTERED]" })
     end
 
+    it "masks an object-backed PARENT on a subfield-shape path (can't descend into it)" do
+      person_klass = person
+      payload_klass = Data.define(:person)
+      action = build_axn do
+        expects :payload, type: payload_klass
+        expects :person, on: :payload, method_call: true, type: person_klass do
+          field :ssn, method_call: true, sensitive: true
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, payload: payload_klass.new(person: person_klass.new(name: "A", ssn: "111-11-1111"))).send(:inputs_for_logging)
+      expect(inputs[:payload]).to eq("[FILTERED]")
+    end
+
+    it "does not falsely mask a Hash parent when the sensitive subfield key is absent" do
+      person_klass = person
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :person, on: :payload, method_call: true, type: person_klass do
+          field :ssn, method_call: true, sensitive: true
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, payload: { other: "x" }).send(:inputs_for_logging)
+      expect(inputs[:payload]).to eq({ other: "x" })
+    end
+
     it "masks a nested object member regardless of symbol/string key form on either side" do
       klass = person
       # symbol member name × string data key
