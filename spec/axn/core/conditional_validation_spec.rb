@@ -44,11 +44,78 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     it "still allows presence: false alongside a tolerance flag (explicit suppression, coherent)" do
       expect { build_axn { expects :note, optional: true, presence: false } }.not_to raise_error
     end
+  end
 
-    it "leaves other non-Hash validator values under a tolerance flag as a (pre-existing) declaration error" do
-      expect do
-        build_axn { expects :num, optional: true, numericality: true }
-      end.to raise_error(TypeError)
+  # A non-Hash scalar validator value (`numericality: true`, `inclusion: [..]`/`1..5`, `format: /re/`)
+  # normalizes exactly as ActiveModel's own `validates` would, then the tolerance rides on top — so the
+  # terse spelling combines transparently with optional:/allow_blank:/allow_nil: (PRO-2915). Previously
+  # this raised a bare `TypeError` from the tolerance push-down loop.
+  describe "tolerance flags + non-Hash scalar validator values" do
+    it "normalizes `numericality: true` and applies the tolerance" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true              # omitted (tolerance)
+      expect(action.call(num: 5).ok?).to be true      # numericality satisfied
+      expect(action.call(num: "nope").ok?).to be false # numericality enforced
+    end
+
+    it "normalizes an Array value to `in:` (inclusion) and applies the tolerance" do
+      action = build_axn do
+        expects :color, inclusion: %w[red green], optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(color: "red").ok?).to be true
+      expect(action.call(color: "blue").ok?).to be false
+    end
+
+    it "normalizes a Range value to `in:` (inclusion) and applies the tolerance" do
+      action = build_axn do
+        expects :n, inclusion: 1..5, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(n: 3).ok?).to be true
+      expect(action.call(n: 9).ok?).to be false
+    end
+
+    it "normalizes a Regexp value to `with:` (format) and applies the tolerance" do
+      action = build_axn do
+        expects :code, format: /\A\d+\z/, optional: true
+        def call; end
+      end
+
+      expect(action.call.ok?).to be true
+      expect(action.call(code: "123").ok?).to be true
+      expect(action.call(code: "abc").ok?).to be false
+    end
+
+    it "treats a falsy validator value as disabled (mirrors ActiveModel's falsy-skip)" do
+      expect { build_axn { expects :num, numericality: nil, optional: true } }.not_to raise_error
+      expect { build_axn { expects :num, numericality: false, optional: true } }.not_to raise_error
+
+      action = build_axn do
+        expects :num, numericality: false, optional: true
+        def call; end
+      end
+      expect(action.call(num: "not-a-number").ok?).to be true # numericality disabled
+    end
+
+    it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
+      action = build_axn do
+        expects :num, numericality: true, optional: true
+        expects :n2, numericality: { greater_than: 0 }, optional: true
+        def call; end
+      end
+
+      props = action.input_schema.fetch(:properties)
+      expect(props.fetch(:num)).to eq(props.fetch(:n2))
+      expect(props.dig(:num, :type)).to contain_exactly("number", "null")
     end
   end
 

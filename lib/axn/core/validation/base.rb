@@ -18,6 +18,15 @@ module Axn
       OfValidator = Validators::OfValidator
       ShapeValidator = Validators::ShapeValidator
 
+      # Normalize a scalar validator value the way ActiveModel's own `validates` does, so the tolerance
+      # push-down (contract.rb `_parse_field_validations`) can layer allow_blank:/allow_nil: onto the
+      # SAME options hash `validates` would build — the terse spelling (`numericality: true`,
+      # `inclusion: [..]`/`1..5`, `format: /re/`) then combines transparently with a tolerance flag,
+      # matching how it behaves WITHOUT one (PRO-2915). Reuses AM's private `_parse_validates_options`
+      # rather than copying its case statement, so the mapping cannot drift (activemodel 7.2.2.2:
+      # TrueClass→{}, Hash→itself, Range/Array→{in:}, else→{with:}).
+      def self.normalize_validator_options(value) = _parse_validates_options(value)
+
       # Delegate unknown methods to the action instance so symbol-referenced validation arguments
       # (e.g. `inclusion: { in: :valid_channels_for_number }`) resolve against the action — for
       # top-level fields and subfields alike.
