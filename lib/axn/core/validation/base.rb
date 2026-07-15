@@ -34,6 +34,15 @@ module Axn
       # it to a Hash and break strict raising. Reuses AM's own canonical list so the set can't drift.
       def self.shared_validation_option_keys = _validates_default_keys
 
+      # The real VALIDATOR entries in a validations hash — everything that is NOT an ActiveModel shared
+      # option (if:/unless:/on:/strict:/allow_blank:/allow_nil:). THE single definition of "is this a
+      # validator", shared by the validator-class builder, the gate sweeps, and schema reflection, so
+      # "does this field have any validators / do its validators accept nil" is decided one way
+      # everywhere. Without it, a shared-only hash like `{ strict: true }` reads as a validator: the
+      # builder calls `validates` and ActiveModel raises "You need to supply at least one validation",
+      # and reflection marks the (omittable) field required.
+      def self.validator_entries(validations) = validations.except(*shared_validation_option_keys)
+
       # Delegate unknown methods to the action instance so symbol-referenced validation arguments
       # (e.g. `inclusion: { in: :valid_channels_for_number }`) resolve against the action — for
       # top-level fields and subfields alike.

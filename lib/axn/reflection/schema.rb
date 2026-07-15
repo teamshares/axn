@@ -484,7 +484,7 @@ module Axn
         # clause emits (also inexact). Either way fall back to unconditional required (the static-maximal
         # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
         # can't affect requiredness — don't fall back on those.
-        entries = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        entries = Axn::Validation::Base.validator_entries(config.validations)
         return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt) && entry_mentions_gate_key?(opt) }
 
         rule = gates.values.first
@@ -1221,14 +1221,12 @@ module Axn
       # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
       # `numericality: true`) — rejects nil.
       def nil_accepted?(config)
-        # ActiveModel's shared options (if:/unless:/on:/strict:/allow_blank:/allow_nil:) ride in the
-        # validations hash but are NOT validators — neutral here, so they must be excluded before
-        # judging the real validators (e.g. a restored `strict: true` under a tolerance flag would
-        # otherwise read as a nil-rejecting validator and wrongly mark the field required). Reuses AM's
-        # own shared-option list, the same set the tolerance push-down holds out (contract.rb). The
-        # judgment is static-maximal: gated validators are counted as if their gates were open (a
-        # condition can only relax enforcement at runtime, never tighten it).
-        v = config.validations.except(*Axn::Validation::Base.shared_validation_option_keys)
+        # Judge only the REAL validators: ActiveModel's shared options (if:/unless:/on:/strict:/
+        # allow_blank:/allow_nil:) ride in the validations hash but aren't validators, so a restored
+        # `strict: true` under a tolerance flag must not read as a nil-rejecting validator and wrongly
+        # mark the field required. The judgment is static-maximal: gated validators are counted as if
+        # their gates were open (a condition can only relax enforcement at runtime, never tighten it).
+        v = Axn::Validation::Base.validator_entries(config.validations)
         return true if v.empty?
 
         v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
@@ -1312,10 +1310,9 @@ module Axn
       def requiredness_conditionally_relaxable?(config)
         gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
         decl_gates = config.validations.slice(*gate_keys)
-        # `entries` are the real VALIDATORS — exclude ALL of AM's shared options (gates plus
-        # strict:/on:/allow_*), not just the gate keys, so a non-validator like `strict: true` isn't
-        # mistaken for a nil-rejecting validator (see nil_accepted?).
-        entries = config.validations.except(*Axn::Validation::Base.shared_validation_option_keys)
+        # `entries` are the real VALIDATORS — shared options (strict:, on:, …) aren't validators and
+        # must not be mistaken for a nil-rejecting one (see nil_accepted?/validator_entries).
+        entries = Axn::Validation::Base.validator_entries(config.validations)
 
         some_gate = decl_gates.any? || entries.any? { |_key, opt| nested_gated?(opt) }
         return false unless some_gate

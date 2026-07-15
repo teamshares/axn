@@ -82,7 +82,7 @@ module Axn
       # member constructs nothing and stays byte-identical to the pre-gate path.
       def member_gate_closed?(member, source, action)
         gate_keys = Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-        entries = member.validations.except(*gate_keys)
+        entries = Axn::Validation::Base.validator_entries(member.validations)
         has_shared_gate = gate_keys.any? { |key| member.validations.key?(key) }
         has_nested_gate = entries.values.any? { |v| v.is_a?(Hash) && gate_keys.any? { |key| v.key?(key) } }
         return false unless has_shared_gate || has_nested_gate

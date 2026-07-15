@@ -136,6 +136,18 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.input_schema.dig(:properties, :num, :type)).to contain_exactly("number", "null")
     end
 
+    it "declares an optional field carrying only a shared option (no real validator) without crashing" do
+      action = build_axn do
+        expects :note, optional: true, strict: true
+        def call; end
+      end
+
+      # A shared-only validations hash has no real validator, so `validates` is never called (it would
+      # raise "You need to supply at least one validation"); the field is a no-op, omittable.
+      expect(action.call.ok?).to be true
+      expect(action.call(note: "anything").ok?).to be true
+    end
+
     it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
       action = build_axn do
         expects :num, numericality: true, optional: true
