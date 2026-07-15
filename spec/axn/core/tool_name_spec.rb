@@ -24,8 +24,12 @@ RSpec.describe "Axn tool_name derivation" do
     expect(tool_klass("Actions::Tools::Foo::BarTool").tool_name).to eq("foo_bar_tool")
   end
 
-  it "does not strip a deeper `tools` segment (prefix/leading-run semantics)" do
-    expect(tool_klass("AgentTools::Tools::Foo").tool_name).to eq("tools_foo")
+  it "strips the whole leading run of prefixes (contiguous prefixes are all leading)" do
+    expect(tool_klass("AgentTools::Tools::Foo").tool_name).to eq("foo")
+  end
+
+  it "a `tools` segment after the run is broken survives (leading-run, not anywhere)" do
+    expect(tool_klass("AgentTools::Users::Tools::Foo").tool_name).to eq("users_tools_foo")
   end
 
   it "restricts to a provider-safe charset and collapses separators" do

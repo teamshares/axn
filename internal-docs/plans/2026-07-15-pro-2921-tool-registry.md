@@ -175,8 +175,12 @@ RSpec.describe "Axn tool_name derivation" do
     expect(tool_klass("Actions::Tools::Foo::BarTool").tool_name).to eq("foo_bar_tool")
   end
 
-  it "does not strip a deeper `tools` segment (prefix/leading-run semantics)" do
-    expect(tool_klass("AgentTools::Tools::Foo").tool_name).to eq("tools_foo")
+  it "strips the whole leading run of prefixes (contiguous prefixes are all leading)" do
+    expect(tool_klass("AgentTools::Tools::Foo").tool_name).to eq("foo")
+  end
+
+  it "a `tools` segment after the run is broken survives (leading-run, not anywhere)" do
+    expect(tool_klass("AgentTools::Users::Tools::Foo").tool_name).to eq("users_tools_foo")
   end
 
   it "restricts to a provider-safe charset and collapses separators" do
@@ -243,27 +247,10 @@ module Axn
 
         private
 
-        # Strips the leading run of segments that match configured prefixes, treating the
-        # prefix list as an ordered template: each matched segment must land at or after the
-        # array position of the previously matched one. This is a forward-only subsequence
-        # match rather than plain set membership, so a segment matching an *earlier* array
-        # position than one already consumed ends the run instead of extending it — e.g. with
-        # `%w[actions tools agent_tools]`, `AgentTools::Tools::Foo` consumes `agent_tools` (last
-        # in the array) and then can't also consume `tools` (earlier in the array), so `Tools`
-        # survives as a real segment rather than being stripped as a second prefix.
         def _tool_name_strip_leading_prefixes(segments)
           prefixes = _tool_name_stripped_prefixes.map(&:to_s)
-          cursor = 0
           index = 0
-
-          while index < segments.length
-            match = prefixes[cursor..].index(segments[index].underscore)
-            break unless match
-
-            cursor += match + 1
-            index += 1
-          end
-
+          index += 1 while index < segments.length && prefixes.include?(segments[index].underscore)
           segments[index..] || []
         end
 
