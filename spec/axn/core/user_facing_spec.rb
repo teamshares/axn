@@ -209,6 +209,102 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
+  describe "user_facing: on a shape member" do
+    it "surfaces the member's own message when the member opts in with true" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: true
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Items element at index 0: status is not included in the list")
+    end
+
+    it "surfaces a String override" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: "Each item needs a valid status"
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Each item needs a valid status")
+    end
+
+    it "invokes a Symbol handler on the action" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: :status_msg
+        end
+        def status_msg = "Pick a real status"
+        def call = nil
+      end
+      expect(action.call(items: [{ status: "bogus" }]).error).to eq("Pick a real status")
+    end
+
+    it "computes a Proc handler from the member's own error" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: ->(e) { "Bad: #{e.message}" }
+        end
+        def call = nil
+      end
+      expect(action.call(items: [{ status: "bogus" }]).error)
+        .to eq("Bad: Items element at index 0: status is not included in the list")
+    end
+
+    it "stays dev-facing when the member does not opt in" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_exception
+      expect(result.error).to eq("Something went wrong")
+    end
+
+    it "collapses a String override to one clause across multiple failing elements" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: "Each item needs a valid status"
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "a" }, { status: "b" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Each item needs a valid status")
+    end
+
+    it "composes a user_facing member nested inside a nested shape" do
+      action = build_axn do
+        expects :order, type: Hash do
+          field :line, type: Hash do
+            field :sku, type: String, user_facing: "SKU is required"
+          end
+        end
+        def call = nil
+      end
+      result = action.call(order: { line: { sku: 123 } })
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("SKU is required")
+    end
+
+    it "rejects a non-parity user_facing value on a member at declaration" do
+      expect do
+        build_axn do
+          expects :items, type: Array do
+            field :status, type: String, user_facing: 123
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+  end
+
   describe "mixed failure: dev-facing dominates" do
     let(:fired) { [] }
     let(:action) do

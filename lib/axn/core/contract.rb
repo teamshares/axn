@@ -90,8 +90,8 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
-      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive) do
-        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false)
+      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
+        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
           super
         end
 
@@ -636,7 +636,7 @@ module Axn
         # have nowhere to apply and are rejected rather than silently dropped when converting to a
         # ShapeConfig. `model:` is rejected separately (see `_build_shape_member`) for the related but
         # distinct reason that it resolves an id and exposes an `_id` companion reader a member lacks.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive].freeze
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive user_facing].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
 
         # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
@@ -689,8 +689,13 @@ module Axn
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
+          # A member's `user_facing:` has full parity with a field's — validate it through the same
+          # gate, so a bad value (`user_facing: 123`) raises the same clear ArgumentError rather than
+          # slipping through as an opaque option.
+          _validate_user_facing!(config.user_facing)
+
           ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata,
-                          method_call: config.method_call, sensitive: config.sensitive)
+                          method_call: config.method_call, sensitive: config.sensitive, user_facing: config.user_facing)
         end
 
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.

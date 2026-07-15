@@ -515,7 +515,7 @@ module Axn
 
       return if failures.empty? && mismatches.empty?
 
-      raise InboundValidationError, _aggregate_errors(failures, mismatches) unless mismatches.empty? && failures.all? { |f| f.config.user_facing }
+      raise InboundValidationError, _aggregate_errors(failures, mismatches) unless mismatches.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
       # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
@@ -601,17 +601,58 @@ module Axn
       errors
     end
 
-    # The one exception raised when every violation is user-facing: all errors aggregated (so
-    # dev-facing introspection still sees the full picture), with the composed message drawn from
-    # each failing config's own `user_facing:` setting — one uniform path for every depth.
+    # The one exception raised when every classification unit is user-facing: all errors aggregated
+    # (so dev-facing introspection still sees the full picture), with the composed message drawn per
+    # unit — each failing config's own `user_facing:` and each shape-member's own tagged intent — one
+    # uniform path for every depth. Parts are de-duplicated so a String/Symbol member override on an
+    # Array shape surfaces once rather than repeating per failing element.
     def _composed_user_facing_error(failures)
-      parts = failures.flat_map do |failure|
-        _resolve_user_facing_override(failure.config.user_facing, own: failure.errors.map(&:full_message),
-                                                                  scoped_error: InboundValidationError.new(failure.errors))
-      end
-
+      parts = failures.flat_map { |failure| _user_facing_parts(failure) }
       InboundValidationError.new(_aggregate_errors(failures, []),
-                                 user_facing: true, user_facing_message: parts.to_sentence)
+                                 user_facing: true, user_facing_message: parts.uniq.to_sentence)
+    end
+
+    # A ContractFailure is a container of errors at two classification granularities: a shape-member
+    # error (tagged by ShapeValidator) is its own structural, individually-classified unit; every
+    # other error is the field's OWN error.
+    def _own_errors(failure) = failure.errors.reject { |e| e.options[:axn_shape_member] }
+    def _member_errors(failure) = failure.errors.select { |e| e.options[:axn_shape_member] }
+
+    # A failure composes user-facing only when EVERY classification unit is: the field's own errors
+    # honor the field's `user_facing:` (own empty ⇒ vacuously satisfied), and each shape-member error
+    # honors the member's own tagged intent. A member error defaults dev-facing, so an un-opted member
+    # forces the aggregate dev-facing.
+    def _failure_fully_user_facing?(failure)
+      (_own_errors(failure).empty? || failure.config.user_facing) &&
+        _member_errors(failure).all? { |e| e.options[:axn_member_user_facing] }
+    end
+
+    # The user-facing message part(s) for one failure, per classification unit: the field's own errors
+    # resolve through the field's `user_facing:`; each shape-member error resolves through its own
+    # tagged intent, scoped to just that member's failure. Reached only when the failure is fully
+    # user-facing.
+    def _user_facing_parts(failure)
+      parts = []
+      own = _own_errors(failure)
+      if own.any?
+        parts.concat(_resolve_user_facing_override(failure.config.user_facing,
+                                                   own: own.map(&:full_message),
+                                                   scoped_error: InboundValidationError.new(_errors_containing(own))))
+      end
+      _member_errors(failure).each do |error|
+        parts.concat(_resolve_user_facing_override(error.options[:axn_member_user_facing],
+                                                   own: [error.full_message],
+                                                   scoped_error: InboundValidationError.new(_errors_containing([error]))))
+      end
+      parts
+    end
+
+    # A fresh ActiveModel::Errors carrying just the given Error objects, so a Symbol/Proc user_facing
+    # handler resolving against it sees exactly that classification unit's message (not the aggregate).
+    def _errors_containing(error_list)
+      errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+      error_list.each { |err| errors.import(err) }
+      errors
     end
 
     # Resolve one config's `user_facing:` setting into its message part(s): `true` → the field's own
