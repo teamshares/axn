@@ -294,7 +294,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(inputs[:items]).to eq([{ ssn: "[FILTERED]", name: "Alice" }, "[FILTERED]"])
     end
 
-    it "masks an object-backed value under a shape declared on a subfield" do
+    it "masks an object-backed value under a class shape declared on a subfield" do
       klass = person
       action = build_axn do
         expects :payload, type: Hash
@@ -308,10 +308,21 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
 
       inputs = action.send(:new, payload: { person: klass.new(name: "Alice", ssn: "111-11-1111") }).send(:inputs_for_logging)
       expect(inputs[:payload][:person]).to eq("[FILTERED]")
+    end
 
-      # A Hash value for the same subfield shape stays precise (per-member).
-      hash_inputs = action.send(:new, payload: { person: { name: "Alice", ssn: "111-11-1111" } }).send(:inputs_for_logging)
-      expect(hash_inputs[:payload][:person]).to eq({ name: "Alice", ssn: "[FILTERED]" })
+    it "filters a Hash value per-member under a Hash shape declared on a subfield" do
+      action = build_axn do
+        expects :payload, type: Hash
+        expects :person, on: :payload, type: Hash do
+          field :name
+          field :ssn, sensitive: true
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, payload: { person: { name: "Alice", ssn: "111-11-1111" } }).send(:inputs_for_logging)
+      expect(inputs[:payload][:person]).to eq({ name: "Alice", ssn: "[FILTERED]" })
     end
 
     it "masks an object-backed PARENT on a subfield-shape path (can't descend into it)" do
@@ -393,6 +404,35 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       # being treated as array elements with only `ssn` keys filtered.
       inputs = action.send(:new, payload: [{ note: "secret", ssn: "111" }]).send(:inputs_for_logging)
       expect(inputs[:payload]).to eq("[FILTERED]")
+    end
+
+    it "masks a malformed Hash supplied to an Array shape wholesale (not treated as one element)" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :ssn, sensitive: true
+        end
+
+        def call; end
+      end
+
+      # Hash is malformed for an Array shape; an undeclared sibling key must not leak by treating the
+      # Hash as a single element with only `ssn` filtered.
+      inputs = action.send(:new, items: { note: "secret", ssn: "111" }).send(:inputs_for_logging)
+      expect(inputs[:items]).to eq("[FILTERED]")
+    end
+
+    it "masks a malformed Hash supplied to a class shape wholesale" do
+      klass = person
+      action = build_axn do
+        expects :person, type: klass do
+          field :ssn, method_call: true, sensitive: true
+        end
+
+        def call; end
+      end
+
+      inputs = action.send(:new, person: { note: "secret", ssn: "111" }).send(:inputs_for_logging)
+      expect(inputs[:person]).to eq("[FILTERED]")
     end
 
     it "preserves a nil shaped value (valid absent data) rather than masking it" do

@@ -449,15 +449,23 @@ module Axn
           shape.is_a?(Hash) ? shape : nil
         end
 
-        # An Array is mapped element-by-element only when the shape actually describes an Array container
-        # (its members describe each element). An Array supplied to a Hash/class shape is malformed —
-        # its arbitrary contents (which reach logging before validation rejects them) can't be trusted to
-        # only hold declared member keys — so it falls through to `_mask_shape_element`, which masks the
-        # non-Hash value wholesale.
+        # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
+        # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
+        # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
+        # (Data/Struct/PORO) shape reads members off an object ParameterFilter can't descend into. Any
+        # value whose type doesn't match the container is masked wholesale rather than treated as a lone
+        # valid element/Hash — only declared member keys would be filtered, leaking arbitrary siblings.
+        # `nil` (valid absent data) is preserved throughout via `_mask_opaque_or_preserve`.
         def _mask_shape_value(value, shape, action_instance)
-          return value.map { |element| _mask_shape_element(element, shape, action_instance) } if shape[:container] == Array && value.is_a?(Array)
+          container = shape[:container]
+          if container == Array
+            return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
 
-          _mask_shape_element(value, shape, action_instance)
+            return _mask_opaque_or_preserve(value)
+          end
+          return _mask_shape_element(value, shape, action_instance) if container == Hash
+
+          _mask_opaque_or_preserve(value)
         end
 
         # A non-Hash value where members are expected is opaque to ParameterFilter → mask it whole. A Hash
