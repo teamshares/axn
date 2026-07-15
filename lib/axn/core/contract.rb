@@ -495,7 +495,9 @@ module Axn
         # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
         # collectors, which descend into shape members via `_sensitive_candidate_configs`, and
         # ParameterFilter redacts by key name at any depth (array elements included) — so a per-element
-        # or nested member redacts without a reader.
+        # or nested member redacts without a reader. It is rejected on an object-backed shape, though
+        # (see `_reject_sensitive_on_object_shape!`): an object value is logged/inspected whole, out of
+        # the filter's reach.
         #
         # Shape members are reader-less, validation/schema-only declarations (a `ShapeConfig`, no reader,
         # no participation in value resolution), so `default:`/`preprocess:` — which produce/transform a
@@ -519,7 +521,51 @@ module Axn
 
           members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock) }
 
+          _reject_sensitive_on_object_shape!(container, validations, members)
+
           { members:, container: }
+        end
+
+        # `sensitive:` redaction works by adding the member's key name to an `ActiveSupport::ParameterFilter`,
+        # which redacts Hash keys at any depth (array elements included). An object-backed shape (a Data/
+        # Struct/PORO container, or an `Array, of: <object class>`) is logged and inspected as the whole
+        # object — the filter can't reach its attributes — so a `sensitive:` member there would silently fail
+        # to redact. Reject it at declaration rather than leak. The check spans the whole subtree: an object
+        # value logs whole, so a sensitive member nested any depth below it is equally unreachable.
+        def _reject_sensitive_on_object_shape!(container, validations, members)
+          return if _shape_hash_keyed?(container, validations)
+
+          offending = _sensitive_member_names_in(members)
+          return if offending.empty?
+
+          raise ArgumentError,
+                "shape member#{offending.size > 1 ? 's' : ''} #{offending.map { |f| "`#{f}`" }.join(', ')} " \
+                "cannot be sensitive: — an object-backed shape (container #{container.inspect}) is logged and " \
+                "inspected as the whole object, so the log filter (which redacts Hash keys) can't reach the " \
+                "member. Use a Hash (or Array-of-Hash) container, or read the value as a top-level/subfield " \
+                "expectation, where sensitive: applies to a resolved value."
+        end
+
+        # A shape whose members are read as Hash keys — the only shape ParameterFilter can redact into. Hash
+        # containers always are; an Array is when its elements are Hashes (`of:` absent defaults to the
+        # documented Hash-element case, or `of:` names Hash). Any other container is object-backed.
+        def _shape_hash_keyed?(container, validations)
+          return true if container == Hash
+          return false unless container == Array
+
+          of_klass = validations&.dig(:of)
+          of_klass = of_klass[:klass] if of_klass.is_a?(Hash)
+          of_klass.nil? || Array(of_klass).all? { |k| k == Hash }
+        end
+
+        # Names of every `sensitive:` member in a shape's subtree (direct members and, recursively, the
+        # members of any nested shape they carry).
+        def _sensitive_member_names_in(members)
+          members.flat_map do |member|
+            names = _sensitive_member_names_in(member.validations.dig(:shape, :members) || [])
+            names << member.field if member.sensitive
+            names
+          end
         end
 
         # A member reuses the same option handling as a top-level field (optional/allow_blank/

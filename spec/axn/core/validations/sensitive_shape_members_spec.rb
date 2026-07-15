@@ -236,6 +236,68 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
   end
 
+  describe "sensitive: on an object-backed shape member" do
+    # An object value is logged/inspected whole (ParameterFilter only redacts Hash keys), so a
+    # sensitive member there would silently fail to redact — rejected at declaration instead.
+    let(:person) { Data.define(:name, :ssn) }
+
+    it "is rejected on a class-backed shape" do
+      klass = person
+      expect do
+        build_axn do
+          expects :person, type: klass do
+            field :ssn, sensitive: true, method_call: true
+          end
+        end
+      end.to raise_error(ArgumentError, /cannot be sensitive:.*object-backed/m)
+    end
+
+    it "is rejected on an Array-of-object shape" do
+      klass = person
+      expect do
+        build_axn do
+          expects :people, type: Array, of: klass do
+            field :ssn, sensitive: true, method_call: true
+          end
+        end
+      end.to raise_error(ArgumentError, /cannot be sensitive:.*object-backed/m)
+    end
+
+    it "is rejected for a member nested inside a Hash that is itself nested in an object shape" do
+      klass = person
+      expect do
+        build_axn do
+          expects :p, type: klass do
+            field :addr, type: Hash, method_call: true do
+              field :zip, sensitive: true
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, /`zip`.*cannot be sensitive:/m)
+    end
+
+    it "still allows a NON-sensitive member on an object-backed shape" do
+      klass = person
+      expect do
+        build_axn do
+          expects :person, type: klass do
+            field :name, method_call: true
+          end
+        end
+      end.not_to raise_error
+    end
+
+    it "allows sensitive members on an explicit Array-of-Hash shape" do
+      expect do
+        build_axn do
+          expects :items, type: Array, of: Hash do
+            field :ssn, sensitive: true
+          end
+        end
+      end.not_to raise_error
+    end
+  end
+
   describe "model: on a shape member" do
     it "is rejected (reader-less members cannot resolve an id or expose an _id companion)" do
       expect do
