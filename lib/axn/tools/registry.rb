@@ -36,7 +36,62 @@ module Axn
         [] # membership resolution added in a later step
       end
 
+      # Fail-safe membership: an explicit declaration wins; else auto-register when the class's
+      # source file lives under a configured tool_path dir; else treat a configure(<adapter>) bag
+      # for a registered adapter key as implicit membership for that adapter; else not a tool.
+      def member?(klass, adapter)
+        return false unless klass.respond_to?(:_tool_declaration)
+
+        case (decl = klass._tool_declaration)
+        when false then false
+        when :all then true
+        when Array then decl.include?(adapter)
+        else
+          _under_tool_path?(klass) || _declares_adapter_config?(klass, adapter)
+        end
+      end
+
       private
+
+      def _under_tool_path?(klass)
+        return false unless klass.name
+
+        path = Object.const_source_location(klass.name)&.first
+        return false unless path
+
+        expanded = File.expand_path(path)
+        _tool_dirs.any? { |dir| expanded == dir || expanded.start_with?(dir + File::SEPARATOR) }
+      rescue StandardError
+        false
+      end
+
+      # A tolerant configure(<adapter>) write lands in @_axn_config_overrides keyed by the
+      # namespace symbol; a registered adapter key there signals implicit membership.
+      def _declares_adapter_config?(klass, adapter)
+        return false unless adapters.include?(adapter)
+
+        node = klass
+        while node.is_a?(Module)
+          store = node.instance_variable_get(:@_axn_config_overrides)
+          return true if store.is_a?(Hash) && store.key?(adapter)
+          break unless node.is_a?(Class) && node.superclass
+
+          node = node.superclass
+        end
+        false
+      end
+
+      def _tool_dirs
+        Array(Axn.config.tool_paths).map { |path| _resolve_tool_dir(path) }.compact
+      end
+
+      def _resolve_tool_dir(path)
+        if defined?(Rails) && Rails.respond_to?(:root) && Rails.root
+          Rails.root.join("app", path).to_s
+        else
+          File.expand_path(path)
+        end
+      end
 
       def _classes
         @classes ||= []
