@@ -58,6 +58,40 @@ module Axn
           Axn::Reflection::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
         end
 
+        # A `shape:` on an ambient subfield validates the COPIED ambient value: a shape-carrying node
+        # with no subfield children is a leaf in `_filter_ambient_node`, so its whole value is copied
+        # and shape validates against it — no filter-merge. A shape node WITH subfield children is not a
+        # leaf: the filter rebuilds it from those children alone, dropping every shape-only member, so
+        # the shape can't be validated there. Reject that at declaration (candidate tree, nothing
+        # committed — same pattern as `_check_ambient_subfield_contradictions!`), pointing at declaring
+        # the nested structure ONE way. Order-independent: a child's `on:` requires its parent already
+        # declared, so a shape-carrying parent is always seen with its children by the time this runs.
+        def _check_ambient_shape_placement!(candidate_subfields)
+          ambient = candidate_subfields.select { |c| _on_roots_at_ambient?(c.on) }
+          return if ambient.empty?
+
+          tree = Axn::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
+          _each_ambient_node(tree.roots[PARENT]) do |node|
+            next if node.children.empty?
+
+            shape_config = node.configs.find { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
+            next unless shape_config
+
+            raise ArgumentError,
+                  "a `shape:` block on the ambient subfield `#{shape_config.field}` is only supported when it " \
+                  "has no nested subfields — this node also has subfield children, so the ambient filter " \
+                  "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
+                  "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
+                  "(`expects :<member>, on: :#{shape_config.field}`), which also give readers and `sensitive:`."
+          end
+        end
+
+        # Depth-first walk of `node` and all its declared descendants, yielding each node.
+        def _each_ambient_node(node, &block)
+          yield node
+          node.children.each_value { |child| _each_ambient_node(child, &block) }
+        end
+
         private
 
         # The framework-supplied ambient parent, modeled for the ambient-scoped tree as an untyped
@@ -129,10 +163,12 @@ module Axn
 
       # Only the declared ambient LEAVES survive, each at its declared PATH — the hash never carries a
       # process-wide dump nor an undeclared sibling at any depth. Walks the ambient-scoped SubfieldTree
-      # (see ClassMethods#_ambient_subfield_tree): a leaf's value is copied; a node with declared children
-      # is reconstructed from those children only (never a whole sub-hash), so a deeply nested
-      # `request[:ip]` resolves while `request[:token]` is dropped (PRO-2909). `shape:` blocks are rejected
-      # on ambient subfields at declaration, so a node's declared structure is its subfields alone.
+      # (see ClassMethods#_ambient_subfield_tree): a leaf's value is copied whole (so a leaf's `shape:`,
+      # if any, validates against the untouched copy); a node with declared children is reconstructed
+      # from those children only (never a whole sub-hash), so a deeply nested `request[:ip]` resolves
+      # while `request[:token]` is dropped (PRO-2909). A `shape:` on a node that ALSO has subfield
+      # children is rejected at declaration (`_check_ambient_shape_placement!`), since that node isn't a
+      # leaf here — its declared structure comes from the children alone and the shape can't be honored.
       def _filter_to_declared(source)
         root = self.class._ambient_subfield_tree.roots[PARENT]
         return {} if root.nil?

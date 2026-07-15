@@ -253,6 +253,7 @@ module Axn
             # (PRO-2909) — same candidate set, same checks.
             Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
             _check_ambient_subfield_contradictions!(subfield_configs + configs)
+            _check_ambient_shape_placement!(subfield_configs + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -299,30 +300,10 @@ module Axn
           method_call: false,
           **validations
         )
-          # The config-building itself is the shared top-level path (a subfield is the on:-carrying
-          # case); the checks below are pure reads of the built configs, raised before anything commits.
+          # A subfield is the on:-carrying case of the shared top-level config builder; with the ambient
+          # coerce/shape guards and the dotted-name model guard gone, no per-config post-check remains.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                        metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
-            _reject_ambient_shape!(config)
-          end
-        end
-
-        # A `shape:` block on an ambient subfield is rejected. Shape's primary job — input_schema
-        # emission — is moot here (ambient is excluded from the schema), and its members are reader-less
-        # validation-only declarations that the ambient filter would have to reconstruct from a SECOND
-        # tree merged with the subfield tree; declaring the same nested structure as SUBFIELDS
-        # (`expects :ip, on: :request`) gives the equivalent validation PLUS readers and `sensitive:`, so
-        # it's the supported path. Full shape symmetry on ambient is deferred (see the alpha-6 symmetry
-        # ticket). Gated on `_on_roots_at_ambient?`, so it fires on the ambient parent AND any nested
-        # ambient subfield.
-        def _reject_ambient_shape!(config)
-          return unless config.validations.key?(:shape)
-          return unless _on_roots_at_ambient?(config.on)
-
-          raise ArgumentError,
-                "a `shape:` block is not supported on an `on: :ambient_context` subfield — declare the " \
-                "nested structure with subfields instead (e.g. `expects :#{config.field}, on: :ambient_context`; " \
-                "`expects :<member>, on: :#{config.field}, ...`), which also gives you readers and `sensitive:`"
+                                        metadata:, reader_names:, user_facing:, method_call:, **validations)
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure

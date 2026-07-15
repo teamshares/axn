@@ -408,39 +408,72 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
-  describe "shape blocks are rejected on ambient subfields (nest via subfields instead)" do
-    it "rejects a shape block on the ambient parent" do
+  describe "shape: on ambient subfields (leaf-copy validation)" do
+    it "validates a shape: on a leaf ambient subfield against the copied value" do
+      klass = build_axn do
+        expects :request, on: :ambient_context, type: Hash do
+          field :ip, type: String
+        end
+        exposes :ip_val, :request
+        def call = expose(ip_val: request[:ip], request:)
+      end
+      ok = with_ambient_context(request: { ip: "1.2.3.4", extra: "kept-in-copy" }) { klass.call }
+      expect(ok).to be_ok
+      expect(ok.ip_val).to eq("1.2.3.4")
+      expect(ok.request).to include(extra: "kept-in-copy") # leaf copies the whole value
+
+      bad = with_ambient_context(request: { ip: 123 }) { klass.call }
+      expect(bad).not_to be_ok
+    end
+
+    it "validates a shape: on an ambient subfield reached via an implicit intermediate" do
+      klass = build_axn do
+        expects "meta.request", on: :ambient_context, as: :req, type: Hash do
+          field :ip, type: String
+        end
+        exposes :ip_val
+        def call = expose(ip_val: req[:ip])
+      end
+      ok = with_ambient_context(meta: { request: { ip: "1.2.3.4" } }) { klass.call }
+      expect(ok).to be_ok
+      expect(ok.ip_val).to eq("1.2.3.4")
+
+      bad = with_ambient_context(meta: { request: { ip: 99 } }) { klass.call }
+      expect(bad).not_to be_ok
+    end
+
+    it "rejects a shape: on an ambient node that also has a subfield child (non-overlapping)" do
       expect do
-        Class.new do
-          include Axn
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :token, type: String
+          end
+          expects :foo, on: :request
+        end
+      end.to raise_error(ArgumentError, /only supported when it has no nested subfields|Declare the nested structure/)
+    end
+
+    it "rejects a shape member overlapping a subfield child on the same ambient node" do
+      expect do
+        build_axn do
           expects :request, on: :ambient_context, type: Hash do
             field :ip, type: String
           end
+          expects :ip, on: :request, type: String
         end
-      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
-    end
-
-    it "rejects a shape block on a nested ambient subfield" do
-      expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :headers, on: :request, type: Hash do
-            field :auth, type: String
-          end
-        end
-      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
+      end.to raise_error(ArgumentError, /only supported when it has no nested subfields|Declare the nested structure/)
     end
 
     it "still allows the equivalent nested structure declared as subfields" do
-      klass = Class.new do
-        include Axn
+      klass = build_axn do
         expects :request, on: :ambient_context, type: Hash
         expects :ip, on: :request, type: String
-        exposes :the_ip
-        def call = expose(the_ip: ip)
+        exposes :ip_val
+        def call = expose(ip_val: ip)
       end
-      expect(klass.call(ambient_context: { request: { ip: "1.2.3.4" } }).the_ip).to eq("1.2.3.4")
+      result = with_ambient_context(request: { ip: "1.2.3.4" }) { klass.call }
+      expect(result).to be_ok
+      expect(result.ip_val).to eq("1.2.3.4")
     end
   end
 
