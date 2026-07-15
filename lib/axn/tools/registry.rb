@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/string/inflections"
+
 module Axn
   module Tools
-    # Process-global tool registry: the registered adapter keys, every include-Axn class,
-    # membership resolution, and on-demand loading of the configured tool directories.
+    # Process-global tool registry: the registered adapter keys and every include-Axn class.
+    # `tools_for` is currently a placeholder.
     module Registry
       extend self
 
