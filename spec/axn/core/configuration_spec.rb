@@ -39,6 +39,40 @@ RSpec.describe Axn::Configuration do
       it "rejects a non-array" do
         expect { config.tool_paths = "agent_tools" }.to raise_error(ArgumentError)
       end
+
+      it "rejects a bare broad `actions` entry, naming the offender" do
+        expect { config.tool_paths = ["actions"] }.to raise_error(ArgumentError, /"actions"/)
+      end
+
+      it "rejects `app/actions`" do
+        expect { config.tool_paths = ["app/actions"] }.to raise_error(ArgumentError, %r{app/actions})
+      end
+
+      it "rejects `app`" do
+        expect { config.tool_paths = ["app"] }.to raise_error(ArgumentError, /"app"/)
+      end
+
+      it "rejects an empty-string entry" do
+        expect { config.tool_paths = [""] }.to raise_error(ArgumentError)
+      end
+
+      it "rejects a `.` entry" do
+        expect { config.tool_paths = ["."] }.to raise_error(ArgumentError)
+      end
+
+      it "rejects a broad entry even with surrounding whitespace and slashes" do
+        expect { config.tool_paths = ["  /actions/  "] }.to raise_error(ArgumentError)
+      end
+
+      it "still accepts legitimately narrow dirs" do
+        config.tool_paths = %w[agent_tools actions/tools]
+        expect(config.tool_paths).to eq(%w[agent_tools actions/tools])
+      end
+
+      it "accepts app/actions/tools (a narrow subdir of app/actions)" do
+        config.tool_paths = %w[app/actions/tools]
+        expect(config.tool_paths).to eq(%w[app/actions/tools])
+      end
     end
 
     describe "#tool_name_stripped_prefixes=" do

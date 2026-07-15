@@ -60,9 +60,35 @@ module Axn
     # narrow: it must never include a broad dir like bare `actions`, which would auto-expose
     # every business action. Resolved to `Rails.root/app/<path>` under Rails, else
     # `File.expand_path(<path>)`. Distinct from tool_name_stripped_prefixes (naming, cosmetic).
+    # Validation for `tool_paths=` (including the broad-entry rejection) lives in the
+    # hand-written writer below; the generated writer would only enforce the array-of-strings shape.
     setting :tool_paths,
-            default: %w[agent_tools actions/tools],
-            validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
+            default: %w[agent_tools actions/tools]
+
+    # Broad/root-like tool_path entries that must never be accepted: each resolves to a directory
+    # holding EVERY business action (bare `actions` → `Rails.root/app/actions`, `app`/`.`/"" →
+    # the app or project root), so auto-registering under them would expose the whole app as tools
+    # and defeat the fail-safe guarantee. Compared against the normalized entry (see #tool_paths=).
+    TOOL_PATHS_BLOCKLIST = ["", ".", "actions", "app", "app/actions"].freeze
+
+    # Rejects broad/root-like entries at assignment with a message naming the offender, then stores
+    # the (array-of-strings) value the generated reader/default expect. Narrow subdirs like
+    # `agent_tools`, `actions/tools`, and `app/actions/tools` are still accepted.
+    def tool_paths=(value)
+      array_of_strings = value.is_a?(Array) && value.all? { |s| s.is_a?(String) }
+      raise ArgumentError, "tool_paths must be an Array of Strings; got #{value.inspect}" unless array_of_strings
+
+      value.each do |entry|
+        next unless TOOL_PATHS_BLOCKLIST.include?(_normalize_tool_path_entry(entry))
+
+        raise ArgumentError,
+              "tool_paths entry #{entry.inspect} is too broad: it resolves to a root-like directory " \
+              "(app/actions, app, or the project root) that would auto-expose every business action as a " \
+              "tool. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
+      end
+
+      @tool_paths = value
+    end
 
     # Leading namespace segments stripped when deriving a tool's `tool_name` from its
     # class name. Cosmetic and broad (may safely include `actions`). Global by default,
@@ -190,6 +216,12 @@ module Axn
     end
 
     private
+
+    # Normalizes a tool_paths entry for the broad-entry blocklist check: strips surrounding
+    # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal.
+    def _normalize_tool_path_entry(entry)
+      entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
+    end
 
     # Apply async config to EnqueueAllOrchestrator if it's already loaded.
     # Called from set_default_async and set_enqueue_all_async to ensure the
