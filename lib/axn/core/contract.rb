@@ -391,24 +391,24 @@ module Axn
         end
 
         # Walk `wire_path` through `value` — Hash keys in either symbol or string form (extraction
-        # accepts both), mapping across arrays — and mask the shaped value at the leaf. An absent key is
-        # left alone (nothing there to mask).
+        # accepts both), mapping across arrays — and mask the shaped value at the leaf. Every present
+        # key form is masked (see `_present_key_variants`); an absent key is left alone.
         def _mask_value_at_path(value, wire_path, shape, action_instance)
           return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
           return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
           return value unless value.is_a?(Hash)
 
-          key = _hash_key_variant(value, wire_path.first)
-          return value unless value.key?(key)
-
-          value.merge(key => _mask_value_at_path(value[key], wire_path.drop(1), shape, action_instance))
+          _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
+            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance))
+          end
         end
 
-        # The form of `key` actually present in `hash` — extraction accepts symbol and string keys, and a
-        # member/wire-path name may itself be declared in either form, so try both directions (the key
-        # as-is, its string form, its symbol form). Falls back to the given key when none is present.
-        def _hash_key_variant(hash, key)
-          [key, key.to_s, key.to_s.to_sym].find { |variant| hash.key?(variant) } || key
+        # Every form of `key` present in `hash` — the key as-is, its string form, and its symbol form.
+        # Extraction accepts symbol and string keys (reading symbol-first) and a member/wire-path name
+        # may be declared in either form, so a single logical key can appear under more than one form in
+        # the same Hash; mask them all, since every form is logged and any could hold the secret.
+        def _present_key_variants(hash, key)
+          [key, key.to_s, key.to_s.to_sym].uniq.select { |variant| hash.key?(variant) }
         end
 
         # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
@@ -453,10 +453,9 @@ module Axn
             nested = _member_shape(member)
             next unless nested && _shape_has_sensitive_member?(nested, action_instance)
 
-            key = _hash_key_variant(masked, member.field)
-            next unless masked.key?(key)
-
-            masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+            _present_key_variants(masked, member.field).each do |key|
+              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+            end
           end
         end
 

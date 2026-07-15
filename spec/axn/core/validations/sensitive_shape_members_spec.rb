@@ -341,6 +341,12 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       end
       inputs2 = str_member.send(:new, order: { customer: klass.new(name: "Z", ssn: "999-99-9999") }).send(:inputs_for_logging)
       expect(inputs2[:order][:customer]).to eq("[FILTERED]")
+
+      # Both key forms present in the same Hash → every form masked (extraction reads symbol-first, but
+      # the string form is still logged), so neither can leak.
+      inputs3 = str_member.send(:new,
+                                order: { "customer" => klass.new(name: "S", ssn: "str"), customer: klass.new(name: "Y", ssn: "sym") }).send(:inputs_for_logging)
+      expect(inputs3[:order]).to eq({ "customer" => "[FILTERED]", customer: "[FILTERED]" })
     end
 
     it "does NOT redact an object-backed shape whose members are all non-sensitive" do
