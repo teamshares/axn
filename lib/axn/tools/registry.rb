@@ -75,22 +75,16 @@ module Axn
                     Rails.application.respond_to?(:initialized?) && Rails.application.initialized?
 
           loader = Rails.autoloaders.main
-          dirs.each do |dir|
-            next unless loader.respond_to?(:eager_load_dir)
-
-            # Snapshot _classes before eager-loading the directory so a file that raises partway
-            # through can't leak the classes it already registered into tools_for. Zeitwerk loads a
-            # directory as a unit, so rollback granularity is per-DIRECTORY: drop only added classes
-            # whose source file lives under this dir. A class a file `require`d from OUTSIDE the dir
-            # is preserved (it isn't this directory's tool).
-            before = _classes.dup
-            loader.eager_load_dir(dir)
-          rescue StandardError, LoadError => e
-            _rollback_registrations(before) do |src|
-              src == dir || src.start_with?(dir + File::SEPARATOR)
-            end
-            Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
-          end
+          # The engine only pushes app/actions into Zeitwerk `after: :load_config_initializers`
+          # (see Axn::RailsIntegration::Engine), so a `tools_for` call from within a
+          # `config/initializers` file runs BEFORE that hook — a configured tool dir can exist on
+          # disk yet not be one Zeitwerk manages. `eager_load_dir` on an unmanaged dir would just
+          # raise and get rescued below, silently yielding an empty/partial tool list. We don't push
+          # dirs ourselves here (that's the engine's job, with its own namespace) — instead we check
+          # Zeitwerk's own managed-root list (`loader.dirs`) up front and warn loudly so the caller
+          # knows discovery may be incomplete, rather than degrading silently.
+          managed_roots = loader.respond_to?(:dirs) ? loader.dirs : nil
+          dirs.each { |dir| _eager_load_rails_dir(loader, dir, managed_roots) }
         else
           dirs.each do |dir|
             Dir.glob(File.join(dir, "**", "*.rb")).each do |file|
@@ -131,6 +125,37 @@ module Axn
       end
 
       private
+
+      # Eager-loads a single Rails tool dir, or warns and skips it if Zeitwerk doesn't manage it
+      # yet (see the boot-ordering comment in `ensure_loaded!`). `managed_roots` is nil when the
+      # loader predates `#dirs` (older Zeitwerk), in which case the manage-check is skipped
+      # entirely and behavior is unchanged from before this check existed.
+      def _eager_load_rails_dir(loader, dir, managed_roots)
+        return unless loader.respond_to?(:eager_load_dir)
+
+        if managed_roots&.none? { |root| dir == root || dir.start_with?(root + File::SEPARATOR) }
+          Axn.config.logger.warn do
+            "[Axn] tool dir #{dir} is not yet managed by the Rails autoloader — tools_for was likely called " \
+              "before Rails finished initializing (e.g. from a config/initializers file). Tool discovery may " \
+              "be incomplete; enumerate tools from `config.after_initialize` or a `to_prepare` block for " \
+              "reliable results."
+          end
+          return
+        end
+
+        # Snapshot _classes before eager-loading the directory so a file that raises partway
+        # through can't leak the classes it already registered into tools_for. Zeitwerk loads a
+        # directory as a unit, so rollback granularity is per-DIRECTORY: drop only added classes
+        # whose source file lives under this dir. A class a file `require`d from OUTSIDE the dir
+        # is preserved (it isn't this directory's tool).
+        before = _classes.dup
+        loader.eager_load_dir(dir)
+      rescue StandardError, LoadError => e
+        _rollback_registrations(before) do |src|
+          src == dir || src.start_with?(dir + File::SEPARATOR)
+        end
+        Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
+      end
 
       # Rolls back registrations added since `before`, deleting each added class whose (expanded)
       # source file satisfies the block predicate. Shared by both eager-load branches so the

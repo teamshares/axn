@@ -337,6 +337,51 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (Rails branch warns instead of eager-loading an unmanaged dir)", :aggregate_failures do
+    # Reproduces the PRO-2921 boot-ordering hole: axn's engine pushes app/actions into Zeitwerk
+    # `after: :load_config_initializers`, so a `tools_for` call from within a
+    # `config/initializers` file runs before that hook — the tool dir exists on disk but Zeitwerk
+    # doesn't manage it yet. `eager_load_dir` would just raise/rescue in that case; we instead
+    # check `loader.dirs` (Zeitwerk's managed root list) up front and warn loudly rather than
+    # silently returning an empty/partial tool list.
+    let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
+
+    before do
+      Axn.register_tool_adapter(:mcp)
+      allow(Axn.config).to receive(:tool_paths).and_return([dir])
+      allow(described_class).to receive(:_rails_app?).and_return(true)
+    end
+
+    it "does not eager-load and warns when the dir is not under any managed root" do
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+      allow(loader).to receive(:dirs).and_return(["/some/other/managed/root"])
+      expect(loader).not_to receive(:eager_load_dir)
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+
+      expect(warnings).to include(a_string_matching(/not yet managed/))
+    end
+
+    it "eager-loads when the dir is under a managed root" do
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+      allow(loader).to receive(:dirs).and_return([File.dirname(dir)])
+      expect(loader).to receive(:eager_load_dir).with(dir)
+
+      described_class.ensure_loaded!
+    end
+  end
+
   describe ".all_classes (prunes definitively-stale named entries from the backing Set)", :aggregate_failures do
     it "deletes a stale named class from _classes (not just from the return value)" do
       class_a = Class.new { include Axn }
