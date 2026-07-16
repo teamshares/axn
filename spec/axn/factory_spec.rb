@@ -755,6 +755,16 @@ RSpec.shared_examples "can build Axns from callables" do
         expect(axn._tags[:payload].from).to eq(:inputs)
       end
     end
+
+    context "with an empty facet list" do
+      let(:kwargs) { { tag: [], dimension: [] } }
+      let(:callable) { -> {} }
+
+      it "is a no-op (no facets registered, no error), matching fails_on: []" do
+        expect(axn._tags).to be_empty
+        expect(axn._dimensions).to be_empty
+      end
+    end
   end
 end
 

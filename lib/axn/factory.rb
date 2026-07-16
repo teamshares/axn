@@ -258,6 +258,11 @@ module Axn
       #   tag: [[:a, 1], [:b, 2]]                   -> tag(:a, 1); tag(:b, 2)
       def _apply_facets(axn, method_name, value)
         return if value.nil?
+        # An empty list is "no facets" — a no-op, matching `fails_on: []` and every other list-shaped
+        # factory option, so an adapter building the list from a collection need not special-case `[]`
+        # to nil. (Unlike `semantic_hints: []`, which CLEARS: that option replaces a single set-valued
+        # attribute, whereas tag/dimension accumulate, so an empty batch simply adds nothing.)
+        return if value.is_a?(Array) && value.empty?
 
         specs = value.is_a?(Array) && value.first.is_a?(Array) ? value : [value]
         specs.each do |spec|
