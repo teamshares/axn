@@ -359,9 +359,10 @@ module Axn
       #   * a required subfield ANYWHERE in the subtree — a nil parent yields every descendant absent
       #     (PRO-2857), so a required grandchild is stranded exactly like a required child; OR
       #   * a required shape (`do…end`) member WHEN the parent has its OWN applied default that
-      #     materializes it: a top-level parent default still writes `{}` (that write-back is unchanged),
-      #     so ShapeValidator runs against the materialized value and enforces the member — omission can't
-      #     be rescued by the parent's nil-tolerance. Counts a Proc default (materialization fires before
+      #     materializes it: a top-level parent's default still resolves to its materialized value (e.g.
+      #     `{}`) through the read-path reader ShapeValidator's `source:` reads, so ShapeValidator runs
+      #     against the materialized value and enforces the member — omission can't be rescued by the
+      #     parent's nil-tolerance. Counts a Proc default (materialization fires before
       #     the Proc's value matters — the applicability hazard). A SUBFIELD default no longer triggers
       #     this: it resolves the child's value on the read path and never synthesizes the parent, so a
       #     nil parent short-circuits ShapeValidator regardless of any descendant default.
@@ -400,12 +401,11 @@ module Axn
         return !subtree_requires_presence?(node, ann) if node.implicit?
 
         # Satisfiability doctrine: a default on ANY of the node's OWN configs (node.configs — the FULL
-        # set, not the possibly-subset `configs` param) writes the SHARED wire value at this node, so it
-        # rescues omission for every route reading it. The defaults write pass materializes the wire node
-        # from that default, and each sibling route then validates against the written value — being
-        # optimistic that the default satisfies each sibling's validator is the satisfiability doctrine
-        # (rejection is reserved for provably dead declarations). Gated on satisfiability so strict schema
-        # mode stays byte-identical to the per-config rule below.
+        # set, not the possibly-subset `configs` param) resolves the SHARED value at this node on the
+        # read path, so it rescues omission for every route reading it. Each sibling route then validates
+        # against that resolved value — being optimistic that the default satisfies each sibling's
+        # validator is the satisfiability doctrine (rejection is reserved for provably dead declarations).
+        # Gated on satisfiability so strict schema mode stays byte-identical to the per-config rule below.
         return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
 
         configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }

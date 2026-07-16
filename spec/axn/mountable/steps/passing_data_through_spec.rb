@@ -34,3 +34,47 @@ RSpec.describe "Step data passing" do
     expect(result.third).to eq(3)
   end
 end
+
+RSpec.describe "Step data passing forwards parent's resolved top-level default" do
+  subject(:result) { composed.call }
+
+  let(:composed) do
+    build_axn do
+      # No value provided by the caller -- the parent must resolve this default itself, and that
+      # resolved value (not a raw/missing one) is what the child step should see.
+      expects :tenant_id, default: 1
+      exposes :tenant_id
+
+      step :step1, expects: [:tenant_id], exposes: [:tenant_id] do
+        expose :tenant_id, tenant_id
+      end
+    end
+  end
+
+  it "gives the child step the parent's resolved default, not a raw/missing value" do
+    is_expected.to be_ok
+    expect(result.tenant_id).to eq(1)
+  end
+end
+
+RSpec.describe "Step data passing forwards parent's normalized-to-nil value, not the raw caller value" do
+  subject(:result) { composed.call(role: "   ") }
+
+  let(:composed) do
+    build_axn do
+      # A blank caller value is normalized to nil by the parent's preprocess -- the child step
+      # should see that resolved nil (and apply its own fallback), not the raw blank string.
+      expects :role, allow_blank: true, preprocess: ->(v) { v.to_s.strip.empty? ? nil : v.strip }
+      exposes :role_seen_by_child
+
+      step :step1, expects: { role: { allow_nil: true } }, exposes: [:role_seen_by_child] do
+        expose :role_seen_by_child, role || "fallback"
+      end
+    end
+  end
+
+  it "gives the child step the parent's resolved nil, not the raw blank string" do
+    is_expected.to be_ok
+    expect(result.role_seen_by_child).to eq("fallback")
+  end
+end

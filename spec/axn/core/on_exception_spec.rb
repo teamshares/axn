@@ -234,16 +234,18 @@ RSpec.describe "on_exception context: nested action breadcrumb" do
     end
 
     stub_const("RetryC", build_axn do
-      expects :ic, default: "c-in"
+      expects :ic
       def call = raise "boom"
     end)
-    stub_const("RetryB", build_axn { def call = RetryC.call! })
+    # ic is supplied as a real arg (not a default): PRO-2908 shows RAW caller input in the report, so
+    # an unsupplied default would no longer appear — a genuinely-passed input still does.
+    stub_const("RetryB", build_axn { def call = RetryC.call!(ic: "c-in") })
     stub_const("RetryA", build_axn { def call = RetryB.call! })
 
     RetryA.call
     expect(attempts.size).to eq(1) # exactly one attempt — no ancestor retry
     expect(attempts.first[:action]).to be_a(RetryC)            # at the innermost (failing) action
-    expect(attempts.first[:inputs]).to eq({ ic: "c-in" })      # innermost's inputs
+    expect(attempts.first[:inputs]).to eq({ ic: "c-in" })      # innermost's raw inputs
     expect(attempts.first[:axn_stack]).to eq(%w[RetryA RetryB RetryC]) # full path (live stack at innermost)
   end
 end

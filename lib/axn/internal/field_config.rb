@@ -25,8 +25,9 @@ module Axn
 
       # Resolve a config's declared default against an action instance: a Proc is instance_exec'd (so
       # it sees readers/context), anything else returned as-is, with failures wrapped as
-      # DefaultAssignmentError. Single source for the executor's write-back pass AND the value-level
-      # read fallback (PRO-2889), so the two can't drift on Proc/error semantics.
+      # DefaultAssignmentError. Single source for the outbound-defaults write pass (Executor
+      # #apply_defaults!, which fills exposed_data) AND the value-level read-path fallback
+      # (PRO-2889), so the two can't drift on Proc/error semantics.
       def resolve_default(action, config)
         descriptor = config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
         identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
@@ -40,9 +41,8 @@ module Axn
       end
 
       # Run a config's preprocess proc against an action instance, wrapping failures as
-      # PreprocessingError. Single source for the write-back pass AND the read-path resolution
-      # (ContractForSubfields.resolve_value), so the two can't drift on error semantics — mirrors
-      # resolve_default.
+      # PreprocessingError. Used by the read-path resolution (ContractForSubfields.resolve_value) for
+      # both top-level and subfield preprocess — mirrors resolve_default's error-wrapping shape.
       def resolve_preprocess(action, config, value)
         descriptor = config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
         identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field

@@ -20,11 +20,13 @@ RSpec.describe Axn do
       subject { action.call }
 
       it { is_expected.to be_ok }
-      it "sets the default channel value" do
-        # Create an action instance to access its internal context for verification
+      it "resolves the default channel value on the read path without mutating provided_data" do
+        # PRO-2908: the top-level default resolves through the reader (read path), not by writing back
+        # into provided_data — so the reader returns "web" while provided_data stays raw (untouched).
         action_instance = action.send(:new)
         action_instance._run
-        expect(action_instance.instance_variable_get("@__context").provided_data[:channel]).to eq("web")
+        expect(action_instance.send(:channel)).to eq("web")
+        expect(action_instance.instance_variable_get("@__context").provided_data).not_to have_key(:channel)
       end
     end
 
