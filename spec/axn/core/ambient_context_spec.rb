@@ -177,6 +177,30 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     expect(result.s).to eq("anon")
   end
 
+  it "resolves an ambient model: subfield from a sibling <field>_id default when ambient is omitted" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context, default: 42
+      expects :company, on: :ambient_context, model: company_model
+      exposes :cid
+      def call = expose(cid: company.id)
+    end
+
+    # omitted ambient → the sibling company_id default (42) drives Company.find(42)
+    defaulted = with_ambient_context { klass.call }
+    expect(defaulted).to be_ok
+    expect(defaulted.cid).to eq(42)
+
+    # a present ambient id still wins over the default
+    present = with_ambient_context(company_id: 7) { klass.call }
+    expect(present).to be_ok
+    expect(present.cid).to eq(7)
+  end
+
   it "still allows sensitive: on an ambient_context subfield" do
     klass = Class.new do
       include Axn

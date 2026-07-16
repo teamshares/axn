@@ -148,7 +148,10 @@ module Axn
         )
         return nil unless raw_id.nil?
 
-        path = action.class._resolved_subfields.index[config]
+        # Ambient configs are absent from `_resolved_subfields` (they live in the ambient-scoped tree),
+        # so fall back to that index — otherwise an ambient `model:` subfield could never consult a
+        # sibling `<field>_id` default (the value-level model rescue), unlike every non-ambient subfield.
+        path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return nil if path.nil?
 
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)

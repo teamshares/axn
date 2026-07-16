@@ -70,7 +70,7 @@ A nested/deep ambient value behaves identically (PRO-2909 forms): the guards wer
 
 Shape's schema job is moot on ambient (ambient is excluded from `input_schema`), but its **validation** job is real: fail loudly if the ambient provider wasn't set up correctly. A shape-carrying ambient node with **no subfield children** is treated as a leaf by `_filter_ambient_node` (`ambient_context.rb:155`, `child.children.empty?`) and its whole value is copied. The `request` reader then returns that copied value, and shape validation runs against it through the normal subfield validation path (`_collect_contract_failures` → `collect_errors` → reader → `ShapeValidator`). No merge of the shape-member tree into the ambient filter is needed.
 
-This covers every shape-only shape: leaf (`expects :request, on: :ambient_context, shape: {...}`), a shape node reached via an implicit intermediate (`expects "meta.request", on: :ambient_context, shape: {...}` — `request` is still a childless leaf in the tree), and nested-member shapes (a member whose validations carry their own `:shape`, which `ShapeValidator` recurses into unchanged).
+This covers every shape-only shape: leaf (`expects :request, on: :ambient_context, shape: {...}`), a shape node reached via an implicit intermediate (`expects :request, on: "ambient_context.meta", shape: {...}` — `request` is still a childless leaf in the tree), and nested-member shapes (a member whose validations carry their own `:shape`, which `ShapeValidator` recurses into unchanged).
 
 ### Reject the non-leaf case at declaration (refinement over the ticket)
 
