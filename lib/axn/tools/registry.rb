@@ -53,8 +53,9 @@ module Axn
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
-      # Under Rails with eager_load off, hands each existing tool dir to the main Zeitwerk loader
-      # via `eager_load_dir`; outside Rails, requires every .rb file under each existing tool dir
+      # Under Rails, unless eager-loading has already completed, hands each existing tool dir to
+      # the main Zeitwerk loader via `eager_load_dir`; outside Rails, requires every .rb file
+      # under each existing tool dir
       # individually. Isolation granularity differs by path: outside Rails, each `require` is
       # rescued independently, so one bad FILE is logged at warn and skipped without affecting its
       # siblings. Under Rails, `eager_load_dir` loads a DIRECTORY as a single unit — Zeitwerk has no
@@ -66,7 +67,12 @@ module Axn
         return if dirs.empty?
 
         if _rails_app?
-          return if Rails.application.config.eager_load
+          # `config.eager_load` only says Rails INTENDS to eager-load; that phase runs late in boot
+          # (after config/initializers). Skip the on-demand load only once the app has finished
+          # initializing (eager-load has actually run), so a tools_for call from within an
+          # initializer still loads the tool dirs on demand.
+          return if Rails.application.config.eager_load &&
+                    Rails.application.respond_to?(:initialized?) && Rails.application.initialized?
 
           loader = Rails.autoloaders.main
           dirs.each do |dir|

@@ -67,4 +67,31 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
+
+  # `config.eager_load = true` only means Rails INTENDS to eager-load; that phase runs late in
+  # boot (after config/initializers). Simulates an adapter calling `Axn.tools_for` from within an
+  # initializer, before `Rails.application.initialize!` has finished.
+  it "still loads the tool dirs on demand when eager_load is true but the app hasn't finished initializing" do
+    allow(Rails.application.config).to receive(:eager_load).and_return(true)
+    allow(Rails.application).to receive(:initialized?).and_return(false)
+
+    expect(Rails.autoloaders.main).to receive(:eager_load_dir)
+      .with(Rails.root.join("app/actions/tools").to_s).and_call_original
+
+    tools = Axn.tools_for(:mcp)
+
+    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
+    expect(tools).to include(Actions::Tools::SampleWidget)
+  end
+
+  # Post-boot production steady state: eager-loading has already run, so the on-demand path
+  # must be skipped as a fast path.
+  it "skips the on-demand load when eager_load is true and the app has finished initializing" do
+    allow(Rails.application.config).to receive(:eager_load).and_return(true)
+    allow(Rails.application).to receive(:initialized?).and_return(true)
+
+    expect(Rails.autoloaders.main).not_to receive(:eager_load_dir)
+
+    Axn.tools_for(:mcp)
+  end
 end
