@@ -740,7 +740,13 @@ module Axn
       # resolved parent (the model leaf's own wire parent). The `raw`-nil guard exempts a caller-OMITTED id
       # before any resolution, so a default-only id never fabricates a conflict with a present record.
       source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
-      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
+      # The id-key presence probe honors the SIBLING id route's `method_call:` (the declaration that governs
+      # reading the id key), not the model field's — matching the finder path's _declared_id_token, so a
+      # sibling that opted into method dispatch on a PORO/Data parent doesn't raise here (PRO-2910). With no
+      # `<field>_id` declared the raw token is read with the model field's own flag.
+      sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
+      permit_method_call = Axn::Core::ContractForSubfields.id_key_permits_method_call?(config, sibling_configs)
+      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call:)
       return nil if raw.nil?
 
       # Compare against exactly the id the finder path would look up: the SAME declared `<field>_id` token
@@ -749,7 +755,6 @@ module Axn
       # declared config carries no transform, so the raw token is used; a declared id that resolves to nil
       # (a present value its preprocess maps to nil, no own default) yields nil — no conflict — matching the
       # reader and the record lookup.
-      sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
       return raw if sibling_configs.empty?
 
       Axn::Core::ContractForSubfields._declared_id_token(@action, config, source, sibling_configs)

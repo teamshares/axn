@@ -312,7 +312,8 @@ module Axn
       # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
       def self._declared_id_token(action, config, parent, configs)
         raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: Axn::Internal::FieldConfig.model_id_key(config.field),
-                                                          provided_data: parent, permit_method_call: config.method_call)
+                                                          provided_data: parent,
+                                                          permit_method_call: id_key_permits_method_call?(config, configs))
         configs.each do |sibling_config|
           # Absent id: only a defaulted route can rescue; skip the rest (they resolve nil and would run an
           # unguarded preprocess on the absent value).
@@ -364,6 +365,19 @@ module Axn
         return [own_route, default_route].compact.uniq if own_route || default_route
 
         [candidates.first].compact
+      end
+
+      # Whether the raw `<field>_id` wire key may be resolved by INVOKING it as a method off a PORO/Data
+      # parent, for the presence probe shared by the record lookup (_declared_id_token) and the consistency
+      # check (Executor#_consistency_id_for). The SIBLING `<field>_id` declaration governs reading the id key
+      # (the model config governs reading the RECORD), so a sibling that opted into `method_call:` permits the
+      # probe even when the model field did not — otherwise the probe raises MethodCallNotPermittedError before
+      # the sibling reader (which does permit the dispatch and transform) is ever consulted (PRO-2910). With no
+      # `<field>_id` declared, the caller's raw token is read with the model field's own flag.
+      def self.id_key_permits_method_call?(config, sibling_configs)
+        return config.method_call if sibling_configs.empty?
+
+        sibling_configs.any?(&:method_call)
       end
 
       module ClassMethods

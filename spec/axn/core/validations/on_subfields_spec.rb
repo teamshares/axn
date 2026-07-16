@@ -2448,6 +2448,64 @@ RSpec.describe Axn do
       end
     end
 
+    context "a model whose sibling <field>_id opts into method_call: on a PORO/Data parent (PRO-2910)" do
+      # The SIBLING `<field>_id` declaration governs how the id KEY is read; the model config governs how
+      # the RECORD is read. When the id opts into method dispatch but the model does not, the id-key
+      # presence probe (used by both the finder path and the consistency check) must honor the sibling id
+      # route's method_call — otherwise it raises MethodCallNotPermittedError before the sibling reader
+      # (which does permit the dispatch and transform) is ever consulted.
+      let(:strict_class) do
+        Class.new do
+          def self.registry = @registry ||= {}
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = registry[id]
+          def self.find(id) = registry[id]
+        end
+      end
+
+      before { stub_const("McCo", strict_class) }
+
+      it "resolves the record via the method_call sibling id (finder path)" do
+        strict_class.registry[5] = strict_class.new(5)
+        # A PORO parent: `company_id` is a METHOD (needs dispatch); no `company` reader (record absent).
+        meta = Class.new { def company_id = "5" }.new
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, coerce: Integer # wire method returns "5"
+          expects :company, on: :meta, model: { klass: McCo, finder: :fetch }, allow_nil: true # NO method_call:
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # sibling id read via dispatch, coerced "5" → 5, fetched
+      end
+
+      it "compares a present record against the method_call sibling id (consistency path)" do
+        # A Data parent: `company` is a declared MEMBER (safe read → record present, no method_call needed),
+        # while `company_id` is a behavioral METHOD (needs dispatch). The consistency check's id-key probe
+        # must honor the sibling id's method_call even though the model config has none.
+        record = strict_class.new("5")
+        parent_class = Data.define(:company) do
+          def company_id = " 5 "
+        end
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: McCo, finder: :find }, allow_nil: true # NO method_call:
+          def call = nil
+        end
+
+        result = action.call(meta: parent_class.new(company: record))
+
+        expect(result).to be_ok # stripped " 5 " → "5" == record id "5"; no false conflict, no method-call raise
+      end
+    end
+
     context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
       it "validates the settled parent value, not a value memoized before the parent was rewritten" do
         # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
