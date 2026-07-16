@@ -72,6 +72,38 @@ module Axn
     # and defeat the fail-safe guarantee. Compared against the normalized entry (see #tool_paths=).
     TOOL_PATHS_BLOCKLIST = ["", ".", "actions", "app", "app/actions"].freeze
 
+    class << self
+      # Single source-of-truth predicate for "is this tool_paths entry too broad to allow" —
+      # shared by the `tool_paths=` setter (which raises) and Tools::Registry (which skips + warns
+      # at resolve time). The setter alone can't fail-safe an in-place mutation of the live array
+      # (`Axn.config.tool_paths << "actions"` never calls the writer), so the registry re-checks
+      # every entry against this same predicate before resolving it to a directory.
+      def broad_tool_path?(entry) = !_broad_tool_path_reason(entry).nil?
+
+      private
+
+      # Normalizes a tool_paths entry for the broad-entry blocklist check: strips surrounding
+      # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare
+      # equal, then collapses `.`/`..` segments via `Pathname#cleanpath` so alternate spellings
+      # like `"./actions"`, `"actions/."`, and `"actions/../actions"` normalize to the same
+      # `"actions"` the blocklist already rejects (Pathname#cleanpath is a lexical collapse, no
+      # filesystem access). An empty string cleanpaths to `"."`, which the blocklist covers.
+      def _normalize_tool_path_entry(entry)
+        stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
+        Pathname(stripped).cleanpath.to_s
+      end
+
+      # Returns :traversal, :blocklist, or nil, letting callers distinguish which failure mode
+      # applies (the setter uses this to raise a tailored message per reason).
+      def _broad_tool_path_reason(entry)
+        normalized = _normalize_tool_path_entry(entry)
+        return :traversal if normalized == ".." || normalized.start_with?("../")
+        return :blocklist if TOOL_PATHS_BLOCKLIST.include?(normalized)
+
+        nil
+      end
+    end
+
     # Rejects broad/root-like entries at assignment with a message naming the offender, then stores
     # the (array-of-strings) value the generated reader/default expect. Narrow subdirs like
     # `agent_tools`, `actions/tools`, and `app/actions/tools` are still accepted.
@@ -80,21 +112,18 @@ module Axn
       raise ArgumentError, "tool_paths must be an Array of Strings; got #{value.inspect}" unless array_of_strings
 
       value.each do |entry|
-        normalized = _normalize_tool_path_entry(entry)
-
-        if normalized == ".." || normalized.start_with?("../")
+        case self.class.send(:_broad_tool_path_reason, entry)
+        when :traversal
           raise ArgumentError,
                 "tool_paths entry #{entry.inspect} escapes the app root via `..` traversal, which would " \
                 "resolve outside the app's own directories. Use a dedicated narrow subdir such as " \
                 "`agent_tools` or `actions/tools`."
+        when :blocklist
+          raise ArgumentError,
+                "tool_paths entry #{entry.inspect} is too broad: it resolves to a root-like directory " \
+                "(app/actions, app, or the project root) that would auto-expose every business action as a " \
+                "tool. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
         end
-
-        next unless TOOL_PATHS_BLOCKLIST.include?(normalized)
-
-        raise ArgumentError,
-              "tool_paths entry #{entry.inspect} is too broad: it resolves to a root-like directory " \
-              "(app/actions, app, or the project root) that would auto-expose every business action as a " \
-              "tool. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
       end
 
       @tool_paths = value
@@ -226,17 +255,6 @@ module Axn
     end
 
     private
-
-    # Normalizes a tool_paths entry for the broad-entry blocklist check: strips surrounding
-    # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal,
-    # then collapses `.`/`..` segments via `Pathname#cleanpath` so alternate spellings like
-    # `"./actions"`, `"actions/."`, and `"actions/../actions"` normalize to the same `"actions"`
-    # the blocklist already rejects (Pathname#cleanpath is a lexical collapse, no filesystem access).
-    # An empty string cleanpaths to `"."`, which the blocklist already covers.
-    def _normalize_tool_path_entry(entry)
-      stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
-      Pathname(stripped).cleanpath.to_s
-    end
 
     # Apply async config to EnqueueAllOrchestrator if it's already loaded.
     # Called from set_default_async and set_enqueue_all_async to ensure the

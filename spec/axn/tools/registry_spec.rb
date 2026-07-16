@@ -97,6 +97,24 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe "._tool_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
+    it "skips a broad entry that reached tool_paths via in-place mutation, warning about it" do
+      allow(Axn.config).to receive(:tool_paths).and_return(%w[actions agent_tools])
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      dirs = described_class.send(:_tool_dirs)
+
+      actions_dir = described_class.send(:_resolve_tool_dir, "actions")
+      agent_tools_dir = described_class.send(:_resolve_tool_dir, "agent_tools")
+
+      expect(dirs).not_to include(actions_dir)
+      expect(dirs).to include(agent_tools_dir)
+      expect(warnings).to include(a_string_matching(/"actions"/))
+    end
+  end
+
   describe ".ensure_loaded! (non-Rails require fallback)", :aggregate_failures do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools", __dir__) }
 

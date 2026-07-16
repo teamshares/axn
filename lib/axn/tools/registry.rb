@@ -119,8 +119,22 @@ module Axn
         false
       end
 
+      # Feeds both eager-loading (ensure_loaded!) and membership (_under_tool_path?), so both are
+      # protected by the same fail-safe: re-checks each entry against the setter's own broad-path
+      # predicate rather than trusting `tool_paths=` already enforced it. The setter can't catch an
+      # entry that reaches the live array without going through it — in-place mutation
+      # (`Axn.config.tool_paths << "actions"`), a mutated reference held after assignment, or the
+      # never-assigned default array (also mutable) — so a broad entry smuggled in this way is
+      # skipped here and logged, never silently auto-registering every business action.
       def _tool_dirs
-        Array(Axn.config.tool_paths).map { |path| _resolve_tool_dir(path) }.compact
+        Array(Axn.config.tool_paths).filter_map do |path|
+          if Axn::Configuration.broad_tool_path?(path)
+            Axn.config.logger.warn { "[Axn] tool_paths entry #{path.inspect} is too broad; skipping (see Axn::Configuration::TOOL_PATHS_BLOCKLIST)" }
+            next
+          end
+
+          _resolve_tool_dir(path)
+        end
       end
 
       def _resolve_tool_dir(path)

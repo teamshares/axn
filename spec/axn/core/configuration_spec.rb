@@ -96,6 +96,37 @@ RSpec.describe Axn::Configuration do
       end
     end
 
+    describe ".broad_tool_path?" do
+      it "flags a bare broad `actions` entry" do
+        expect(described_class.broad_tool_path?("actions")).to be(true)
+      end
+
+      it "flags `./actions` (alternate spelling)" do
+        expect(described_class.broad_tool_path?("./actions")).to be(true)
+      end
+
+      it "flags `app/actions`" do
+        expect(described_class.broad_tool_path?("app/actions")).to be(true)
+      end
+
+      it "flags a `..`-traversal entry" do
+        expect(described_class.broad_tool_path?("actions/..")).to be(true)
+        expect(described_class.broad_tool_path?("..")).to be(true)
+      end
+
+      it "does not flag a legitimately narrow dir" do
+        expect(described_class.broad_tool_path?("actions/tools")).to be(false)
+      end
+
+      it "does not flag a dir that merely shares a prefix with a blocklisted entry" do
+        expect(described_class.broad_tool_path?("agent_tools")).to be(false)
+      end
+
+      it "does not flag a narrow subdir of app/actions" do
+        expect(described_class.broad_tool_path?("app/actions/tools")).to be(false)
+      end
+    end
+
     describe "#tool_name_stripped_prefixes=" do
       it "accepts an array of strings" do
         config.tool_name_stripped_prefixes = %w[actions]
