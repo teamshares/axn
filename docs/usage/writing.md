@@ -95,15 +95,15 @@ result.user.errors.full_messages  # populated on both ok? and !ok?
 When an action is a thin facade over another — forwarding most inputs and re-exposing the child's outputs — use `inputs` to forward arguments and `expose(result)` to forward outputs:
 
 ```ruby
-class Assignments::Create
+class RegisterCustomer
   include Axn
 
-  expects :user, :company, :role, :started_at, optional: true
-  exposes :user, :employment, optional: true
-  error "Unable to create assignment"
+  expects :email, :name, :plan, optional: true
+  exposes :user, :subscription, optional: true
+  error "Unable to register customer"
 
   def call
-    result = Employment::AddEmployeeToCompany.call(**inputs) # [!code focus]
+    result = Accounts::SignUp.call(**inputs) # [!code focus]
     expose(result)              # forwards (child's exposures ∩ this action's exposes) # [!code focus]
     fail! unless result.ok?     # a declared base `error` provides the message # [!code focus]
   end
@@ -397,7 +397,7 @@ The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) 
 
 ### Default with specific overrides
 
-A common pattern — used in integrations like `teamshares_api` — is to declare an unconditional base as the fallback, and then overlay specific `standalone: true` reasons for known error classes. `standalone: true` renders those specific messages on their own (not attached under the base), keeping them clean for user display:
+A common pattern — handy when wrapping an external API — is to declare an unconditional base as the fallback, and then overlay specific `standalone: true` reasons for known error classes. `standalone: true` renders those specific messages on their own (not attached under the base), keeping them clean for user display:
 
 ```ruby
 class CallExternalApi
@@ -512,28 +512,28 @@ For the common "save an ActiveRecord model" case, a plain action plus `fails_on 
 
 When one action calls another, `fails_on` belongs on the **inner** action — the one that knows the exception class is an expected business outcome.
 
-Consider an outer `SyncUser` that calls an inner `CreateZendeskTicket`. The inner action may raise `Faraday::BadRequestError` when the email address is already registered — a predictable, non-bug outcome. Without `fails_on`, that exception lands in the **exception** bucket: `Axn.config.on_exception` fires, and `SyncUser` receives a spurious Honeybadger report even though it handles the failure gracefully.
+Consider an outer `SyncContact` that calls an inner `Crm::CreateContact`. The inner action may raise `Faraday::BadRequestError` when the email address is already registered — a predictable, non-bug outcome. Without `fails_on`, that exception lands in the **exception** bucket: `Axn.config.on_exception` fires, and `SyncContact` receives a spurious error-tracker report even though it handles the failure gracefully.
 
 ```ruby
-class CreateZendeskTicket
+class Crm::CreateContact
   include Axn
 
   fails_on Faraday::BadRequestError   # "email already used" is expected, not a bug
 
   def call
-    ZendeskClient.create_ticket(email:)  # raises Faraday::BadRequestError if duplicate
+    CrmClient.create_contact(email:)  # raises Faraday::BadRequestError if duplicate
   end
 end
 
-class SyncUser
+class SyncContact
   include Axn
 
   def call
-    result = CreateZendeskTicket.call(email:)
+    result = Crm::CreateContact.call(email:)
     # result.ok? is false; result.outcome.failure? is true
     # result.exception holds the original Faraday::BadRequestError
     # Axn.config.on_exception was NOT called — no spurious report
-    fail!("Could not create ticket: #{result.error}") unless result.ok?
+    fail!("Could not create contact: #{result.error}") unless result.ok?
   end
 end
 ```
@@ -707,15 +707,15 @@ This section covers an advanced shortcut. If you're new to Axn, start by explici
 If you don't define a `call` method, Axn provides a default implementation that automatically exposes all declared exposures by calling methods with matching names. This allows you to simplify actions that only need to compute and expose values:
 
 ```ruby
-class CertificatesByDestination
+class OrdersByStatus
   include Axn
-  exposes :certs_by_destination, type: Hash
+  exposes :orders_by_status, type: Hash
 
   private
 
-  def certs_by_destination
+  def orders_by_status
     # Your logic here - automatically exposed
-    { "dest1" => "cert1", "dest2" => "cert2" }
+    { "pending" => 3, "shipped" => 12 }
   end
 end
 ```
@@ -723,18 +723,18 @@ end
 This is equivalent to:
 
 ```ruby
-class CertificatesByDestination
+class OrdersByStatus
   include Axn
-  exposes :certs_by_destination, type: Hash
+  exposes :orders_by_status, type: Hash
 
   def call
-    expose certs_by_destination: certs_by_destination
+    expose orders_by_status: orders_by_status
   end
 
   private
 
-  def certs_by_destination
-    { "dest1" => "cert1", "dest2" => "cert2" }
+  def orders_by_status
+    { "pending" => 3, "shipped" => 12 }
   end
 end
 ```
