@@ -96,6 +96,20 @@ RSpec.describe Axn::Configuration do
       end
     end
 
+    describe ".normalize_tool_path" do
+      it "collapses a `.`-segment alternate spelling" do
+        expect(described_class.normalize_tool_path("actions/./tools")).to eq("actions/tools")
+      end
+
+      it "collapses a `..`-round-trip alternate spelling" do
+        expect(described_class.normalize_tool_path("app/../agent_tools")).to eq("agent_tools")
+      end
+
+      it "strips surrounding whitespace and slashes" do
+        expect(described_class.normalize_tool_path(" /actions/tools/ ")).to eq("actions/tools")
+      end
+    end
+
     describe ".broad_tool_path?" do
       it "flags a bare broad `actions` entry" do
         expect(described_class.broad_tool_path?("actions")).to be(true)

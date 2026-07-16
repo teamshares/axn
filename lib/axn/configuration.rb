@@ -80,23 +80,26 @@ module Axn
       # every entry against this same predicate before resolving it to a directory.
       def broad_tool_path?(entry) = !_broad_tool_path_reason(entry).nil?
 
-      private
-
-      # Normalizes a tool_paths entry for the broad-entry blocklist check: strips surrounding
-      # whitespace and any leading/trailing slashes, so `" /actions/ "` and `"actions"` compare
-      # equal, then collapses `.`/`..` segments via `Pathname#cleanpath` so alternate spellings
-      # like `"./actions"`, `"actions/."`, and `"actions/../actions"` normalize to the same
-      # `"actions"` the blocklist already rejects (Pathname#cleanpath is a lexical collapse, no
-      # filesystem access). An empty string cleanpaths to `"."`, which the blocklist covers.
-      def _normalize_tool_path_entry(entry)
+      # Normalizes a tool_paths entry for BOTH the broad-entry blocklist check and directory
+      # resolution (Tools::Registry#_resolve_tool_dir): strips surrounding whitespace and any
+      # leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal, then collapses
+      # `.`/`..` segments via `Pathname#cleanpath` so alternate spellings like `"./actions"`,
+      # `"actions/."`, and `"actions/../actions"` normalize to the same `"actions"` the blocklist
+      # already rejects (Pathname#cleanpath is a lexical collapse, no filesystem access). An empty
+      # string cleanpaths to `"."`, which the blocklist covers. Exposed as public API (rather than
+      # kept private) so the registry's resolver can share this exact normalization — the validator
+      # and the resolver must never disagree on what a given entry means.
+      def normalize_tool_path(entry)
         stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
         Pathname(stripped).cleanpath.to_s
       end
 
+      private
+
       # Returns :traversal, :blocklist, or nil, letting callers distinguish which failure mode
       # applies (the setter uses this to raise a tailored message per reason).
       def _broad_tool_path_reason(entry)
-        normalized = _normalize_tool_path_entry(entry)
+        normalized = normalize_tool_path(entry)
         return :traversal if normalized == ".." || normalized.start_with?("../")
         return :blocklist if TOOL_PATHS_BLOCKLIST.include?(normalized)
 

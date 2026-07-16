@@ -143,11 +143,17 @@ module Axn
         end
       end
 
+      # Normalizes via the same `Axn::Configuration.normalize_tool_path` the `tool_paths=` validator
+      # uses (strip + `Pathname#cleanpath`), so an entry like `"actions/./tools"` resolves to the
+      # identical dir as its clean spelling `"actions/tools"` instead of a raw, uncollapsed path.
+      # `File.expand_path` on the joined result makes the returned dir canonical/absolute, matching
+      # how `_under_tool_path?` expands a class's source path before comparing — without this, the
+      # two comparison sides can disagree on an otherwise-equal directory (PRO-2921 follow-up).
       def _resolve_tool_dir(path)
         if defined?(Rails) && Rails.respond_to?(:root) && Rails.root
-          rel = path.to_s.strip.sub(%r{\A/+}, "")
+          rel = Axn::Configuration.normalize_tool_path(path)
           rel = rel.delete_prefix("app/") if rel.start_with?("app/")
-          Rails.root.join("app", rel).to_s
+          File.expand_path(Rails.root.join("app", rel).to_s)
         else
           File.expand_path(path)
         end
