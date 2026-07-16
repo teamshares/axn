@@ -54,14 +54,14 @@ module Axn
             next unless loader.respond_to?(:eager_load_dir)
 
             loader.eager_load_dir(dir)
-          rescue StandardError => e
+          rescue StandardError, LoadError => e
             Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
           end
         else
           dirs.each do |dir|
             Dir.glob(File.join(dir, "**", "*.rb")).each do |file|
               require file
-            rescue StandardError => e
+            rescue StandardError, LoadError => e
               Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
             end
           end

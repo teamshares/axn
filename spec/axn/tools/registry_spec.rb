@@ -135,6 +135,19 @@ RSpec.describe Axn::Tools::Registry do
       expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
       expect(warnings).to include(a_string_matching(/bad_mixed_tool\.rb.*boom/))
     end
+
+    it "loads the good tool despite a sibling file raising LoadError at load time, warning about it too" do
+      skip "fixture already loaded" if Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      tools = Axn.tools_for(:mcp)
+
+      expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
+      expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
+      expect(warnings).to include(a_string_matching(/load_error_mixed_tool\.rb.*LoadError/))
+    end
   end
 
   describe ".member?" do
