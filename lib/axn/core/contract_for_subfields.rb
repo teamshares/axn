@@ -131,12 +131,17 @@ module Axn
         # pre-transform extract and breaks the cycle.
         return raw if in_progress[config]
 
-        # A read taken while ANOTHER field is mid-transform is provisional — it resolves against a parent
-        # that hasn't settled yet, so it is returned uncached and its reader memo is dropped once the outer
-        # field settles, so a later read re-resolves against the now-settled parent.
-        nested = !in_progress.empty?
+        # A read taken while ANOTHER field's read-path TRANSFORM is mid-flight is provisional — it resolves
+        # against a parent that hasn't settled yet (e.g. a parent whose own preprocess rewrites the value its
+        # children read), so it is returned uncached and its reader memo is dropped once the outer field
+        # settles, so a later read re-resolves against the now-settled parent. Keyed off the transform set,
+        # NOT the cycle set: a model id LOOKUP (resolve_model_value) marks the cycle set but not this one —
+        # its sibling `<field>_id` read is against an already-settled parent, so it must cache (PRO-2910).
+        transforms = _transform_in_progress_set(action)
+        nested = !transforms.empty?
         _mark_provisional_reader(action, config) if nested
         in_progress[config] = true
+        transforms[config] = true
         begin
           # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
           # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
@@ -145,6 +150,7 @@ module Axn
           value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         ensure
           in_progress.delete(config)
+          transforms.delete(config)
         end
         return value if nested
 
@@ -153,15 +159,30 @@ module Axn
         value
       end
 
-      # The per-action set of configs whose read-path resolution is mid-flight (compare_by_identity). Shared
-      # by resolve_value and resolve_model_value so a value can't be defined in terms of its own transform or
-      # default: a re-entrant read of the same config returns its pre-default value, breaking the cycle. A
-      # non-empty set also means "some field is mid-resolution", so a read taken now is provisional.
+      # The per-action set of configs whose resolution is mid-flight (compare_by_identity), for CYCLE
+      # detection. Shared by resolve_value and resolve_model_value so a value can't be defined in terms of
+      # its own transform or default: a re-entrant read of the same config returns its pre-default value,
+      # breaking the cycle.
       def self._resolve_in_progress_set(action)
         if action.instance_variable_defined?(:@__resolve_in_progress)
           action.instance_variable_get(:@__resolve_in_progress)
         else
           action.instance_variable_set(:@__resolve_in_progress, {}.compare_by_identity)
+        end
+      end
+
+      # The per-action set of configs whose read-path TRANSFORM is mid-flight (compare_by_identity), the
+      # provisional trigger. Distinct from the cycle set. A transform can rewrite the value its children read,
+      # so a read taken during one is provisional: resolve_value marks it around coerce:/preprocess:/default:,
+      # and resolve_model_value marks it around a record-supplying `default:` (which can read this model's own
+      # subfields against a not-yet-settled record). A model id LOOKUP does NOT mark it — it rewrites nothing
+      # its SIBLINGS read, so the sibling `<field>_id` it consults resolves against an already-settled parent
+      # and must cache, not drop as provisional (PRO-2910). Non-empty means a read taken now is provisional.
+      def self._transform_in_progress_set(action)
+        if action.instance_variable_defined?(:@__transform_in_progress)
+          action.instance_variable_get(:@__transform_in_progress)
+        else
+          action.instance_variable_set(:@__transform_in_progress, {}.compare_by_identity)
         end
       end
 
@@ -253,13 +274,30 @@ module Axn
         # the marker is set BEFORE the id lookup and the default so both re-entry routes are covered.
         return present_record || _model_from_raw_parent(config, options, parent) if in_progress[config]
 
-        nested = !in_progress.empty?
+        # This model read is provisional only when a PARENT transform is mid-flight (keyed off the transform
+        # set, like resolve_value) — a record resolved against an unsettled parent must be dropped and re-read.
+        transforms = _transform_in_progress_set(action)
+        nested = !transforms.empty?
         _mark_provisional_reader(action, config) if nested
         in_progress[config] = true
         begin
           record = present_record
+          # The id LOOKUP reads a SIBLING `<field>_id`, whose parent is already settled — so it is NOT a
+          # transform-in-progress (only the cycle set is marked). That lets the sibling id reader cache and
+          # be reused by its own later validation read, running a stateful preprocess:/default: at most once
+          # and keeping the record's id in agreement with what the `<field>_id` reader sees (PRO-2910).
           record ||= resolve_model_via_id(action, config, options, parent)
-          record = Axn::Internal::FieldConfig.resolve_default(action, config) if record.nil? && config.applied_default?
+          # The record-supplying `default:`, by contrast, CAN read this model's own subfields (`on:` this
+          # field) against a record that hasn't settled yet, so it marks the transform set: those child reads
+          # are provisional and re-resolve against the settled record once the default returns (PRO-2908).
+          if record.nil? && config.applied_default?
+            transforms[config] = true
+            begin
+              record = Axn::Internal::FieldConfig.resolve_default(action, config)
+            ensure
+              transforms.delete(config)
+            end
+          end
         ensure
           in_progress.delete(config)
         end

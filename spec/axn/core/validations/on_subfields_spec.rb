@@ -2506,6 +2506,49 @@ RSpec.describe Axn do
       end
     end
 
+    context "a stateful sibling <field>_id transform runs at most once (model declared BEFORE its id, PRO-2910)" do
+      # When the model is declared before its (aliased) `<field>_id`, inbound validation resolves the model
+      # first, so the finder reads the sibling id reader WHILE the model is mid-resolution. That read must
+      # still CACHE (the id's parent is already settled — a model LOOKUP is not a parent transform), so the
+      # id's own later validation read reuses it instead of re-running the transform. Otherwise a stateful/
+      # non-idempotent preprocess: runs twice and the record's id disagrees with what the reader exposes.
+      it "resolves the record and the reader from a SINGLE preprocess run (they agree)" do
+        runs = []
+        finder = Class.new do
+          def self.seen = @seen ||= []
+          attr_reader :id
+
+          def initialize(id) = @id = id
+
+          def self.find(id)
+            seen << id
+            new(id)
+          end
+        end
+        stub_const("OnceCo", finder)
+        # A stateful preprocess: a different token on each call — so a second run would make the record's id
+        # (from the finder) and the `<field>_id` reader disagree.
+        stateful = lambda do |_v|
+          runs << :call
+          "id#{runs.size}"
+        end
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company, on: :meta, model: { klass: OnceCo, finder: :find }, allow_nil: true # declared FIRST
+          expects :company_id, on: :meta, as: :the_cid, preprocess: stateful
+          exposes :record_id, :reader_id, allow_nil: true
+          def call = expose(record_id: company&.id, reader_id: the_cid)
+        end
+
+        result = action.call(meta: { company_id: "raw" })
+
+        expect(result).to be_ok
+        expect(runs.size).to eq(1)                       # preprocess ran once, not twice
+        expect(result.record_id).to eq(result.reader_id) # record's id agrees with the reader
+        expect(finder.seen).to eq(["id1"])               # finder consumed the one transformed token
+      end
+    end
+
     context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
       it "validates the settled parent value, not a value memoized before the parent was rewritten" do
         # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
