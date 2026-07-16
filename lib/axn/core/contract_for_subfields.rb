@@ -643,13 +643,23 @@ module Axn
           end
         end
 
-        # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
-        # parent and otherwise shares the top-level reader's semantics via `_define_model_id_reader_from`.
+        # The subfield analog of `_define_model_id_reader`: yields the `<field>_id` token and otherwise
+        # shares the top-level reader's semantics via `_define_model_id_reader_from`. Like the top-level
+        # companion, it reuses the SAME declared `<field>_id` token the record lookup and the consistency
+        # check consume (sibling_id_configs + _declared_id_token), so this companion agrees with them and
+        # with the declared `<field>_id`'s own (possibly `as:`-aliased) reader — never the raw wire value
+        # when a transform is declared (PRO-2910). An undeclared id is the caller's raw token off the `on:`
+        # parent.
         def _define_subfield_model_id_reader(config, processed_options)
           by_primary_key = processed_options[:finder] == :find
           _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
-            parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
-            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+            sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(self, config)
+            if sibling_configs.empty?
+              parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
+              Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+            else
+              Axn::Core::ContractForSubfields._declared_id_token(self, sibling_configs)
+            end
           end
         end
       end

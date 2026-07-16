@@ -2576,6 +2576,36 @@ RSpec.describe Axn do
       end
     end
 
+    context "the auto <field>_id companion agrees with the transformed lookup when the id is aliased (PRO-2910)" do
+      # An `as:`-aliased sibling `<field>_id` frees the `<field>_id` name, so the model still generates its
+      # own `<field>_id` companion reader. That companion must yield the SAME declared/transformed token the
+      # record lookup consumed (mirroring the top-level companion), not the raw wire value — otherwise the
+      # record and the auto companion expose inconsistent ids.
+      it "returns the transformed id from the subfield companion, matching the resolved record" do
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("AliasCo", finder)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, as: :stripped_id, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: AliasCo, finder: :find }, allow_nil: true
+          exposes :record_id, :companion_id, :aliased_id, allow_nil: true
+          def call = expose(record_id: company&.id, companion_id: company_id, aliased_id: stripped_id)
+        end
+
+        result = action.call(meta: { company_id: " 5 " })
+
+        expect(result).to be_ok
+        expect(result.record_id).to eq("5") # lookup consumed the stripped token
+        expect(result.companion_id).to eq("5") # auto companion agrees (not the raw " 5 ")
+        expect(result.aliased_id).to eq("5")   # and matches the explicit aliased reader
+      end
+    end
+
     context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
       it "validates the settled parent value, not a value memoized before the parent was rewritten" do
         # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
