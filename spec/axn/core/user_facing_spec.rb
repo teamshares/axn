@@ -320,6 +320,15 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
+    it "validates a raw ShapeConfig member's user_facing: grammar at construction (raw path shares the block path's check)" do
+      # A raw shape: kwarg supplies pre-built ShapeConfigs that bypass _build_shape_member; the grammar
+      # check lives in ShapeConfig's constructor, so a malformed value fails here rather than surfacing
+      # as a literal runtime message ("123").
+      expect do
+        Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } }, user_facing: 123)
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
     it "rejects user_facing: on an exposes shape member (outbound failures are always dev-facing)" do
       expect do
         build_axn do

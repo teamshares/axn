@@ -47,6 +47,19 @@ module Axn
         end
       end
 
+      # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
+      # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
+      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes`
+      # field-level check AND `ShapeConfig`'s own construction hold members and fields to one grammar —
+      # a member built via the block form OR a raw `shape:` kwarg is validated identically.
+      def self.validate_user_facing!(user_facing)
+        return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
+                  Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+
+        raise ArgumentError,
+              "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+      end
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
@@ -92,6 +105,12 @@ module Axn
       # `method_call:` (PRO-2907).
       ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
         def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
+          # Validate at construction so a member's `user_facing:` grammar holds however the ShapeConfig
+          # is built — the block form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies
+          # pre-built ShapeConfigs, which never route through the block path. A malformed value
+          # (`user_facing: 123`) would otherwise reach the runtime settlement path as a truthy opt-in
+          # and surface as a literal message (`"123"`) instead of failing here.
+          Contract.validate_user_facing!(user_facing)
           super
         end
 
@@ -590,13 +609,9 @@ module Axn
         # user-facing failure (see Executor). Its value doubles as the surfaced message: `true` uses
         # the field's own validation message; a String overrides it; a Symbol names an action method
         # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
-        # handler shape. Anything else is a programmer error, so reject it at declaration.
+        # handler shape. Single-sourced through the module-level grammar check (see above).
         def _validate_user_facing!(user_facing)
-          return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
-                    Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
-
-          raise ArgumentError,
-                "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+          Contract.validate_user_facing!(user_facing)
         end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -717,11 +732,8 @@ module Axn
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
-          # A member's `user_facing:` has full parity with a field's — validate it through the same
-          # gate, so a bad value (`user_facing: 123`) raises the same clear ArgumentError rather than
-          # slipping through as an opaque option.
-          _validate_user_facing!(config.user_facing)
-
+          # `user_facing:` (full parity with a field's) is validated in ShapeConfig's constructor below,
+          # so the block and raw `shape:` paths hold members to one grammar.
           ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata,
                           method_call: config.method_call, sensitive: config.sensitive, user_facing: config.user_facing)
         end
