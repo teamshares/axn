@@ -420,6 +420,26 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
       expect(result).to be_ok
       expect(result.cid).to be_nil
     end
+
+    it "resolves from the default when a present id preprocesses to nil AND a default is declared (reader parity)" do
+      # This is NOT the failed-lookup-stays-nil case (that is a present id resolving to a NON-nil value whose
+      # lookup fails). Here the present value transforms to nil, so the field's OWN default: applies — the
+      # universal preprocess+default semantic — and the `company_id` reader itself returns 42. The model must
+      # resolve from that same 42 (reader/model parity), not diverge to nil.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, default: 42, preprocess: ->(v) { v == "none" ? nil : v }
+        exposes :cid, allow_nil: true
+        exposes :id_reader, allow_nil: true
+        def call = expose(cid: company&.id, id_reader: company_id)
+      end
+
+      result = action.call(company_id: "none")
+
+      expect(result).to be_ok
+      expect(result.id_reader).to eq(42) # the field resolves to its default after preprocess → nil
+      expect(result.cid).to eq(42)       # the model agrees with the reader, not nil
+    end
   end
 
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
