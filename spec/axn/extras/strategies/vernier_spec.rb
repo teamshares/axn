@@ -278,7 +278,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
         named_action.send(:_with_vernier_profiling) { "test" }
       end
 
-      it "does not use axn_name (the display override) for the profile filename — it stays stable across display renames" do
+      it "uses axn_name (sanitized) for the profile filename when set, mirroring tool_name" do
         named_action_class = build_axn do
           use :vernier
           axn_name "custom-tool"
@@ -291,7 +291,7 @@ RSpec.describe Axn::Extras::Strategies::Vernier do
         named_action = named_action_class.send(:new, name: "World")
 
         expect(Vernier).to receive(:profile).with(
-          hash_including(out: match(/axn_tool_\d+\.json$/)),
+          hash_including(out: match(/axn_custom_tool_\d+\.json$/)),
         ).and_yield
 
         named_action.send(:_with_vernier_profiling) { "test" }

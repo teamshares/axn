@@ -55,11 +55,11 @@ RSpec.describe "Axn tool_name derivation" do
     expect(k.tool_name).to eq("list_companies")
   end
 
-  it "derives from the stable class name, not the mutable axn_name display override" do
+  it "mirrors an explicit axn_name (sanitized) as its base default, over the class name" do
     k = tool_klass("AgentTools::ListCompanies")
     k.axn_name "List companies in CRM"
 
-    expect(k.tool_name).to eq("list_companies")
+    expect(k.tool_name).to eq("list_companies_in_crm")
     expect(k.resolved_axn_name).to eq("List companies in CRM")
   end
 
@@ -71,13 +71,30 @@ RSpec.describe "Axn tool_name derivation" do
     expect(k.tool_name).to eq("custom")
   end
 
-  it "falls back to `tool` for an anonymous class (nil name), even with axn_name set" do
+  it "an anonymous class (nil name) with axn_name set derives tool_name from the sanitized axn_name" do
     k = Class.new do
       include Axn
       axn_name "List companies in CRM"
     end
 
+    expect(k.tool_name).to eq("list_companies_in_crm")
+  end
+
+  it "falls back to `tool` for an anonymous class with no axn_name and no class name" do
+    k = Class.new do
+      include Axn
+    end
+
     expect(k.tool_name).to eq("tool")
+  end
+
+  it "mirrors axn_name for an anonymous tool class (the real axn-ruby_llm case)" do
+    k = Class.new do
+      include Axn
+      axn_name "greet"
+    end
+
+    expect(k.tool_name).to eq("greet")
   end
 
   describe "an inherited `tool name:` override does not leak into a subclass's own redeclaration" do

@@ -75,11 +75,12 @@ module Axn
           nil
         end
 
-        # The provider-facing tool name — stable across edits to `axn_name` (the free-form
-        # display name used in logging/async), because it's derived from the Ruby class name
-        # rather than resolved_axn_name. An explicit `tool name:` override wins; otherwise derive
-        # from the class name by stripping the leading run of configured prefixes, snake_casing
-        # the rest, and restricting to [a-z0-9_]. Never blank.
+        # The provider-facing tool name. The default mirrors an explicit `axn_name` (sanitized)
+        # when one is set — this is what lets an otherwise-anonymous tool class get a real
+        # provider-facing name (`Class.new { include Axn; axn_name "greet"; tool }`) — and
+        # otherwise derives from the Ruby class name. An explicit `tool name:` override wins
+        # over both. Derivation (from whichever source wins) strips the leading run of
+        # configured prefixes, snake_cases the rest, and restricts to [a-z0-9_]. Never blank.
         def tool_name
           # Defense-in-depth: the `tool` DSL rejects an override that sanitizes to empty, but an
           # override set through some other path (a direct class_attribute write) must still never
@@ -90,11 +91,13 @@ module Axn
             return sanitized_override unless sanitized_override.empty?
           end
 
-          # An anonymous class (name == nil) has no stable source to derive from — do not fall
-          # back to axn_name/resolved_axn_name, which would re-introduce the display coupling.
-          return "tool" if name.blank?
+          # `axn_name.presence || name.presence` — NOT `resolved_axn_name` — so a truly nameless
+          # class (no axn_name, no class name) falls back to "tool" below rather than deriving
+          # from the "Anonymous Axn" sentinel.
+          source = axn_name.presence || name.presence
+          return "tool" if source.nil? || source.strip.empty?
 
-          segments = name.split("::")
+          segments = source.split("::")
           kept = _tool_name_strip_leading_prefixes(segments)
           derived = _tool_name_sanitize(kept.map(&:underscore).join("_"))
           return derived unless derived.empty?
