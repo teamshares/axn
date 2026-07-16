@@ -249,17 +249,19 @@ The default is resolved at the **value** level, when the subfield is read: the r
 
 #### Reaching into nested parents
 
-`on:` accepts a **dotted path** to declare a subfield of a deeply-nested parent, with a clean flat reader named after the field:
+`on:` accepts a **dotted path** — this is the tool for pulling a single deeply-nested value out of a big provided hash, declaring it (and validating it) as a flat field with a clean reader named after the leaf:
 
 ```ruby
 expects :address, type: Hash
 expects :zip, on: "address.billing", type: String  # validates address[:billing][:zip]; defines a `zip` reader
 ```
 
-The **root** segment (`address`) must be a declared field (or subfield). Resolution is canonical: the chain resolves through the deepest *declared* ancestor's reader (so `on: "payload.company"` where `:company` is a `model:` subfield sees the resolved record, exactly like `on: :company`), and only undeclared intermediate segments are dug as plain hashes. The reader is named after the subfield (`zip`) — there's no ambiguity, since the field name itself has no dots. Nested keys are read indifferently: a parent holding either symbol or string keys resolves the same (symbol keys are checked first).
+Now `zip` reads `address[:billing][:zip]` directly — you name only the leaf you care about, not every intermediate. The **root** segment (`address`) must be a declared field (or subfield); the dots after it name intermediate keys that need no declaration of their own. Resolution is canonical: the chain resolves through the deepest *declared* ancestor's reader (so `on: "payload.company"` where `:company` is a `model:` subfield sees the resolved record, exactly like `on: :company`), and only undeclared intermediate segments are dug as plain hashes. Nested keys are read indifferently: a parent holding either symbol or string keys resolves the same (symbol keys are checked first).
+
+The field name is always a single key; the path lives entirely in `on:`. (A dotted field *name* — `expects "billing.zip", on: :address` — is not valid; write the leaf as the name and the path in `on:`.)
 
 ::: info Nested parents support the full kwarg surface
-`default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. They all resolve on the **read path**, when the subfield is read: a nested `default:` returns the declared value for a missing/`nil` leaf, and a nested `preprocess:` transforms the resolved value. Neither materializes intermediate objects nor writes into the parent — the parent reader returns exactly what the caller passed (so a dotted subfield you want to *read* the transformed value from needs an `as:` alias to get its own reader). A nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is framework-supplied per-invocation and does not support `default:`/`preprocess:`.
+`default:`, `preprocess:`, and `sensitive:` work on a **nested** parent too — whether reached via a dotted path (`on: "address.billing"`) or by pointing `on:` at another subfield. They all resolve on the **read path**, when the subfield is read: a nested `default:` returns the declared value for a missing/`nil` leaf, and a nested `preprocess:` transforms the resolved value. Neither materializes intermediate objects nor writes into the parent — the parent reader returns exactly what the caller passed, while the subfield's own reader (named after its leaf, or an `as:` alias) returns the transformed value. A nested `sensitive:` filters its full nested path from logs and inspect output. The only exception is an ambient parent (`on: :ambient_context`), whose value is framework-supplied per-invocation and does not support `default:`/`preprocess:`.
 :::
 
 #### Ambient context (`on: :ambient_context`)
@@ -296,7 +298,7 @@ expects :request, on: :ambient_context, type: Hash
 expects :ip,      on: :request, type: String   # resolves ambient_context[:request][:ip]
 
 # equivalently, without the intermediate reader:
-expects "request.ip", on: :ambient_context, type: String, as: :ip
+expects :ip, on: "ambient_context.request", type: String
 ```
 
 The filter reconstructs only the declared leaves along their paths, never a whole sub-hash — so an undeclared sibling at any depth (`request[:token]` when only `request[:ip]` is declared) never reaches the resolved value, logs, or exception context. `sensitive:` composes down the path (mark a nested leaf, or an ancestor, and the reconstructed nested value is filtered). Because ambient values are resolved per-invocation and never read from the inbound arguments, `default:`, `preprocess:`, and `coerce:` are **not** supported on any ambient subfield (nested or not) and raise at declaration — shape those values in your `ambient_context_provider` instead (a `before` hook is too late: inbound validation resolves ambient before hooks run). `sensitive:` is supported. A `shape:` block is **not** supported on an ambient subfield either — declare the nested structure as subfields (`expects :ip, on: :request`), which give the same validation plus readers and `sensitive:`; shape's other job, schema emission, is moot for ambient (excluded from `input_schema`).
@@ -312,7 +314,7 @@ expects :event
 expects :data, on: :event, method_call: true            # invokes event.data (a reader, not a key)
 
 expects :payload, type: Hash
-expects "items.count", on: :payload, type: Integer, as: :item_count, method_call: true  # invokes Array#count
+expects :count, on: "payload.items", type: Integer, as: :item_count, method_call: true  # invokes Array#count
 
 expects :company, model: Company
 expects :name, on: :company, method_call: true          # invokes company.name off the resolved record
@@ -323,6 +325,28 @@ Note the last example: reaching into a resolved `model:` record reads its attrib
 Reaching a method-dispatch segment **without** `method_call: true` raises `Axn::ContractViolation::MethodCallNotPermittedError`. It settles as a bug (fires the global `on_exception`; `result.error` shows the generic headline) with the actionable fix — the field, the parent's runtime class, and "add `method_call: true`" — on the exception's own message. This is deliberately loud: it is never silently treated as an absent value.
 
 `method_call:` is a per-declaration property, so it's only valid on a subfield (a declaration with `on:`). It composes with `default:` — the method is invoked and a `nil` result falls back to the declared default (a value-level default, resolved on read). `preprocess:` and `coerce:` compose with `method_call:` — the method is invoked and its result is coerced then preprocessed (the same order as a top-level field), all on the read path.
+
+`method_call: true` means "permit dispatch resolving this expectation" **uniformly across its path** — so a single dotted-`on:` declaration whose intermediate must be method-dispatched works in one line:
+
+```ruby
+expects :event
+expects :name, on: "event.data", method_call: true   # event.data (a method) → Hash; [:name] read as a key
+```
+
+Here the implicit `data` hop is method-dispatched (honoring the declaration's flag) and the `name` leaf is read as a plain key. An **explicitly declared** intermediate keeps its own flag — a child opting in never makes its parent dispatch — so declaring `expects :data, on: :event` (no flag) leaves `data` key-access-only even if a subfield beneath it sets `method_call: true`.
+
+::: tip The DRY idiom for reading many leaves off a method-resolved object
+When you need several values off the same method-resolved object (a PORO, a `model:` record), declare that hop **once** with `method_call: true`, then read its leaves with plain key access — no per-leaf flag:
+
+```ruby
+expects :event
+expects :data, on: :event, method_call: true   # invoke event.data once → a Hash
+expects :name, on: :data, type: String         # plain key reads off the resolved Hash
+expects :role, on: :data, type: String, default: "member"
+```
+
+The flat one-line spelling above is best for pulling a *single* leaf through a method intermediate; declaring the object hop once is best when you want *many* leaves off it.
+:::
 
 #### Subfield readers always generate
 
@@ -347,7 +371,7 @@ expects :id, on: :event_params, as: :event_id           # reader: event_id (extr
 expects :id, :type, on: :event_params, prefix: :event_  # readers: event_id, event_type
 ```
 
-`as:` and `prefix:` cannot be combined (raises at declaration). A **dotted subfield name** (`expects "items.count", on: :order`) generates no reader on its own — a dotted method name is unspeakable — but `as:` supplies one, aliasing the nested path to a flat reader: `expects "items.count", on: :order, as: :item_count` defines an `item_count` reader that resolves `order[:items][:count]`. `prefix:` can't do this — prepending to a dotted key leaves it dotted, so it still names no method and raises. A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader. This is also what makes a dotted-name `model:` usable: `expects "order.widget", on: :payload, model: Widget, as: :widget` resolves the record from `order[:widget_id]` and exposes `widget`/`widget_id` (without `as:` it raises, since there is no reader to run the id→record lookup).
+`as:` and `prefix:` cannot be combined (raises at declaration). A renamed reader must clear the same reserved-name bar as a field and can't collide with another reader — which is how you disambiguate two subfields that share a leaf key (e.g. `zip` under both `billing` and `shipping`, or two routes converging on one wire path): give each a distinct `as:`. Renaming composes with `model:` — the model is resolved (including the `<field>_id` lookup) against the wire key and exposed under the aliased reader. The `as:` value itself may not be dotted (a reader name must name a method).
 
 When you declare subfields `on:` a renamed parent, reference it by its **reader name** (the alias), not the wire key — `on:` is resolved by calling the parent's reader:
 
@@ -795,7 +819,7 @@ To keep reflection cheap and free of running your code, the schema is built from
 These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Give the default a valid value, or send the parent explicitly, and the schema and runtime agree.
 :::
 
-Subfields nest to any depth: a dotted `on:` path (`on: "address.billing"`), a subfield of a subfield, and a dotted field name (`expects "bar.baz", on: :foo`) all appear as recursively nested object `properties`, keyed by wire key (aliases resolve to the key a client actually sends). A required subfield at any depth forces its whole ancestor chain into `required` (and strips those ancestors' nullability): a `nil`/omitted ancestor yields every descendant absent, so runtime could never satisfy the leaf. Intermediate keys introduced by a dotted segment reflect as plain object properties that are required (and non-nullable) exactly when something beneath them is. The structural exclusions: a deep subfield whose chain passes through a `model:` parent (the client sends `<field>_id`, not the object) or a non-object parent (`type: Array`, a mixed union) has no JSON-object representation. These are omitted from the schema — calling `input_schema` on such a class logs a one-time warning naming the omitted field(s), so the gap is visible rather than silent when you build tooling on the schema. A dotted-NAME `model:` config is not one of these exclusions: without an `as:` alias it raises at declaration (a dotted subfield name generates no reader, so the runtime could never run the id→record lookup), and with one (`expects "order.widget", on: :payload, model:, as: :widget`) it reflects like any nested model — the client sends the nested `<leaf>_id` (`order.widget_id`).
+Subfields nest to any depth: a dotted `on:` path (`on: "address.billing"`) and a subfield of a subfield both appear as recursively nested object `properties`, keyed by wire key (aliases resolve to the key a client actually sends). A required subfield at any depth forces its whole ancestor chain into `required` (and strips those ancestors' nullability): a `nil`/omitted ancestor yields every descendant absent, so runtime could never satisfy the leaf. Intermediate keys introduced by a dotted segment reflect as plain object properties that are required (and non-nullable) exactly when something beneath them is. The structural exclusions: a deep subfield whose chain passes through a `model:` parent (the client sends `<field>_id`, not the object) or a non-object parent (`type: Array`, a mixed union) has no JSON-object representation. These are omitted from the schema — calling `input_schema` on such a class logs a one-time warning naming the omitted field(s), so the gap is visible rather than silent when you build tooling on the schema. A nested `model:` subfield reached via a dotted `on:` (`expects :widget, on: "payload.order", model:`) is not one of these exclusions — it reflects like any nested model, with the client sending the nested `<field>_id` (`order.widget_id`).
 
 ::: tip Ruby-object input types are coercible
 The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. Add `coerce:` (see [`coerce`](#coerce) above) so a JSON client sending the string `"2026-07-08"` or `"active"` is parsed into the declared `Date`/`Symbol` — the inbound inverse of how the value serializes on output. Without `coerce:`, core still validates strictly against the Ruby type (a direct Ruby caller must pass a real `Date`).

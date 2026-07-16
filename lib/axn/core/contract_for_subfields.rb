@@ -34,19 +34,19 @@ module Axn
       # value's own validation classifies it, PRO-2857).
       def self.resolve_parent(action, config)
         path = action.class._resolved_subfields.index[config]
-        return _resolve_parent_by_recipe(action, config.on) if path.nil?
+        return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if path.nil?
 
         reader_index = deepest_reader_index(path)
-        return _resolve_parent_by_recipe(action, config.on) if reader_index.nil?
+        return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if reader_index.nil?
 
-        value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
+        value = action.public_send(_deepest_reader_name(config, path, reader_index))
         (reader_index...path.parent_index).each do |i|
-          # Reading this hop's segment yields the NEXT node, so that child's own config governs whether
-          # the hop may method-dispatch — honoring a method_call: subfield crossed as a readerless hop
-          # (the same child-node decision the executor's pre-validation walkers make).
-          child = path.ancestors[i + 1].first
+          # Every hop below the deepest reader is an IMPLICIT intermediate (a declared node bears a
+          # reader, so it would be the reader public_sent above — never dig-crossed here). So the
+          # resolving config's `method_call:` governs the whole dig uniformly: `method_call: true`
+          # permits dispatch across every implicit hop on this expectation's path (PRO-2926).
           value = Axn::Core::FieldResolvers.extract_or_nil(field: path.ancestors[i].last.to_s, provided_data: value,
-                                                           permit_method_call: child.configs.any?(&:method_call))
+                                                           permit_method_call: config.method_call)
         end
         value
       end
@@ -60,20 +60,35 @@ module Axn
         (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end
 
-      # The node's reader-bearing config, if any: a config generates a reader unless its reader name
-      # is dotted (a dotted NAME with no `as:` alias gets none; an implicit node has no configs at all).
+      # The node's reader-bearing config, if any. Every declared config generates a reader, so this is
+      # the node's first config; an implicit node has no configs and returns nil.
       def self._reader_config(node)
-        node.configs.find(&:generates_reader?)
+        node.configs.first
+      end
+
+      # The reader to public_send at the deepest reader-bearing ancestor. When that ancestor is the
+      # config's `on:` ANCHOR (the on: root's node), the reader is the one config.on names — which
+      # disambiguates a MERGED anchor node (two routes to one wire path, distinct readers via `as:`) so a
+      # descendant resolves through the route it actually anchored on, not the node's first-declared
+      # config. A deeper reused declared intermediate (e.g. a `model:` hop crossed by a dotted `on:`) is
+      # single-config in practice, so its own node reader is used. `anchor_index` is the on: root node's
+      # chain index (parent_index minus the dotted-`on:` segments below the anchor).
+      def self._deepest_reader_name(config, path, reader_index)
+        anchor_index = path.parent_index - (config.on.to_s.split(".").size - 1)
+        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
+
+        _reader_config(path.ancestors[reader_index].first).reader_as
       end
 
       # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
-      # rest raw.
-      def self._resolve_parent_by_recipe(source, on)
+      # rest raw. The resolving config's `method_call:` applies to those raw dig segments (the untree'd
+      # analog of the per-hop implicit-intermediate rule in resolve_parent, PRO-2926).
+      def self._resolve_parent_by_recipe(source, on, permit_method_call: false)
         root, *rest = on.to_s.split(".")
         value = source.public_send(root)
         return value if rest.empty?
 
-        Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value)
+        Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value, permit_method_call:)
       end
 
       # THE subfield value read — readers and validation share it: leaf-extract from the canonically
@@ -125,15 +140,8 @@ module Axn
       # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
       # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
       # failed lookup stays nil). The sibling `<field>_id` lives beside the model leaf under the leaf's
-      # own WIRE parent, which coincides with the `on:` target ONLY for a non-dotted subfield. PRO-2896
-      # legalized aliased dotted model subfields (`expects "meta.company", on: :payload, model:, as:`),
-      # whose leaf sits below the `on:` target through implicit segments, so the sibling lookup keys off
-      # the leaf's wire parent (`leaf_parent_node`) and leaf wire key (`leaf_key`) — not `config.field`
-      # (the full, possibly-dotted name) or `parent_node`.
+      # own WIRE parent — the `on:` target (`parent_node`), since a field name is a single wire key.
       def self.resolve_model_via_sibling_id(action, config, options, parent_value)
-        # The raw-id absence guard digs the config's full `<field>_id` off the resolved parent value:
-        # for a dotted field name Extract splits per segment, reaching the same wire slot the leaf-keyed
-        # lookup below targets.
         raw_id = Axn::Core::FieldResolvers.extract_or_nil(
           field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
           permit_method_call: config.method_call
@@ -143,9 +151,8 @@ module Axn
         path = action.class._resolved_subfields.index[config]
         return nil if path.nil?
 
-        leaf_key = path.leaf_key
-        id_key = Axn::Internal::FieldConfig.model_id_key(leaf_key)
-        sibling = path.leaf_parent_node.children[id_key.to_sym]
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
+        sibling = path.parent_node.children[id_key.to_sym]
         # Select the sibling config with the SAME predicate the declaration credits
         # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
         # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
@@ -155,20 +162,12 @@ module Axn
         sibling_config = sibling&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
         return nil if sibling_config.nil?
 
-        # A reader-less sibling (a dotted NAME with no `as:` alias) reads through the value-level
-        # resolver; anything reader-bearing reads through its reader (the canonical, memoized path —
-        # PRO-2896's `as:` gives even a dotted-name sibling one).
-        sibling_value = if sibling_config.generates_reader?
-                          action.public_send(sibling_config.reader_as)
-                        else
-                          resolve_value(action, sibling_config)
-                        end
+        # The sibling reads through its own reader (the canonical, memoized path).
+        sibling_value = action.public_send(sibling_config.reader_as)
         return nil if sibling_value.nil?
 
-        # Leaf-keyed synthetic resolve: the Model resolver reads `<leaf>_id` from a hash keyed by that
-        # same leaf id key. Passing the dotted `config.field` here would make it dig per segment into a
-        # FLAT single-key hash and resolve nil.
-        Axn::Core::FieldResolvers.resolve(type: :model, field: leaf_key, options:, provided_data: { id_key => sibling_value })
+        # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => sibling_value })
       end
 
       module ClassMethods
@@ -319,7 +318,6 @@ module Axn
                                         metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
             _reject_ambient_coerce!(config)
             _reject_ambient_shape!(config)
-            _reject_dotted_model_name!(config, fields:)
           end
         end
 
@@ -354,33 +352,15 @@ module Axn
                 "`expects :<member>, on: :#{config.field}, ...`), which also gives you readers and `sensitive:`"
         end
 
-        # A dotted field NAME with no `as:` alias generates no reader (see `_define_subfield_reader`'s
-        # early return), so `model:`'s id→record lookup — which is wired onto the generated reader —
-        # never runs, and the advertised `<leaf>_id` is unconsumable. Two working spellings: supply an
-        # `as:` alias (the reader then digs the dotted path), or move the dot into `on:` with a
-        # single-level name (`expects :company, on: "payload.org"`). Point the error at both.
-        def _reject_dotted_model_name!(config, fields:)
-          return unless config.validations.key?(:model) && !config.generates_reader?
-
-          *parents, leaf = config.field.to_s.split(".")
-          working_on = ([config.on] + parents).join(".")
-          raise ArgumentError,
-                "a dotted-name model: subfield (#{fields.map(&:to_s).inspect} with on: #{config.on}) has no consumable id — " \
-                "a dotted subfield name generates no reader, so the id-to-record lookup never runs. " \
-                "Add an `as:` alias (e.g. as: :#{leaf}), or use the reader spelling: expects :#{leaf}, on: \"#{working_on}\", model: ..."
-        end
-
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
         # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
-        # the class is mutated. A dotted field name generates no reader, so it can't collide. Every
-        # declared subfield MUST get a reader (canonical `on:` resolution public_sends the deepest
-        # reader-bearing ancestor, so a silently-skipped reader would resolve the wrong value), so a
-        # collision is always a declaration error — resolved by renaming, never by suppression.
+        # the class is mutated. Every declared subfield gets a reader (canonical `on:` resolution
+        # public_sends the deepest reader-bearing ancestor, so a silently-skipped reader would resolve the
+        # wrong value), so a collision is always a declaration error — resolved by renaming, never by
+        # suppression.
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
-            next unless config.generates_reader?
-
             reader = config.reader_as
             if method_defined?(reader) || seen.include?(reader)
               raise ArgumentError,
@@ -415,9 +395,6 @@ module Axn
         # from the `on:` parent is the config's own field (resolve_value reads it).
         def _define_subfield_reader(config)
           reader = config.reader_as
-          # A dotted wire key names no method on its own; only an `as:` alias gives it a reader (whose
-          # body resolves the dotted path segment-by-segment via Extract). No alias → no reader.
-          return unless config.generates_reader?
 
           # Reader-name uniqueness is validated up front by _validate_subfield_reader_names! before any
           # reader is generated, so there is no duplicate to guard against here.
@@ -435,21 +412,16 @@ module Axn
         # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
         # any explicit same-named reader regardless of declaration order.
         def _define_subfield_companion_readers(config)
-          return unless config.generates_reader?
-
           _define_boolean_predicate_reader(config.reader_as) if config.boolean?
           return unless config.validations.key?(:model)
 
           _define_subfield_model_id_reader(config, _subfield_model_options(config))
         end
 
-        # Syntactic-sugar processing for a subfield `model:`, keyed on the LEAF segment so a defaulted
-        # `klass` derives from the field name itself (`items.widget` → `Widget`) rather than the dotted
-        # path (`"items.widget".classify`). The full dotted `field` remains the id-extraction key. For
-        # a non-dotted field the leaf is the field, so this is a no-op there.
+        # Syntactic-sugar processing for a subfield `model:`, keyed on the field name so a defaulted
+        # `klass` derives from it (`widget` → `Widget`).
         def _subfield_model_options(config)
-          leaf = config.field.to_s.split(".").last.to_sym
-          Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [leaf])
+          Axn::Validators::ModelValidator.apply_syntactic_sugar(config.validations[:model], [config.field])
         end
 
         def _define_subfield_model_reader(config)

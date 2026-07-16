@@ -135,7 +135,7 @@ RSpec.describe "expects ..., method_call: true" do
     let(:action) do
       build_axn do
         expects :payload
-        expects "items.count", on: :payload, as: :item_count, type: Integer, method_call: true
+        expects :count, on: "payload.items", as: :item_count, type: Integer, method_call: true
         exposes :out
 
         def call
@@ -240,42 +240,115 @@ RSpec.describe "expects ..., method_call: true" do
     end
   end
 
-  describe "a readerless dotted method_call ancestor crossed by another subfield" do
-    # A dotted-name method_call subfield generates no reader, so a deeper subfield's `on:` chain
-    # crosses it as a raw hop in resolve_parent. That hop must honor the ancestor's opt-in (its config
-    # carries method_call: true) rather than raise the gate error.
-    it "resolves through the opted-in dotted ancestor rather than raising" do
-      event_obj = Class.new { def data = { name: "Ada" } }.new
+  describe "method_call: parity across an implicit intermediate (PRO-2926 Part A)" do
+    # `method_call: true` means "permit dispatch resolving THIS expectation" uniformly across its
+    # path: a flat one-line spelling whose `on:` names a method intermediate honors the flag on every
+    # implicit (undeclared) hop, not just the leaf — matching the DRY declare-the-hop-once idiom.
+    let(:event_class) do
+      Class.new do
+        attr_reader :data
+
+        def initialize(data) = (@data = data)
+      end
+    end
+
+    it "dispatches across an implicit intermediate segment" do
       action = build_axn do
-        expects :payload, type: Hash
-        expects "event.data", on: :payload, method_call: true # dotted name, no as: -> no reader
-        expects :name, on: "payload.event.data", type: String
-        exposes :out, allow_nil: true
+        expects :event
+        expects :name, on: "event.data", method_call: true, type: String # event.data is a METHOD
+        exposes :out
         def call = expose(out: name)
       end
-      result = action.call(payload: { event: event_obj })
+      result = action.call(event: event_class.new({ name: "Ada" }))
       expect(result).to be_ok
       expect(result.out).to eq("Ada")
     end
-  end
 
-  describe "reader-vs-dotted parity with method_call: true (PR #162)" do
-    it "resolves identically whether spelled `on:`-reader or dotted-name" do
-      via_reader = build_axn do
-        expects :items
-        expects :count, on: :items, as: :count_via_reader, method_call: true
-        exposes :out
-        def call = expose(out: count_via_reader)
+    it "dispatches across a deeper implicit intermediate then reads the leaf by key" do
+      inner = Class.new do
+        attr_reader :detail
+
+        def initialize(detail) = (@detail = detail)
       end
-      via_dotted = build_axn do
+      action = build_axn do
+        expects :event
+        expects :name, on: "event.data.detail", method_call: true, type: String
+        exposes :out
+        def call = expose(out: name)
+      end
+      # event.data (method) => inner PORO; inner.detail (method) => Hash; [:name] key read.
+      result = action.call(event: event_class.new(inner.new({ name: "Ada" })))
+      expect(result).to be_ok
+      expect(result.out).to eq("Ada")
+    end
+
+    it "surfaces a clean validation failure (not the gate error) and reports the nil strand when a method intermediate resolves nil" do
+      Axn.config.instance_variable_set(:@on_exception, nil)
+      action = build_axn do
+        expects :event
+        expects :name, on: "event.data", method_call: true, type: String, presence: true
+        exposes :out, allow_nil: true
+        def call = expose(out: name)
+      end
+      result = action.call(event: event_class.new(nil)) # event.data (method) => nil
+      expect(result).not_to be_ok
+      # Runtime resolves cleanly (no gate crash), so the failure is an ordinary inbound validation
+      # error — AND the stranded-path diagnostic dispatches the method hop to pinpoint the nil strand.
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to match(/event\.data.*nil/i)
+    ensure
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
+
+    it "does not leak a child's method_call up into a declared intermediate's own resolution" do
+      Axn.config.instance_variable_set(:@on_exception, nil)
+      payload_class = Class.new { def profile = { name: "Ada" } } # `profile` is a METHOD
+      action = build_axn do
         expects :payload
-        expects "items.count", on: :payload, as: :count_via_dotted, method_call: true
-        exposes :out
-        def call = expose(out: count_via_dotted)
+        expects :profile, on: :payload # declared intermediate, NO method_call:
+        expects :name, on: :profile, method_call: true, type: String
+        exposes :out, allow_nil: true
+        def call = expose(out: name)
       end
+      # Resolving :profile digs it off the payload PORO by KEY access (its own declaration didn't opt
+      # in), so it raises the gate error — the child's opt-in does not reach up into the parent hop.
+      result = action.call(payload: payload_class.new)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+    ensure
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
 
-      expect(via_reader.call(items: [1, 2, 3]).out).to eq(3)
-      expect(via_dotted.call(payload: { items: [1, 2, 3] }).out).to eq(3)
+    it "does not let an opted-in sibling's cached parent skip a non-opted-in sibling's gate" do
+      # Two siblings share `on: "event.data"` (a method hop). The opted-in one is declared/validated
+      # first; the parent-resolution memo must NOT let the non-opted-in sibling reuse that dispatched
+      # value and skip its own MethodCallNotPermittedError — resolution is keyed by dispatch mode, so
+      # the gate fires regardless of declaration/validation order.
+      Axn.config.instance_variable_set(:@on_exception, nil)
+      event_class = Class.new { def data = { a: 1 } } # `data` is a METHOD
+      action = build_axn do
+        expects :event
+        expects :a, on: "event.data", method_call: true, optional: true, allow_nil: true
+        expects :b, on: "event.data", optional: true, allow_nil: true # NO method_call: — must still raise
+        def call = nil
+      end
+      result = action.call(event: event_class.new)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+    ensure
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
+
+    it "treats method_call: as a harmless no-op on a Hash intermediate (key access wins)" do
+      action = build_axn do
+        expects :address, type: Hash
+        expects :zip, on: "address.billing", method_call: true, type: String
+        exposes :out
+        def call = expose(out: zip)
+      end
+      result = action.call(address: { billing: { zip: "90210" } })
+      expect(result).to be_ok
+      expect(result.out).to eq("90210")
     end
   end
 

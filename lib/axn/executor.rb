@@ -545,7 +545,7 @@ module Axn
         next if errors.empty?
 
         path = _resolved_path_for(config)
-        ContractFailure.new(config:, path:, errors:, stranded_at: path && _stranded_ancestor_path(path))
+        ContractFailure.new(config:, path:, errors:, stranded_at: path && _stranded_ancestor_path(path, config))
       end
     end
 
@@ -554,13 +554,13 @@ module Axn
     # self-evident in the report: its own presence error co-reports, or its absence is the classic
     # PRO-2857 semantics). Purely diagnostic: names which nested hop stranded the failing check, so
     # a "Note can't be blank" three levels deep doesn't send the caller hunting.
-    def _stranded_ancestor_path(path)
+    def _stranded_ancestor_path(path, config)
       value = @context.provided_data[path.wire_path.first]
       return nil if value.nil?
 
       path.wire_path[1..-2].each_with_index do |seg, i|
         value = Core::FieldResolvers.resolve(type: :extract, field: seg.to_s, provided_data: value,
-                                             permit_method_call: _segment_permits_method_call?(path, i + 1))
+                                             permit_method_call: _segment_permits_method_call?(path, i + 1, config))
         return path.wire_path[0..i + 1].join(".") if value.nil?
       end
       nil
@@ -571,12 +571,12 @@ module Axn
 
     # Whether reading the wire segment at `wire_index` (≥1) may dispatch a method: governed by the
     # config of the node that segment PRODUCES (its child — the deeper hop's parent, or the leaf for
-    # the last segment), so a method_call: subfield's own segment is read by method while implicit or
-    # plain intermediates stay on the safe path. Mirrors the per-config threading the subfield readers
-    # use, so this diagnostic agrees with runtime resolution on which hops may dispatch.
-    def _segment_permits_method_call?(path, wire_index)
+    # the last segment). A declared child carries its OWN opt-in; an IMPLICIT intermediate honors the
+    # resolving `config`'s method_call: (PRO-2926), so this diagnostic dispatches exactly the hops
+    # runtime resolution does and never crashes on the gate error where runtime would have dispatched.
+    def _segment_permits_method_call?(path, wire_index, config)
       child = wire_index < path.ancestors.size ? path.ancestors[wire_index].first : path.node
-      _node_dispatches?(child)
+      _node_dispatches?(child) || (child.implicit? && config.method_call)
     end
 
     # Whether a tree node is produced by a method_call: subfield. Single source for "is this hop sharp?"
@@ -762,7 +762,7 @@ module Axn
     # model_id_key on the field — or nil. Guards a top-level `<field>_id` default from being written
     # when the sibling record is already present (a fabricated consistency mismatch).
     def _sibling_model_route_for_id(path)
-      id_key = path.leaf_key
+      id_key = path.wire_path.last
       @action_class.send(:internal_field_configs).find do |c|
         c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
       end
@@ -861,18 +861,16 @@ module Axn
     # sees stale input, so invalid data passes. Same accepted trade as the resolve_value clear: a Proc
     # default read early and re-read post-clear runs twice.
     #
-    # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
-    # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
-    # The model `<field>_id` reader is an unmemoized define_method (nothing to clear), and the boolean
-    # `?` predicate is an alias of the primary reader (sharing its ivar), so neither needs its own clear.
-    # Top-level reader memos are deliberately NOT cleared: a top-level model record would re-run its
-    # finder — pre-existing behavior, out of scope here.
+    # One ivar per subfield config covers every flavor: the plain reader, and the model RECORD reader
+    # (whose stale memo would otherwise pin a record resolved from the old id). The model `<field>_id`
+    # reader is an unmemoized define_method (nothing to clear), and the boolean `?` predicate is an
+    # alias of the primary reader (sharing its ivar), so neither needs its own clear. Top-level reader
+    # memos are deliberately NOT cleared: a top-level model record would re-run its finder — pre-existing
+    # behavior, out of scope here.
     def _clear_pre_pipeline_memos!
       @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
 
       @action_class.send(:subfield_configs).each do |config|
-        next unless config.generates_reader?
-
         ivar = :"@_memoized_reader_#{config.reader_as}"
         @action.remove_instance_variable(ivar) if @action.instance_variable_defined?(ivar)
       end
@@ -887,10 +885,14 @@ module Axn
     # call — canonically, through the deepest reader-bearing ancestor (see
     # ContractForSubfields.resolve_parent), so both spellings of the same wire path share one
     # resolution. Only populated during the inbound-validation phase, after every provided_data
-    # mutation (coercion/preprocess/defaults) has already run.
+    # mutation (coercion/preprocess/defaults) has already run. Keyed by `method_call:` as well as the
+    # `on:` target: resolving an implicit method hop now depends on the resolving config's dispatch
+    # opt-in (PRO-2926), so two siblings under one `on:` that disagree on `method_call:` must each
+    # resolve per their own flag — the non-opted-in one raising its own gate regardless of order —
+    # rather than one reusing the other's dispatched (or refused) result.
     def _resolved_parent_value(config)
       memo = (@_resolved_parent_values ||= {})
-      key = config.on.to_s
+      key = [config.on.to_s, config.method_call]
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
 

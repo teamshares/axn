@@ -1270,7 +1270,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field "bar", type: Hash
           end
-          expects "bar.baz", on: :payload, type: String
+          expects :baz, on: "payload.bar", type: String
         end
         prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
 
@@ -1870,9 +1870,9 @@ RSpec.describe Axn::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "types the parent object-only + required when a DEEP (dotted-name) subfield default synthesizes it " \
+    it "types the parent object-only + required when a DEEP (via dotted on:) subfield default synthesizes it " \
        "into a required shape member (PRO-2872)" do
-      # `expects "address.zip", on: :payload, default: "x"` lands the defaulted config on a DEEPER node
+      # `expects :zip, on: "payload.address", default: "x"` lands the defaulted config on a DEEPER node
       # (under an implicit `address`). Runtime still materializes `{}` under `payload` BEFORE writing the
       # default, so ShapeValidator no longer short-circuits on nil and enforces the required `status`
       # member — omission AND `payload: nil` FAIL. The shape-member hazard must walk the whole subtree,
@@ -1884,7 +1884,7 @@ RSpec.describe Axn::Reflection::Schema do
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
-        expects "address.zip", on: :payload, default: "x"
+        expects :zip, on: "payload.address", default: "x"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1895,7 +1895,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(payload: { status: "ok" })).to be_ok   # a satisfying call passes
     end
 
-    it "types the parent object-only + required when a DEEP (dotted-name) subfield PROC default synthesizes " \
+    it "types the parent object-only + required when a DEEP (via dotted on:) subfield PROC default synthesizes " \
        "it (the hazard counts Procs — materialization fires before the Proc runs, PRO-2872)" do
       # Same as above but the default is a Proc. Runtime materializes `{}` under `payload` BEFORE the Proc
       # is evaluated, so the required `status` member is still enforced — omission/nil FAIL. The hazard
@@ -1909,7 +1909,7 @@ RSpec.describe Axn::Reflection::Schema do
         end
         # optional: so the zip itself isn't a required descendant — the shape-member hazard clause,
         # not the required-child clause, must be what forces the parent.
-        expects "address.zip", on: :payload, type: String, default: -> { "x" }, optional: true
+        expects :zip, on: "payload.address", type: String, default: -> { "x" }, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1919,15 +1919,15 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(payload: nil)).not_to be_ok # runtime agreement: nil fails
     end
 
-    it "requires the parent when a DEEP (dotted-name) subfield default would land under it (the default " \
+    it "requires the parent when a DEEP (via dotted on:) subfield default would land under it (the default " \
        "resolves only the child on the read path, never synthesizing the parent, PRO-2903)" do
-      # `expects "address.zip", on: :payload, default: "x"` on a plain Hash parent: the deep default resolves
+      # `expects :zip, on: "payload.address", default: "x"` on a plain Hash parent: the deep default resolves
       # only the child's value when read — it never synthesizes `payload` — so the parent keeps its own
       # presence obligation. The schema marks it required and runtime rejects omission.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
-        expects "address.zip", on: :payload, default: "x"
+        expects :zip, on: "payload.address", default: "x"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -1935,7 +1935,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call).not_to be_ok # runtime agreement: omission fails the parent's own presence
     end
 
-    it "keeps the parent required when the only DEEP (dotted-name) subfield default is a Proc (rescue " \
+    it "keeps the parent required when the only DEEP (via dotted on:) subfield default is a Proc (rescue " \
        "excludes Procs — stricter than runtime, PRO-2872)" do
       # A Proc default's success is what would rescue omission, and a raising Proc would make omission FAIL,
       # so the rescue walk deliberately excludes Procs — the parent stays required. This is the safe,
@@ -1945,7 +1945,7 @@ RSpec.describe Axn::Reflection::Schema do
         include Axn
         expects :payload, type: Hash
         # optional: so nothing in the subtree requires presence — the rescue clause alone decides.
-        expects "address.zip", on: :payload, type: String, default: -> { "x" }, optional: true
+        expects :zip, on: "payload.address", type: String, default: -> { "x" }, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -2368,17 +2368,17 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  describe "a dotted subfield NAME nests as recursive object properties keyed by wire segment" do
-    it "nests a dotted-name subfield under an implicit intermediate (bar -> baz), not a flat dotted key" do
+  describe "a deep subfield via a dotted `on:` nests as recursive object properties keyed by wire segment" do
+    it "nests a deep dotted-on: subfield under an implicit intermediate (bar -> baz), not a flat dotted key" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
-        expects "bar.baz", on: :foo
+        expects :baz, on: "foo.bar"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       foo = schema[:properties][:foo]
-      # The dotted name splits into an implicit :bar intermediate carrying the :baz leaf — never a flat
+      # The dotted on: splits into an implicit :bar intermediate carrying the :baz leaf — never a flat
       # "bar.baz" property key.
       expect(foo[:properties]).not_to have_key("bar.baz")
       expect(foo[:properties]).not_to have_key(:"bar.baz")
@@ -2403,12 +2403,12 @@ RSpec.describe Axn::Reflection::Schema do
       expect(foo[:properties][:bar]).to include(type: "string")
     end
 
-    it "nests both a normal sibling subfield and a dotted-name subfield on the same parent" do
+    it "nests both a normal sibling subfield and a deep dotted-on: subfield on the same parent" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
         expects :bar, on: :foo, type: String
-        expects "deep.path", on: :foo
+        expects :path, on: "foo.deep"
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -2422,7 +2422,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(foo[:properties]).not_to have_key(:"deep.path")
     end
 
-    it "leaves an optional (no-default) parent whose only subfield is a dotted name optional, matching its shallow analog" do
+    it "leaves an optional (no-default) parent whose only subfield is a deep dotted-on: leaf optional, matching its shallow analog" do
       shallow = Class.new do
         include Axn
         expects :foo, optional: true
@@ -2431,7 +2431,7 @@ RSpec.describe Axn::Reflection::Schema do
       dotted = Class.new do
         include Axn
         expects :foo, optional: true
-        expects "bar.baz", on: :foo, type: String, optional: true
+        expects :baz, on: "foo.bar", type: String, optional: true
       end
 
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
@@ -2439,43 +2439,20 @@ RSpec.describe Axn::Reflection::Schema do
 
       # accepted divergence: runtime rejects both omitted calls (a nil parent can't yield the child);
       # the schema reflects both as optional because `optional: true` is a nil-tolerant declared signal
-      # and the sole child is itself optional. Parity is the criterion: the dotted subfield's parent
+      # and the sole child is itself optional. Parity is the criterion: the deep dotted-on: parent
       # reflects its optionality identically to the shallow case.
       expect(shallow_schema[:required] || []).not_to include("foo")
       expect(dotted_schema[:required] || []).not_to include("foo")
 
-      # The dotted subfield nests under an implicit :bar intermediate (never a flat "bar.baz" key).
+      # The deep dotted-on: leaf nests under an implicit :bar intermediate (never a flat "bar.baz" key).
       expect(dotted_schema[:properties][:foo][:properties][:bar][:properties]).to have_key(:baz)
     end
 
-    it "still requires a parent with only an optional dotted child when its literal default is a blank {} " \
-       "(runtime rejects the omitted call via the parent's auto-presence: \"Foo can't be blank\")" do
+    it "requires the parent when its only child is a REQUIRED deep dotted-on: subfield (a required descendant strands a nil parent)" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash, default: {}
-        expects "bar.baz", on: :foo, type: String, optional: true
-      end
-      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-      expect(schema[:required]).to include("foo")
-    end
-
-    it "does not require a parent with only an optional dotted child when its non-blank default satisfies its own contract" do
-      klass = Class.new do
-        include Axn
-        expects :foo, type: Hash, default: { seeded: true }
-        expects "bar.baz", on: :foo, type: String, optional: true
-      end
-      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-      expect(schema[:required] || []).not_to include("foo")
-    end
-
-    it "requires the parent when its only child is a REQUIRED dotted subfield (a required descendant strands a nil parent)" do
-      klass = Class.new do
-        include Axn
-        expects :foo, type: Hash, default: {}
-        expects "bar.baz", on: :foo, type: String
+        expects :baz, on: "foo.bar", type: String
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3401,20 +3378,6 @@ RSpec.describe Axn::Reflection::Schema do
       expect(address[:required]).to eq(["zip"])
     end
 
-    it "nests a dotted field name through an implicit intermediate object" do
-      klass = Class.new do
-        include Axn
-        expects :foo, type: Hash
-        expects "bar.baz", on: :foo, type: String
-      end
-      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-
-      bar = schema[:properties][:foo][:properties][:bar]
-      expect(bar[:type]).to eq("object")
-      expect(bar[:properties][:baz]).to include(type: "string")
-      expect(bar[:required]).to eq(["baz"])
-    end
-
     it "keys every level by wire key when on: chains through as: aliases" do
       klass = Class.new do
         include Axn
@@ -3549,10 +3512,10 @@ RSpec.describe Axn::Reflection::Schema do
         expect(meta[:properties][:company_id]).to include(not: { type: "null" }) # required id can't be null
       end
 
-      it "still emits and consumes the id for a dotted ON: with a NON-dotted model name (a reader IS generated)" do
-        # CONTRAST with the dropped dotted-NAME case above: here the NAME is plain (`:company`) and only the
-        # `on:` is dotted, so ContractForSubfields generates a reader that runs the id->record lookup. The
-        # `company_id` under `payload.org` stays represented and the runtime consumes it.
+      it "emits and consumes the id for a model subfield reached via a dotted on: (a reader IS generated)" do
+        # The NAME is plain (`:company`) and only the `on:` is dotted, so ContractForSubfields generates a
+        # reader that runs the id->record lookup. The `company_id` under `payload.org` stays represented and
+        # the runtime consumes it.
         model_klass = Class.new do
           def self.name = "Co"
           attr_reader :id
@@ -3621,16 +3584,15 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
       end
 
-      it "does not require the model <field>_id when a deep dotted-name subfield is value-level defaulted (PRO-2889)" do
-        # `expects "settings.theme", on: :company, default: "x"` lands the defaulted config on a DEEPER
-        # node with a dotted NAME (no reader). PRO-2889: the value-level default "x" applies at read time
-        # (validation resolves it through the shared `resolve_value`, no synthesis), so the deep subfield
-        # is self-rescuing and the omitted call SUCCEEDS — the schema mirrors that and drops company_id
-        # from `required`.
+      it "does not require the model <field>_id when a deep dotted-on: subfield is value-level defaulted (PRO-2889)" do
+        # `expects :theme, on: "company.settings", default: "x"` lands the defaulted config on a DEEPER
+        # node. PRO-2889: the value-level default "x" applies at read time (validation resolves it through
+        # the shared `resolve_value`, no synthesis), so the deep subfield is self-rescuing and the omitted
+        # call SUCCEEDS — the schema mirrors that and drops company_id from `required`.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
-          expects "settings.theme", on: :company, default: "x"
+          expects :theme, on: "company.settings", default: "x"
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3639,14 +3601,14 @@ RSpec.describe Axn::Reflection::Schema do
         expect(klass.call).to be_ok # runtime agreement: the value-level default satisfies the deep subfield on omission
       end
 
-      it "does not require the model <field>_id for an optional deep PROC default via a dotted NAME (optionality alone rescues it)" do
+      it "does not require the model <field>_id for an optional deep PROC default via a dotted on: (optionality alone rescues it)" do
         # The optional deep subfield never forces the id: omitting it resolves company to nil, the deep
-        # dotted-name default applies at read time (PRO-2889), and an optional String validates either
+        # dotted-on: default applies at read time (PRO-2889), and an optional String validates either
         # way — so the omitted call succeeds and the schema mirrors that.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
-          expects "settings.theme", on: :company, type: String, default: -> { "x" }, optional: true
+          expects :theme, on: "company.settings", type: String, default: -> { "x" }, optional: true
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3663,7 +3625,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, type: Hash
           end
-          expects "bar.baz", on: :payload, type: String
+          expects :baz, on: "payload.bar", type: String
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3681,7 +3643,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, type: [Hash, String]
           end
-          expects "bar.baz", on: :payload, type: String
+          expects :baz, on: "payload.bar", type: String
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3690,7 +3652,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(Array(bar[:type])).not_to include("object")
         expect(bar).not_to have_key(:properties)
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"bar.baz"])
+        expect(dropped.map(&:field)).to eq([:baz])
       end
 
       it "leaves a mixed-union shape member untouched and drops the colliding deep config (emission and drop pass agree)" do
@@ -3699,7 +3661,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, type: [Hash, Array]
           end
-          expects "bar.baz", on: :payload, type: String
+          expects :baz, on: "payload.bar", type: String
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3708,7 +3670,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(bar).not_to have_key(:properties)
         expect(Array(bar[:type])).not_to include("object")
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"bar.baz"])
+        expect(dropped.map(&:field)).to eq([:baz])
       end
 
       # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: the colliding member's own
@@ -3790,7 +3752,7 @@ RSpec.describe Axn::Reflection::Schema do
 
       it "leaves a non-object (union) member-of-a-member untouched and drops the deeper colliding config (implicit merge stops at the member)" do
         # `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2) yet answerable
-        # via its Hash branch, so the declaration is accepted while `bar.baz.qux` drops.
+        # via its Hash branch, so the declaration is accepted while the deep `qux` drops.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
@@ -3798,7 +3760,7 @@ RSpec.describe Axn::Reflection::Schema do
               field :baz, type: [Hash, String]
             end
           end
-          expects "bar.baz.qux", on: :payload
+          expects :qux, on: "payload.bar.baz"
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3807,7 +3769,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(Array(baz[:type])).not_to include("object")
         expect(baz).not_to have_key(:properties) # no forced object / qux under it
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+        expect(dropped.map(&:field)).to eq([:qux])
       end
 
       it "leaves a mixed-union member-of-a-member untouched and drops the deeper colliding config" do
@@ -3818,7 +3780,7 @@ RSpec.describe Axn::Reflection::Schema do
               field :baz, type: [Hash, Array]
             end
           end
-          expects "bar.baz.qux", on: :payload
+          expects :qux, on: "payload.bar.baz"
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3827,7 +3789,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(baz).not_to have_key(:properties)
         expect(Array(baz[:type])).not_to include("object")
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"bar.baz.qux"])
+        expect(dropped.map(&:field)).to eq([:qux])
       end
 
       it "merges into an OBJECT member-of-a-member at depth 2 and does NOT drop the config (positive control)" do
@@ -3838,7 +3800,7 @@ RSpec.describe Axn::Reflection::Schema do
               field :baz, type: Hash
             end
           end
-          expects "bar.baz.qux", on: :payload
+          expects :qux, on: "payload.bar.baz"
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3858,7 +3820,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, allow_nil: true, length: { maximum: 10 }
           end
-          expects "bar.baz", on: :payload, type: String, optional: true
+          expects :baz, on: "payload.bar", type: String, optional: true
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3875,7 +3837,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, allow_nil: true, length: { maximum: 10 }
           end
-          expects "bar.baz", on: :payload, type: String
+          expects :baz, on: "payload.bar", type: String
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3892,7 +3854,7 @@ RSpec.describe Axn::Reflection::Schema do
           expects :payload, type: Hash do
             field :bar, type: Hash
           end
-          expects "bar.baz", on: :payload, type: String, optional: true
+          expects :baz, on: "payload.bar", type: String, optional: true
           def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3913,9 +3875,10 @@ RSpec.describe Axn::Reflection::Schema do
           include Axn
           expects :foo, type: Hash
           expects :bar, on: :foo, type: Hash
-          expects "bar.baz", on: :foo, type: Hash                                                  # baz config #1 (no shape)
+          # as: disambiguates the two routes' shared :baz reader (wire key stays :baz, so they still merge)
+          expects :baz, on: "foo.bar", type: Hash, as: :baz_route1                                 # baz config #1 (no shape)
           expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (non-nestable member x)
-          expects "baz.x.y", on: :bar                                                              # implicit x under baz + grandchild y
+          expects :y, on: "bar.baz.x"                                                              # implicit x under baz + grandchild y
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
@@ -3923,7 +3886,7 @@ RSpec.describe Axn::Reflection::Schema do
         expect(baz[:properties]).not_to have_key(:y)                        # not force-nested under a blocking member
         expect(baz.dig(:properties, :x, :properties, :y)).to be_nil         # the deep x.y structure is dropped, matching the tree
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"baz.x.y"])
+        expect(dropped.map(&:field)).to eq([:y])
       end
 
       # Two routes to a merged node each carry a nestable Hash member `x`, but their NESTED members at
@@ -3941,16 +3904,17 @@ RSpec.describe Axn::Reflection::Schema do
           include Axn
           expects :foo, type: Hash
           expects :bar, on: :foo, type: Hash
-          expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash } # route 1: x -> y (Hash)
+          # as: disambiguates the two routes' shared :baz reader (wire key stays :baz, so they still merge)
+          expects :baz, on: "foo.bar", type: Hash, shape: { members: [x1], container: Hash }, as: :baz_route1 # route 1: x -> y (Hash)
           expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }      # route 2: x -> y (String)
-          expects "x.y.z", on: :baz                                                          # implicit x, implicit y, leaf z
+          expects :z, on: "baz.x.y"                                                          # implicit x, implicit y, leaf z
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         baz = schema.dig(:properties, :foo, :properties, :bar, :properties, :baz)
         expect(baz.dig(:properties, :x, :properties, :y, :properties, :z)).to be_nil # scalar y blocks the deep z
         dropped = described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)
-        expect(dropped.map(&:field)).to eq([:"x.y.z"]) # and it is warned, not silently gone
+        expect(dropped.map(&:field)).to eq([:z]) # and it is warned, not silently gone
       end
     end
 
@@ -3960,7 +3924,7 @@ RSpec.describe Axn::Reflection::Schema do
           include Axn
           expects :foo, type: Hash
           expects :bar, on: :foo, type: Hash
-          expects "bar.baz", on: :foo, type: String, allow_nil: true # route 1: optional/nullable
+          expects :baz, on: "foo.bar", type: String, allow_nil: true, as: :baz_route1 # route 1: optional/nullable; as: disambiguates the shared :baz reader
           expects :baz, on: :bar, type: String # route 2: required, non-nullable
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -3984,7 +3948,8 @@ RSpec.describe Axn::Reflection::Schema do
           klass = Class.new do
             include Axn
             expects :payload, type: Hash
-            expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first), optional
+            # as: disambiguates the shared :user reader; wire key stays :user, so the two routes still merge
+            expects :user, on: "payload.account", type: Hash, optional: true, as: :user_nonmodel # non-model route (first), optional
             expects :account, on: :payload, type: Hash
             expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find } # model route (second), required
             def call = nil
@@ -4009,7 +3974,7 @@ RSpec.describe Axn::Reflection::Schema do
         klass = Class.new do
           include Axn
           expects :payload, type: Hash
-          expects "account.user", on: :payload, type: Hash, optional: true
+          expects :user, on: "payload.account", type: Hash, optional: true, as: :user_nonmodel # as: disambiguates the shared :user reader
           expects :account, on: :payload, type: Hash
           expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }
           def call = nil
@@ -4031,8 +3996,9 @@ RSpec.describe Axn::Reflection::Schema do
             include Axn
             expects :foo, type: Hash
             expects :bar, on: :foo, type: Hash
-            expects "bar.baz", on: :foo, type: Hash         # route 1: nestable
-            expects :baz, on: :bar, type: [Hash, Array]     # route 2: NON-nestable (mixed union)
+            # as: disambiguates the shared :baz reader; wire key stays :baz, so the two routes still merge
+            expects :baz, on: "foo.bar", type: Hash, as: :baz_route1 # route 1: nestable
+            expects :baz, on: :bar, type: [Hash, Array] # route 2: NON-nestable (mixed union)
             expects :qux, on: :baz, type: String
           end
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -4048,8 +4014,9 @@ RSpec.describe Axn::Reflection::Schema do
             include Axn
             expects :foo, type: Hash
             expects :bar, on: :foo, type: Hash
-            expects :baz, on: :bar, type: [Hash, Array]     # route 2 FIRST
-            expects "bar.baz", on: :foo, type: Hash         # route 1 SECOND
+            # as: disambiguates the shared :baz reader; wire key stays :baz, so the two routes still merge
+            expects :baz, on: :bar, type: [Hash, Array] # route 2 FIRST
+            expects :baz, on: "foo.bar", type: Hash, as: :baz_route1 # route 1 SECOND
             expects :qux, on: :baz, type: String
           end
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -4070,7 +4037,8 @@ RSpec.describe Axn::Reflection::Schema do
         klass = Class.new do
           include Axn
           expects :payload, type: Hash
-          expects "account.user", on: :payload, type: Hash, optional: true # non-model route (first)
+          # as: disambiguates the shared :user reader; wire key stays :user, so the two routes still merge
+          expects :user, on: "payload.account", type: Hash, optional: true, as: :user_nonmodel # non-model route (first)
           expects :account, on: :payload, type: Hash
           expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }, optional: true # model route
           # `name` carries a Proc default so the contract is legal under PRO-2889 (the nil-tolerant :user
@@ -4126,11 +4094,11 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.call(payload: { address: { zip: "10001" } })).to be_ok
     end
 
-    it "dotted field name: runtime digs the same path the schema advertises" do
+    it "deep dotted-on: subfield: runtime digs the same path the schema advertises" do
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
-        expects "bar.baz", on: :foo, type: String
+        expects :baz, on: "foo.bar", type: String
         def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
@@ -4161,14 +4129,14 @@ RSpec.describe Axn::Reflection::Schema do
   # omitted configs so the caller can warn — it must NOT flag a represented (object-shaped) chain,
   # a shallow subfield, nor a subfield under the deliberately-excluded ambient_context parent.
   describe ".dropped_deep_subfields" do
-    it "returns [] for the three deep forms under object-shaped parents (they are represented now)" do
+    it "returns [] for the deep forms under object-shaped parents (they are represented now)" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
         expects :meta, on: :payload, type: Hash          # shallow — represented
         expects :id, on: :meta, type: Integer            # deep: subfield-of-subfield
-        expects :deep, on: "payload.meta", type: String  # deep: dotted on:
-        expects "bar.baz", on: :payload                  # deep: dotted field name
+        expects :deep, on: "payload.meta", type: String  # deep: dotted on: (explicit parent)
+        expects :baz, on: "payload.bar"                  # deep: dotted on: (implicit intermediate)
       end
 
       expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
@@ -4236,7 +4204,7 @@ RSpec.describe Axn::Reflection::Schema do
   # these Hashes must stay byte-identical after the derivation lands. One example per row of the
   # legal-contract table: object parent, model parent, `type: Array` parent, mixed union, a
   # representable deep chain, a defaulted subtree, nested shape members, and the shape-member
-  # synthesis hazard (both a shallow and a deep dotted-name trigger).
+  # synthesis hazard (both a shallow and a deep dotted-on: trigger).
   describe "single-pass derivation parity (PRO-2877)" do
     it "emits the same input_schema for a representable deep chain" do
       klass = Class.new do
@@ -4318,11 +4286,11 @@ RSpec.describe Axn::Reflection::Schema do
       )
     end
 
-    it "emits the same input_schema for a defaulted deep (dotted-name) subtree" do
+    it "emits the same input_schema for a defaulted deep (dotted-on:) subtree" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
-        expects "address.zip", on: :payload, default: "x"
+        expects :zip, on: "payload.address", default: "x"
       end
 
       expect(klass.input_schema).to eq(
@@ -4406,7 +4374,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     it "emits the same input_schema for the shape-member synthesis hazard triggered by a DEEP " \
-       "(dotted-name) default" do
+       "(dotted-on:) default" do
       # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
       # rescue) while strict reflection ignores Procs — the emitted schema is unchanged (Proc defaults are
       # never serialized, and the hazard still forces payload required + non-nullable).
@@ -4415,7 +4383,7 @@ RSpec.describe Axn::Reflection::Schema do
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
-        expects "address.zip", on: :payload, default: "x"
+        expects :zip, on: "payload.address", default: "x"
       end
 
       expect(klass.input_schema).to eq(
@@ -4683,7 +4651,7 @@ RSpec.describe Axn::Reflection::Schema do
         expects :root, type: Hash, allow_blank: true
         expects :data, on: :root, optional: true
         expects :user, on: :data, type: String, optional: true
-        expects "data.user", on: :root, type: String, if: :strict
+        expects :user, on: "root.data", type: String, if: :strict, as: :user_gated # as: disambiguates the shared :user reader
       end
       root = action.input_schema[:properties][:root]
       # data is NOT forced required by the gated route

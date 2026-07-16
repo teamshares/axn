@@ -181,11 +181,11 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     expect(bad).not_to be_ok
   end
 
-  it "still allows a dotted subfield name on a NON-ambient parent, and resolves it via deep extraction" do
+  it "resolves a dotted on: path on a NON-ambient parent via deep extraction" do
     klass = Class.new do
       include Axn
       expects :foo, type: Hash
-      expects "bar.baz", on: :foo, type: String
+      expects :baz, on: "foo.bar", type: String
     end
 
     # If resolution were broken (always nil, as it would be for the ambient case), this would fail
@@ -226,21 +226,21 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
-  describe "form 2: a dotted subfield NAME on an ambient_context parent" do
-    it "declares without error and validates the nested value (no reader)" do
+  describe "a deep ambient_context value: validation and reader resolution" do
+    it "declares without error and validates the nested value" do
       klass = Class.new do
         include Axn
-        expects "request.ip", on: :ambient_context, type: String
+        expects :ip, on: "ambient_context.request", type: String
         def call = nil
       end
       expect(klass.call(ambient_context: { request: { ip: "1.2.3.4" } })).to be_ok
       expect(klass.call(ambient_context: { request: { ip: 5 } })).not_to be_ok
     end
 
-    it "resolves the aliased nested value via its reader" do
+    it "resolves the nested value via its reader" do
       klass = Class.new do
         include Axn
-        expects "request.ip", on: :ambient_context, type: String, as: :ip
+        expects :ip, on: "ambient_context.request", type: String
         exposes :the_ip
         def call = expose(the_ip: ip)
       end

@@ -37,19 +37,6 @@ RSpec.describe Axn::Reflection::SubfieldTree do
     expect(tree.dropped).to eq([])
   end
 
-  it "expands a dotted field name into implicit intermediate nodes under the parent" do
-    klass = Class.new do
-      include Axn
-      expects :foo, type: Hash
-      expects "bar.baz", on: :foo, type: String
-    end
-    tree = tree_for(klass)
-
-    bar = tree.roots[:foo].children[:bar]
-    expect(bar).to be_implicit
-    expect(bar.children[:baz].config.field).to eq(:"bar.baz")
-  end
-
   it "anchors a subfield-of-a-subfield under the parent subfield's node, resolving on: through the READER (as: alias) while keying children by WIRE KEY" do
     klass = Class.new do
       include Axn
@@ -70,16 +57,48 @@ RSpec.describe Axn::Reflection::SubfieldTree do
     klass = Class.new do
       include Axn
       expects :foo, type: Hash
-      expects "bar.baz", on: :foo, type: String
+      expects :baz, on: "foo.bar", type: String
       expects :bar, on: :foo, type: Hash
     end
     tree = tree_for(klass)
 
     bar = tree.roots[:foo].children[:bar]
-    # The implicit node created by "bar.baz" and the explicit :bar declaration are the same node.
+    # The implicit node created by the dotted `on: "foo.bar"` and the explicit :bar declaration are the same node.
     expect(bar.configs.map(&:field)).to eq([:bar])
     expect(bar).not_to be_implicit
-    expect(bar.children[:baz].config.field).to eq(:"bar.baz")
+    expect(bar.children[:baz].config.field).to eq(:baz)
+  end
+
+  it "merges two routes to the SAME wire path (dotted on: + reader-anchored via as:) onto one node" do
+    # A merged leaf node needs two configs at one wire path; both therefore share the leaf wire key,
+    # so they are NOT duplicates (they differ by `on:` route). Distinct readers via `as:` keep the
+    # reader table unambiguous. (The dotted-NAME spelling that used to reach this is gone, PRO-2926.)
+    klass = Class.new do
+      include Axn
+      expects :foo, type: Hash
+      expects :bar, on: :foo, type: Hash
+      expects :baz, on: "foo.bar", type: String
+      expects :baz, on: :bar, as: :bar_baz, type: String
+    end
+    tree = tree_for(klass)
+
+    baz = tree.roots[:foo].children[:bar].children[:baz]
+    expect(baz.configs.size).to eq(2)
+    expect(baz.configs.map(&:field)).to eq(%i[baz baz])
+  end
+
+  it "allows two subfields sharing a leaf wire key under DIFFERENT parents (distinct readers via as:)" do
+    klass = Class.new do
+      include Axn
+      expects :billing, type: Hash
+      expects :shipping, type: Hash
+      expects :zip, on: :billing, type: String, as: :billing_zip
+      expects :zip, on: :shipping, type: String, as: :shipping_zip
+    end
+    tree = tree_for(klass)
+
+    expect(tree.roots[:billing].children[:zip].config.field).to eq(:zip)
+    expect(tree.roots[:shipping].children[:zip].config.field).to eq(:zip)
   end
 
   it "silently skips an on: :ambient_context subfield with no declared ambient field (excluded, not dropped)" do
@@ -149,11 +168,11 @@ RSpec.describe Axn::Reflection::SubfieldTree do
         expects :payload, type: Hash do
           field :bar, type: [Hash, String]
         end
-        expects "bar.baz", on: :payload, type: String
+        expects :baz, on: "payload.bar", type: String
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
+      expect(tree.dropped.map(&:field)).to eq([:baz])
     end
 
     it "drops a deep config whose implicit intermediate collides with a mixed-union shape member" do
@@ -162,39 +181,39 @@ RSpec.describe Axn::Reflection::SubfieldTree do
         expects :payload, type: Hash do
           field :bar, type: [Hash, Array]
         end
-        expects "bar.baz", on: :payload, type: String
+        expects :baz, on: "payload.bar", type: String
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz"])
+      expect(tree.dropped.map(&:field)).to eq([:baz])
     end
 
     it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
-      # baz is a merged node (two routes: `bar.baz` and `baz`); only the SECOND config carries the
-      # non-nestable member x (`[Hash, String]` — blocks the drop pass, yet answerable at declaration).
-      # blocking_ancestor? scans EVERY config at the node, so the deep `baz.x.y` still drops.
+      # baz is a merged node (two routes: `:baz, on: "foo.bar"` and `:baz, on: :bar`); only the SECOND config
+      # carries the non-nestable member x (`[Hash, String]` — blocks the drop pass, yet answerable at declaration).
+      # blocking_ancestor? scans EVERY config at the node, so the deep `bar.baz.x.y` still drops.
       # (Subfields take no block, so the shape rides a raw `shape:` kwarg — the block DSL's own structure.)
       x_member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: [Hash, String] }, presence: true }, metadata: {})
       klass = Class.new do
         include Axn
         expects :foo, type: Hash
         expects :bar, on: :foo, type: Hash
-        expects "bar.baz", on: :foo, type: Hash
-        expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }
-        expects "baz.x.y", on: :bar
+        expects :baz, on: "foo.bar", type: Hash
+        expects :baz, on: :bar, as: :bar_baz, type: Hash, shape: { members: [x_member], container: Hash }
+        expects :y, on: "bar.baz.x"
       end
       tree = tree_for(klass)
 
       baz = tree.roots[:foo].children[:bar].children[:baz]
       expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:"baz.x.y"])
+      expect(tree.dropped.map(&:field)).to eq([:y])
     end
 
     it "drops a deep config when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
       # baz is a merged node; both routes declare a nestable Hash member `x`, but their NESTED members at
       # `y` disagree — route 1's `y` is a Hash (nestable), route 2's `y` is a non-nestable `[Hash, String]`
       # union. Carrying only the FIRST nestable `x` would test route 1's `y` alone and NOT drop; carrying
-      # ALL colliding members tests route 2's union `y` and drops `x.y.z`, matching emission (which carries
+      # ALL colliding members tests route 2's union `y` and drops `baz.x.y.z`, matching emission (which carries
       # every member). The union stays answerable at declaration (the Hash branch) while blocking the drop pass.
       y1 = Axn::Core::Contract::ShapeConfig.new(field: :y, validations: { type: { klass: Hash } }, metadata: {})
       x1 = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Hash }, shape: { members: [y1], container: Hash } }, metadata: {})
@@ -204,20 +223,20 @@ RSpec.describe Axn::Reflection::SubfieldTree do
         include Axn
         expects :foo, type: Hash
         expects :bar, on: :foo, type: Hash
-        expects "bar.baz", on: :foo, type: Hash, shape: { members: [x1], container: Hash }
-        expects :baz, on: :bar, type: Hash, shape: { members: [x2], container: Hash }
-        expects "x.y.z", on: :baz
+        expects :baz, on: "foo.bar", type: Hash, shape: { members: [x1], container: Hash }
+        expects :baz, on: :bar, as: :bar_baz, type: Hash, shape: { members: [x2], container: Hash }
+        expects :z, on: "baz.x.y"
       end
       tree = tree_for(klass)
 
       baz = tree.roots[:foo].children[:bar].children[:baz]
       expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:"x.y.z"])
+      expect(tree.dropped.map(&:field)).to eq([:z])
     end
 
     it "drops a deep config whose implicit intermediate collides with a non-object member of a member (carried through implicit descent)" do
       # `baz` is a `[Hash, String]` member-of-a-member: non-nestable (blocks the drop pass at depth 2)
-      # yet answerable via its Hash branch, so the declaration is accepted while `bar.baz.qux` drops.
+      # yet answerable via its Hash branch, so the declaration is accepted while `payload.bar.baz.qux` drops.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash do
@@ -225,11 +244,11 @@ RSpec.describe Axn::Reflection::SubfieldTree do
             field :baz, type: [Hash, String]
           end
         end
-        expects "bar.baz.qux", on: :payload
+        expects :qux, on: "payload.bar.baz"
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      expect(tree.dropped.map(&:field)).to eq([:qux])
     end
 
     it "drops a deep config whose implicit intermediate collides with a mixed-union member of a member" do
@@ -240,11 +259,11 @@ RSpec.describe Axn::Reflection::SubfieldTree do
             field :baz, type: [Hash, Array]
           end
         end
-        expects "bar.baz.qux", on: :payload
+        expects :qux, on: "payload.bar.baz"
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:"bar.baz.qux"])
+      expect(tree.dropped.map(&:field)).to eq([:qux])
     end
 
     it "does NOT drop a deep config nesting through an OBJECT member of a member (member-of-member is nestable)" do
@@ -255,7 +274,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
             field :baz, type: Hash
           end
         end
-        expects "bar.baz.qux", on: :payload
+        expects :qux, on: "payload.bar.baz"
       end
       tree = tree_for(klass)
 
@@ -269,7 +288,7 @@ RSpec.describe Axn::Reflection::SubfieldTree do
         expects :meta, on: :payload, type: Hash
         expects :id, on: :meta, type: Integer
         expects :deep, on: "payload.meta", type: String
-        expects "bar.baz", on: :payload
+        expects :baz, on: "payload.bar"
       end
       tree = tree_for(klass)
 
