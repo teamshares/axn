@@ -57,7 +57,8 @@ module Axn
             # unreadable-member error iff AT LEAST ONE validator would still run.
             next if no_member_validator_runs?(member, source, action)
 
-            record.errors.add(attribute, "#{prefix}#{member.field} could not be read (got #{source.class})")
+            record.errors.add(attribute, "#{prefix}#{member.field} could not be read (got #{source.class})",
+                              axn_shape_member: true, axn_member_user_facing: member_user_facing(member))
             next
           end
 
@@ -66,7 +67,15 @@ module Axn
             source:, validations: member.validations,
             action:, permit_method_call: member_method_call?(member)
           )
-          errors.each { |error| record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}") }
+          errors.each do |error|
+            # A member error carries its own `user_facing:` intent. When re-wrapping an error that
+            # bubbled up from this member's OWN nested shape (already tagged), keep the deeper member's
+            # intent rather than overwriting it — so a `user_facing:` member composes at any depth. A
+            # member's own direct-validator errors are untagged here and take this member's intent.
+            intent = error.options[:axn_shape_member] ? error.options[:axn_member_user_facing] : member_user_facing(member)
+            record.errors.add(attribute, "#{prefix}#{member.field} #{error.message}",
+                              axn_shape_member: true, axn_member_user_facing: intent)
+          end
         end
       end
 
@@ -111,6 +120,21 @@ module Axn
       # doesn't implement `#method_call` is treated as not opted in (the safe default: no dispatch),
       # rather than raising. Declared shapes always yield ShapeConfig, which carries the reader.
       def member_method_call?(member) = member.respond_to?(:method_call) && member.method_call
+
+      # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:`/
+      # `sensitive:` — a raw `shape:` member object that doesn't implement `#user_facing` defaults to
+      # not opted in (dev-facing). A block/ShapeConfig member's value was grammar-checked at
+      # declaration (ShapeConfig's constructor); a raw duck-typed member never routed through it, so
+      # validate a truthy value here through the same single-sourced check — lazily, only on the
+      # failure path where this is read — so a malformed value (`123`) fails loudly rather than
+      # surfacing as a literal user-facing message. Falsy (nil/false) is "not opted in", left as-is.
+      def member_user_facing(member)
+        return false unless member.respond_to?(:user_facing)
+
+        value = member.user_facing
+        Axn::Core::Contract.validate_user_facing!(value) if value
+        value
+      end
 
       # A value can yield a named member only if it responds to the reader (objects/Data) or
       # supports named-key access (Hash-like). Arrays respond to #dig but only by integer index,

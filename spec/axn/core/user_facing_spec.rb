@@ -209,6 +209,192 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
+  describe "user_facing: on a shape member" do
+    it "surfaces the member's own message when the member opts in with true" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: true
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Items element at index 0: status is not included in the list")
+    end
+
+    it "surfaces a String override" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: "Each item needs a valid status"
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Each item needs a valid status")
+    end
+
+    it "invokes a Symbol handler on the action" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: :status_msg
+        end
+        def status_msg = "Pick a real status"
+        def call = nil
+      end
+      expect(action.call(items: [{ status: "bogus" }]).error).to eq("Pick a real status")
+    end
+
+    it "computes a Proc handler from the member's own error" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: ->(e) { "Bad: #{e.message}" }
+        end
+        def call = nil
+      end
+      expect(action.call(items: [{ status: "bogus" }]).error)
+        .to eq("Bad: Items element at index 0: status is not included in the list")
+    end
+
+    it "stays dev-facing when the member does not opt in" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "bogus" }])
+      expect(result.outcome).to be_exception
+      expect(result.error).to eq("Something went wrong")
+    end
+
+    it "collapses a String override to one clause across multiple failing elements" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :status, type: String, inclusion: { in: %w[open closed] }, user_facing: "Each item needs a valid status"
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ status: "a" }, { status: "b" }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Each item needs a valid status")
+    end
+
+    it "composes a user_facing member nested inside a nested shape" do
+      action = build_axn do
+        expects :order, type: Hash do
+          field :line, type: Hash do
+            field :sku, type: String, user_facing: "SKU is required"
+          end
+        end
+        def call = nil
+      end
+      result = action.call(order: { line: { sku: 123 } })
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("SKU is required")
+    end
+
+    it "scopes each member's handler to its own error when two siblings fail together" do
+      # Both members fold into the SAME parent ContractFailure — the member-specific structural case
+      # (a field-level analog can't produce, since distinct fields are distinct configs). Each handler
+      # must see only its own member's error: were the aggregate passed, both parts would read "…a…and…b…".
+      action = build_axn do
+        expects :items, type: Array do
+          field :a, type: String, user_facing: ->(e) { "A: #{e.message}" }
+          field :b, type: String, user_facing: ->(e) { "B: #{e.message}" }
+        end
+        def call = nil
+      end
+      result = action.call(items: [{ a: 1, b: 2 }])
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("A: Items element at index 0: a is not a String and B: Items element at index 0: b is not a String")
+    end
+
+    it "rejects a non-parity user_facing value on a member at declaration" do
+      expect do
+        build_axn do
+          expects :items, type: Array do
+            field :status, type: String, user_facing: 123
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
+    it "validates a raw ShapeConfig member's user_facing: grammar at construction (raw path shares the block path's check)" do
+      # A raw shape: kwarg supplies pre-built ShapeConfigs that bypass _build_shape_member; the grammar
+      # check lives in ShapeConfig's constructor, so a malformed value fails here rather than surfacing
+      # as a literal runtime message ("123").
+      expect do
+        Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } }, user_facing: 123)
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
+    it "fails loudly on a malformed user_facing from a duck-typed raw member (not a literal message)" do
+      # A raw shape member that is a bare duck-typed object (not a ShapeConfig) never routes through
+      # the constructor grammar check; ShapeValidator validates its truthy user_facing when the member
+      # fails, so a bogus value raises rather than surfacing "123" to the caller.
+      bad = Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123)
+      action = build_axn do
+        expects :items, type: Array, shape: { members: [bad], container: Array }
+        def call = nil
+      end
+      result = action.call(items: [{ status: 1 }]) # member fails → user_facing read → grammar check raises
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
+    it "rejects user_facing: on an exposes shape member (outbound failures are always dev-facing)" do
+      expect do
+        build_axn do
+          exposes :items, type: Array do
+            field :status, type: String, user_facing: "surfaced"
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
+
+    it "rejects even an explicit user_facing: false on an exposes shape member (key presence, matching top-level exposes)" do
+      expect do
+        build_axn do
+          exposes :items, type: Array do
+            field :status, type: String, user_facing: false
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
+
+    it "rejects user_facing: on a nested exposes shape member too" do
+      expect do
+        build_axn do
+          exposes :order, type: Hash do
+            field :line, type: Hash do
+              field :sku, type: String, user_facing: "surfaced"
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+    end
+
+    it "rejects a user_facing: member supplied via a raw shape: kwarg on exposes (bypasses the block path)" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } }, user_facing: "surfaced")
+      expect do
+        build_axn do
+          exposes :items, type: Array, shape: { members: [member], container: Array }
+        end
+      end.to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+    end
+
+    it "rejects a user_facing: member nested inside a raw exposes shape (any depth)" do
+      leaf = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }, user_facing: "surfaced")
+      line = Axn::Core::Contract::ShapeConfig.new(field: :line, validations: { type: { klass: Hash }, shape: { members: [leaf], container: Hash } })
+      expect do
+        build_axn do
+          exposes :order, type: Hash, shape: { members: [line], container: Hash }
+        end
+      end.to raise_error(ArgumentError, /`sku` does not support user_facing: on exposes/)
+    end
+  end
+
   describe "mixed failure: dev-facing dominates" do
     let(:fired) { [] }
     let(:action) do
@@ -509,28 +695,66 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /not supported for an ambient_context subfield/)
     end
 
-    it "rejects a shape block on a user_facing field" do
-      # ShapeValidator reports nested member failures under the same top-level attribute, so a
-      # malformed-member error would otherwise be reclassified as user-facing — but nested member
-      # checks are structural and must stay dev-facing, exactly like subfields.
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true do
-            field :id, type: Integer
+    describe "user_facing: on a field that also carries a shape block" do
+      it "surfaces the field's own failure user-facing" do
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order details are required" do
+            field :sku, type: String
           end
-        end
-      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
-    end
-
-    it "rejects a shape passed as a raw shape: kwarg (not just the block form)" do
-      # The guard keys on the resolved validations[:shape], so a direct shape: option is caught too —
-      # ShapeValidator reports member failures under the same attribute either way.
-      expect do
-        build_axn do
-          expects :payload, type: Hash, user_facing: true, shape: { members: [] }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /user_facing: is not supported with a shape block/)
+        result = action.call # :order omitted → the field's OWN presence fails
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Order details are required")
+      end
+
+      it "keeps a member failure dev-facing (does not leak) when the member fails alone" do
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order details are required" do
+            field :sku, type: String
+          end
+          def call = nil
+        end
+        result = action.call(order: { sku: 123 }) # field's own presence OK; member :sku invalid
+        expect(result.outcome).to be_exception
+        expect(result.error).to eq("Something went wrong")
+      end
+
+      it "lets dev-facing dominate and reports BOTH when the field's own check and a member both fail" do
+        action = build_axn do
+          # A custom `validate:` gives the field its OWN check that fails while the value is still a
+          # valid Hash whose member also fails — the only way to co-fail the field's own error and a
+          # member error in one call (an absent/wrong-type value would short-circuit ShapeValidator).
+          expects :order, type: Hash, user_facing: "Order details are required",
+                          validate: ->(v) { "order is not ready" unless v[:ready] } do
+            field :sku, type: String
+          end
+          def call = nil
+        end
+        result = action.call(order: { sku: 123 }) # own validate: fails AND member :sku is not a String
+        expect(result.outcome).to be_exception
+        expect(result.error).to eq("Something went wrong")
+        messages = result.exception.errors.full_messages.join(" ")
+        expect(messages).to include("order is not ready")
+        expect(messages).to include("sku")
+      end
+
+      it "derives the container for a raw shape: kwarg (no explicit container:), so it validates instead of crashing" do
+        # A raw shape: kwarg bypasses the block form's _build_shape (which derives :container from
+        # type:); _parse_field_validations now derives it the same way, so a container-less raw shape
+        # validates like the block form instead of reaching ShapeValidator with a nil container
+        # (value.is_a?(nil) → TypeError at call time).
+        action = build_axn do
+          expects :order, type: Hash, user_facing: "Order is required", shape: { members: [] }
+          def call = nil
+        end
+        # A non-blank Hash validates (zero members) — previously raised TypeError on the nil container
+        expect(action.call(order: { any: 1 }).outcome).to be_success
+        # An empty Hash now surfaces the field's own user_facing presence failure, not a dev-facing TypeError
+        result = action.call(order: {})
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Order is required")
+      end
     end
 
     it "suppresses through an aliased user_facing parent (wire-key identification)" do

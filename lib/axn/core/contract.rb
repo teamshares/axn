@@ -47,6 +47,19 @@ module Axn
         end
       end
 
+      # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
+      # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
+      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes`
+      # field-level check AND `ShapeConfig`'s own construction hold members and fields to one grammar —
+      # a member built via the block form OR a raw `shape:` kwarg is validated identically.
+      def self.validate_user_facing!(user_facing)
+        return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
+                  Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+
+        raise ArgumentError,
+              "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+      end
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
@@ -90,8 +103,14 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
-      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive) do
-        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false)
+      ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
+        def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
+          # Validate at construction so a member's `user_facing:` grammar holds however the ShapeConfig
+          # is built — the block form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies
+          # pre-built ShapeConfigs, which never route through the block path. A malformed value
+          # (`user_facing: 123`) would otherwise reach the runtime settlement path as a truthy opt-in
+          # and surface as a literal message (`"123"`) instead of failing here.
+          Contract.validate_user_facing!(user_facing)
           super
         end
 
@@ -165,16 +184,6 @@ module Axn
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
 
-          # A shape (whether built from a `do … end` block or passed as a raw `shape:` option)
-          # validates nested members, which `ShapeValidator` reports under this same attribute — so
-          # reclassifying the field user-facing would wrongly turn a malformed-member (structural)
-          # failure into a user-facing one. Nested member checks stay dev-facing at every level, so
-          # reject the combination. Keyed on the resolved `validations[:shape]`, not the block, so a
-          # direct `shape:` kwarg is caught too.
-          if user_facing && validations[:shape]
-            raise ArgumentError, "user_facing: is not supported with a shape block (nested member checks are always dev-facing)"
-          end
-
           if on.present?
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                reader_names:, user_facing:, method_call:, **validations)
@@ -217,7 +226,12 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
 
-          validations[:shape] = _build_shape(fields, validations:, &block) if block
+          validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
+
+          # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
+          # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
+          # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
+          _reject_outbound_shape_user_facing!(validations[:shape])
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
@@ -434,6 +448,27 @@ module Axn
           shape.is_a?(Hash) ? shape : nil
         end
 
+        # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
+        # catches it in `_build_shape_member` on key presence; a raw `shape:` kwarg supplies pre-built
+        # member objects that bypass that path, so walk the resolved members (and nested shapes) here.
+        # Truthy-based (not key-presence): a pre-built member exposes only its resolved `#user_facing`
+        # value, whose `false` default is indistinguishable from unset — only a truthy value is a real
+        # opt-in (the block form, seeing the literal opts, still rejects an explicit `user_facing: false`).
+        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in.
+        def _reject_outbound_shape_user_facing!(shape)
+          return unless shape.is_a?(Hash)
+
+          (shape[:members] || []).each do |member|
+            if member.respond_to?(:user_facing) && member.user_facing
+              field = member.respond_to?(:field) ? member.field : member.inspect
+              raise ArgumentError,
+                    "shape member `#{field}` does not support user_facing: on exposes — an outbound failure is a " \
+                    "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+            end
+            _reject_outbound_shape_user_facing!(_member_shape(member))
+          end
+        end
+
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
         # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
         # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
@@ -574,13 +609,9 @@ module Axn
         # user-facing failure (see Executor). Its value doubles as the surfaced message: `true` uses
         # the field's own validation message; a String overrides it; a Symbol names an action method
         # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
-        # handler shape. Anything else is a programmer error, so reject it at declaration.
+        # handler shape. Single-sourced through the module-level grammar check (see above).
         def _validate_user_facing!(user_facing)
-          return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
-                    Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
-
-          raise ArgumentError,
-                "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+          Contract.validate_user_facing!(user_facing)
         end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
@@ -636,7 +667,7 @@ module Axn
         # have nowhere to apply and are rejected rather than silently dropped when converting to a
         # ShapeConfig. `model:` is rejected separately (see `_build_shape_member`) for the related but
         # distinct reason that it resolves an id and exposes an `_id` companion reader a member lacks.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive].freeze
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive user_facing].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
 
         # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
@@ -646,7 +677,7 @@ module Axn
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
         # trying to extract members from the wrong kind of value).
-        def _build_shape(fields, validations: nil, &)
+        def _build_shape(fields, validations: nil, outbound: false, &)
           raise ArgumentError, "a shape block can only be declared on a single field" if fields.size > 1
 
           container = _shape_compatible_type!(validations)
@@ -654,19 +685,31 @@ module Axn
           builder = ShapeBuilder.new
           builder.instance_exec(&)
 
-          members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock) }
+          members = builder.declarations.map { |name, opts, subblock| _build_shape_member(name, opts, subblock, outbound:) }
 
           { members:, container: }
         end
 
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
-        def _build_shape_member(name, opts, subblock)
+        def _build_shape_member(name, opts, subblock, outbound: false)
           unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
           if unsupported.any?
             raise ArgumentError,
                   "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
                   "(shape blocks declare validation/schema only)"
+          end
+
+          # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
+          # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
+          # the caller's fault — and the outbound settlement path never consults `user_facing:`, so on an
+          # exposes shape member it would be silently inert. Reject it loudly on key presence (even an
+          # explicit `user_facing: false`), matching top-level `exposes`, which rejects `user_facing:`
+          # as an unknown key regardless of value.
+          if outbound && opts.key?(:user_facing)
+            raise ArgumentError,
+                  "shape member `#{name}` does not support user_facing: on exposes — an outbound failure is a " \
+                  "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
           end
 
           # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
@@ -684,13 +727,15 @@ module Axn
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
-          field_validations[:shape] = _build_shape([name], validations: field_validations, &subblock) if subblock
+          field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
           raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
 
+          # `user_facing:` (full parity with a field's) is validated in ShapeConfig's constructor below,
+          # so the block and raw `shape:` paths hold members to one grammar.
           ShapeConfig.new(field: name, validations: config.validations, metadata: config.metadata,
-                          method_call: config.method_call, sensitive: config.sensitive)
+                          method_call: config.method_call, sensitive: config.sensitive, user_facing: config.user_facing)
         end
 
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.
@@ -703,6 +748,20 @@ module Axn
 
           raise ArgumentError,
                 "a shape block requires a single structured type: (Array, Hash, or a class) — got #{klasses.inspect}"
+        end
+
+        # A raw `shape:` kwarg (as opposed to the `do…end` block, whose `_build_shape` derives
+        # `:container` from `type:`) may omit `:container`. Derive it from the declared type the same
+        # way the block form does, so a raw shape validates identically instead of reaching
+        # ShapeValidator with a nil container (`value.is_a?(nil)` → TypeError at call time). A
+        # block-built shape already carries `:container`, so this fires only for the raw form; a raw
+        # shape with an incompatible/missing `type:` raises the same declaration error the block form
+        # does (via `_shape_compatible_type!`). Mutates `validations`.
+        def _derive_raw_shape_container!(validations)
+          shape = validations[:shape]
+          return unless shape.is_a?(Hash) && !shape.key?(:container)
+
+          validations[:shape] = shape.merge(container: _shape_compatible_type!(validations))
         end
 
         def _partition_field_options(fields, **options)
@@ -983,6 +1042,8 @@ module Axn
             validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
             raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
+
+          _derive_raw_shape_container!(validations)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil
