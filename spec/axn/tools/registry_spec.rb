@@ -144,6 +144,25 @@ RSpec.describe Axn::Tools::Registry do
       expect(Axn.tools_for(:ruby_llm)).not_to include(mcp_only)
     end
 
+    it "returns members sorted by tool_name (deterministic regardless of registration order)" do
+      # Register in an order that is NOT tool_name order, so a Set-insertion-order return would differ.
+      charlie = stub_const("ToolsForSpec::Charlie", Class.new do
+        include Axn
+        tool name: "charlie"
+      end)
+      alpha = stub_const("ToolsForSpec::Alpha", Class.new do
+        include Axn
+        tool name: "alpha"
+      end)
+      bravo = stub_const("ToolsForSpec::Bravo", Class.new do
+        include Axn
+        tool name: "bravo"
+      end)
+
+      members = Axn.tools_for(:mcp)
+      expect(members).to eq([alpha, bravo, charlie])
+    end
+
     it "exposes a subclass of an Axn base that declares `tool` (inheritance pattern)" do
       base = stub_const("ToolsForSpec::AppBase", Class.new { include Axn })
       sub = stub_const("ToolsForSpec::ConcreteTool", Class.new(base) { tool })

@@ -95,7 +95,13 @@ Because uniqueness is asserted first, `tool_name` values are guaranteed distinct
 
 ## Docs / CHANGELOG
 
-`docs/` does not document Factory params, so no doc-site change. Add `## Unreleased` CHANGELOG entries: one `[FEAT]` for the Factory parity params, one `[FEAT]` for deterministic `tools_for` ordering.
+`Axn::Factory` is currently **undocumented** on the doc site despite being a public, first-class API (it backs `Axn::Result.ok/error` and the mountable class builder) — and it is now the sanctioned pattern for a downstream tool gem to relocate a `define` into a real, nameable class. So add a dedicated **DSL Reference** page:
+
+- **`docs/reference/factory.md`** ("Building Axns from Callables"): what `Axn::Factory.build` is and when to reach for it (dynamic/programmatic construction vs a hand-written class), the callable-vs-block form and its argument rules (keyword-only, `keyreq` → `expects`), a full param table (the builder-specific `superclass:`/`expose_return_as:`/`include:`/`extend:`/`prepend:`, then each DSL-mirroring param including the new `axn_name:`/`description:`/`semantic_hints:`/`fails_on:`/`tag:`/`dimension:` with the single-vs-list spec convention spelled out), and a short "building tools" example aimed at the gem-author audience (relocate a `define`, give it an `axn_name:` for a clean `tool_name`, set `description:`). Register the page in `docs/.vitepress/config.mjs` under **DSL Reference**, after "Instance Interface". Cross-link it from `docs/recipes/gem-configuration.md` (the existing `axn-mcp`/`axn-ruby_llm` recipe).
+
+Doc conventions: one line per paragraph (no manual hard-wrapping); apply `[!code focus]` selectively per the repo rubric (full-scaffold blocks only, not tight snippets).
+
+Add `## Unreleased` CHANGELOG entries: one `[FEAT]` for the Factory parity params, one `[FEAT]` for deterministic `tools_for` ordering.
 
 ## Not user-breaking
 

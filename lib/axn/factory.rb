@@ -23,6 +23,18 @@ module Axn
         success: nil,
         error: nil,
 
+        # Naming and metadata
+        axn_name: nil,
+        description: nil,
+        semantic_hints: nil,
+
+        # Failure reclassification
+        fails_on: nil,
+
+        # Observability facets (single spec or list of specs)
+        tag: nil,
+        dimension: nil,
+
         # Hooks
         before: nil,
         after: nil,
@@ -83,6 +95,20 @@ module Axn
           exposes.each do |field, opts|
             axn.exposes(field, **opts)
           end
+
+          # Naming and metadata
+          axn.axn_name(axn_name) unless axn_name.nil?
+          # Write the backing attribute directly rather than calling `axn.description(...)`: the
+          # `description` DSL is only extended onto axn when no non-Axn ancestor already defines
+          # `description` (PRO-2875), so a `axn.description(...)` call would hit the ancestor's
+          # setter when building on a base class (e.g. a tool base) that defines its own.
+          axn._axn_description = description unless description.nil?
+          axn.semantic_hints(*Array(semantic_hints)) unless semantic_hints.nil?
+
+          # Failure reclassification and observability facets (fan out a single spec or a list)
+          _apply_fails_on(axn, fails_on)
+          _apply_facets(axn, :tag, tag)
+          _apply_facets(axn, :dimension, dimension)
 
           # Apply logging configuration (always apply if provided to override defaults).
           # A Hash forwards as per-outcome keywords (auto_log success: :info, ...); anything else
@@ -156,6 +182,56 @@ module Axn
 
           # Both descriptor objects and simple cases (string/proc) can be used directly
           axn.public_send(method_name, handler)
+        end
+      end
+
+      # `fails_on` accumulates across calls, so a builder value fans out into one call per spec.
+      # A bare Class (or Array<Class>) is one matcher; an Array is a LIST of specs. Within a spec:
+      # all-Classes means one matcher over all of them (the `exceptions` arg is itself an array),
+      # otherwise the spec is [exceptions, message] with a trailing Hash forwarded as kwargs.
+      #   fails_on: MyError                                 -> one matcher
+      #   fails_on: [A, B]                                  -> two matchers (one class each)
+      #   fails_on: [[A, B]]                                -> one matcher covering both
+      #   fails_on: [[A, "msg", { standalone: true }]]      -> fails_on(A, "msg", standalone: true)
+      #   fails_on: [[[A, B], "msg"]]                       -> fails_on([A, B], "msg")
+      def _apply_fails_on(axn, value)
+        return if value.nil?
+
+        specs = value.is_a?(Array) ? value : [value]
+        specs.each { |spec| _apply_one_fails_on(axn, spec) }
+      end
+
+      def _apply_one_fails_on(axn, spec)
+        return axn.fails_on(spec) if spec.is_a?(Class)
+        raise ArgumentError, "[Axn::Factory] Invalid fails_on spec: #{spec.inspect}" unless spec.is_a?(Array)
+
+        parts = spec.dup
+        kwargs = parts.last.is_a?(Hash) ? parts.pop : {}
+        if parts.all? { |p| p.is_a?(Class) }
+          axn.fails_on(parts, **kwargs)
+        else
+          exceptions, message = parts
+          axn.fails_on(exceptions, message, **kwargs)
+        end
+      end
+
+      # `tag`/`dimension` accumulate one facet per call. A value whose first element is itself an
+      # Array is a LIST of specs; otherwise the value is a single spec. Each spec is [name, resolver]
+      # (or [name, resolver, { from: … }]); a trailing Hash forwards as kwargs. Names are never
+      # arrays, so first-element-is-Array unambiguously distinguishes a list from a single spec.
+      #   tag: [:region, "us5"]                 -> tag(:region, "us5")
+      #   tag: [:charged, "yes", { from: :result }] -> tag(:charged, "yes", from: :result)
+      #   tag: [[:a, 1], [:b, 2]]               -> tag(:a, 1); tag(:b, 2)
+      def _apply_facets(axn, method_name, value)
+        return if value.nil?
+
+        specs = value.is_a?(Array) && value.first.is_a?(Array) ? value : [value]
+        specs.each do |spec|
+          raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{spec.inspect}" unless spec.is_a?(Array)
+
+          parts = spec.dup
+          kwargs = parts.last.is_a?(Hash) ? parts.pop : {}
+          axn.public_send(method_name, *parts, **kwargs)
         end
       end
 
