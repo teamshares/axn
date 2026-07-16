@@ -59,15 +59,17 @@ module Axn
           # A provided `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would
           # yield a blank tool_name, violating the never-blank contract. Fail at declaration rather
           # than silently accept an unusable override. A nil name (not provided) is not an error.
-          unless name.nil?
-            if _tool_name_sanitize(name).empty?
-              raise ArgumentError,
-                    "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
-                    "provide a name containing at least one such character"
-            end
-
-            self._tool_name_override = name
+          if !name.nil? && _tool_name_sanitize(name).empty?
+            raise ArgumentError,
+                  "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
+                  "provide a name containing at least one such character"
           end
+
+          # Always assign (even when name is nil). `_tool_name_override` is a class_attribute, so a
+          # subclass of a class that set `tool name: "x"` INHERITS that override. A fresh `tool`
+          # declaration without `name:` means "derive from THIS class's name", so writing nil here
+          # clears the inherited value rather than letting the parent's override leak through.
+          self._tool_name_override = name
 
           self._tool_declaration = adapters.empty? ? :all : adapters
           nil

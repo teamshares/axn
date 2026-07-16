@@ -79,4 +79,36 @@ RSpec.describe "Axn tool_name derivation" do
 
     expect(k.tool_name).to eq("tool")
   end
+
+  describe "an inherited `tool name:` override does not leak into a subclass's own redeclaration" do
+    def named_klass(name, &blk)
+      Class.new do
+        include Axn
+        define_singleton_method(:name) { name }
+        class_eval(&blk) if blk
+      end
+    end
+
+    it "a subclass redeclaring `tool` (no name:) derives its OWN name, not the parent's override" do
+      parent = named_klass("AgentTools::ParentTool") { tool name: "custom_parent" }
+      expect(parent.tool_name).to eq("custom_parent")
+
+      sub = Class.new(parent) { define_singleton_method(:name) { "AgentTools::SubTool" } }
+      sub.tool # fresh declaration without name: → clears inherited override
+
+      expect(sub.tool_name).to eq("sub_tool")
+      # The parent is unaffected.
+      expect(parent.tool_name).to eq("custom_parent")
+    end
+
+    it "a subclass redeclaring `tool name:` uses its own explicit override" do
+      parent = named_klass("AgentTools::ParentTool") { tool name: "custom_parent" }
+
+      sub = Class.new(parent) { define_singleton_method(:name) { "AgentTools::SubTool" } }
+      sub.tool name: "sub_custom"
+
+      expect(sub.tool_name).to eq("sub_custom")
+      expect(parent.tool_name).to eq("custom_parent")
+    end
+  end
 end
