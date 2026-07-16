@@ -290,6 +290,175 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
     end
   end
 
+  describe "top-level model + transformed <field>_id feeding a STRICT finder (id-only input, PRO-2910)" do
+    # A finder that resolves ONLY the exactly-transformed token — so the raw (untransformed) token
+    # fails the lookup. This is the case PR #181 regressed: with the top-level write-back pass gone,
+    # the record lookup consumed the RAW <field>_id while the reader/validation saw the transformed one.
+    let(:co_class) do
+      Class.new do
+        def self.name = "Co"
+        def self.registry = @registry ||= {}
+        # strict: " 5 " (raw) misses; "5" (stripped) hits
+        def self.fetch(id) = registry[id]
+        attr_reader :id
+
+        def initialize(id) = (@id = id)
+      end
+    end
+
+    before { stub_const("Co", co_class) }
+
+    it "resolves the record from a preprocessed id-only input (no record supplied)" do
+      co_class.registry["5"] = co_class.new("5")
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ") # id ONLY — no company record
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5") # finder consumed the STRIPPED id, not the raw " 5 "
+    end
+
+    it "lets a REQUIRED model resolve from a valid preprocessed id-only input (the severe regression)" do
+      # Before the fix a *valid* id-only input failed model presence validation: the finder got the
+      # raw " 5 " token, returned nil, and a required (non-nil-tolerant) model then rejected the call.
+      co_class.registry["5"] = co_class.new("5")
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, optional: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ")
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5")
+    end
+
+    it "still resolves nil when even the TRANSFORMED id fails the lookup (no default to override with)" do
+      # A present id that fails its lookup after transform stays nil — there is no sibling default to
+      # silently substitute (mirrors the subfield failed-lookup-stays-nil guarantee).
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 999 ") # nothing registered under "999"
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+
+    it "resolves via a coerced id-only input under coerce_input_types" do
+      # The whole-action coercion setting turns the Integer coercion on without a per-field coerce:,
+      # and the transformed (coerced) id still feeds the strict finder.
+      co_class.registry[5] = co_class.new(5)
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, type: Integer
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: "5") # coerced to Integer 5 before the finder
+
+      expect(result).to be_ok
+      expect(result.cid).to eq(5)
+    end
+  end
+
+  describe "top-level model + a TOLERANT finder consumes the transformed id, not the raw token (PRO-2910)" do
+    # A finder that resolves ANY non-blank token (echoing it as the record id). Because the raw lookup would
+    # succeed, a raw-first-then-retry approach would silently keep the untransformed token; the lookup must
+    # route through the transformed id from the start.
+    let(:echo_class) do
+      Class.new do
+        def self.name = "Echo"
+        def self.find(id) = new(id)
+        attr_reader :id
+
+        def initialize(id) = (@id = id)
+      end
+    end
+
+    before { stub_const("Echo", echo_class) }
+
+    it "looks the record up by the preprocessed id even though the raw token would also resolve" do
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ")
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5") # the finder saw the STRIPPED id, not the raw " 5 " a tolerant find would echo
+    end
+
+    it "resolves nil when a present id's preprocess maps it to nil (never re-read raw)" do
+      # company_id reader returns nil (preprocessed away); the model must agree — not resolve a record from
+      # the raw token a tolerant finder would otherwise accept.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, optional: true, preprocess: ->(v) { v == "none" ? nil : v }
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: "none")
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+
+    it "resolves from the default when a present id preprocesses to nil AND a default is declared (reader parity)" do
+      # This is NOT the failed-lookup-stays-nil case (that is a present id resolving to a NON-nil value whose
+      # lookup fails). Here the present value transforms to nil, so the field's OWN default: applies — the
+      # universal preprocess+default semantic — and the `company_id` reader itself returns 42. The model must
+      # resolve from that same 42 (reader/model parity), not diverge to nil.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, default: 42, preprocess: ->(v) { v == "none" ? nil : v }
+        exposes :cid, allow_nil: true
+        exposes :id_reader, allow_nil: true
+        def call = expose(cid: company&.id, id_reader: company_id)
+      end
+
+      result = action.call(company_id: "none")
+
+      expect(result).to be_ok
+      expect(result.id_reader).to eq(42) # the field resolves to its default after preprocess → nil
+      expect(result.cid).to eq(42)       # the model agrees with the reader, not nil
+    end
+
+    it "leaves an optional model nil when an id with an unguarded preprocess (no default) is OMITTED" do
+      # Resolving the model must not read a non-defaulted id route for an ABSENT id: doing so would run the
+      # id's `preprocess:` on nil (`nil.strip`) and raise. With the id omitted and no default to rescue it,
+      # the model is simply nil.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, optional: true, preprocess: lambda(&:strip) # unguarded: nil.strip would raise
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call # company_id omitted
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+  end
+
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
     it "settles rather than escaping .call when a field's read-path default runs first during copy-forward" do
       action = build_axn do

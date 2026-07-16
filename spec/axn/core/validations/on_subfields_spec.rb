@@ -2030,6 +2030,175 @@ RSpec.describe Axn do
       end
     end
 
+    context "with a transformed sibling <field>_id feeding a STRICT finder (present id, PRO-2910)" do
+      # A finder that resolves ONLY the exactly-transformed token — so the RAW wire id misses. The
+      # record lookup must consume the same transformed id the `<field>_id` reader/validation see, not
+      # the raw token (the PR #173 subfield finding).
+      let(:strict_class) do
+        Class.new do
+          def self.registry = @registry ||= {}
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = registry[id]
+        end
+      end
+
+      before { stub_const("StrictCo", strict_class) }
+
+      it "resolves the record from a coerced sibling id (string wire value → integer finder key)" do
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, coerce: Integer # wire sends "5"
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "5" })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # finder consumed the COERCED 5, not the raw "5"
+      end
+
+      it "resolves the record from a preprocessed sibling id" do
+        strict_class.registry["5"] = strict_class.new("5")
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: " 5 " })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq("5")
+      end
+
+      it "resolves via a coerced sibling id under coerce_input_types (no per-field coerce:)" do
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          configure { |c| c.coerce_input_types = true }
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, type: Integer
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "5" })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5)
+      end
+
+      it "prefers the id route declared BESIDE the model over a differently-transformed merged route" do
+        # A merged `company_id` node with two routes onto the same wire key: an earlier dotted route with
+        # NO coercion, and the route declared next to the model (on: :thing) that coerces to Integer.
+        # The finder must retry with the id from the model's OWN route (coerced 5), not declaration-order
+        # first (raw "5", which the strict finder misses).
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", as: :pt_company_id            # route A: raw, first
+          expects :company_id, on: :thing, coerce: Integer, as: :thing_company_id # route B: beside model
+          expects :company, on: :thing, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: { company_id: "5" } })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # route B coerced "5" → 5; route A's raw "5" would have missed
+      end
+
+      it "resolves nil when a present sibling id's preprocess maps it to nil (tolerant finder, never raw)" do
+        # A TOLERANT finder would resolve the raw token; the model must instead agree with the `company_id`
+        # reader, which preprocesses the present value to nil — so no record is looked up.
+        tolerant = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("TolerantCo", tolerant)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, optional: true, preprocess: ->(v) { v == "none" ? nil : v }
+          expects :company, on: :meta, model: { klass: TolerantCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "none" })
+
+        expect(result).to be_ok
+        expect(result.cid).to be_nil
+      end
+
+      it "does not fall through to another merged route when the own route maps a PRESENT id to nil" do
+        # Merged company_id node: the own route (on: :thing) preprocesses a present "none" to nil with NO
+        # default; a DIFFERENT route (dotted) carries a usable default 42. The own route is the model's
+        # canonical id (its reader is nil here), so the model must resolve nil — never fall through to the
+        # other route (which would re-read the shared wire value / its default). The credited default route
+        # rescues only an ABSENT id, not a present one the own route nils out.
+        tolerant = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("MergedNilCo", tolerant)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", optional: true, default: 42, as: :pt_company_id # other route: default
+          expects :company_id, on: :thing, optional: true, preprocess: ->(v) { v == "none" ? nil : v }, as: :t_company_id # own route
+          expects :company, on: :thing, model: { klass: MergedNilCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          exposes :own_reader, allow_nil: true
+          def call = expose(cid: company&.id, own_reader: t_company_id)
+        end
+
+        result = action.call(payload: { thing: { company_id: "none" } })
+
+        expect(result).to be_ok
+        expect(result.own_reader).to be_nil # the own route resolves the present "none" to nil
+        expect(result.cid).to be_nil        # the model agrees with the own route, not the other route's 42
+      end
+
+      it "still rescues an ABSENT merged id via a different route's credited default" do
+        # Same merged shape, but the id is OMITTED entirely: now the credited default route (42) legitimately
+        # rescues (the PRO-2889 omitted-id rescue), because the own route's nil is absence, not a nilled value.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("MergedAbsentCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, allow_blank: true
+          expects :company_id, on: "payload.thing", optional: true, default: 42, as: :pt_company_id
+          expects :company_id, on: :thing, optional: true, preprocess: ->(v) { v == "none" ? nil : v }, as: :t_company_id
+          expects :company, on: :thing, model: { klass: MergedAbsentCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: {} }) # id omitted entirely (parent present, id absent)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(42) # the credited default route rescues the absent id
+      end
+    end
+
     context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do
       # `expects :company, on: "payload.meta", model: ...` and `expects :company_id, on: "payload.meta", ...`
       # are siblings under the `payload.meta` wire node, so sibling lookups key off that shared wire parent.
@@ -2219,6 +2388,252 @@ RSpec.describe Axn do
       end
     end
 
+    context "subfield model-consistency compares against the TRANSFORMED sibling id (PRO-2910)" do
+      # The subfield consistency check must compare a present record against the id the reader/finder
+      # actually see (its coerce:/preprocess: applied), not the raw token — mirroring top-level.
+      let(:find_class) do
+        Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+      end
+
+      before { stub_const("ConsistCo", find_class) }
+
+      it "does NOT fabricate a conflict when a present record matches the id only after preprocess:" do
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(meta: { company: ConsistCo.new("5"), company_id: " 5 " })
+
+        expect(result).to be_ok # raw " 5 " != record id "5", but the stripped "5" matches
+      end
+
+      it "still raises when the present record disagrees with the transformed id" do
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(meta: { company: ConsistCo.new("5"), company_id: " 6 " })
+
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/conflicts with company_id="6"/)
+      end
+
+      it "compares against the model's OWN-route id in a merged node (not declaration-order first)" do
+        # Merged `company_id` node: route A (dotted) raw and declared first, route B (on: :thing) strips —
+        # declared beside the model. The consistency check must compare the present record against route B's
+        # transformed id (matching the finder path), not route A's raw value.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", as: :pt_company_id # route A: raw, first
+          expects :company_id, on: :thing, preprocess: lambda(&:strip), as: :t_company_id # route B: beside model
+          expects :company, on: :thing, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(payload: { thing: { company: ConsistCo.new("5"), company_id: " 5 " } })
+
+        expect(result).to be_ok # route B strips " 5 " → "5" == record id "5"; route A's raw " 5 " would conflict
+      end
+    end
+
+    context "a model whose sibling <field>_id opts into method_call: on a PORO/Data parent (PRO-2910)" do
+      # The SIBLING `<field>_id` declaration governs how the id KEY is read; the model config governs how
+      # the RECORD is read. When the id opts into method dispatch but the model does not, the id-key
+      # presence probe (used by both the finder path and the consistency check) must honor the sibling id
+      # route's method_call — otherwise it raises MethodCallNotPermittedError before the sibling reader
+      # (which does permit the dispatch and transform) is ever consulted.
+      let(:strict_class) do
+        Class.new do
+          def self.registry = @registry ||= {}
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = registry[id]
+          def self.find(id) = registry[id]
+        end
+      end
+
+      before { stub_const("McCo", strict_class) }
+
+      it "resolves the record via the method_call sibling id (finder path)" do
+        strict_class.registry[5] = strict_class.new(5)
+        # A PORO parent: `company_id` is a METHOD (needs dispatch); no `company` reader (record absent).
+        meta = Class.new { def company_id = "5" }.new
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, coerce: Integer # wire method returns "5"
+          expects :company, on: :meta, model: { klass: McCo, finder: :fetch }, allow_nil: true # NO method_call:
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # sibling id read via dispatch, coerced "5" → 5, fetched
+      end
+
+      it "compares a present record against the method_call sibling id (consistency path)" do
+        # A Data parent: `company` is a declared MEMBER (safe read → record present, no method_call needed),
+        # while `company_id` is a behavioral METHOD (needs dispatch). The consistency check's id-key probe
+        # must honor the sibling id's method_call even though the model config has none.
+        record = strict_class.new("5")
+        parent_class = Data.define(:company) do
+          def company_id = " 5 "
+        end
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: McCo, finder: :find }, allow_nil: true # NO method_call:
+          def call = nil
+        end
+
+        result = action.call(meta: parent_class.new(company: record))
+
+        expect(result).to be_ok # stripped " 5 " → "5" == record id "5"; no false conflict, no method-call raise
+      end
+
+      it "dispatches a method_call sibling id reader at most once (finder + reader share one read)" do
+        # A NON-idempotent method reader: `company_id` returns "5" once, then nil. The finder's presence probe
+        # and the id reader must consume the SAME dispatch — a second invocation would read nil and make the
+        # lookup miss even though the reader resolves to 5.
+        strict_class.registry[5] = strict_class.new(5)
+        meta = Class.new do
+          def initialize = @calls = 0
+
+          def company_id
+            @calls += 1
+            @calls == 1 ? "5" : nil
+          end
+        end.new
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, coerce: Integer
+          expects :company, on: :meta, model: { klass: McCo, finder: :fetch }, allow_nil: true # NO method_call:
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # method dispatched once; a second dispatch (nil) would miss
+      end
+
+      it "reads a method_call RECORD key at most once when deriving from the implicit id (no declared id)" do
+        # No declared `<field>_id`, `method_call: true` model, PORO parent exposing BOTH `company` and
+        # `company_id`. The record key is read once (present_record); the finder must derive from the id
+        # ALONE (never re-read the record key) and the consistency check must reuse that one read. A one-shot
+        # `company` (nil, then a spurious record) would otherwise resolve the model from the wrong value.
+        strict_class.registry[5] = strict_class.new(5)
+        spurious = Struct.new(:id).new(999)
+        meta = Class.new do
+          define_method(:initialize) { @calls = 0 }
+          define_method(:company) do
+            @calls += 1
+            @calls == 1 ? nil : spurious
+          end
+          def company_id = 5
+        end.new
+        action = build_axn do
+          expects :meta
+          expects :company, on: :meta, method_call: true, model: { klass: McCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok # no spurious record → no false record-vs-id conflict
+        expect(result.cid).to eq(5) # derived from the implicit id 5, not the re-read spurious record
+      end
+    end
+
+    context "a stateful sibling <field>_id transform runs at most once (model declared BEFORE its id, PRO-2910)" do
+      # When the model is declared before its (aliased) `<field>_id`, inbound validation resolves the model
+      # first, so the finder reads the sibling id reader WHILE the model is mid-resolution. That read must
+      # still CACHE (the id's parent is already settled — a model LOOKUP is not a parent transform), so the
+      # id's own later validation read reuses it instead of re-running the transform. Otherwise a stateful/
+      # non-idempotent preprocess: runs twice and the record's id disagrees with what the reader exposes.
+      it "resolves the record and the reader from a SINGLE preprocess run (they agree)" do
+        runs = []
+        finder = Class.new do
+          def self.seen = @seen ||= []
+          attr_reader :id
+
+          def initialize(id) = @id = id
+
+          def self.find(id)
+            seen << id
+            new(id)
+          end
+        end
+        stub_const("OnceCo", finder)
+        # A stateful preprocess: a different token on each call — so a second run would make the record's id
+        # (from the finder) and the `<field>_id` reader disagree.
+        stateful = lambda do |_v|
+          runs << :call
+          "id#{runs.size}"
+        end
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company, on: :meta, model: { klass: OnceCo, finder: :find }, allow_nil: true # declared FIRST
+          expects :company_id, on: :meta, as: :the_cid, preprocess: stateful
+          exposes :record_id, :reader_id, allow_nil: true
+          def call = expose(record_id: company&.id, reader_id: the_cid)
+        end
+
+        result = action.call(meta: { company_id: "raw" })
+
+        expect(result).to be_ok
+        expect(runs.size).to eq(1)                       # preprocess ran once, not twice
+        expect(result.record_id).to eq(result.reader_id) # record's id agrees with the reader
+        expect(finder.seen).to eq(["id1"])               # finder consumed the one transformed token
+      end
+    end
+
+    context "the auto <field>_id companion agrees with the transformed lookup when the id is aliased (PRO-2910)" do
+      # An `as:`-aliased sibling `<field>_id` frees the `<field>_id` name, so the model still generates its
+      # own `<field>_id` companion reader. That companion must yield the SAME declared/transformed token the
+      # record lookup consumed (mirroring the top-level companion), not the raw wire value — otherwise the
+      # record and the auto companion expose inconsistent ids.
+      it "returns the transformed id from the subfield companion, matching the resolved record" do
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("AliasCo", finder)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, as: :stripped_id, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: AliasCo, finder: :find }, allow_nil: true
+          exposes :record_id, :companion_id, :aliased_id, allow_nil: true
+          def call = expose(record_id: company&.id, companion_id: company_id, aliased_id: stripped_id)
+        end
+
+        result = action.call(meta: { company_id: " 5 " })
+
+        expect(result).to be_ok
+        expect(result.record_id).to eq("5") # lookup consumed the stripped token
+        expect(result.companion_id).to eq("5") # auto companion agrees (not the raw " 5 ")
+        expect(result.aliased_id).to eq("5")   # and matches the explicit aliased reader
+      end
+    end
+
     context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do
       it "validates the settled parent value, not a value memoized before the parent was rewritten" do
         # payload's preprocess reads the `name` subfield reader (== "ok"), memoizing it, BEFORE returning
@@ -2258,6 +2673,32 @@ RSpec.describe Axn do
           def call = expose(cid: company&.id)
         end
         expect(action.call(payload: { company_id: 1 }).cid).to eq(2)
+      end
+
+      it "clears the raw-extract memo, so a PRE-pipeline read doesn't pin a stale subfield wire value (PRO-2910)" do
+        # A dynamic `sensitive:` predicate resolved during before-logging (auto_log) reads the `leaf` subfield
+        # reader BEFORE validation — a pre-pipeline read. With a stateful parent preprocess the settled parent
+        # differs from the pre-pipeline one, so the child must re-resolve against the settled parent. The
+        # raw-extract memo (keyed by config in resolve_value) has to be dropped at the pipeline boundary
+        # alongside the value cache / reader memos; otherwise the body reads the stale pre-pipeline leaf.
+        runs = { n: 0 }
+        stateful_parent = lambda do |_v|
+          runs[:n] += 1
+          { leaf: "run#{runs[:n]}" }
+        end
+        action = build_axn do
+          auto_log :info
+          expects :payload, type: Hash, preprocess: stateful_parent
+          expects :leaf, on: :payload, type: String
+          expects :trigger, sensitive: -> { leaf == "peek" } # predicate reads `leaf` → pre-pipeline read
+          exposes :seen_leaf, allow_nil: true
+          def call = expose(seen_leaf: leaf)
+        end
+
+        result = action.call(payload: { leaf: "orig" }, trigger: "t")
+
+        expect(result).to be_ok
+        expect(result.seen_leaf).to eq("run2") # the SETTLED preprocess value, not the stale pre-pipeline "run1"
       end
     end
 

@@ -374,7 +374,7 @@ module Axn
 
     def with_contract(&block)
       # A pre-pipeline read — a hook/preprocess touching a reader (which may consult a sibling's
-      # value-level default via resolve_model_via_sibling_id) — can populate both
+      # value-level default via resolve_model_via_id) — can populate both
       # ContractForSubfields' @__resolve_value_cache AND a reader's own memo before inbound validation
       # runs. The settled inputs are the authoritative state, so discard any pre-pipeline cache: the
       # validation-time reads below then resolve against the settled wire values.
@@ -649,12 +649,11 @@ module Axn
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
     # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
-    # `default:` participates only via resolve_model_via_sibling_id (which fires only when both record
-    # and raw id are absent). The top-level `<field>_id` is compared against the CALLER-SUPPLIED token
-    # with the declared field's own coerce:/preprocess: applied (never its default — see
-    # _consistency_id_for), so the check agrees with what the reader itself sees; a default-only id (the
-    # caller supplied nothing) resolves to nil here and never fabricates a conflict. The subfield branch
-    # still reads both record and id raw off the resolved parent — unchanged, pre-existing. Skipped for
+    # `default:` participates only via resolve_model_via_id (which fires only when the record is
+    # absent). The `<field>_id` is compared against the CALLER-SUPPLIED token with the declared field's
+    # own coerce:/preprocess: applied (never its default — see _consistency_id_for) at BOTH depths, so the
+    # check agrees with what the reader and the finder path see; a default-only id (the caller supplied
+    # nothing) resolves to nil here and never fabricates a conflict. Skipped for
     # custom finders, where `<field>_id` holds a finder-specific token rather than a primary key and a
     # record-vs-id comparison would be meaningless. Mismatches are structurally dev-facing, aggregated
     # into the settled exception's errors on :base (base messages render verbatim — each mismatch
@@ -668,8 +667,9 @@ module Axn
         next unless _id_based_model?(config)
         next if _model_gate_closed?(config) { @action.internal_context }
 
-        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: @context.provided_data,
-                                                     permit_method_call: config.method_call)
+        # Reuse the per-config raw memo (present_record read the same key during resolution), so the
+        # directly-provided record — and its `method_call:` dispatch — is read at most once (PRO-2910).
+        record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, @context.provided_data)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
@@ -681,9 +681,8 @@ module Axn
         next if _model_gate_closed?(config) { _resolved_parent_value(config) }
 
         source = _resolved_parent_value(config)
-        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: source, permit_method_call: config.method_call)
-        raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(config.field),
-                                                     provided_data: source, permit_method_call: config.method_call)
+        record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, source)
+        raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
       end
@@ -725,40 +724,52 @@ module Axn
       model.is_a?(Hash) && model[:finder] == :find
     end
 
-    # The <field>_id to check top-level model consistency against: nil unless the caller actually
-    # supplied the id (a default-only id must not fabricate a conflict with a present record — the
-    # record is authoritative), and otherwise the caller-supplied token with the declared <field>_id's
-    # coerce:/preprocess: applied — via ContractForSubfields._apply_read_path_transforms, the transform
-    # seam WITHOUT its default: fallback and WITHOUT the resolve-value cache (this is a comparison-only
-    # read, not a materializing one) — so the check agrees with what the reader itself sees. Using
-    # resolve_value here would be wrong: it substitutes the field's default: whenever the transformed
-    # value comes back nil, so a caller-supplied id that preprocesses to nil (e.g. blank-to-nil) would
-    # silently pick up a default and fabricate a conflict with a present record — a default is axn's
-    # synthetic fallback, never a caller-supplied id, and must never enter this comparison. A <field>_id
-    # with no declared field carries no transform, so the raw token is used directly.
+    # The <field>_id to check model consistency against, at EITHER depth (PRO-2910): nil unless the
+    # caller actually supplied the id (a default-only id must not fabricate a conflict with a present
+    # record — the record is authoritative), and otherwise the caller-supplied token with the declared
+    # `<field>_id`'s coerce:/preprocess:/default: applied via its own reader value (resolve_value), so the
+    # check compares exactly what the `<field>_id` reader, its validation, and the finder path
+    # (resolve_model_via_id) all see. The `raw`-nil guard enforces present-record authority: a
+    # caller-OMITTED id is exempted before any resolution, so its default never fabricates a conflict; a
+    # caller-SUPPLIED id is compared as its own resolved value — normally its transform, or that route's
+    # default when a present value's preprocess maps it to nil (exactly what the reader returns there).
+    # Reusing the CACHED reader value also guarantees a stateful/side-effecting preprocess runs at most once
+    # per call. A `<field>_id` with no declared field config carries no transform, so the raw token is used.
     def _consistency_id_for(config)
-      id_key = Internal::FieldConfig.model_id_key(config.field)
-      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: @context.provided_data,
-                                                permit_method_call: config.method_call)
-      return nil if raw.nil?
+      sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
 
-      id_config = @action_class.send(:internal_field_configs).find { |c| c.field == id_key }
-      return raw unless id_config
+      # No declared `<field>_id`: the caller's raw token carries no transform, read with the model field's own
+      # `method_call:`. The `raw`-nil guard enforces present-record authority (an omitted id fabricates no
+      # conflict). The raw source differs by depth: a top-level id off provided_data, a subfield id off the
+      # resolved parent (the model leaf's own wire parent).
+      if sibling_configs.empty?
+        id_key = Internal::FieldConfig.model_id_key(config.field)
+        source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
+        return Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
+      end
 
-      # Reuse the declared `<field>_id` field's CACHED reader value (resolve_value) rather than
-      # re-transforming: a stateful/side-effecting preprocess must run at most once per call (validation
-      # and the id reader already resolved it), and the consistency check then compares exactly what the
-      # reader saw. The `raw`-nil guard above already exempts a caller-OMITTED (default-only) id from
-      # fabricating a conflict with a present record (present-record authority); a caller-SUPPLIED id is
-      # compared as its own resolved value.
-      Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
+      # Present-record authority: exempt a caller-OMITTED id (no declared route saw a raw token) before any
+      # resolution, so a default-only id never fabricates a conflict with a present record. Probe presence via
+      # the SAME memoized raw each route's reader consumes, so a `method_call:` id reader dispatches at most
+      # once across the finder and consistency paths (PRO-2910).
+      supplied = sibling_configs.any? do |sc|
+        !Axn::Core::ContractForSubfields._memoized_raw_extract(@action, sc, Axn::Core::ContractForSubfields.resolve_parent(@action, sc)).nil?
+      end
+      return nil unless supplied
+
+      # Compare against exactly the id the finder path would look up: the SAME declared `<field>_id` token
+      # (ContractForSubfields._declared_id_token — depth-agnostic, ambient-aware, own-`on:`-route authoritative,
+      # absent-id-only fall-through to a credited default route). A declared id that resolves to nil (a present
+      # value its preprocess maps to nil, no own default) yields nil — no conflict — matching the reader and
+      # the record lookup.
+      Axn::Core::ContractForSubfields._declared_id_token(@action, sibling_configs)
     end
 
     # The comparison core, source-agnostic: a provided record whose id disagrees with a provided
     # `<field>_id` is a contradiction. A nil/blank id, an absent record, or a record without `.id` is
-    # no conflict. Callers supply the record and the (resolved) id from the appropriate source
-    # (top-level: the caller-supplied token with its declared transform applied, never a default — see
-    # _consistency_id_for; subfield: raw off the resolved parent).
+    # no conflict. Callers supply the record and the (resolved) id from the appropriate source: at both
+    # depths the caller-supplied token with its declared transform applied, never a default — see
+    # _consistency_id_for.
     def _record_id_mismatch(field:, record:, raw_id:)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
@@ -876,13 +887,16 @@ module Axn
 
     # Drop the per-instance caches an early pre-pipeline read (a hook/preprocess touching a reader
     # before inbound validation runs) may have populated: ContractForSubfields' value-level cache
-    # (@__resolve_value_cache, see resolve_value) AND each SUBFIELD reader's memoized value
-    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called at the top
-    # of with_contract — the settled inputs are authoritative. Without this, a preprocess/default Proc
-    # that reads a reader early caches a value against pre-pipeline state, and validation (which
-    # public_sends the reader — see Validation::Fields) then sees stale input, so invalid data passes.
-    # Same accepted trade as the resolve_value clear: a Proc default read early and re-read post-clear
-    # runs twice.
+    # (@__resolve_value_cache) AND its raw-extract memo (@__raw_extract_memo) — both keyed by config in
+    # resolve_value — plus each SUBFIELD reader's memoized value (@_memoized_reader_<reader_as>, see
+    # Memoization.define_memoized_reader_method). Called at the top of with_contract — the settled inputs
+    # are authoritative. Without this, a preprocess/default Proc (or a dynamic `sensitive:` predicate
+    # resolved during before-logging) that reads a reader early caches a value against pre-pipeline state,
+    # and validation (which public_sends the reader — see Validation::Fields) then sees stale input, so
+    # invalid data passes. The raw memo is cleared alongside the value cache for the same reason: a stale
+    # raw leaf would let validation re-run a parent preprocess/default yet still resolve the child from the
+    # pre-pipeline wire value. Same accepted trade as the resolve_value clear: a Proc read early and re-read
+    # post-clear runs twice.
     #
     # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
     # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
@@ -892,6 +906,7 @@ module Axn
     # cleared here: a top-level model record would re-run its finder — pre-existing behavior.
     def _clear_pre_pipeline_memos!
       @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
+      @action.remove_instance_variable(:@__raw_extract_memo) if @action.instance_variable_defined?(:@__raw_extract_memo)
 
       @action_class.send(:subfield_configs).each do |config|
         ivar = :"@_memoized_reader_#{config.reader_as}"

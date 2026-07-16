@@ -105,7 +105,7 @@ module Axn
       def self.resolve_value(action, config)
         # Memoize on the action INSTANCE, keyed by config identity — mirrors the reader memoization
         # that already covers configs WITH a generated reader, extending it to the reader-less callers
-        # this seam serves (validation's no-reader branch and resolve_model_via_sibling_id's
+        # this seam serves (validation's no-reader branch and resolve_model_via_id's
         # dotted-sibling path). Without it a reader-less config re-resolves once per ActiveModel
         # validator, re-running a Proc default each time — a Proc default must resolve at most once per
         # call. A config with a reader already memoizes, so this second layer is harmless there.
@@ -118,8 +118,7 @@ module Axn
         return cache[config] if cache.key?(config)
 
         parent = resolve_parent(action, config)
-        raw = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
-                                                       permit_method_call: config.method_call)
+        raw = _memoized_raw_extract(action, config, parent)
 
         # Enqueue-time facet resolution wants the raw serialized value: no coerce/preprocess/default, so a
         # dynamic hook runs once at perform rather than also drifting/double-executing at enqueue.
@@ -131,12 +130,17 @@ module Axn
         # pre-transform extract and breaks the cycle.
         return raw if in_progress[config]
 
-        # A read taken while ANOTHER field is mid-transform is provisional — it resolves against a parent
-        # that hasn't settled yet, so it is returned uncached and its reader memo is dropped once the outer
-        # field settles, so a later read re-resolves against the now-settled parent.
-        nested = !in_progress.empty?
+        # A read taken while ANOTHER field's read-path TRANSFORM is mid-flight is provisional — it resolves
+        # against a parent that hasn't settled yet (e.g. a parent whose own preprocess rewrites the value its
+        # children read), so it is returned uncached and its reader memo is dropped once the outer field
+        # settles, so a later read re-resolves against the now-settled parent. Keyed off the transform set,
+        # NOT the cycle set: a model id LOOKUP (resolve_model_value) marks the cycle set but not this one —
+        # its sibling `<field>_id` read is against an already-settled parent, so it must cache (PRO-2910).
+        transforms = _transform_in_progress_set(action)
+        nested = !transforms.empty?
         _mark_provisional_reader(action, config) if nested
         in_progress[config] = true
+        transforms[config] = true
         begin
           # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
           # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
@@ -145,6 +149,7 @@ module Axn
           value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
         ensure
           in_progress.delete(config)
+          transforms.delete(config)
         end
         return value if nested
 
@@ -153,15 +158,54 @@ module Axn
         value
       end
 
-      # The per-action set of configs whose read-path resolution is mid-flight (compare_by_identity). Shared
-      # by resolve_value and resolve_model_value so a value can't be defined in terms of its own transform or
-      # default: a re-entrant read of the same config returns its pre-default value, breaking the cycle. A
-      # non-empty set also means "some field is mid-resolution", so a read taken now is provisional.
+      # The per-action set of configs whose resolution is mid-flight (compare_by_identity), for CYCLE
+      # detection. Shared by resolve_value and resolve_model_value so a value can't be defined in terms of
+      # its own transform or default: a re-entrant read of the same config returns its pre-default value,
+      # breaking the cycle.
       def self._resolve_in_progress_set(action)
         if action.instance_variable_defined?(:@__resolve_in_progress)
           action.instance_variable_get(:@__resolve_in_progress)
         else
           action.instance_variable_set(:@__resolve_in_progress, {}.compare_by_identity)
+        end
+      end
+
+      # The per-action set of configs whose read-path TRANSFORM is mid-flight (compare_by_identity), the
+      # provisional trigger. Distinct from the cycle set. A transform can rewrite the value its children read,
+      # so a read taken during one is provisional: resolve_value marks it around coerce:/preprocess:/default:,
+      # and resolve_model_value marks it around a record-supplying `default:` (which can read this model's own
+      # subfields against a not-yet-settled record). A model id LOOKUP does NOT mark it — it rewrites nothing
+      # its SIBLINGS read, so the sibling `<field>_id` it consults resolves against an already-settled parent
+      # and must cache, not drop as provisional (PRO-2910). Non-empty means a read taken now is provisional.
+      def self._transform_in_progress_set(action)
+        if action.instance_variable_defined?(:@__transform_in_progress)
+          action.instance_variable_get(:@__transform_in_progress)
+        else
+          action.instance_variable_set(:@__transform_in_progress, {}.compare_by_identity)
+        end
+      end
+
+      # The RAW (pre-transform) extract of a config's field off its parent, memoized per-config so the wire
+      # value is read at most once — critical when the field opts into `method_call:` and its reader is a
+      # non-idempotent/one-shot method: the model finder's presence probe and the field's own reader must
+      # see the SAME dispatch, not two (PRO-2910). Only a SETTLED read memoizes; a read taken during a parent
+      # transform is provisional (the parent may still be rewritten), so it re-extracts against the settled
+      # parent next time — mirroring the value cache and the reader-memo drop.
+      def self._memoized_raw_extract(action, config, parent)
+        memo = _raw_extract_memo(action)
+        return memo[config] if memo.key?(config)
+
+        raw = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
+                                                       permit_method_call: config.method_call)
+        memo[config] = raw if _transform_in_progress_set(action).empty?
+        raw
+      end
+
+      def self._raw_extract_memo(action)
+        if action.instance_variable_defined?(:@__raw_extract_memo)
+          action.instance_variable_get(:@__raw_extract_memo)
+        else
+          action.instance_variable_set(:@__raw_extract_memo, {}.compare_by_identity)
         end
       end
 
@@ -226,36 +270,57 @@ module Axn
         value
       end
 
-      # The model-field value read: resolves the parent (provided_data at depth 0), resolves the
-      # record, falls back to a sibling-<field>_id-supplied lookup (value-level id default), then to a
-      # record-supplying default:. Non-materializing — the parent's own value stays untouched. Used by
-      # both the InternalContext facade's top-level model reader (depth 0) and
-      # _define_subfield_model_reader (depth ≥ 1). `options` is the syntactic-sugar-processed model
-      # options for this config.
+      # The model-field value read: a directly-supplied RECORD (authoritative), else a lookup by the
+      # `<field>_id` — routed through that id's read-path transform when the sibling is declared, or the raw
+      # caller token when it isn't (PRO-2910) — then a record-supplying default:. Non-materializing — the
+      # parent's own value stays untouched. Used by both the InternalContext facade's top-level model reader
+      # (depth 0) and _define_subfield_model_reader (depth ≥ 1). `options` is the syntactic-sugar-processed
+      # model options for this config.
       def self.resolve_model_value(action, config, options)
         parent = resolve_parent(action, config)
-        record = Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
-                                                   provided_data: parent, permit_method_call: config.method_call)
 
-        # Raw-read mode (enqueue-time facets): resolve the record straight from the raw parent — no
-        # sibling-<field>_id rescue and no record-supplying default, so the facet mirrors the serialized
-        # payload rather than a run-time-only rescue/default.
-        return record if _raw_reads?(action)
+        # Raw-read mode (enqueue-time facets): resolve the record straight from the raw parent — raw record
+        # or a straight RAW-id lookup, no transform/rescue/default — so the facet mirrors the serialized
+        # payload rather than a run-time-only transformed/rescued/defaulted value.
+        return _model_from_raw_parent(config, options, parent) if _raw_reads?(action)
+
+        # A directly-supplied RECORD is authoritative and read raw — never overridden by an id lookup. Read
+        # the record key through the per-config raw memo so it (and its `method_call:` dispatch) is read at
+        # most once — shared with the model-consistency check, which reads the same key (PRO-2910).
+        present_record = _memoized_raw_extract(action, config, parent).presence
 
         in_progress = _resolve_in_progress_set(action)
         # A model field's value can't be defined in terms of its own resolution: a record-supplying `default:`
         # OR a sibling `<field>_id` `default:` that reads this same model reader re-enters here. The re-entrant
-        # read returns the record resolved from the parent ALONE — no sibling-id rescue, no default — breaking
-        # the cycle so the Proc can complete. Mirrors resolve_value's re-entrancy guard; the marker is set
-        # BEFORE both the sibling-id rescue and the default so BOTH re-entry routes are covered.
-        return record if in_progress[config]
+        # read returns the present record or a RAW-id lookup from the parent ALONE — no transform, rescue, or
+        # default — breaking the cycle so the Proc can complete. Mirrors resolve_value's re-entrancy guard;
+        # the marker is set BEFORE the id lookup and the default so both re-entry routes are covered.
+        return present_record || _model_from_raw_parent(config, options, parent) if in_progress[config]
 
-        nested = !in_progress.empty?
+        # This model read is provisional only when a PARENT transform is mid-flight (keyed off the transform
+        # set, like resolve_value) — a record resolved against an unsettled parent must be dropped and re-read.
+        transforms = _transform_in_progress_set(action)
+        nested = !transforms.empty?
         _mark_provisional_reader(action, config) if nested
         in_progress[config] = true
         begin
-          record ||= resolve_model_via_sibling_id(action, config, options, parent)
-          record = Axn::Internal::FieldConfig.resolve_default(action, config) if record.nil? && config.applied_default?
+          record = present_record
+          # The id LOOKUP reads a SIBLING `<field>_id`, whose parent is already settled — so it is NOT a
+          # transform-in-progress (only the cycle set is marked). That lets the sibling id reader cache and
+          # be reused by its own later validation read, running a stateful preprocess:/default: at most once
+          # and keeping the record's id in agreement with what the `<field>_id` reader sees (PRO-2910).
+          record ||= resolve_model_via_id(action, config, options, parent)
+          # The record-supplying `default:`, by contrast, CAN read this model's own subfields (`on:` this
+          # field) against a record that hasn't settled yet, so it marks the transform set: those child reads
+          # are provisional and re-resolve against the settled record once the default returns (PRO-2908).
+          if record.nil? && config.applied_default?
+            transforms[config] = true
+            begin
+              record = Axn::Internal::FieldConfig.resolve_default(action, config)
+            ensure
+              transforms.delete(config)
+            end
+          end
         ensure
           in_progress.delete(config)
         end
@@ -267,53 +332,103 @@ module Axn
         record
       end
 
-      # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
-      # `<field>_id` subfield's VALUE-LEVEL resolution (its own reader — which applies its default:)
-      # supplies the lookup token, and the model resolves from it. This is the model-flavored half of
-      # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
-      # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
-      # failed lookup stays nil). The sibling `<field>_id` lives beside the model leaf under the leaf's
-      # own WIRE parent — the `on:` target (`parent_node`), since a field name is a single wire key.
-      def self.resolve_model_via_sibling_id(action, config, options, parent_value)
-        raw_id = Axn::Core::FieldResolvers.extract_or_nil(
-          field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
-          permit_method_call: config.method_call
-        )
-        return nil unless raw_id.nil?
+      # A present record OR a straight RAW-id lookup off the parent — the Model resolver's own
+      # record-or-derive with no read-path transform. The raw-read (enqueue) and re-entrancy fallbacks.
+      def self._model_from_raw_parent(config, options, parent)
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
+                                          provided_data: parent, permit_method_call: config.method_call)
+      end
 
-        # Ambient configs are absent from `_resolved_subfields` (they live in the ambient-scoped tree),
-        # so fall back to that index — otherwise an ambient `model:` subfield could never consult a
-        # sibling `<field>_id` default (the value-level model rescue), unlike every non-ambient subfield.
+      # Resolve the model record from its `<field>_id` (a present RECORD is already handled by the caller,
+      # so this derives from the id ALONE). The lookup token is a DECLARED sibling `<field>_id`'s read-path
+      # transform (its own reader, via _declared_id_token) so the record resolves from the SAME value the
+      # `<field>_id` reader, its validation, and the model-consistency check all see; with NO `<field>_id`
+      # declared it is the caller's RAW token off the parent (no transform). Either way the record is looked
+      # up through a SYNTHETIC hash keyed by the id key: the Model resolver finds no record key there, so it
+      # goes straight to the id derivation — the caller already read the record key (present_record), and
+      # re-reading it here would dispatch a one-shot/stateful record reader a second time (PRO-2910).
+      def self.resolve_model_via_id(action, config, options, parent)
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
+        configs = sibling_id_configs(action, config)
+        token =
+          if configs.empty?
+            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+          else
+            _declared_id_token(action, configs)
+          end
+        return nil if token.nil?
+
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => token })
+      end
+
+      # The effective transformed `<field>_id` token from the DECLARED sibling routes (`configs`, already the
+      # priority-ordered sibling_id_configs), shared by the record lookup and the consistency check so they can
+      # never disagree about which value a present record/lookup sees. Reads the routes in order via their own
+      # readers (resolve_value); each route's presence probe reads the SAME memoized raw its reader consumes
+      # (_memoized_raw_extract), so a `method_call:` id whose reader is a non-idempotent method dispatches at
+      # most once (PRO-2910). Each route reads its own wire key off its own parent, so it also carries that
+      # route's own `method_call:` — the id declaration governs reading the id key, not the model field's:
+      #   * a PRESENT raw id reads that route, which is AUTHORITATIVE: the first route to yield a non-nil value
+      #     wins, and a present value it resolves to nil (its preprocess maps it to nil, no own default) is
+      #     genuinely nil for this model, so we STOP rather than re-reading through another route;
+      #   * an ABSENT raw id reads ONLY defaulted routes (Schema.usable_id_token_default?) — the PRO-2889
+      #     omitted-id rescue — and skips the rest: a non-defaulted route would resolve nil anyway AND running
+      #     its reader on the absent value would fire an unguarded `preprocess:` on nil (e.g. `nil.strip`).
+      # Returns nil when no eligible route yields a token. Callers separate the "no declared `<field>_id` at
+      # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
+      def self._declared_id_token(action, configs)
+        configs.each do |sibling_config|
+          raw = _memoized_raw_extract(action, sibling_config, resolve_parent(action, sibling_config))
+          # Absent id: only a defaulted route can rescue; skip the rest (they resolve nil and would run an
+          # unguarded preprocess on the absent value).
+          next if raw.nil? && !Axn::Reflection::Schema.usable_id_token_default?(sibling_config)
+
+          value = action.public_send(sibling_config.reader_as)
+          return value unless value.nil?
+          # A PRESENT id this route resolves to nil is genuinely nil — don't fall through to another route.
+          return nil unless raw.nil?
+        end
+        nil
+      end
+
+      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
+      # reads them (for both the record lookup and the consistency check), so the two can never disagree about
+      # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
+      # wire key, differing only in their coerce:/preprocess:/default:, so route choice is purely "which
+      # transform interprets that one wire value":
+      #   * the id declared beside THIS model on the SAME `on:` route is AUTHORITATIVE — its transform is this
+      #     model field's canonical id (the reader user code reads for it). A present token it maps to nil is
+      #     genuinely nil for this model (_declared_id_token stops there), never re-read through an alternate route.
+      #   * the ONLY fall-through (an ABSENT id) is to a route whose default the declaration credits as a usable
+      #     token (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate): the omitted-id rescue,
+      #     even when the default lives on a different route than the model. PRO-2901 forbids two defaults on one
+      #     node, so this is the node's one default.
+      #   * with neither an own-route nor a defaulted route, the sole/first declared route supplies the token
+      #     (a lone id declared on a route other than the model's).
+      # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
+      # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
+      def self.sibling_id_configs(action, config)
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
-        return nil if path.nil?
+        return [] if path.nil?
 
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        # Select the sibling config with the SAME predicate the declaration credits
-        # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
-        # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
-        # applied at runtime but is blank-guarded by the model resolver, so it is not a usable token:
-        # picking it by applied_default? alone (blank route declared first) would supply no id and
-        # silently defeat the rescue the declaration accepted.
-        sibling_config =
+        # Candidate sibling `<field>_id` configs: another top-level root at depth 0 (a declared field, not a
+        # child of parent_node), else the children of the leaf's own wire parent.
+        candidates =
           if path.ancestors.empty?
-            # Top-level: the sibling <field>_id is another top-level root (a declared field), not a
-            # child of parent_node.
-            action.class.internal_field_configs.find do |c|
-              c.field == id_key && Axn::Reflection::Schema.usable_id_token_default?(c)
-            end
+            action.class.internal_field_configs.select { |c| c.field == id_key }
           else
-            path.parent_node.children[id_key.to_sym]&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+            path.parent_node.children[id_key.to_sym]&.configs || []
           end
-        return nil if sibling_config.nil?
 
-        # The sibling reads through its own reader (the canonical, memoized path). At depth 0 the
-        # top-level `<field>_id` reader routes through the read path too, so `public_send` is uniform
-        # across depths — it applies the sibling's own default:/preprocess: either way.
-        sibling_value = action.public_send(sibling_config.reader_as)
-        return nil if sibling_value.nil?
+        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
+        default_route = candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+        # An own route or a credited default route is authoritative; the raw declaration-order fallback is
+        # ONLY for the case where neither exists (a single undefaulted id on a non-model route), so a nil
+        # own-route resolution never spills over into re-reading the shared wire value through another route.
+        return [own_route, default_route].compact.uniq if own_route || default_route
 
-        # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
-        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => sibling_value })
+        [candidates.first].compact
       end
 
       module ClassMethods
@@ -531,13 +646,23 @@ module Axn
           end
         end
 
-        # The subfield analog of `_define_model_id_reader`: reads the raw `<field>_id` from the `on:`
-        # parent and otherwise shares the top-level reader's semantics via `_define_model_id_reader_from`.
+        # The subfield analog of `_define_model_id_reader`: yields the `<field>_id` token and otherwise
+        # shares the top-level reader's semantics via `_define_model_id_reader_from`. Like the top-level
+        # companion, it reuses the SAME declared `<field>_id` token the record lookup and the consistency
+        # check consume (sibling_id_configs + _declared_id_token), so this companion agrees with them and
+        # with the declared `<field>_id`'s own (possibly `as:`-aliased) reader — never the raw wire value
+        # when a transform is declared (PRO-2910). An undeclared id is the caller's raw token off the `on:`
+        # parent.
         def _define_subfield_model_id_reader(config, processed_options)
           by_primary_key = processed_options[:finder] == :find
           _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
-            parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
-            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+            sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(self, config)
+            if sibling_configs.empty?
+              parent = Axn::Core::ContractForSubfields.resolve_parent(self, config)
+              Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+            else
+              Axn::Core::ContractForSubfields._declared_id_token(self, sibling_configs)
+            end
           end
         end
       end
