@@ -148,7 +148,10 @@ module Axn
         )
         return nil unless raw_id.nil?
 
-        path = action.class._resolved_subfields.index[config]
+        # Ambient configs are absent from `_resolved_subfields` (they live in the ambient-scoped tree),
+        # so fall back to that index — otherwise an ambient `model:` subfield could never consult a
+        # sibling `<field>_id` default (the value-level model rescue), unlike every non-ambient subfield.
+        path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return nil if path.nil?
 
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
@@ -229,25 +232,12 @@ module Axn
           # Deep ambient nesting — a dotted `on:` rooted at ambient (`on: "ambient_context.request"`),
           # a dotted subfield NAME on an ambient parent (`expects "request.ip", on: :ambient_context`),
           # and a subfield nested UNDER an ambient subfield (`expects :ip, on: :request`) — is fully
-          # supported (PRO-2909): runtime resolution already walked these, and `_filter_to_declared` now
-          # rebuilds the filtered ambient hash along each declared PATH, so a nested leaf resolves while
-          # undeclared siblings are still dropped. The `default:`/`preprocess:`/`coerce:` carve-outs below
-          # remain (they're about per-invocation resolution, orthogonal to nesting).
-
-          # An ambient subfield's value is framework-supplied per-invocation (from the ambient provider /
-          # CurrentAttributes), not caller input — so `default:`/`preprocess:`, which transform
-          # caller-supplied inbound arguments, have no place to apply, and defaulting/preprocessing a
-          # framework value is a category error. Gated on `_on_roots_at_ambient?` so a NESTED ambient
-          # subfield (whose `on:` names an ambient parent, not ambient itself) is covered too. `sensitive:`
-          # is filter-only and unaffected — it's relied on for ambient_context observability, so it must
-          # stay allowed (composed down the declared path, PRO-2909).
-          if _on_roots_at_ambient?(on) && (!default.nil? || !preprocess.nil?)
-            raise ArgumentError,
-                  "`default:`/`preprocess:` are not supported for an `on: :ambient_context` subfield " \
-                  "(the ambient parent is resolved per-invocation, not read from provided_data) — " \
-                  "shape those values in your ambient_context_provider instead (a before hook runs after " \
-                  "inbound validation has already resolved ambient, so it's too late). `sensitive:` is supported."
-          end
+          # supported (PRO-2909): runtime resolution walks these, and `_filter_to_declared` rebuilds the
+          # filtered ambient hash along each declared PATH, so a nested leaf resolves while undeclared
+          # siblings are dropped. `default:`/`preprocess:`/`coerce:` resolve on the same non-mutating read
+          # path (`resolve_value`) as every other subfield, so they apply here too — no write-back to
+          # `provided_data` is involved. `user_facing:` stays rejected (above): an ambient value is
+          # framework-supplied, so there is no caller to face regardless of resolution mechanism.
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
@@ -266,6 +256,7 @@ module Axn
             # (PRO-2909) — same candidate set, same checks.
             Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
             _check_ambient_subfield_contradictions!(subfield_configs + configs)
+            _check_ambient_shape_placement!(subfield_configs + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -312,44 +303,10 @@ module Axn
           method_call: false,
           **validations
         )
-          # The config-building itself is the shared top-level path (a subfield is the on:-carrying
-          # case); the checks below are pure reads of the built configs, raised before anything commits.
+          # A subfield is the on:-carrying case of the shared top-level config builder; with the ambient
+          # coerce/shape guards and the dotted-name model guard gone, no per-config post-check remains.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
-                                        metadata:, reader_names:, user_facing:, method_call:, **validations).each do |config|
-            _reject_ambient_coerce!(config)
-            _reject_ambient_shape!(config)
-          end
-        end
-
-        # An ambient subfield's value is resolved per-invocation, never read from provided_data —
-        # which is the only place coercion writes — so a `coerce:` there would silently never
-        # apply. Reject it like ambient default:/preprocess:, and (post-PRO-2909) for a NESTED ambient
-        # subfield too — hence `_on_roots_at_ambient?` rather than an exact-root check.
-        def _reject_ambient_coerce!(config)
-          return unless config.validations.dig(:type, :coerce)
-          return unless _on_roots_at_ambient?(config.on)
-
-          raise ArgumentError,
-                "`coerce:` is not supported for an `on: :ambient_context` subfield " \
-                "(the ambient parent is resolved per-invocation, not read from provided_data)"
-        end
-
-        # A `shape:` block on an ambient subfield is rejected. Shape's primary job — input_schema
-        # emission — is moot here (ambient is excluded from the schema), and its members are reader-less
-        # validation-only declarations that the ambient filter would have to reconstruct from a SECOND
-        # tree merged with the subfield tree; declaring the same nested structure as SUBFIELDS
-        # (`expects :ip, on: :request`) gives the equivalent validation PLUS readers and `sensitive:`, so
-        # it's the supported path. Full shape symmetry on ambient is deferred (see the alpha-6 symmetry
-        # ticket). Gated on `_on_roots_at_ambient?`, so it fires on the ambient parent AND any nested
-        # ambient subfield.
-        def _reject_ambient_shape!(config)
-          return unless config.validations.key?(:shape)
-          return unless _on_roots_at_ambient?(config.on)
-
-          raise ArgumentError,
-                "a `shape:` block is not supported on an `on: :ambient_context` subfield — declare the " \
-                "nested structure with subfields instead (e.g. `expects :#{config.field}, on: :ambient_context`; " \
-                "`expects :<member>, on: :#{config.field}, ...`), which also gives you readers and `sensitive:`"
+                                        metadata:, reader_names:, user_facing:, method_call:, **validations)
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure

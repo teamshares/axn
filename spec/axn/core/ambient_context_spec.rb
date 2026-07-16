@@ -119,22 +119,86 @@ RSpec.describe "Axn::Core::AmbientContext.default_source" do
 end
 
 RSpec.describe "Axn ambient_context subfield restrictions" do
-  it "rejects preprocess: on an ambient_context subfield" do
-    expect do
-      Class.new do
-        include Axn
-        expects :company, on: :ambient_context, preprocess: ->(v) { v }
-      end
-    end.to raise_error(ArgumentError, /preprocess/)
+  it "applies default: to an absent ambient subfield on read and at validation" do
+    klass = build_axn do
+      expects :locale, on: :ambient_context, type: String, default: "en"
+      exposes :loc
+      def call = expose(loc: locale)
+    end
+    result = with_ambient_context { klass.call }
+    expect(result).to be_ok
+    expect(result.loc).to eq("en")
   end
 
-  it "rejects default: on an ambient_context subfield" do
-    expect do
-      Class.new do
-        include Axn
-        expects :company, on: :ambient_context, default: 5
-      end
-    end.to raise_error(ArgumentError, /default/)
+  it "applies coerce: to an ambient subfield value on read and at validation" do
+    klass = build_axn do
+      expects :count, on: :ambient_context, type: { klass: Integer, coerce: true }
+      exposes :c
+      def call = expose(c: count)
+    end
+    result = with_ambient_context(count: "5") { klass.call }
+    expect(result).to be_ok
+    expect(result.c).to eq(5)
+  end
+
+  it "applies preprocess: to an ambient subfield value on read" do
+    klass = build_axn do
+      expects :tag, on: :ambient_context, type: String, preprocess: ->(v) { v&.strip }
+      exposes :t
+      def call = expose(t: tag)
+    end
+    result = with_ambient_context(tag: "  x  ") { klass.call }
+    expect(result).to be_ok
+    expect(result.t).to eq("x")
+  end
+
+  it "applies default:/preprocess:/coerce: on a subfield nested under ambient_context" do
+    klass = build_axn do
+      expects :request, on: :ambient_context, type: Hash
+      expects :ip, on: :request, type: String, default: "0.0.0.0"
+      expects :port, on: :request, type: { klass: Integer, coerce: true }
+      exposes :ip_val, :port_val
+      def call = expose(ip_val: ip, port_val: port)
+    end
+    result = with_ambient_context(request: { port: "8080" }) { klass.call }
+    expect(result).to be_ok
+    expect(result.ip_val).to eq("0.0.0.0")
+    expect(result.port_val).to eq(8080)
+  end
+
+  it "applies default: on a dotted `on:` path rooted at ambient_context" do
+    klass = build_axn do
+      expects :session, on: "ambient_context.request", type: String, default: "anon"
+      exposes :s
+      def call = expose(s: session)
+    end
+    result = with_ambient_context(request: {}) { klass.call }
+    expect(result).to be_ok
+    expect(result.s).to eq("anon")
+  end
+
+  it "resolves an ambient model: subfield from a sibling <field>_id default when ambient is omitted" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context, default: 42
+      expects :company, on: :ambient_context, model: company_model
+      exposes :cid
+      def call = expose(cid: company.id)
+    end
+
+    # omitted ambient → the sibling company_id default (42) drives Company.find(42)
+    defaulted = with_ambient_context { klass.call }
+    expect(defaulted).to be_ok
+    expect(defaulted.cid).to eq(42)
+
+    # a present ambient id still wins over the default
+    present = with_ambient_context(company_id: 7) { klass.call }
+    expect(present).to be_ok
+    expect(present.cid).to eq(7)
   end
 
   it "still allows sensitive: on an ambient_context subfield" do
@@ -368,39 +432,129 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
-  describe "shape blocks are rejected on ambient subfields (nest via subfields instead)" do
-    it "rejects a shape block on the ambient parent" do
+  describe "shape: on ambient subfields (leaf-copy validation)" do
+    it "validates a shape: on a leaf ambient subfield against the copied value" do
+      klass = build_axn do
+        expects :request, on: :ambient_context, type: Hash do
+          field :ip, type: String
+        end
+        exposes :ip_val, :request
+        def call = expose(ip_val: request[:ip], request:)
+      end
+      ok = with_ambient_context(request: { ip: "1.2.3.4", extra: "kept-in-copy" }) { klass.call }
+      expect(ok).to be_ok
+      expect(ok.ip_val).to eq("1.2.3.4")
+      expect(ok.request).to include(extra: "kept-in-copy") # leaf copies the whole value
+
+      bad = with_ambient_context(request: { ip: 123 }) { klass.call }
+      expect(bad).not_to be_ok
+    end
+
+    it "validates a shape: on an ambient subfield reached via an implicit intermediate" do
+      klass = build_axn do
+        expects :request, on: "ambient_context.meta", type: Hash do
+          field :ip, type: String
+        end
+        exposes :ip_val
+        def call = expose(ip_val: request[:ip])
+      end
+      ok = with_ambient_context(meta: { request: { ip: "1.2.3.4" } }) { klass.call }
+      expect(ok).to be_ok
+      expect(ok.ip_val).to eq("1.2.3.4")
+
+      bad = with_ambient_context(meta: { request: { ip: 99 } }) { klass.call }
+      expect(bad).not_to be_ok
+    end
+
+    it "rejects a shape: on an ambient node that also has a subfield child (non-overlapping)" do
       expect do
-        Class.new do
-          include Axn
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :token, type: String
+          end
+          expects :foo, on: :request
+        end
+      end.to raise_error(ArgumentError, /only supported when it has no nested subfields|Declare the nested structure/)
+    end
+
+    it "rejects a shape member overlapping a subfield child on the same ambient node" do
+      expect do
+        build_axn do
           expects :request, on: :ambient_context, type: Hash do
             field :ip, type: String
           end
+          expects :ip, on: :request, type: String
         end
-      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
+      end.to raise_error(ArgumentError, /only supported when it has no nested subfields|Declare the nested structure/)
     end
 
-    it "rejects a shape block on a nested ambient subfield" do
+    it "rejects user_facing: on an ambient shape member (direct and nested)" do
       expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :headers, on: :request, type: Hash do
-            field :auth, type: String
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :ip, type: String, user_facing: "bad"
           end
         end
-      end.to raise_error(ArgumentError, /shape.*not supported on an `on: :ambient_context`|subfields instead/)
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+
+      expect do
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :meta, type: Hash do
+              field :token, type: String, user_facing: "bad"
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    it "checks EVERY shape config on a merged ambient node for a user_facing: member" do
+      expect do
+        build_axn do
+          expects :meta, on: :ambient_context, type: Hash
+          # route 1 (dotted on:) — shape without user_facing, seen first
+          expects :request, on: "ambient_context.meta", type: Hash do
+            field :ip, type: String
+          end
+          # route 2 (reader-anchored via as:) converges on the SAME wire node, shape WITH a user_facing member
+          expects :request, on: :meta, as: :meta_request, type: Hash do
+            field :ip, type: String, user_facing: "bad"
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
     end
 
     it "still allows the equivalent nested structure declared as subfields" do
-      klass = Class.new do
-        include Axn
+      klass = build_axn do
         expects :request, on: :ambient_context, type: Hash
         expects :ip, on: :request, type: String
-        exposes :the_ip
-        def call = expose(the_ip: ip)
+        exposes :ip_val
+        def call = expose(ip_val: ip)
       end
-      expect(klass.call(ambient_context: { request: { ip: "1.2.3.4" } }).the_ip).to eq("1.2.3.4")
+      result = with_ambient_context(request: { ip: "1.2.3.4" }) { klass.call }
+      expect(result).to be_ok
+      expect(result.ip_val).to eq("1.2.3.4")
+    end
+
+    it "allows shape: on a model: ambient node with children (model node is a filter leaf)" do
+      model_klass = Class.new do
+        def self.find(id) = new(id)
+        def initialize(id) = (@id = id)
+        attr_reader :id
+
+        def name = "acme"
+      end
+      klass = build_axn do
+        expects :company, on: :ambient_context, model: model_klass, type: model_klass do
+          field :name, type: String, method_call: true
+        end
+        expects :name, on: :company, method_call: true
+        exposes :cn
+        def call = expose(cn: name)
+      end
+      result = with_ambient_context(company_id: 7) { klass.call }
+      expect(result).to be_ok
+      expect(result.cn).to eq("acme")
     end
   end
 
@@ -491,46 +645,58 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       inst._run
       expect(inst.execution_context[:ambient_context][:request][:company_id]).to eq("[FILTERED]")
     end
+
+    it "masks a sensitive shape member on an ambient subfield (Hash value) in execution_context" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :ip, type: String
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: { ip: "1.2.3.4", token: "secret" } })
+      inst._run
+      ambient = inst.execution_context[:ambient_context]
+      expect(ambient[:request][:token]).to eq("[FILTERED]")
+      expect(ambient[:request][:ip]).to eq("1.2.3.4") # non-sensitive sibling preserved
+    end
+
+    it "masks a non-Hash ambient shape value wholesale when a member is sensitive" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: "111-11-1111" })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request]).to eq("[FILTERED]")
+    end
+
+    it "preserves nil absent data rather than masking it for a sensitive ambient shape" do
+      klass = Class.new do
+        include Axn
+        expects :request, on: :ambient_context, type: Hash do
+          field :token, type: String, sensitive: true
+        end
+        def call = nil
+      end
+      inst = klass.send(:new, ambient_context: { request: nil })
+      inst._run
+      expect(inst.execution_context[:ambient_context][:request]).to be_nil
+    end
   end
 
   describe "retained guards still fire on a nested ambient subfield" do
-    it "rejects default: on a subfield nested under ambient_context" do
+    it "rejects user_facing: on a subfield nested under ambient_context" do
       expect do
-        Class.new do
-          include Axn
+        build_axn do
           expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, default: "0.0.0.0"
+          expects :ip, on: :request, user_facing: "nope"
         end
-      end.to raise_error(ArgumentError, /default/)
-    end
-
-    it "rejects preprocess: on a subfield nested under ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, preprocess: ->(v) { v }
-        end
-      end.to raise_error(ArgumentError, /preprocess/)
-    end
-
-    it "rejects coerce: on a subfield nested under ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :request, on: :ambient_context, type: Hash
-          expects :ip, on: :request, type: Integer, coerce: true
-        end
-      end.to raise_error(ArgumentError, /coerce/)
-    end
-
-    it "rejects default: on a dotted `on:` path rooted at ambient_context" do
-      expect do
-        Class.new do
-          include Axn
-          expects :session, on: "ambient_context.request", default: "x"
-        end
-      end.to raise_error(ArgumentError, /default/)
+      end.to raise_error(ArgumentError, /user_facing.*ambient|ambient.*user_facing/)
     end
   end
 end
