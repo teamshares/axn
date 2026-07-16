@@ -111,8 +111,7 @@ module Axn
           axn._axn_description = description unless description == NOT_PROVIDED
           axn.semantic_hints(*Array(semantic_hints)) unless semantic_hints.nil?
 
-          # Failure reclassification and observability facets (fan out a single spec or a list)
-          _apply_fails_on(axn, fails_on)
+          # Observability facets (fan out a single spec or a list)
           _apply_facets(axn, :tag, tag)
           _apply_facets(axn, :dimension, dimension)
 
@@ -126,6 +125,14 @@ module Axn
           # Apply success and error handlers
           _apply_handlers(axn, :success, success, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
           _apply_handlers(axn, :error, error, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+
+          # Failure reclassification — applied AFTER the error handlers on purpose. `fails_on Klass, "msg"`
+          # wires a conditional `error` message; the message registry is last-defined-wins, and among
+          # competing REASONS the most-recently-declared matches first. Mirroring the conventional
+          # hand-written order (`error ...` then `fails_on ...`), the fan-out runs here so a
+          # reclassification message out-specifies an `error:` reason that also matches the exception,
+          # rather than being shadowed by it.
+          _apply_fails_on(axn, fails_on)
 
           # Hooks
           axn.before(before) if before.present?

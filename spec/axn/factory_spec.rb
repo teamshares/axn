@@ -665,6 +665,26 @@ RSpec.shared_examples "can build Axns from callables" do
         expect { axn }.to raise_error(ArgumentError, /Invalid fails_on spec/)
       end
     end
+
+    context "when an error: reason also matches the reclassified exception" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) do
+        {
+          fails_on: [[err_class, "from fails_on", { standalone: true }]],
+          error: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
+            handler: "from error kwarg", if: err_class, standalone: true,
+          ),
+        }
+      end
+      let(:callable) do
+        boom = err_class
+        -> { raise boom }
+      end
+
+      it "lets the fails_on message win (applied after error: handlers, mirroring a hand-written class)" do
+        expect(axn.call.error).to eq("from fails_on")
+      end
+    end
   end
 
   context "setting tag / dimension" do
