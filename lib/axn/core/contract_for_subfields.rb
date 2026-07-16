@@ -301,22 +301,26 @@ module Axn
       # priority-ordered sibling_id_configs), shared by the record lookup and the consistency check so they can
       # never disagree about which value a present record/lookup sees. Reads the routes in order via their own
       # readers (resolve_value):
-      #   * the first route to yield a non-nil value wins (its coerce:/preprocess:/default: applied);
-      #   * the own/priority route is AUTHORITATIVE for a PRESENT id — a present wire id it resolves to nil (its
-      #     preprocess maps it to nil, no own default) is genuinely nil for this model, so we STOP rather than
-      #     re-reading the shared wire value through another route;
-      #   * ONLY an ABSENT raw id (`raw_id.nil?` — every merged route shares the one wire key) falls through to
-      #     the credited default route (the PRO-2889 omitted-id rescue).
-      # Returns nil when the priority routes yield no usable token. Callers separate the "no declared
-      # `<field>_id` at all" case via sibling_id_configs.empty? (there the caller's raw token is used).
+      #   * a PRESENT raw id (`raw_id` non-nil — every merged route shares the one wire key) reads the own/
+      #     priority route, which is AUTHORITATIVE: the first route to yield a non-nil value wins, and a present
+      #     value it resolves to nil (its preprocess maps it to nil, no own default) is genuinely nil for this
+      #     model, so we STOP rather than re-reading the shared wire value through another route;
+      #   * an ABSENT raw id reads ONLY defaulted routes (Schema.usable_id_token_default?) — the PRO-2889
+      #     omitted-id rescue — and skips the rest: a non-defaulted route would resolve nil anyway AND running
+      #     its reader on the absent value would fire an unguarded `preprocess:` on nil (e.g. `nil.strip`).
+      # Returns nil when no eligible route yields a token. Callers separate the "no declared `<field>_id` at
+      # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
       def self._declared_id_token(action, config, parent, configs)
         raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: Axn::Internal::FieldConfig.model_id_key(config.field),
                                                           provided_data: parent, permit_method_call: config.method_call)
         configs.each do |sibling_config|
+          # Absent id: only a defaulted route can rescue; skip the rest (they resolve nil and would run an
+          # unguarded preprocess on the absent value).
+          next if raw_id.nil? && !Axn::Reflection::Schema.usable_id_token_default?(sibling_config)
+
           value = action.public_send(sibling_config.reader_as)
           return value unless value.nil?
           # A PRESENT id this route resolves to nil is genuinely nil — don't fall through to another route.
-          # Only an omitted (absent) id continues to the credited default route.
           return nil unless raw_id.nil?
         end
         nil

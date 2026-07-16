@@ -440,6 +440,23 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
       expect(result.id_reader).to eq(42) # the field resolves to its default after preprocess → nil
       expect(result.cid).to eq(42)       # the model agrees with the reader, not nil
     end
+
+    it "leaves an optional model nil when an id with an unguarded preprocess (no default) is OMITTED" do
+      # Resolving the model must not read a non-defaulted id route for an ABSENT id: doing so would run the
+      # id's `preprocess:` on nil (`nil.strip`) and raise. With the id omitted and no default to rescue it,
+      # the model is simply nil.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, optional: true, preprocess: lambda(&:strip) # unguarded: nil.strip would raise
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call # company_id omitted
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
   end
 
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
