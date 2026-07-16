@@ -29,8 +29,9 @@ module Axn
 
       # Only currently-defined, named classes: drops anonymous classes and stale references
       # left behind by a Zeitwerk reload (the reloaded constant points at a fresh object).
+      # Iterates a snapshot so a mid-enumeration registration can't corrupt the backing Set.
       def all_classes
-        _classes.select { |k| _currently_defined?(k) }
+        _classes.to_a.select { |k| _currently_defined?(k) }
       end
 
       def tools_for(adapter)
@@ -156,13 +157,32 @@ module Axn
         @classes ||= Set.new
       end
 
+      # A class is "currently defined" iff its name resolves — WITHOUT triggering any autoload — to
+      # the very same object. This deliberately avoids String#safe_constantize, which would autoload
+      # a pending constant (a stale entry left by a Rails reload) purely to decide staleness — both a
+      # surprising enumeration side-effect and a re-entrancy hazard (the loaded file may include Axn
+      # and mutate _classes mid-enumeration).
       def _currently_defined?(klass)
         name = klass.name
         return false if name.nil? || name.empty?
 
-        klass.name.safe_constantize.equal?(klass)
-      rescue StandardError
-        false
+        _loaded_constant(name).equal?(klass)
+      end
+
+      # Resolves a "::"-separated constant name against already-loaded constants only, returning the
+      # constant or nil. Walks from Object; at each segment bails (nil) unless the current module
+      # defines it directly (const_defined?(segment, false)) as a genuinely-loaded constant — a
+      # pending autoload (autoload?(segment) truthy) counts as not-yet-live and is NOT triggered.
+      def _loaded_constant(name)
+        name.split("::").reduce(Object) do |mod, segment|
+          return nil unless mod.is_a?(Module)
+          return nil unless mod.const_defined?(segment, false)
+          return nil if mod.autoload?(segment)
+
+          mod.const_get(segment, false)
+        end
+      rescue NameError
+        nil
       end
     end
   end

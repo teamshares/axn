@@ -53,6 +53,66 @@ RSpec.describe Axn::Tools::Registry do
       described_class.register_class(klass)
       expect(described_class.all_classes.count(klass)).to eq(1)
     end
+
+    it "excludes a stale reference whose name now resolves to a different (live) class" do
+      class_a = Class.new { include Axn }
+      stub_const("PruneSpec::Thing", class_a)
+      described_class.register_class(class_a)
+
+      class_b = Class.new { include Axn }
+      stub_const("PruneSpec::Thing", class_b)
+      described_class.register_class(class_b)
+
+      # "PruneSpec::Thing" now resolves to class_b, so class_a is stale and pruned.
+      expect(described_class.all_classes).to include(class_b)
+      expect(described_class.all_classes).not_to include(class_a)
+    end
+  end
+
+  describe "pruning without autoloading" do
+    let(:probe_path) { File.expand_path("../../support/fixtures/autoload_probe.rb", __dir__) }
+    let(:injected) { [] }
+
+    before do
+      ENV.delete("AXN_AUTOLOAD_PROBE_LOADED")
+      Object.const_set(:AutoloadProbe, Module.new) unless Object.const_defined?(:AutoloadProbe, false)
+      # Register a real, still-pending autoload for AutoloadProbe::Thing.
+      AutoloadProbe.autoload(:Thing, probe_path)
+    end
+
+    after do
+      Object.send(:remove_const, :AutoloadProbe) if Object.const_defined?(:AutoloadProbe, false)
+      ENV.delete("AXN_AUTOLOAD_PROBE_LOADED")
+      # Drop the stale entries we injected so they can't leak into other examples. (Their name stub
+      # is already torn down here, so match by object identity rather than by name.)
+      injected.each { |k| described_class.send(:_classes).delete(k) }
+    end
+
+    # A stale class whose #name matches the pending autoload target, held in _classes.
+    def stale_named_class
+      Class.new { include Axn }.tap do |k|
+        allow(k).to receive(:name).and_return("AutoloadProbe::Thing")
+        injected << k
+      end
+    end
+
+    it "does not trigger a pending autoload when deciding staleness (_currently_defined?)" do
+      stale = stale_named_class
+
+      expect(described_class.send(:_currently_defined?, stale)).to be(false)
+      expect(AutoloadProbe.autoload?(:Thing)).to be_truthy
+      expect(ENV.fetch("AXN_AUTOLOAD_PROBE_LOADED", nil)).to be_nil
+    end
+
+    it "does not trigger a pending autoload during all_classes enumeration" do
+      stale = stale_named_class
+      described_class.register_class(stale)
+
+      described_class.all_classes
+
+      expect(AutoloadProbe.autoload?(:Thing)).to be_truthy
+      expect(ENV.fetch("AXN_AUTOLOAD_PROBE_LOADED", nil)).to be_nil
+    end
   end
 
   describe "Axn.tools_for validation" do
