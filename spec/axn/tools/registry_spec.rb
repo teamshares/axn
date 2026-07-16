@@ -228,6 +228,71 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (non-Rails, rolls back registrations from a file that fails after the class body)", :aggregate_failures do
+    let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_failed", __dir__) }
+
+    before do
+      Axn.register_tool_adapter(:mcp)
+      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+    end
+
+    it "exposes the good tool but rolls back the class registered by the failing file" do
+      skip "fixture already loaded" if Object.const_defined?("GoodFailedFixture::Ok")
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      tools = Axn.tools_for(:mcp)
+
+      expect(tools).to include(GoodFailedFixture::Ok)
+
+      # The failing file DID define/register its class before raising, but ensure_loaded! rolled
+      # it back out of _classes, so it must not surface as a tool even though the constant exists.
+      expect(defined?(FailedFixture::PartialTool)).to be_truthy
+      expect(tools).not_to include(FailedFixture::PartialTool)
+      expect(described_class.send(:_classes)).not_to include(FailedFixture::PartialTool)
+
+      expect(warnings).to include(a_string_matching(/partial_failed_fixture\.rb.*boom after class body/))
+    end
+  end
+
+  describe ".all_classes (prunes definitively-stale named entries from the backing Set)", :aggregate_failures do
+    it "deletes a stale named class from _classes (not just from the return value)" do
+      class_a = Class.new { include Axn }
+      stub_const("PrunePersist::Thing", class_a)
+      described_class.register_class(class_a)
+
+      class_b = Class.new { include Axn }
+      stub_const("PrunePersist::Thing", class_b)
+      described_class.register_class(class_b)
+
+      described_class.all_classes
+
+      expect(described_class.send(:_classes)).not_to include(class_a)
+      expect(described_class.send(:_classes)).to include(class_b)
+    end
+
+    it "retains an anonymous class in _classes (may be named later) while excluding it from the list" do
+      anon = Class.new { include Axn }
+      described_class.register_class(anon)
+
+      result = described_class.all_classes
+
+      expect(result).not_to include(anon)
+      expect(described_class.send(:_classes)).to include(anon)
+    ensure
+      described_class.send(:_classes).delete(anon)
+    end
+
+    it "retains and returns a live named class" do
+      live = stub_const("PruneLive::Thing", Class.new { include Axn })
+      described_class.register_class(live)
+
+      expect(described_class.all_classes).to include(live)
+      expect(described_class.send(:_classes)).to include(live)
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 

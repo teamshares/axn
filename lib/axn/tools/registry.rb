@@ -29,9 +29,22 @@ module Axn
 
       # Only currently-defined, named classes: drops anonymous classes and stale references
       # left behind by a Zeitwerk reload (the reloaded constant points at a fresh object).
-      # Iterates a snapshot so a mid-enumeration registration can't corrupt the backing Set.
+      # Iterates a snapshot (_classes.to_a) so a mid-enumeration registration can't corrupt the
+      # backing Set and so deleting from _classes while walking is safe. Definitively-stale NAMED
+      # entries (a non-empty name that no longer resolves to this very object) are deleted from
+      # _classes here, releasing the strong ref so a Rails reload can't pin dead classes forever.
+      # Anonymous entries are only excluded from the return value, never deleted: an anonymous class
+      # may still be assigned to a constant later and become live.
       def all_classes
-        _classes.to_a.select { |k| _currently_defined?(k) }
+        live = []
+        _classes.to_a.each do |klass|
+          if _currently_defined?(klass)
+            live << klass
+          elsif (n = klass.name) && !n.empty?
+            _classes.delete(klass)
+          end
+        end
+        live
       end
 
       def tools_for(adapter)
@@ -66,8 +79,14 @@ module Axn
         else
           dirs.each do |dir|
             Dir.glob(File.join(dir, "**", "*.rb")).each do |file|
+              # Snapshot _classes before the require so that if the file registers an Axn class (via
+              # include/inherited) and THEN raises later in the same file, we can roll those
+              # registrations back — otherwise a "skipped" file would still leak its classes into
+              # tools_for. The loop is single-threaded, so a before/after diff is exact.
+              before = _classes.dup
               require file
             rescue StandardError, LoadError => e
+              (_classes - before).each { |added| _classes.delete(added) }
               Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
             end
           end
