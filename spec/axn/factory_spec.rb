@@ -901,6 +901,11 @@ RSpec.describe Axn::Factory do
       expect(axn.semantic_hints).to eq([:read_only])
     end
 
+    it "keeps the inherited hints when semantic_hints: is explicitly nil (an unset optional, not a clear)" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: nil) { nil }
+      expect(axn.semantic_hints).to eq([:read_only])
+    end
+
     it "clears the inherited hints when passed an explicit empty list" do
       axn = Axn::Factory.build(superclass: base, semantic_hints: []) { nil }
       expect(axn.semantic_hints).to eq([])

@@ -26,7 +26,7 @@ module Axn
         # Naming and metadata
         axn_name: nil,
         description: NOT_PROVIDED,
-        semantic_hints: NOT_PROVIDED,
+        semantic_hints: nil,
 
         # Failure reclassification
         fails_on: nil,
@@ -109,11 +109,13 @@ module Axn
           # `description: nil` to CLEAR it (else the subclass republishes stale provider text), so an
           # explicit nil must write through while a truly-omitted arg leaves the inherited value.
           axn._axn_description = description unless description == NOT_PROVIDED
-          # NOT_PROVIDED omission sentinel here too: `semantic_hints` is an inherited class_attribute,
-          # and the DSL's zero-arg call is the GETTER — so a caller can't clear inherited hints through
-          # it. An explicit empty list writes the backing attribute directly (clearing/overriding an
-          # inherited value); a non-empty list goes through the DSL for vocabulary validation.
-          unless semantic_hints == NOT_PROVIDED
+          # `semantic_hints` needs no omission sentinel (unlike `description`): the DSL's setter rejects
+          # nil (`semantic_hints(nil)` raises on `nil.to_sym`), so nil is NOT a meaningful value and is
+          # treated as omission — leaving an inherited class_attribute intact, which is what an adapter
+          # forwarding an unset option expects. The explicit clear is an empty list: it can't go through
+          # the DSL (its zero-arg call is the getter), so it writes the backing attribute directly to
+          # clear/override inherited hints; a non-empty list goes through the DSL for vocab validation.
+          unless semantic_hints.nil?
             hints = Array(semantic_hints)
             hints.empty? ? (axn._semantic_hints = [].freeze) : axn.semantic_hints(*hints)
           end
