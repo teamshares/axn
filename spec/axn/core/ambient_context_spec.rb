@@ -428,11 +428,11 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
 
     it "validates a shape: on an ambient subfield reached via an implicit intermediate" do
       klass = build_axn do
-        expects "meta.request", on: :ambient_context, as: :req, type: Hash do
+        expects :request, on: "ambient_context.meta", type: Hash do
           field :ip, type: String
         end
         exposes :ip_val
-        def call = expose(ip_val: req[:ip])
+        def call = expose(ip_val: request[:ip])
       end
       ok = with_ambient_context(meta: { request: { ip: "1.2.3.4" } }) { klass.call }
       expect(ok).to be_ok
