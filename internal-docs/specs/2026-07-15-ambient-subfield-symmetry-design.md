@@ -76,7 +76,9 @@ This covers every shape-only shape: leaf (`expects :request, on: :ambient_contex
 
 The ticket frames the rejection as "a key declared as **both** a subfield child and a shape member on the same ambient parent." The correct invariant is broader and simpler to state:
 
-> **A shape-carrying ambient node must be a leaf — it may have no subfield children.**
+> **A shape-carrying ambient node must be a filter-leaf — no subfield children, OR a `model:` node** (whose children read off the resolved record, so `_filter_ambient_node` copies it whole regardless — the same leaf test the filter uses).
+
+*(Implementation refinement: the leaf test reuses `_filter_ambient_node`'s exact predicate `children.empty? || _ambient_model_node?(node)`, single-sourced, so a `model:` ambient node may carry a shape and children together — the filter copies it whole and the shape validates against the record. A non-`model:` shape node with children is the rejected case.)*
 
 Key-overlap rejection misses a real broken case:
 
