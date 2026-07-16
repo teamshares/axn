@@ -2616,6 +2616,32 @@ RSpec.describe Axn do
         end
         expect(action.call(payload: { company_id: 1 }).cid).to eq(2)
       end
+
+      it "clears the raw-extract memo, so a PRE-pipeline read doesn't pin a stale subfield wire value (PRO-2910)" do
+        # A dynamic `sensitive:` predicate resolved during before-logging (auto_log) reads the `leaf` subfield
+        # reader BEFORE validation — a pre-pipeline read. With a stateful parent preprocess the settled parent
+        # differs from the pre-pipeline one, so the child must re-resolve against the settled parent. The
+        # raw-extract memo (keyed by config in resolve_value) has to be dropped at the pipeline boundary
+        # alongside the value cache / reader memos; otherwise the body reads the stale pre-pipeline leaf.
+        runs = { n: 0 }
+        stateful_parent = lambda do |_v|
+          runs[:n] += 1
+          { leaf: "run#{runs[:n]}" }
+        end
+        action = build_axn do
+          auto_log :info
+          expects :payload, type: Hash, preprocess: stateful_parent
+          expects :leaf, on: :payload, type: String
+          expects :trigger, sensitive: -> { leaf == "peek" } # predicate reads `leaf` → pre-pipeline read
+          exposes :seen_leaf, allow_nil: true
+          def call = expose(seen_leaf: leaf)
+        end
+
+        result = action.call(payload: { leaf: "orig" }, trigger: "t")
+
+        expect(result).to be_ok
+        expect(result.seen_leaf).to eq("run2") # the SETTLED preprocess value, not the stale pre-pipeline "run1"
+      end
     end
 
     context "two defaults on one sibling-id wire node are rejected at declaration (PRO-2901)" do

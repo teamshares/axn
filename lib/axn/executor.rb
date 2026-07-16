@@ -886,13 +886,16 @@ module Axn
 
     # Drop the per-instance caches an early pre-pipeline read (a hook/preprocess touching a reader
     # before inbound validation runs) may have populated: ContractForSubfields' value-level cache
-    # (@__resolve_value_cache, see resolve_value) AND each SUBFIELD reader's memoized value
-    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called at the top
-    # of with_contract — the settled inputs are authoritative. Without this, a preprocess/default Proc
-    # that reads a reader early caches a value against pre-pipeline state, and validation (which
-    # public_sends the reader — see Validation::Fields) then sees stale input, so invalid data passes.
-    # Same accepted trade as the resolve_value clear: a Proc default read early and re-read post-clear
-    # runs twice.
+    # (@__resolve_value_cache) AND its raw-extract memo (@__raw_extract_memo) — both keyed by config in
+    # resolve_value — plus each SUBFIELD reader's memoized value (@_memoized_reader_<reader_as>, see
+    # Memoization.define_memoized_reader_method). Called at the top of with_contract — the settled inputs
+    # are authoritative. Without this, a preprocess/default Proc (or a dynamic `sensitive:` predicate
+    # resolved during before-logging) that reads a reader early caches a value against pre-pipeline state,
+    # and validation (which public_sends the reader — see Validation::Fields) then sees stale input, so
+    # invalid data passes. The raw memo is cleared alongside the value cache for the same reason: a stale
+    # raw leaf would let validation re-run a parent preprocess/default yet still resolve the child from the
+    # pre-pipeline wire value. Same accepted trade as the resolve_value clear: a Proc read early and re-read
+    # post-clear runs twice.
     #
     # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
     # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
@@ -902,6 +905,7 @@ module Axn
     # cleared here: a top-level model record would re-run its finder — pre-existing behavior.
     def _clear_pre_pipeline_memos!
       @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
+      @action.remove_instance_variable(:@__raw_extract_memo) if @action.instance_variable_defined?(:@__raw_extract_memo)
 
       @action_class.send(:subfield_configs).each do |config|
         ivar = :"@_memoized_reader_#{config.reader_as}"
