@@ -316,7 +316,7 @@ module Axn
       # Satisfiability-only post-adjustment (runs before this node's own requiredness is computed, so the
       # credit propagates up every ancestor): a model-routed child that a sibling `<key>_id` subfield can
       # rescue is re-annotated non-required. The sibling's value-level default supplies the lookup token at
-      # read time (see ContractForSubfields.resolve_model_via_sibling_id), so omitting the record still
+      # read time (see ContractForSubfields.resolve_model_via_id), so omitting the record still
       # resolves it and the record answers the subtree; the record's attributes are unknowable at
       # declaration, so crediting the rescue is the satisfiability doctrine. STRICT (schema) mode is
       # untouched — it keeps its documented stricter-than-runtime divergence for self-referential id/model

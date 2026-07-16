@@ -375,6 +375,53 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
     end
   end
 
+  describe "top-level model + a TOLERANT finder consumes the transformed id, not the raw token (PRO-2910)" do
+    # A finder that resolves ANY non-blank token (echoing it as the record id). Because the raw lookup would
+    # succeed, a raw-first-then-retry approach would silently keep the untransformed token; the lookup must
+    # route through the transformed id from the start.
+    let(:echo_class) do
+      Class.new do
+        def self.name = "Echo"
+        def self.find(id) = new(id)
+        attr_reader :id
+
+        def initialize(id) = (@id = id)
+      end
+    end
+
+    before { stub_const("Echo", echo_class) }
+
+    it "looks the record up by the preprocessed id even though the raw token would also resolve" do
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ")
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5") # the finder saw the STRIPPED id, not the raw " 5 " a tolerant find would echo
+    end
+
+    it "resolves nil when a present id's preprocess maps it to nil (never re-read raw)" do
+      # company_id reader returns nil (preprocessed away); the model must agree — not resolve a record from
+      # the raw token a tolerant finder would otherwise accept.
+      action = build_axn do
+        expects :company, model: { klass: Echo, finder: :find }, allow_nil: true
+        expects :company_id, optional: true, preprocess: ->(v) { v == "none" ? nil : v }
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: "none")
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+  end
+
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
     it "settles rather than escaping .call when a field's read-path default runs first during copy-forward" do
       action = build_axn do

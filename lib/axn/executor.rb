@@ -374,7 +374,7 @@ module Axn
 
     def with_contract(&block)
       # A pre-pipeline read — a hook/preprocess touching a reader (which may consult a sibling's
-      # value-level default via resolve_model_via_sibling_id) — can populate both
+      # value-level default via resolve_model_via_id) — can populate both
       # ContractForSubfields' @__resolve_value_cache AND a reader's own memo before inbound validation
       # runs. The settled inputs are the authoritative state, so discard any pre-pipeline cache: the
       # validation-time reads below then resolve against the settled wire values.
@@ -649,7 +649,7 @@ module Axn
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
     # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
-    # `default:` participates only via resolve_model_via_sibling_id (which fires only when the record is
+    # `default:` participates only via resolve_model_via_id (which fires only when the record is
     # absent). The `<field>_id` is compared against the CALLER-SUPPLIED token with the declared field's
     # own coerce:/preprocess: applied (never its default — see _consistency_id_for) at BOTH depths, so the
     # check agrees with what the reader and the finder path see; a default-only id (the caller supplied
@@ -728,7 +728,7 @@ module Axn
     # record — the record is authoritative), and otherwise the caller-supplied token with the declared
     # `<field>_id`'s coerce:/preprocess:/default: applied via its own reader value (resolve_value), so the
     # check compares exactly what the `<field>_id` reader, its validation, and the finder path
-    # (resolve_model_via_sibling_id) all see. The `raw`-nil guard enforces present-record authority: a
+    # (resolve_model_via_id) all see. The `raw`-nil guard enforces present-record authority: a
     # caller-OMITTED id is exempted before any resolution, so its default never fabricates a conflict; a
     # caller-SUPPLIED id is compared as its own resolved value — normally its transform, or that route's
     # default when a present value's preprocess maps it to nil (exactly what the reader returns there).

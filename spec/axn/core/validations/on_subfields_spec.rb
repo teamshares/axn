@@ -2116,6 +2116,30 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.cid).to eq(5) # route B coerced "5" → 5; route A's raw "5" would have missed
       end
+
+      it "resolves nil when a present sibling id's preprocess maps it to nil (tolerant finder, never raw)" do
+        # A TOLERANT finder would resolve the raw token; the model must instead agree with the `company_id`
+        # reader, which preprocesses the present value to nil — so no record is looked up.
+        tolerant = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("TolerantCo", tolerant)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, optional: true, preprocess: ->(v) { v == "none" ? nil : v }
+          expects :company, on: :meta, model: { klass: TolerantCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "none" })
+
+        expect(result).to be_ok
+        expect(result.cid).to be_nil
+      end
     end
 
     context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do
