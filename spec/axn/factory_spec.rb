@@ -877,4 +877,28 @@ RSpec.describe Axn::Factory do
       expect(axn._axn_description).to eq("override")
     end
   end
+
+  context "semantic_hints: relative to an inherited value" do
+    let(:base) do
+      Class.new do
+        include Axn
+        semantic_hints :read_only
+      end
+    end
+
+    it "keeps the inherited hints when semantic_hints: is omitted" do
+      axn = Axn::Factory.build(superclass: base) { nil }
+      expect(axn.semantic_hints).to eq([:read_only])
+    end
+
+    it "clears the inherited hints when passed an explicit empty list" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: []) { nil }
+      expect(axn.semantic_hints).to eq([])
+    end
+
+    it "overrides the inherited hints with a new list (validated against the vocab)" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: [:idempotent]) { nil }
+      expect(axn.semantic_hints).to contain_exactly(:idempotent)
+    end
+  end
 end
