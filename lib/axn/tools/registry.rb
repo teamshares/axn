@@ -242,7 +242,7 @@ module Axn
       def _tool_dirs
         Array(Axn.config.tool_paths).filter_map do |path|
           if Axn::Configuration.broad_tool_path?(path)
-            Axn.config.logger.warn { "[Axn] tool_paths entry #{path.inspect} is too broad; skipping (see Axn::Configuration::TOOL_PATHS_BLOCKLIST)" }
+            Axn.config.logger.warn { "[Axn] tool_paths entry #{path.inspect} is too broad; skipping (see Axn::Configuration::BROAD_TOOL_PATH_LEAVES)" }
             next
           end
 

@@ -80,6 +80,22 @@ RSpec.describe Axn::Configuration do
         expect { config.tool_paths = ["../secret"] }.to raise_error(ArgumentError, %r{\.\./secret})
       end
 
+      it "rejects an absolute broad `actions` entry (bypasses the exact-string blocklist otherwise)" do
+        expect { config.tool_paths = [File.expand_path("actions")] }.to raise_error(ArgumentError, /actions/)
+      end
+
+      it "rejects an absolute broad `app/actions` entry" do
+        expect { config.tool_paths = [File.expand_path("app/actions")] }.to raise_error(ArgumentError, /actions/)
+      end
+
+      it "rejects an absolute broad `app` entry" do
+        expect { config.tool_paths = [File.expand_path("app")] }.to raise_error(ArgumentError, /app/)
+      end
+
+      it "rejects an arbitrary absolute path ending in the broad `actions` leaf" do
+        expect { config.tool_paths = ["/srv/app/actions"] }.to raise_error(ArgumentError, /actions/)
+      end
+
       it "still accepts legitimately narrow dirs" do
         config.tool_paths = %w[agent_tools actions/tools]
         expect(config.tool_paths).to eq(%w[agent_tools actions/tools])
@@ -93,6 +109,16 @@ RSpec.describe Axn::Configuration do
       it "accepts app/actions/tools (a narrow subdir of app/actions)" do
         config.tool_paths = %w[app/actions/tools]
         expect(config.tool_paths).to eq(%w[app/actions/tools])
+      end
+
+      it "accepts an absolute narrow dir (agent_tools)" do
+        config.tool_paths = [File.expand_path("agent_tools")]
+        expect(config.tool_paths).to eq([File.expand_path("agent_tools")])
+      end
+
+      it "accepts an absolute narrow dir (actions/tools, leaf is `tools` not `actions`)" do
+        config.tool_paths = [File.expand_path("actions/tools")]
+        expect(config.tool_paths).to eq([File.expand_path("actions/tools")])
       end
     end
 
@@ -138,6 +164,14 @@ RSpec.describe Axn::Configuration do
 
       it "does not flag a narrow subdir of app/actions" do
         expect(described_class.broad_tool_path?("app/actions/tools")).to be(false)
+      end
+
+      it "flags an absolute broad `actions` entry" do
+        expect(described_class.broad_tool_path?(File.expand_path("actions"))).to be(true)
+      end
+
+      it "does not flag an absolute narrow dir whose leaf is not a broad name" do
+        expect(described_class.broad_tool_path?(File.expand_path("actions/tools"))).to be(false)
       end
     end
 

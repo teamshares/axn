@@ -66,11 +66,21 @@ module Axn
     setting :tool_paths,
             default: %w[agent_tools actions/tools]
 
-    # Broad/root-like tool_path entries that must never be accepted: each resolves to a directory
-    # holding EVERY business action (bare `actions` → `Rails.root/app/actions`, `app`/`.`/"" →
-    # the app or project root), so auto-registering under them would expose the whole app as tools
-    # and defeat the fail-safe guarantee. Compared against the normalized entry (see #tool_paths=).
-    TOOL_PATHS_BLOCKLIST = ["", ".", "actions", "app", "app/actions"].freeze
+    # Root-ish tool_path entries that must never be accepted: both normalize to the project root
+    # itself (an empty entry cleanpaths to `"."`, and `"."` is its own normalized form). Compared
+    # against the normalized entry (see #tool_paths=). The broad-DIRECTORY-NAME cases (`actions`,
+    # `app`, `app/actions`, and any absolute spelling of them) are caught by the leaf-segment rule
+    # below instead, since a blocklist of exact strings can't also catch e.g.
+    # `File.expand_path("actions")` or `/srv/app/actions`.
+    TOOL_PATHS_BLOCKLIST = ["", "."].freeze
+
+    # Leaf (final path segment) names that make a tool_paths entry broad regardless of how much
+    # path precedes them — including an ABSOLUTE spelling (e.g. `File.expand_path("actions")`,
+    # `"/srv/app/actions"`), which normalizes to a path that no longer equals any exact blocklist
+    # string but still resolves to (and bulk-exposes) the same directory. An entry ending in `actions`
+    # is the business-actions dir; ending in `app` is the whole app dir. Checked against the LAST
+    # segment only, so a narrow subdir like `actions/tools` (leaf `tools`) is unaffected.
+    BROAD_TOOL_PATH_LEAVES = %w[actions app].freeze
 
     class << self
       # Single source-of-truth predicate for "is this tool_paths entry too broad to allow" —
@@ -102,6 +112,7 @@ module Axn
         normalized = normalize_tool_path(entry)
         return :traversal if normalized == ".." || normalized.start_with?("../")
         return :blocklist if TOOL_PATHS_BLOCKLIST.include?(normalized)
+        return :blocklist if BROAD_TOOL_PATH_LEAVES.include?(normalized.split("/").last)
 
         nil
       end
@@ -123,8 +134,8 @@ module Axn
                 "`agent_tools` or `actions/tools`."
         when :blocklist
           raise ArgumentError,
-                "tool_paths entry #{entry.inspect} is too broad: it resolves to a root-like directory " \
-                "(app/actions, app, or the project root) that would auto-expose every business action as a " \
+                "tool_paths entry #{entry.inspect} is too broad: it resolves to the project root, or ends " \
+                "in a broad directory (`actions`/`app`) that would auto-expose every business action as a " \
                 "tool. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
         end
       end
