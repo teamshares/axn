@@ -77,10 +77,18 @@ module Axn
           # `roots[PARENT]` is guaranteed present: `ambient` is non-empty (checked above), and every
           # config in it roots at `PARENT`, so `SubfieldTree.build` always creates that root node.
           _each_ambient_node(tree.roots[PARENT]) do |node|
-            next if node.children.empty? || _ambient_model_node?(node)
-
             shape_config = node.configs.find { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
             next unless shape_config
+
+            # An ambient value is framework-supplied, not caller input — so a violation can never be
+            # user-facing, at any depth. The subfield's own `user_facing:` is already rejected upstream;
+            # extend the same rule to shape members (which carry their own `user_facing:` since PRO-2925),
+            # so an ambient shape can't smuggle a user-facing member classification.
+            _reject_ambient_shape_user_facing_members!(shape_config)
+
+            # Only a filter-leaf shape validates against the copied value; a non-`model:` node WITH subfield
+            # children is rebuilt from those children alone, dropping shape-only members.
+            next if node.children.empty? || _ambient_model_node?(node)
 
             raise ArgumentError,
                   "a `shape:` block on the ambient subfield `#{shape_config.field}` is only supported when it " \
@@ -88,6 +96,29 @@ module Axn
                   "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
                   "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
                   "(`expects :<member>, on: :#{shape_config.field}`), which also give readers and `sensitive:`."
+          end
+        end
+
+        # Reject `user_facing:` on any member of an ambient subfield's shape, recursing into nested shapes.
+        # A duck-typed member without `#user_facing` (a raw `shape: { members: [...] }`) defaults to none.
+        def _reject_ambient_shape_user_facing_members!(shape_config)
+          _each_shape_member(shape_config.validations[:shape]) do |member|
+            next unless member.respond_to?(:user_facing) && member.user_facing
+
+            raise ArgumentError,
+                  "`user_facing:` is not supported on a shape member of an `on: :ambient_context` subfield " \
+                  "(ambient values are framework-supplied, not caller input — there is no caller to face)"
+          end
+        end
+
+        # Yield every member of `shape`, recursing into each member's own nested shape.
+        def _each_shape_member(shape, &block)
+          return unless shape.is_a?(Hash)
+
+          (shape[:members] || []).each do |member|
+            yield member
+            nested = member.validations[:shape] if member.respond_to?(:validations) && member.validations.is_a?(Hash)
+            _each_shape_member(nested, &block) if nested
           end
         end
 

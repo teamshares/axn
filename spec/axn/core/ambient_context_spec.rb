@@ -488,6 +488,26 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       end.to raise_error(ArgumentError, /only supported when it has no nested subfields|Declare the nested structure/)
     end
 
+    it "rejects user_facing: on an ambient shape member (direct and nested)" do
+      expect do
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :ip, type: String, user_facing: "bad"
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+
+      expect do
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash do
+            field :meta, type: Hash do
+              field :token, type: String, user_facing: "bad"
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
     it "still allows the equivalent nested structure declared as subfields" do
       klass = build_axn do
         expects :request, on: :ambient_context, type: Hash
