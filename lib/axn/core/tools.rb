@@ -35,6 +35,17 @@ module Axn
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
         # here would be load-order-hostile) and simply never match tools_for.
         def tool(*adapters, name: nil)
+          # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
+          # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins,
+          # e.g. `tool :mcp` then `tool name:` becomes :all), changing membership at tools_for time
+          # instead of failing here. Per axn's fail-at-declaration doctrine, reject the repeat. A
+          # subclass declaring its own `tool` is a fresh first call (fresh object, no ivar) and is fine.
+          if instance_variable_defined?(:@__axn_tool_declared)
+            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters and `name:` in a single call " \
+                                 "(e.g. `tool :mcp, :ruby_llm, name: \"...\"`)."
+          end
+          @__axn_tool_declared = true
+
           if adapters.include?(false)
             raise ArgumentError, "`tool false` opts out; it can't be combined with adapters or `name:`" if adapters.length > 1 || !name.nil?
 
