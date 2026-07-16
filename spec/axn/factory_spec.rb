@@ -725,6 +725,26 @@ RSpec.shared_examples "can build Axns from callables" do
         expect(axn._tags).to be_empty
       end
     end
+
+    context "with a Hash-valued literal resolver" do
+      let(:kwargs) { { tag: [:payload, { kind: "a" }] } }
+      let(:callable) { -> {} }
+
+      it "forwards the Hash as the resolver, not as keyword options" do
+        expect(axn._tags[:payload].resolver).to eq({ kind: "a" })
+        expect(axn._tags[:payload].from).to eq(:inputs)
+      end
+    end
+
+    context "with a Hash-valued resolver plus an explicit from:" do
+      let(:kwargs) { { tag: [:payload, { kind: "a" }, { from: :result }] } }
+      let(:callable) { -> {} }
+
+      it "keeps the Hash resolver positional and applies from: from the kwargs Hash" do
+        expect(axn._tags[:payload].resolver).to eq({ kind: "a" })
+        expect(axn._tags[:payload].from).to eq(:result)
+      end
+    end
   end
 end
 

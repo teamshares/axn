@@ -234,13 +234,18 @@ module Axn
         end
       end
 
+      # The only keyword option the `tag`/`dimension` DSL accepts. A trailing Hash in a facet spec is
+      # forwarded as kwargs ONLY when it looks like these options; otherwise it is a positional resolver.
+      FACET_KWARG_KEYS = %i[from].freeze
+
       # `tag`/`dimension` accumulate one facet per call. A value whose first element is itself an
       # Array is a LIST of specs; otherwise the value is a single spec. Each spec is [name, resolver]
-      # (or [name, resolver, { from: … }]); a trailing Hash forwards as kwargs. Names are never
-      # arrays, so first-element-is-Array unambiguously distinguishes a list from a single spec.
-      #   tag: [:region, "us5"]                 -> tag(:region, "us5")
+      # (or [name, resolver, { from: … }]). Names are never arrays, so first-element-is-Array
+      # unambiguously distinguishes a list from a single spec.
+      #   tag: [:region, "us5"]                     -> tag(:region, "us5")
       #   tag: [:charged, "yes", { from: :result }] -> tag(:charged, "yes", from: :result)
-      #   tag: [[:a, 1], [:b, 2]]               -> tag(:a, 1); tag(:b, 2)
+      #   tag: [:payload, { kind: "a" }]            -> tag(:payload, { kind: "a" })  # Hash resolver
+      #   tag: [[:a, 1], [:b, 2]]                   -> tag(:a, 1); tag(:b, 2)
       def _apply_facets(axn, method_name, value)
         return if value.nil?
 
@@ -249,9 +254,19 @@ module Axn
           raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{spec.inspect}" unless spec.is_a?(Array)
 
           parts = spec.dup
-          kwargs = parts.last.is_a?(Hash) ? parts.pop : {}
+          # A trailing Hash is only `from:` kwargs when every key is a supported kwarg; otherwise it is a
+          # literal Hash RESOLVER value (the DSL accepts `tag(:name, { … })`), forwarded positionally to
+          # stay at parity. (An empty Hash is a resolver too — `**{}` would drop it.) The narrow
+          # unexpressible case — a resolver Hash whose only key is `:from` — needs the DSL's brace syntax,
+          # which a flat data spec can't carry.
+          kwargs = {}
+          kwargs = parts.pop if _facet_kwargs?(parts.last)
           axn.public_send(method_name, *parts, **kwargs)
         end
+      end
+
+      def _facet_kwargs?(candidate)
+        candidate.is_a?(Hash) && !candidate.empty? && (candidate.keys - FACET_KWARG_KEYS).empty?
       end
 
       def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil, _creating_action_class_for: nil) # rubocop:disable Lint/UnderscorePrefixedVariableName
