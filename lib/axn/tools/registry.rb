@@ -39,9 +39,14 @@ module Axn
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
-      # Under Rails with eager_load off, hands each existing tool dir to the main Zeitwerk
-      # loader; outside Rails, requires every .rb under each existing tool dir. Best-effort per
-      # file/dir: a single bad file or dir is logged at warn and skipped, never aborting the rest.
+      # Under Rails with eager_load off, hands each existing tool dir to the main Zeitwerk loader
+      # via `eager_load_dir`; outside Rails, requires every .rb file under each existing tool dir
+      # individually. Isolation granularity differs by path: outside Rails, each `require` is
+      # rescued independently, so one bad FILE is logged at warn and skipped without affecting its
+      # siblings. Under Rails, `eager_load_dir` loads a DIRECTORY as a single unit — Zeitwerk has no
+      # public API to load or `require` a managed file in isolation — so a file that raises aborts
+      # the rest of that directory's files (logged at warn), while every other `tool_paths`
+      # directory still loads independently.
       def ensure_loaded!
         dirs = _tool_dirs.select { |dir| File.directory?(dir) }
         return if dirs.empty?
