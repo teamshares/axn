@@ -49,6 +49,7 @@ module Axn
           if adapters.include?(false)
             raise ArgumentError, "`tool false` opts out; it can't be combined with adapters or `name:`" if adapters.length > 1 || !name.nil?
 
+            self._tool_name_override = nil # a subclass opting out reports its OWN tool_name, not an inherited `tool name:` override
             self._tool_declaration = false
             return
           end

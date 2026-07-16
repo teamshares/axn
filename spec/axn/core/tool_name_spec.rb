@@ -127,5 +127,18 @@ RSpec.describe "Axn tool_name derivation" do
       expect(sub.tool_name).to eq("sub_custom")
       expect(parent.tool_name).to eq("custom_parent")
     end
+
+    it "a subclass opting out via `tool false` reports its OWN derived name, not the parent's inherited override" do
+      parent = named_klass("AgentTools::ParentTool") { tool name: "parent_custom" }
+      expect(parent.tool_name).to eq("parent_custom")
+
+      sub = Class.new(parent) { define_singleton_method(:name) { "AgentTools::OptedOutSub" } }
+      sub.tool false
+
+      expect(sub._tool_name_override).to be_nil
+      expect(sub.tool_name).to eq("opted_out_sub")
+      # The parent is unaffected.
+      expect(parent.tool_name).to eq("parent_custom")
+    end
   end
 end
