@@ -125,7 +125,9 @@ module Axn
 
       def _resolve_tool_dir(path)
         if defined?(Rails) && Rails.respond_to?(:root) && Rails.root
-          Rails.root.join("app", path).to_s
+          rel = path.to_s.strip.sub(%r{\A/+}, "")
+          rel = rel.delete_prefix("app/") if rel.start_with?("app/")
+          Rails.root.join("app", rel).to_s
         else
           File.expand_path(path)
         end

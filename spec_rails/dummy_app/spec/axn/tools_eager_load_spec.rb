@@ -43,4 +43,16 @@ RSpec.describe "Axn tool registry under Rails" do
     Axn.tools_for(:mcp)
     expect(Actions::Tools::SampleWidget.tool_name).to eq("sample_widget")
   end
+
+  it "resolves an app/-prefixed tool_paths entry to the same real dir as the bare spelling" do
+    Axn.config.tool_paths = %w[app/actions/tools]
+
+    expect(Rails.autoloaders.main).to receive(:eager_load_dir)
+      .with(Rails.root.join("app/actions/tools").to_s).and_call_original
+
+    tools = Axn.tools_for(:mcp)
+
+    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
+    expect(tools).to include(Actions::Tools::SampleWidget)
+  end
 end
