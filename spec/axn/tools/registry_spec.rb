@@ -157,6 +157,74 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".tools_for (duplicate tool_name detection)" do
+    before { Axn.register_tool_adapter(:mcp) }
+
+    it "raises when two members derive the same tool_name from their class names" do
+      stub_const("AgentTools::ListCompanies", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      stub_const("Actions::Tools::ListCompanies", Class.new do
+        include Axn
+        tool :mcp
+      end)
+
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError) do |error|
+        expect(error.message).to include("list_companies")
+        expect(error.message).to include("AgentTools::ListCompanies")
+        expect(error.message).to include("Actions::Tools::ListCompanies")
+        expect(error.message).to include("tool name:")
+      end
+    end
+
+    it "raises when two distinctly-named classes share an explicit tool name: override" do
+      stub_const("DupNameSpec::First", Class.new do
+        include Axn
+        tool :mcp, name: "dup"
+      end)
+      stub_const("DupNameSpec::Second", Class.new do
+        include Axn
+        tool :mcp, name: "dup"
+      end)
+
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /dup/)
+    end
+
+    it "does not raise when the same tool_name is used under different adapters" do
+      Axn.register_tool_adapter(:ruby_llm)
+
+      # Both derive "widget": distinct class names, each with a leading segment
+      # ("Tools"/"AgentTools") that's in the default tool_name_stripped_prefixes list.
+      mcp_klass = stub_const("Tools::Widget", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      ruby_llm_klass = stub_const("AgentTools::Widget", Class.new do
+        include Axn
+        tool :ruby_llm
+      end)
+
+      expect(mcp_klass.tool_name).to eq(ruby_llm_klass.tool_name)
+
+      expect(Axn.tools_for(:mcp)).to contain_exactly(mcp_klass)
+      expect(Axn.tools_for(:ruby_llm)).to contain_exactly(ruby_llm_klass)
+    end
+
+    it "returns members normally when no collision exists" do
+      distinct_a = stub_const("NoDupSpec::AlphaTool", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      distinct_b = stub_const("NoDupSpec::BetaTool", Class.new do
+        include Axn
+        tool :mcp
+      end)
+
+      expect(Axn.tools_for(:mcp)).to include(distinct_a, distinct_b)
+    end
+  end
+
   describe "._tool_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
     it "skips a broad entry that reached tool_paths via in-place mutation, warning about it" do
       allow(Axn.config).to receive(:tool_paths).and_return(%w[actions agent_tools])

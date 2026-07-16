@@ -49,7 +49,9 @@ module Axn
 
       def tools_for(adapter)
         ensure_loaded!
-        all_classes.select { |klass| member?(klass, adapter) }
+        members = all_classes.select { |klass| member?(klass, adapter) }
+        _assert_unique_tool_names!(members, adapter)
+        members
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
@@ -125,6 +127,22 @@ module Axn
       end
 
       private
+
+      # Two independently-declared classes (different files) can derive or override the same
+      # provider-facing tool_name for the same adapter — only knowable once both are loaded and
+      # selected here. An adapter that publishes by tool_name would then silently clobber one tool
+      # or hand the provider duplicate names, so fail loudly with a fixable message instead. Scoped
+      # per-adapter: the same name reused under a DIFFERENT adapter is fine (checked by the caller
+      # passing only that adapter's members).
+      def _assert_unique_tool_names!(members, adapter)
+        collisions = members.group_by(&:tool_name).select { |_name, klasses| klasses.length > 1 }
+        return if collisions.empty?
+
+        details = collisions.map { |tname, klasses| "#{tname.inspect} (#{klasses.map(&:name).sort.join(', ')})" }.join("; ")
+        raise ArgumentError,
+              "Duplicate tool_name for adapter #{adapter.inspect}: #{details}. Two tools cannot share a " \
+              "provider name; give one an explicit `tool name: \"...\"` to disambiguate."
+      end
 
       # Eager-loads a single Rails tool dir, or warns and skips it if Zeitwerk doesn't manage it
       # yet (see the boot-ordering comment in `ensure_loaded!`). `managed_roots` is nil when the
