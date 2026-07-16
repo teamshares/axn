@@ -34,6 +34,7 @@ that earn a stable base (backward-compatible seams, deprecation over removal) st
 - **Reuse the seams** — `FieldResolvers` (`:extract`/`:model`), the memoization helpers,
   `resolve_parent`, the `*_field_configs` collections. A parallel path is a new thing to keep
   consistent forever.
+- **Tool registry** — `tool` DSL / `Axn.tools_for(:adapter)` / `tool_name` (`Axn::Core::Tools`, `Axn::Tools::Registry`) own tool membership and naming; adapters consume them, never re-derive names or re-list members.
 - **Additive at the seam.** Extending a config/option keeps the existing canonical key/behavior
   identical and adds the new axis alongside, so existing consumers are untouched.
 

@@ -40,7 +40,7 @@ module Axn
             def _profile_with_vernier(&)
               _ensure_vernier_available!
 
-              class_name = self.class.resolved_axn_name.gsub(/[^A-Za-z0-9]+/, "_")
+              class_name = self.class.tool_name
               profile_name = "axn_#{class_name}_#{Time.now.to_i}"
 
               # Ensure output directory exists (only once per instance)

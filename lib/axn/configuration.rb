@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/configurable"
+require "pathname"
 
 module Axn
   class RailsConfiguration
@@ -54,6 +55,101 @@ module Axn
             default: false,
             overridable: true,
             validate: ->(v) { [true, false].include?(v) }
+
+    # Dedicated directories whose Axns auto-register as tools (membership) and which core
+    # eager-loads on demand to populate the registry. Security-sensitive and deliberately
+    # narrow: it must never include a broad dir like bare `actions`, which would auto-expose
+    # every business action. Resolved to `Rails.root/app/<path>` under Rails, else
+    # `File.expand_path(<path>)`. Distinct from tool_name_stripped_prefixes (naming, cosmetic).
+    # Validation for `tool_paths=` (including the broad-entry rejection) lives in the
+    # hand-written writer below; the generated writer would only enforce the array-of-strings shape.
+    setting :tool_paths,
+            default: %w[agent_tools actions/tools]
+
+    # Root-ish tool_path entries that must never be accepted: both normalize to the project root
+    # itself (an empty entry cleanpaths to `"."`, and `"."` is its own normalized form). Compared
+    # against the normalized entry (see #tool_paths=). The broad-DIRECTORY-NAME cases (`actions`,
+    # `app`, `app/actions`, and any absolute spelling of them) are caught by the leaf-segment rule
+    # below instead, since a blocklist of exact strings can't also catch e.g.
+    # `File.expand_path("actions")` or `/srv/app/actions`.
+    TOOL_PATHS_BLOCKLIST = ["", "."].freeze
+
+    # Leaf (final path segment) names that make a tool_paths entry broad regardless of how much
+    # path precedes them — including an ABSOLUTE spelling (e.g. `File.expand_path("actions")`,
+    # `"/srv/app/actions"`), which normalizes to a path that no longer equals any exact blocklist
+    # string but still resolves to (and bulk-exposes) the same directory. An entry ending in `actions`
+    # is the business-actions dir; ending in `app` is the whole app dir. Checked against the LAST
+    # segment only, so a narrow subdir like `actions/tools` (leaf `tools`) is unaffected.
+    BROAD_TOOL_PATH_LEAVES = %w[actions app].freeze
+
+    class << self
+      # Single source-of-truth predicate for "is this tool_paths entry too broad to allow" —
+      # shared by the `tool_paths=` setter (which raises) and Tools::Registry (which skips + warns
+      # at resolve time). The setter alone can't fail-safe an in-place mutation of the live array
+      # (`Axn.config.tool_paths << "actions"` never calls the writer), so the registry re-checks
+      # every entry against this same predicate before resolving it to a directory.
+      def broad_tool_path?(entry) = !_broad_tool_path_reason(entry).nil?
+
+      # Normalizes a tool_paths entry for BOTH the broad-entry blocklist check and directory
+      # resolution (Tools::Registry#_resolve_tool_dir): strips surrounding whitespace and any
+      # leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal, then collapses
+      # `.`/`..` segments via `Pathname#cleanpath` so alternate spellings like `"./actions"`,
+      # `"actions/."`, and `"actions/../actions"` normalize to the same `"actions"` the blocklist
+      # already rejects (Pathname#cleanpath is a lexical collapse, no filesystem access). An empty
+      # string cleanpaths to `"."`, which the blocklist covers. Exposed as public API (rather than
+      # kept private) so the registry's resolver can share this exact normalization — the validator
+      # and the resolver must never disagree on what a given entry means.
+      def normalize_tool_path(entry)
+        stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
+        Pathname(stripped).cleanpath.to_s
+      end
+
+      private
+
+      # Returns :traversal, :blocklist, or nil, letting callers distinguish which failure mode
+      # applies (the setter uses this to raise a tailored message per reason).
+      def _broad_tool_path_reason(entry)
+        normalized = normalize_tool_path(entry)
+        return :traversal if normalized == ".." || normalized.start_with?("../")
+        return :blocklist if TOOL_PATHS_BLOCKLIST.include?(normalized)
+        return :blocklist if BROAD_TOOL_PATH_LEAVES.include?(normalized.split("/").last)
+
+        nil
+      end
+    end
+
+    # Rejects broad/root-like entries at assignment with a message naming the offender, then stores
+    # the (array-of-strings) value the generated reader/default expect. Narrow subdirs like
+    # `agent_tools`, `actions/tools`, and `app/actions/tools` are still accepted.
+    def tool_paths=(value)
+      array_of_strings = value.is_a?(Array) && value.all? { |s| s.is_a?(String) }
+      raise ArgumentError, "tool_paths must be an Array of Strings; got #{value.inspect}" unless array_of_strings
+
+      value.each do |entry|
+        case self.class.send(:_broad_tool_path_reason, entry)
+        when :traversal
+          raise ArgumentError,
+                "tool_paths entry #{entry.inspect} escapes the app root via `..` traversal, which would " \
+                "resolve outside the app's own directories. Use a dedicated narrow subdir such as " \
+                "`agent_tools` or `actions/tools`."
+        when :blocklist
+          raise ArgumentError,
+                "tool_paths entry #{entry.inspect} is too broad: it resolves to the project root, or ends " \
+                "in a broad directory (`actions`/`app`) that would auto-expose every business action as a " \
+                "tool. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
+        end
+      end
+
+      @tool_paths = value
+    end
+
+    # Leading namespace segments stripped when deriving a tool's `tool_name` from its
+    # class name. Cosmetic and broad (may safely include `actions`). Global by default,
+    # per-class overridable (a class can narrow/replace the set it derives against).
+    setting :tool_name_stripped_prefixes,
+            default: %w[actions tools agent_tools],
+            overridable: true,
+            validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
 
     attr_writer :logger, :env, :on_exception, :rails
 

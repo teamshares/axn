@@ -9,6 +9,7 @@ require "axn/extras"
 require "axn/core/hooks"
 require "axn/core/method_shadowing"
 require "axn/core/naming"
+require "axn/core/tools"
 require "axn/core/logging"
 require "axn/core/flow"
 require "axn/core/automatic_logging"
@@ -67,6 +68,7 @@ module Axn
         # DSL modules that add class methods/attributes users interact with
         include Core::Hooks
         include Core::Naming
+        include Core::Tools
         include Core::Logging
         include Core::AutomaticLogging
         include Core::Tagging

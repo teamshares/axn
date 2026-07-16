@@ -31,6 +31,8 @@ RSpec.configure do |config|
       c.logger = Logger.new(File::NULL) unless ENV["DEBUG"]
     end
   end
+
+  config.before { Axn::Tools::Registry.reset_adapters! }
 end
 
 def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil, times: 1)
