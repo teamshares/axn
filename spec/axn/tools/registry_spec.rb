@@ -296,6 +296,47 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (non-Rails, isolates a SyntaxError in one tool file from valid siblings)", :aggregate_failures do
+    # A committed malformed `.rb` would fail rubocop, so the bad fixture is generated at runtime in a
+    # temp dir. SyntaxError inherits from ScriptError (not StandardError/LoadError), so the per-file
+    # rescue must catch ScriptError for the malformed file to be isolated rather than aborting the load.
+    it "loads a valid sibling despite a SyntaxError file, warning about the bad one and not raising" do
+      require "tmpdir"
+
+      skip "fixture already loaded" if Object.const_defined?("SyntaxIsoFixture::Ok")
+
+      dir = Dir.mktmpdir("axn_syntax_iso")
+      begin
+        File.write(File.join(dir, "ok_tool.rb"), <<~RUBY)
+          module SyntaxIsoFixture
+            class Ok
+              include Axn
+              tool :mcp
+              def call = nil
+            end
+          end
+        RUBY
+        # Genuine syntax error: a def with a missing method-body expression.
+        File.write(File.join(dir, "broken_tool.rb"), "class Broken\n  def call =\nend\n")
+
+        Axn.register_tool_adapter(:mcp)
+        allow(Axn.config).to receive(:tool_paths).and_return([dir])
+
+        warnings = []
+        allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+        tools = nil
+        expect { tools = Axn.tools_for(:mcp) }.not_to raise_error
+
+        expect(Object.const_defined?("SyntaxIsoFixture::Ok")).to be(true)
+        expect(tools).to include(SyntaxIsoFixture::Ok)
+        expect(warnings).to include(a_string_matching(/broken_tool\.rb.*SyntaxError/))
+      ensure
+        FileUtils.remove_entry(dir)
+      end
+    end
+  end
+
   describe ".ensure_loaded! (non-Rails, rolls back registrations from a file that fails after the class body)", :aggregate_failures do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_failed", __dir__) }
 

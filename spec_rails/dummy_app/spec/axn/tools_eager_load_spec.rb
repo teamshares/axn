@@ -56,6 +56,18 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
+  it "resolves an ABSOLUTE tool_paths entry directly instead of re-rooting it under app/" do
+    Axn.config.tool_paths = [Rails.root.join("app/actions/tools").to_s]
+
+    expect(Rails.autoloaders.main).to receive(:eager_load_dir)
+      .with(Rails.root.join("app/actions/tools").to_s).and_call_original
+
+    tools = Axn.tools_for(:mcp)
+
+    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
+    expect(tools).to include(Actions::Tools::SampleWidget)
+  end
+
   it "resolves a `.`-segment alternate spelling to the same real dir as the clean spelling" do
     Axn.config.tool_paths = %w[actions/./tools]
 

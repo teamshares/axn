@@ -59,7 +59,10 @@ module Axn
       # Under Rails, unless eager-loading has already completed, hands each existing tool dir to
       # the main Zeitwerk loader via `eager_load_dir`; outside Rails, requires every .rb file
       # under each existing tool dir
-      # individually. Isolation granularity differs by path: outside Rails, each `require` is
+      # individually. Both branches rescue `StandardError, ScriptError` — ScriptError covers
+      # SyntaxError, LoadError, and NotImplementedError — so any load failure of one unit (a malformed
+      # file, a missing require, a raising initializer) is isolated and warn-logged rather than
+      # aborting enumeration. Isolation granularity differs by path: outside Rails, each `require` is
       # rescued independently, so one bad FILE is logged at warn and skipped without affecting its
       # siblings. Under Rails, `eager_load_dir` loads a DIRECTORY as a single unit — Zeitwerk has no
       # public API to load or `require` a managed file in isolation — so a file that raises aborts
@@ -101,7 +104,7 @@ module Axn
               # would leave the valid tool's constant defined yet permanently absent from _classes.
               before = _classes.dup
               require file
-            rescue StandardError, LoadError => e
+            rescue StandardError, ScriptError => e
               expanded = File.expand_path(file)
               _rollback_registrations(before) { |src| src == expanded }
               Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
@@ -169,7 +172,7 @@ module Axn
         # is preserved (it isn't this directory's tool).
         before = _classes.dup
         loader.eager_load_dir(dir)
-      rescue StandardError, LoadError => e
+      rescue StandardError, ScriptError => e
         _rollback_registrations(before) do |src|
           src == dir || src.start_with?(dir + File::SEPARATOR)
         end
@@ -259,11 +262,17 @@ module Axn
       # two comparison sides can disagree on an otherwise-equal directory (PRO-2921 follow-up).
       def _resolve_tool_dir(path)
         if defined?(Rails) && Rails.respond_to?(:root) && Rails.root
+          # An ABSOLUTE entry (e.g. `Rails.root.join("app/actions/tools").to_s`) is already a real
+          # dir — use it directly. Re-rooting it under `Rails.root/app` would strip its leading slash,
+          # join a non-`app/`-prefixed path under app, and produce a doubled, nonexistent path. Check
+          # the RAW path before normalization (which would collapse the leading slash away).
+          return File.expand_path(path.to_s) if File.absolute_path?(path.to_s)
+
           rel = Axn::Configuration.normalize_tool_path(path)
           rel = rel.delete_prefix("app/") if rel.start_with?("app/")
           File.expand_path(Rails.root.join("app", rel).to_s)
         else
-          File.expand_path(path)
+          File.expand_path(path.to_s)
         end
       end
 
