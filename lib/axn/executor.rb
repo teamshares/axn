@@ -885,10 +885,14 @@ module Axn
     # call — canonically, through the deepest reader-bearing ancestor (see
     # ContractForSubfields.resolve_parent), so both spellings of the same wire path share one
     # resolution. Only populated during the inbound-validation phase, after every provided_data
-    # mutation (coercion/preprocess/defaults) has already run.
+    # mutation (coercion/preprocess/defaults) has already run. Keyed by `method_call:` as well as the
+    # `on:` target: resolving an implicit method hop now depends on the resolving config's dispatch
+    # opt-in (PRO-2926), so two siblings under one `on:` that disagree on `method_call:` must each
+    # resolve per their own flag — the non-opted-in one raising its own gate regardless of order —
+    # rather than one reusing the other's dispatched (or refused) result.
     def _resolved_parent_value(config)
       memo = (@_resolved_parent_values ||= {})
-      key = config.on.to_s
+      key = [config.on.to_s, config.method_call]
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
 

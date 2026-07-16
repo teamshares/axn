@@ -319,6 +319,26 @@ RSpec.describe "expects ..., method_call: true" do
       Axn.config.instance_variable_set(:@on_exception, nil)
     end
 
+    it "does not let an opted-in sibling's cached parent skip a non-opted-in sibling's gate" do
+      # Two siblings share `on: "event.data"` (a method hop). The opted-in one is declared/validated
+      # first; the parent-resolution memo must NOT let the non-opted-in sibling reuse that dispatched
+      # value and skip its own MethodCallNotPermittedError — resolution is keyed by dispatch mode, so
+      # the gate fires regardless of declaration/validation order.
+      Axn.config.instance_variable_set(:@on_exception, nil)
+      event_class = Class.new { def data = { a: 1 } } # `data` is a METHOD
+      action = build_axn do
+        expects :event
+        expects :a, on: "event.data", method_call: true, optional: true, allow_nil: true
+        expects :b, on: "event.data", optional: true, allow_nil: true # NO method_call: — must still raise
+        def call = nil
+      end
+      result = action.call(event: event_class.new)
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::ContractViolation::MethodCallNotPermittedError)
+    ensure
+      Axn.config.instance_variable_set(:@on_exception, nil)
+    end
+
     it "treats method_call: as a harmless no-op on a Hash intermediate (key access wins)" do
       action = build_axn do
         expects :address, type: Hash

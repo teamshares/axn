@@ -485,10 +485,14 @@ module Axn
         # field, the generated reader would be clobbered, and per-field config would collapse
         # ambiguously. Returns the offending wire-key names.
         def _duplicate_fields(existing, new_configs)
-          taken = existing.map { |c| [c.on, c.field] }
+          # `on:` is normalized with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling
+          # of the same dotted path) name the same route — matching how the SubfieldTree splits `on:` —
+          # rather than slipping two configs onto one wire slot on a spelling difference.
+          key_for = ->(c) { [c.on.to_s, c.field] }
+          taken = existing.map(&key_for)
           seen = []
           new_configs.select do |c|
-            key = [c.on, c.field]
+            key = key_for.call(c)
             collides = taken.include?(key) || seen.include?(key)
             seen << key
             collides

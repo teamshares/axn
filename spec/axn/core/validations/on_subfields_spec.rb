@@ -590,6 +590,18 @@ RSpec.describe Axn do
           expect(action.call(foo: { bar: { foo: 3 } })).to be_ok
           expect(action.call(foo: { bar: { baz: 3 } })).not_to be_ok
         end
+
+        it "treats string and symbol on: as the same route (a genuine duplicate, not a merge)" do
+          # `on: :payload` and `on: "payload"` name the SAME parent (the tree splits `on:` via to_s), so
+          # the same wire key under both is a true duplicate even when the second renames its reader.
+          expect do
+            build_axn do
+              expects :payload, type: Hash
+              expects :x, on: :payload
+              expects :x, on: "payload", as: :x2
+            end
+          end.to raise_error(Axn::DuplicateFieldError, /x/)
+        end
       end
     end
 
