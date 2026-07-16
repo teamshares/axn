@@ -201,6 +201,41 @@ RSpec.describe "Axn ambient_context subfield restrictions" do
     expect(present.cid).to eq(7)
   end
 
+  it "resolves an ambient model: subfield through the TRANSFORMED sibling <field>_id (PRO-2910)" do
+    # Parity with non-ambient subfields: both the finder path (resolve_model_via_sibling_id) and the
+    # model-consistency check must consume the coerce:/preprocess:-transformed id, not the raw token.
+    company_model = Class.new do
+      def self.registry = @registry ||= {}
+      # strict: " 5 " (raw) misses; "5" (stripped) hits
+      def self.fetch(id) = registry[id]
+      def self.find(id) = registry[id]
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    company_model.registry["5"] = company_model.new("5")
+
+    # id-only ambient input → the STRIPPED id feeds the strict finder
+    finder_klass = build_axn do
+      expects :company_id, on: :ambient_context, preprocess: lambda(&:strip)
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :fetch }, allow_nil: true
+      exposes :cid, allow_nil: true
+      def call = expose(cid: company&.id)
+    end
+    resolved = with_ambient_context(company_id: " 5 ") { finder_klass.call }
+    expect(resolved).to be_ok
+    expect(resolved.cid).to eq("5")
+
+    # present ambient record + an id that matches only after preprocess → no fabricated conflict
+    consistency_klass = build_axn do
+      expects :company_id, on: :ambient_context, preprocess: lambda(&:strip)
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :find }, allow_nil: true
+      def call = nil
+    end
+    record = company_model.new("5")
+    checked = with_ambient_context(company: record, company_id: " 5 ") { consistency_klass.call }
+    expect(checked).to be_ok
+  end
+
   it "still allows sensitive: on an ambient_context subfield" do
     klass = Class.new do
       include Axn

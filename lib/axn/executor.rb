@@ -741,7 +741,10 @@ module Axn
       # read off the resolved parent — the same parent/child structure the finder rescue consults.
       if config.subfield?
         source = _resolved_parent_value(config)
-        path = _resolved_path_for(config)
+        # Ambient configs are kept out of `_resolved_subfields`, so fall back to the ambient-scoped tree
+        # exactly as the finder path (resolve_model_via_sibling_id) does — otherwise an ambient model
+        # subfield's id would be compared raw and fabricate the conflict PRO-2910 fixes elsewhere.
+        path = _resolved_path_for(config) || @action_class._ambient_subfield_tree.index[config]
         sibling_node = path && path.parent_node.children[id_key.to_sym]
         id_config = sibling_node&.configs&.first
       else
