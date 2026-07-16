@@ -62,10 +62,11 @@ module Axn
           nil
         end
 
-        # The provider-facing tool name (distinct from resolved_axn_name, the free-form display
-        # name). An explicit `tool name:` override wins; otherwise derive from the class name by
-        # stripping the leading run of configured prefixes, snake_casing the rest, and restricting
-        # to [a-z0-9_]. Never blank.
+        # The provider-facing tool name — stable across edits to `axn_name` (the free-form
+        # display name used in logging/async), because it's derived from the Ruby class name
+        # rather than resolved_axn_name. An explicit `tool name:` override wins; otherwise derive
+        # from the class name by stripping the leading run of configured prefixes, snake_casing
+        # the rest, and restricting to [a-z0-9_]. Never blank.
         def tool_name
           # Defense-in-depth: the `tool` DSL rejects an override that sanitizes to empty, but an
           # override set through some other path (a direct class_attribute write) must still never
@@ -76,7 +77,11 @@ module Axn
             return sanitized_override unless sanitized_override.empty?
           end
 
-          segments = resolved_axn_name.split("::")
+          # An anonymous class (name == nil) has no stable source to derive from — do not fall
+          # back to axn_name/resolved_axn_name, which would re-introduce the display coupling.
+          return "tool" if name.blank?
+
+          segments = name.split("::")
           kept = _tool_name_strip_leading_prefixes(segments)
           derived = _tool_name_sanitize(kept.map(&:underscore).join("_"))
           return derived unless derived.empty?

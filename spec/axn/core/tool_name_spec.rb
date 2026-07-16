@@ -54,4 +54,29 @@ RSpec.describe "Axn tool_name derivation" do
     k._tool_name_override = "!!!"
     expect(k.tool_name).to eq("list_companies")
   end
+
+  it "derives from the stable class name, not the mutable axn_name display override" do
+    k = tool_klass("AgentTools::ListCompanies")
+    k.axn_name "List companies in CRM"
+
+    expect(k.tool_name).to eq("list_companies")
+    expect(k.resolved_axn_name).to eq("List companies in CRM")
+  end
+
+  it "an explicit `tool name:` override still wins over both the class name and axn_name" do
+    k = tool_klass("AgentTools::ListCompanies")
+    k.axn_name "List companies in CRM"
+    k.tool name: "custom"
+
+    expect(k.tool_name).to eq("custom")
+  end
+
+  it "falls back to `tool` for an anonymous class (nil name), even with axn_name set" do
+    k = Class.new do
+      include Axn
+      axn_name "List companies in CRM"
+    end
+
+    expect(k.tool_name).to eq("tool")
+  end
 end
