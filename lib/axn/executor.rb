@@ -735,29 +735,33 @@ module Axn
     # Reusing the CACHED reader value also guarantees a stateful/side-effecting preprocess runs at most once
     # per call. A `<field>_id` with no declared field config carries no transform, so the raw token is used.
     def _consistency_id_for(config)
-      id_key = Internal::FieldConfig.model_id_key(config.field)
-      # The raw source differs by depth: a top-level id is read off provided_data; a subfield id off the
-      # resolved parent (the model leaf's own wire parent). The `raw`-nil guard exempts a caller-OMITTED id
-      # before any resolution, so a default-only id never fabricates a conflict with a present record.
-      source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
-      # The id-key presence probe honors the SIBLING id route's `method_call:` (the declaration that governs
-      # reading the id key), not the model field's — matching the finder path's _declared_id_token, so a
-      # sibling that opted into method dispatch on a PORO/Data parent doesn't raise here (PRO-2910). With no
-      # `<field>_id` declared the raw token is read with the model field's own flag.
       sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
-      permit_method_call = Axn::Core::ContractForSubfields.id_key_permits_method_call?(config, sibling_configs)
-      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call:)
-      return nil if raw.nil?
+
+      # No declared `<field>_id`: the caller's raw token carries no transform, read with the model field's own
+      # `method_call:`. The `raw`-nil guard enforces present-record authority (an omitted id fabricates no
+      # conflict). The raw source differs by depth: a top-level id off provided_data, a subfield id off the
+      # resolved parent (the model leaf's own wire parent).
+      if sibling_configs.empty?
+        id_key = Internal::FieldConfig.model_id_key(config.field)
+        source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
+        return Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
+      end
+
+      # Present-record authority: exempt a caller-OMITTED id (no declared route saw a raw token) before any
+      # resolution, so a default-only id never fabricates a conflict with a present record. Probe presence via
+      # the SAME memoized raw each route's reader consumes, so a `method_call:` id reader dispatches at most
+      # once across the finder and consistency paths (PRO-2910).
+      supplied = sibling_configs.any? do |sc|
+        !Axn::Core::ContractForSubfields._memoized_raw_extract(@action, sc, Axn::Core::ContractForSubfields.resolve_parent(@action, sc)).nil?
+      end
+      return nil unless supplied
 
       # Compare against exactly the id the finder path would look up: the SAME declared `<field>_id` token
-      # (ContractForSubfields._declared_id_token — depth-agnostic, ambient-aware, own-`on:`-route
-      # authoritative, absent-id-only fall-through to a credited default route). A `<field>_id` with no
-      # declared config carries no transform, so the raw token is used; a declared id that resolves to nil
-      # (a present value its preprocess maps to nil, no own default) yields nil — no conflict — matching the
-      # reader and the record lookup.
-      return raw if sibling_configs.empty?
-
-      Axn::Core::ContractForSubfields._declared_id_token(@action, config, source, sibling_configs)
+      # (ContractForSubfields._declared_id_token — depth-agnostic, ambient-aware, own-`on:`-route authoritative,
+      # absent-id-only fall-through to a credited default route). A declared id that resolves to nil (a present
+      # value its preprocess maps to nil, no own default) yields nil — no conflict — matching the reader and
+      # the record lookup.
+      Axn::Core::ContractForSubfields._declared_id_token(@action, sibling_configs)
     end
 
     # The comparison core, source-agnostic: a provided record whose id disagrees with a provided

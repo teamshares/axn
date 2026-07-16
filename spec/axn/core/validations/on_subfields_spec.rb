@@ -2504,6 +2504,33 @@ RSpec.describe Axn do
 
         expect(result).to be_ok # stripped " 5 " → "5" == record id "5"; no false conflict, no method-call raise
       end
+
+      it "dispatches a method_call sibling id reader at most once (finder + reader share one read)" do
+        # A NON-idempotent method reader: `company_id` returns "5" once, then nil. The finder's presence probe
+        # and the id reader must consume the SAME dispatch — a second invocation would read nil and make the
+        # lookup miss even though the reader resolves to 5.
+        strict_class.registry[5] = strict_class.new(5)
+        meta = Class.new do
+          def initialize = @calls = 0
+
+          def company_id
+            @calls += 1
+            @calls == 1 ? "5" : nil
+          end
+        end.new
+        action = build_axn do
+          expects :meta
+          expects :company_id, on: :meta, method_call: true, coerce: Integer
+          expects :company, on: :meta, model: { klass: McCo, finder: :fetch }, allow_nil: true # NO method_call:
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # method dispatched once; a second dispatch (nil) would miss
+      end
     end
 
     context "a stateful sibling <field>_id transform runs at most once (model declared BEFORE its id, PRO-2910)" do

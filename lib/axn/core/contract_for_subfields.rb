@@ -118,8 +118,7 @@ module Axn
         return cache[config] if cache.key?(config)
 
         parent = resolve_parent(action, config)
-        raw = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
-                                                       permit_method_call: config.method_call)
+        raw = _memoized_raw_extract(action, config, parent)
 
         # Enqueue-time facet resolution wants the raw serialized value: no coerce/preprocess/default, so a
         # dynamic hook runs once at perform rather than also drifting/double-executing at enqueue.
@@ -183,6 +182,30 @@ module Axn
           action.instance_variable_get(:@__transform_in_progress)
         else
           action.instance_variable_set(:@__transform_in_progress, {}.compare_by_identity)
+        end
+      end
+
+      # The RAW (pre-transform) extract of a config's field off its parent, memoized per-config so the wire
+      # value is read at most once — critical when the field opts into `method_call:` and its reader is a
+      # non-idempotent/one-shot method: the model finder's presence probe and the field's own reader must
+      # see the SAME dispatch, not two (PRO-2910). Only a SETTLED read memoizes; a read taken during a parent
+      # transform is provisional (the parent may still be rewritten), so it re-extracts against the settled
+      # parent next time — mirroring the value cache and the reader-memo drop.
+      def self._memoized_raw_extract(action, config, parent)
+        memo = _raw_extract_memo(action)
+        return memo[config] if memo.key?(config)
+
+        raw = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
+                                                       permit_method_call: config.method_call)
+        memo[config] = raw if _transform_in_progress_set(action).empty?
+        raw
+      end
+
+      def self._raw_extract_memo(action)
+        if action.instance_variable_defined?(:@__raw_extract_memo)
+          action.instance_variable_get(:@__raw_extract_memo)
+        else
+          action.instance_variable_set(:@__raw_extract_memo, {}.compare_by_identity)
         end
       end
 
@@ -327,7 +350,7 @@ module Axn
         # No declared `<field>_id`: the caller's raw token is the lookup key (nothing to transform).
         return _model_from_raw_parent(config, options, parent) if configs.empty?
 
-        token = _declared_id_token(action, config, parent, configs)
+        token = _declared_id_token(action, configs)
         return nil if token.nil?
 
         # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
@@ -338,29 +361,29 @@ module Axn
       # The effective transformed `<field>_id` token from the DECLARED sibling routes (`configs`, already the
       # priority-ordered sibling_id_configs), shared by the record lookup and the consistency check so they can
       # never disagree about which value a present record/lookup sees. Reads the routes in order via their own
-      # readers (resolve_value):
-      #   * a PRESENT raw id (`raw_id` non-nil — every merged route shares the one wire key) reads the own/
-      #     priority route, which is AUTHORITATIVE: the first route to yield a non-nil value wins, and a present
-      #     value it resolves to nil (its preprocess maps it to nil, no own default) is genuinely nil for this
-      #     model, so we STOP rather than re-reading the shared wire value through another route;
+      # readers (resolve_value); each route's presence probe reads the SAME memoized raw its reader consumes
+      # (_memoized_raw_extract), so a `method_call:` id whose reader is a non-idempotent method dispatches at
+      # most once (PRO-2910). Each route reads its own wire key off its own parent, so it also carries that
+      # route's own `method_call:` — the id declaration governs reading the id key, not the model field's:
+      #   * a PRESENT raw id reads that route, which is AUTHORITATIVE: the first route to yield a non-nil value
+      #     wins, and a present value it resolves to nil (its preprocess maps it to nil, no own default) is
+      #     genuinely nil for this model, so we STOP rather than re-reading through another route;
       #   * an ABSENT raw id reads ONLY defaulted routes (Schema.usable_id_token_default?) — the PRO-2889
       #     omitted-id rescue — and skips the rest: a non-defaulted route would resolve nil anyway AND running
       #     its reader on the absent value would fire an unguarded `preprocess:` on nil (e.g. `nil.strip`).
       # Returns nil when no eligible route yields a token. Callers separate the "no declared `<field>_id` at
       # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
-      def self._declared_id_token(action, config, parent, configs)
-        raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: Axn::Internal::FieldConfig.model_id_key(config.field),
-                                                          provided_data: parent,
-                                                          permit_method_call: id_key_permits_method_call?(config, configs))
+      def self._declared_id_token(action, configs)
         configs.each do |sibling_config|
+          raw = _memoized_raw_extract(action, sibling_config, resolve_parent(action, sibling_config))
           # Absent id: only a defaulted route can rescue; skip the rest (they resolve nil and would run an
           # unguarded preprocess on the absent value).
-          next if raw_id.nil? && !Axn::Reflection::Schema.usable_id_token_default?(sibling_config)
+          next if raw.nil? && !Axn::Reflection::Schema.usable_id_token_default?(sibling_config)
 
           value = action.public_send(sibling_config.reader_as)
           return value unless value.nil?
           # A PRESENT id this route resolves to nil is genuinely nil — don't fall through to another route.
-          return nil unless raw_id.nil?
+          return nil unless raw.nil?
         end
         nil
       end
@@ -403,19 +426,6 @@ module Axn
         return [own_route, default_route].compact.uniq if own_route || default_route
 
         [candidates.first].compact
-      end
-
-      # Whether the raw `<field>_id` wire key may be resolved by INVOKING it as a method off a PORO/Data
-      # parent, for the presence probe shared by the record lookup (_declared_id_token) and the consistency
-      # check (Executor#_consistency_id_for). The SIBLING `<field>_id` declaration governs reading the id key
-      # (the model config governs reading the RECORD), so a sibling that opted into `method_call:` permits the
-      # probe even when the model field did not — otherwise the probe raises MethodCallNotPermittedError before
-      # the sibling reader (which does permit the dispatch and transform) is ever consulted (PRO-2910). With no
-      # `<field>_id` declared, the caller's raw token is read with the model field's own flag.
-      def self.id_key_permits_method_call?(config, sibling_configs)
-        return config.method_call if sibling_configs.empty?
-
-        sibling_configs.any?(&:method_call)
       end
 
       module ClassMethods
