@@ -466,14 +466,14 @@ RSpec.describe Axn::Tools::Registry do
       expect(described_class.send(:_classes)).to include(class_b)
     end
 
-    it "retains an anonymous class in _classes (may be named later) while excluding it from the list" do
+    it "drops a transient anonymous class from _classes (never a usable tool) and excludes it from the list" do
       anon = Class.new { include Axn }
       described_class.register_class(anon)
 
       result = described_class.all_classes
 
       expect(result).not_to include(anon)
-      expect(described_class.send(:_classes)).to include(anon)
+      expect(described_class.send(:_classes)).not_to include(anon)
     ensure
       described_class.send(:_classes).delete(anon)
     end

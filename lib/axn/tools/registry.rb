@@ -27,20 +27,21 @@ module Axn
         _classes << klass
       end
 
-      # Only currently-defined, named classes: drops anonymous classes and stale references
-      # left behind by a Zeitwerk reload (the reloaded constant points at a fresh object).
-      # Iterates a snapshot (_classes.to_a) so a mid-enumeration registration can't corrupt the
-      # backing Set and so deleting from _classes while walking is safe. Definitively-stale NAMED
-      # entries (a non-empty name that no longer resolves to this very object) are deleted from
-      # _classes here, releasing the strong ref so a Rails reload can't pin dead classes forever.
-      # Anonymous entries are only excluded from the return value, never deleted: an anonymous class
-      # may still be assigned to a constant later and become live.
+      # Only currently-defined, named classes survive. Every entry that isn't _currently_defined? is
+      # deleted from _classes here, releasing its strong ref so a process-global Set can't pin dead
+      # classes forever. That covers both cases _currently_defined? rejects: a stale NAMED reference
+      # left by a Zeitwerk reload (the reloaded constant points at a fresh object), and a transient
+      # anonymous class (name nil) that never got a constant. An anonymous class can never be a usable
+      # tool anyway (no stable tool_name, no const_source_location for tool_path membership), and
+      # tools_for runs at adapter setup — well after class definition — so the "anonymous now, named
+      # later" window is effectively never open at enumeration. Iterates a snapshot (_classes.to_a) so
+      # a mid-enumeration registration can't corrupt the backing Set and deleting while walking is safe.
       def all_classes
         live = []
         _classes.to_a.each do |klass|
           if _currently_defined?(klass)
             live << klass
-          elsif (n = klass.name) && !n.empty?
+          else
             _classes.delete(klass)
           end
         end
