@@ -39,7 +39,7 @@ module Axn
         reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if reader_index.nil?
 
-        value = action.public_send(_reader_config(path.ancestors[reader_index].first).reader_as)
+        value = action.public_send(_deepest_reader_name(config, path, reader_index))
         (reader_index...path.parent_index).each do |i|
           # Every hop below the deepest reader is an IMPLICIT intermediate (a declared node bears a
           # reader, so it would be the reader public_sent above — never dig-crossed here). So the
@@ -64,6 +64,20 @@ module Axn
       # the node's first config; an implicit node has no configs and returns nil.
       def self._reader_config(node)
         node.configs.first
+      end
+
+      # The reader to public_send at the deepest reader-bearing ancestor. When that ancestor is the
+      # config's `on:` ANCHOR (the on: root's node), the reader is the one config.on names — which
+      # disambiguates a MERGED anchor node (two routes to one wire path, distinct readers via `as:`) so a
+      # descendant resolves through the route it actually anchored on, not the node's first-declared
+      # config. A deeper reused declared intermediate (e.g. a `model:` hop crossed by a dotted `on:`) is
+      # single-config in practice, so its own node reader is used. `anchor_index` is the on: root node's
+      # chain index (parent_index minus the dotted-`on:` segments below the anchor).
+      def self._deepest_reader_name(config, path, reader_index)
+        anchor_index = path.parent_index - (config.on.to_s.split(".").size - 1)
+        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
+
+        _reader_config(path.ancestors[reader_index].first).reader_as
       end
 
       # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the

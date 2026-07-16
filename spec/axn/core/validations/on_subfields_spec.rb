@@ -2279,5 +2279,24 @@ RSpec.describe Axn do
         end.to raise_error(ArgumentError, /conflicting default:.*payload\.thing\.company_id/m)
       end
     end
+
+    context "a descendant anchored on an aliased merged route resolves through THAT route (PRO-2926)" do
+      it "reads the leaf through the anchoring route's reader, honoring its default" do
+        # foo.bar.baz is a merged node: route1 (reader :baz) and route2 (reader :bar_baz, with a default).
+        # A descendant anchored `on: :bar_baz` must resolve its parent through route2's reader — seeing
+        # route2's default — not through the first-declared route's reader (which would read a different value).
+        action = build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash, optional: true, allow_nil: true
+          expects :baz, on: "foo.bar", type: Hash, optional: true, allow_nil: true
+          expects :baz, on: :bar, as: :bar_baz, type: Hash, optional: true, default: { note: "route2" }
+          expects :note, on: :bar_baz, optional: true, allow_nil: true
+          exposes :via_note, allow_nil: true
+          def call = expose(via_note: note)
+        end
+        # `bar` absent: route1 `:baz` resolves nil; route2 `:bar_baz` resolves its default {note: "route2"}.
+        expect(action.call(foo: { other: 1 }).via_note).to eq("route2")
+      end
+    end
   end
 end
