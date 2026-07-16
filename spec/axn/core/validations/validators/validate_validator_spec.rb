@@ -108,6 +108,30 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
   end
 
+  describe "misuse: a Hash without :with (e.g. ActiveModel validator keys)" do
+    it "raises at declaration (not at call time) with an actionable message" do
+      expect do
+        build_axn { expects :color, validate: { inclusion: { in: %w[red green blue] } } }
+      end.to raise_error(ArgumentError) do |e|
+        expect(e.message).to include("validate:")
+        expect(e.message).to include("with:")
+        expect(e.message).to include("inclusion") # names the keys actually given
+      end
+    end
+
+    it "still accepts the valid Hash form (with: present)" do
+      expect do
+        build_axn { expects :foo, validate: { with: ->(v) { "too small" unless v > 1 } } }
+      end.not_to raise_error
+    end
+
+    it "still accepts the bare-callable form" do
+      expect do
+        build_axn { expects :foo, validate: ->(v) { "too small" unless v > 1 } }
+      end.not_to raise_error
+    end
+  end
+
   describe "Axn::Internal::PipingError.piping_error integration" do
     let(:validator) { ->(_v) { raise ArgumentError, "fail message" } }
 
