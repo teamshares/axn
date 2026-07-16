@@ -743,20 +743,16 @@ module Axn
       raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
       return nil if raw.nil?
 
-      # Compare against the transformed id the finder path itself would use: the SAME priority-ordered
-      # sibling `<field>_id` routes (ContractForSubfields.sibling_id_configs — depth-agnostic, ambient-aware,
-      # own-`on:`-route first), resolved via the first that yields a non-nil value. A `<field>_id` with no
+      # Compare against exactly the id the finder path would look up: the SAME declared `<field>_id` token
+      # (ContractForSubfields._declared_id_token — depth-agnostic, ambient-aware, own-`on:`-route
+      # authoritative, absent-id-only fall-through to a credited default route). A `<field>_id` with no
       # declared config carries no transform, so the raw token is used; a declared id that resolves to nil
-      # (a present value its preprocess maps to nil, no default) yields nil — no conflict — matching the
-      # reader.
+      # (a present value its preprocess maps to nil, no own default) yields nil — no conflict — matching the
+      # reader and the record lookup.
       sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
       return raw if sibling_configs.empty?
 
-      sibling_configs.each do |id_config|
-        resolved = Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
-        return resolved unless resolved.nil?
-      end
-      nil
+      Axn::Core::ContractForSubfields._declared_id_token(@action, config, source, sibling_configs)
     end
 
     # The comparison core, source-agnostic: a provided record whose id disagrees with a provided

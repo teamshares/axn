@@ -280,46 +280,60 @@ module Axn
 
       # Resolve the model record from its `<field>_id` (a present RECORD is already handled by the caller).
       # When a sibling `<field>_id` is DECLARED, the lookup is routed through that id's read-path transform
-      # (its own reader), so the record resolves from the SAME value the `<field>_id` reader, its validation,
-      # and the model-consistency check (`Executor#_consistency_id_for`) all see — never the raw token
-      # (PRO-2910). When NO `<field>_id` is declared, the caller's RAW token is the lookup key (it carries no
-      # transform). The declared routes are read in priority order (sibling_id_configs), taking the FIRST that
-      # yields a non-nil value: a PRESENT id resolves through its own-route transform, an ABSENT id falls
-      # through to the credited default route (PRO-2889). A present id never picks up a default (resolve_value
-      # returns the transformed present value, not the default), so a present id that still fails after
-      # transform — or one its preprocess maps to nil — stays nil rather than being resolved from the raw
-      # token or another route's default.
+      # (its own reader) via _declared_id_token, so the record resolves from the SAME value the `<field>_id`
+      # reader, its validation, and the model-consistency check (`Executor#_consistency_id_for`) all see —
+      # never the raw token (PRO-2910). When NO `<field>_id` is declared, the caller's RAW token is the lookup
+      # key (it carries no transform).
       def self.resolve_model_via_id(action, config, options, parent)
         configs = sibling_id_configs(action, config)
         # No declared `<field>_id`: the caller's raw token is the lookup key (nothing to transform).
         return _model_from_raw_parent(config, options, parent) if configs.empty?
 
-        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        configs.each do |sibling_config|
-          sibling_value = action.public_send(sibling_config.reader_as)
-          next if sibling_value.nil?
+        token = _declared_id_token(action, config, parent, configs)
+        return nil if token.nil?
 
-          # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
-          return Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
-                                                   provided_data: { id_key => sibling_value })
+        # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
+                                          provided_data: { Axn::Internal::FieldConfig.model_id_key(config.field) => token })
+      end
+
+      # The effective transformed `<field>_id` token from the DECLARED sibling routes (`configs`, already the
+      # priority-ordered sibling_id_configs), shared by the record lookup and the consistency check so they can
+      # never disagree about which value a present record/lookup sees. Reads the routes in order via their own
+      # readers (resolve_value):
+      #   * the first route to yield a non-nil value wins (its coerce:/preprocess:/default: applied);
+      #   * the own/priority route is AUTHORITATIVE for a PRESENT id — a present wire id it resolves to nil (its
+      #     preprocess maps it to nil, no own default) is genuinely nil for this model, so we STOP rather than
+      #     re-reading the shared wire value through another route;
+      #   * ONLY an ABSENT raw id (`raw_id.nil?` — every merged route shares the one wire key) falls through to
+      #     the credited default route (the PRO-2889 omitted-id rescue).
+      # Returns nil when the priority routes yield no usable token. Callers separate the "no declared
+      # `<field>_id` at all" case via sibling_id_configs.empty? (there the caller's raw token is used).
+      def self._declared_id_token(action, config, parent, configs)
+        raw_id = Axn::Core::FieldResolvers.extract_or_nil(field: Axn::Internal::FieldConfig.model_id_key(config.field),
+                                                          provided_data: parent, permit_method_call: config.method_call)
+        configs.each do |sibling_config|
+          value = action.public_send(sibling_config.reader_as)
+          return value unless value.nil?
+          # A PRESENT id this route resolves to nil is genuinely nil — don't fall through to another route.
+          # Only an omitted (absent) id continues to the credited default route.
+          return nil unless raw_id.nil?
         end
         nil
       end
 
-      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order both the
-      # record lookup (resolve_model_via_id) and the consistency check (Executor#_consistency_id_for)
-      # consult — read in order, taking the first that yields a non-nil value — so the two can never disagree
-      # about which route's transformed id a present record/lookup sees. All routes of a merged id node read
-      # the SAME wire key, differing only in their coerce:/preprocess:/default:, so route choice is purely
-      # "which transform interprets that one wire value":
+      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
+      # reads them (for both the record lookup and the consistency check), so the two can never disagree about
+      # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
+      # wire key, differing only in their coerce:/preprocess:/default:, so route choice is purely "which
+      # transform interprets that one wire value":
       #   * the id declared beside THIS model on the SAME `on:` route is AUTHORITATIVE — its transform is this
-      #     model field's canonical id (the reader user code reads for it). When it exists, no other route is
-      #     consulted for a PRESENT value: a present token its preprocess maps to nil is genuinely nil for
-      #     this model, never silently re-read raw through an alternate route.
-      #   * the ONLY fall-through is to a route whose default the declaration credits as a usable token
-      #     (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate): an ABSENT id (every route's
-      #     shared wire value is nil) resolves via that credited default, even when it lives on a different
-      #     route than the model. PRO-2901 forbids two defaults on one node, so this is the node's one default.
+      #     model field's canonical id (the reader user code reads for it). A present token it maps to nil is
+      #     genuinely nil for this model (_declared_id_token stops there), never re-read through an alternate route.
+      #   * the ONLY fall-through (an ABSENT id) is to a route whose default the declaration credits as a usable
+      #     token (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate): the omitted-id rescue,
+      #     even when the default lives on a different route than the model. PRO-2901 forbids two defaults on one
+      #     node, so this is the node's one default.
       #   * with neither an own-route nor a defaulted route, the sole/first declared route supplies the token
       #     (a lone id declared on a route other than the model's).
       # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the

@@ -2140,6 +2140,63 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.cid).to be_nil
       end
+
+      it "does not fall through to another merged route when the own route maps a PRESENT id to nil" do
+        # Merged company_id node: the own route (on: :thing) preprocesses a present "none" to nil with NO
+        # default; a DIFFERENT route (dotted) carries a usable default 42. The own route is the model's
+        # canonical id (its reader is nil here), so the model must resolve nil — never fall through to the
+        # other route (which would re-read the shared wire value / its default). The credited default route
+        # rescues only an ABSENT id, not a present one the own route nils out.
+        tolerant = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("MergedNilCo", tolerant)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", optional: true, default: 42, as: :pt_company_id # other route: default
+          expects :company_id, on: :thing, optional: true, preprocess: ->(v) { v == "none" ? nil : v }, as: :t_company_id # own route
+          expects :company, on: :thing, model: { klass: MergedNilCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          exposes :own_reader, allow_nil: true
+          def call = expose(cid: company&.id, own_reader: t_company_id)
+        end
+
+        result = action.call(payload: { thing: { company_id: "none" } })
+
+        expect(result).to be_ok
+        expect(result.own_reader).to be_nil # the own route resolves the present "none" to nil
+        expect(result.cid).to be_nil        # the model agrees with the own route, not the other route's 42
+      end
+
+      it "still rescues an ABSENT merged id via a different route's credited default" do
+        # Same merged shape, but the id is OMITTED entirely: now the credited default route (42) legitimately
+        # rescues (the PRO-2889 omitted-id rescue), because the own route's nil is absence, not a nilled value.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("MergedAbsentCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, allow_blank: true
+          expects :company_id, on: "payload.thing", optional: true, default: 42, as: :pt_company_id
+          expects :company_id, on: :thing, optional: true, preprocess: ->(v) { v == "none" ? nil : v }, as: :t_company_id
+          expects :company, on: :thing, model: { klass: MergedAbsentCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: {} }) # id omitted entirely (parent present, id absent)
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(42) # the credited default route rescues the absent id
+      end
     end
 
     context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do
