@@ -329,6 +329,20 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
+    it "fails loudly on a malformed user_facing from a duck-typed raw member (not a literal message)" do
+      # A raw shape member that is a bare duck-typed object (not a ShapeConfig) never routes through
+      # the constructor grammar check; ShapeValidator validates its truthy user_facing when the member
+      # fails, so a bogus value raises rather than surfacing "123" to the caller.
+      bad = Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123)
+      action = build_axn do
+        expects :items, type: Array, shape: { members: [bad], container: Array }
+        def call = nil
+      end
+      result = action.call(items: [{ status: 1 }]) # member fails → user_facing read → grammar check raises
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
     it "rejects user_facing: on an exposes shape member (outbound failures are always dev-facing)" do
       expect do
         build_axn do
