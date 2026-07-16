@@ -2094,6 +2094,28 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.cid).to eq(5)
       end
+
+      it "prefers the id route declared BESIDE the model over a differently-transformed merged route" do
+        # A merged `company_id` node with two routes onto the same wire key: an earlier dotted route with
+        # NO coercion, and the route declared next to the model (on: :thing) that coerces to Integer.
+        # The finder must retry with the id from the model's OWN route (coerced 5), not declaration-order
+        # first (raw "5", which the strict finder misses).
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", as: :pt_company_id            # route A: raw, first
+          expects :company_id, on: :thing, coerce: Integer, as: :thing_company_id # route B: beside model
+          expects :company, on: :thing, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: { company_id: "5" } })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # route B coerced "5" → 5; route A's raw "5" would have missed
+      end
     end
 
     context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do

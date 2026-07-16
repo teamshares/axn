@@ -297,24 +297,39 @@ module Axn
           else
             path.parent_node.children[id_key.to_sym]&.configs || []
           end
-        # Prefer the config whose default the declaration credits as a usable lookup token
-        # (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate), so on an ABSENT id a merged
-        # id node resolves the route the credit relied on rather than a blank-default route declared first
-        # (a blank default is applied but blank-guarded by the resolver, supplying no token). When no
-        # candidate carries a usable default, the representative (first) config still supplies the
-        # transformed value of a PRESENT id — `resolve_value` returns the caller's transformed id, not a
-        # default, so the present-id retry works even for an id field with no default.
-        sibling_config = candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) } || candidates.first
-        return nil if sibling_config.nil?
 
-        # The sibling reads through its own reader (the canonical, memoized read path), so it applies the
-        # id field's coerce:/preprocess:/default: uniformly across depths — at depth 0 the top-level
-        # `<field>_id` reader routes through the read path too, so `public_send` behaves identically.
-        sibling_value = action.public_send(sibling_config.reader_as)
-        return nil if sibling_value.nil?
+        # Priority order for which sibling `<field>_id` route supplies the lookup token, when a merged id
+        # node carries several routes (distinct `on:` spellings onto one wire key, each with its own
+        # coerce:/preprocess:/default:):
+        #   1. the id declared beside THIS model on the SAME `on:` route — its transform is this model
+        #      field's canonical id (the reader user code reads for it);
+        #   2. a route whose default the declaration credits as a usable token (Schema.usable_id_token_default?
+        #      — sibling_id_rescued?'s predicate), so an ABSENT id falls back to the credited default even
+        #      when it lives on a different route than the model, and never onto a blank-default route;
+        #   3. declaration-order first, so a lone untransformed/undefaulted id still supplies a present token.
+        # Read them in that order and take the FIRST that yields a non-nil token: a PRESENT id resolves
+        # through its own-route transform (1), while an OMITTED id (own route yields nil) falls through to
+        # the credited default route (2). A present id never picks up a default (resolve_value returns the
+        # transformed present value, not the default), so a present id that still fails after transform
+        # stays nil rather than being overridden by another route's default.
+        ordered = [
+          candidates.find { |c| c.on.to_s == config.on.to_s },
+          candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) },
+          candidates.first,
+        ].compact.uniq
 
-        # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
-        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => sibling_value })
+        ordered.each do |sibling_config|
+          # The sibling reads through its own reader (the canonical, memoized read path), so it applies the
+          # id field's coerce:/preprocess:/default: uniformly across depths — at depth 0 the top-level
+          # `<field>_id` reader routes through the read path too, so `public_send` behaves identically.
+          sibling_value = action.public_send(sibling_config.reader_as)
+          next if sibling_value.nil?
+
+          # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
+          return Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
+                                                   provided_data: { id_key => sibling_value })
+        end
+        nil
       end
 
       module ClassMethods
