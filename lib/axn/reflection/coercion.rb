@@ -7,8 +7,9 @@ module Axn
   module Reflection
     # Inbound wire DECODER — the parse-based inverse of Values.serialize_value, keyed off the same
     # class set so encoder and decoder can't drift. The single home for the wire→Ruby mapping: the
-    # `coerce:` DSL (per-field, at runtime via Executor#apply_inbound_coercion!) and adapters (bulk,
-    # by walking configs) both call this rather than reinventing it. Read-only, off the execution path.
+    # `coerce:` DSL (per-field, at runtime via ContractForSubfields.resolve_value's read-path
+    # transforms) and adapters (bulk, by walking configs) both call this rather than reinventing it.
+    # Read-only, off the execution path.
     module Coercion
       module_function
 
@@ -141,16 +142,16 @@ module Axn
       end
 
       # Whether a field coerces this run: its own `coerce:` tri-state wins (explicit true/false), else the
-      # resolved coerce_input_types flag. Single-sourced so the write-back pass and the read path
-      # (ContractForSubfields.resolve_value) decide identically.
+      # resolved coerce_input_types flag. Single-sourced so every read-path resolution
+      # (ContractForSubfields.resolve_value, top-level or subfield) decides identically.
       def field_coerces?(type_opt, coerce_input_types)
         explicit = type_opt.is_a?(Hash) ? type_opt[:coerce] : nil
         explicit.nil? ? coerce_input_types : explicit
       end
 
       # Coerce a config's value when the field has ≥1 coercible member AND opts in (field_coerces?);
-      # otherwise return it untouched. The one place both the write-back coercion pass and the read path
-      # decide-and-coerce, so they can't drift.
+      # otherwise return it untouched. THE single place the read path decides-and-coerces, for every
+      # field regardless of depth.
       def coerce_config_value(value, config, coerce_input_types:)
         type_opt = config.validations[:type]
         klasses = coercible_klasses(type_opt)

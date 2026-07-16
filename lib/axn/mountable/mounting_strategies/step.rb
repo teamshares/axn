@@ -117,7 +117,17 @@ module Axn
               axn = step_descriptor.mounted_axn_for(target: self.class)
               error_prefix = options[:error_prefix] || "#{step_descriptor.name}: "
 
-              step_result = axn.call(**@__context.__combined_data)
+              # A field this parent declares is forwarded solely via `inputs` (resolved:
+              # default:/preprocess:/coerce: applied, models resolved) -- never via the raw
+              # provided_data value, which may be the un-normalized caller input (e.g. a blank
+              # string a preprocess: normalizes to nil). `inputs` omits nil-resolved keys so a child
+              # step applies its own absent/default handling for them, so we exclude the parent's
+              # declared inbound fields from the raw passthrough rather than letting the raw splat
+              # re-leak them. Undeclared caller fields (a field the caller passed that this parent
+              # doesn't declare but a child step does) still pass through raw; exposed_data wins
+              # last, matching __combined_data's prior exposure-over-input precedence.
+              passthrough = @__context.provided_data.except(*self.class._declared_fields(:inbound))
+              step_result = axn.call(**passthrough, **inputs, **@__context.exposed_data)
 
               unless step_result.ok?
                 # Propagate the step's outcome *category*, not a flattened failure: a deliberate fail!

@@ -23,9 +23,10 @@ RSpec.describe "#inputs reader" do
   end
 
   it "forwards a preprocess result for an omitted optional, but omits one that resolves to nil" do
-    # apply_inbound_preprocessing! runs preprocess on the omitted field's nil and writes the result
-    # back into provided_data. A non-nil result (here "") is a real resolved value the reader sees,
-    # so it forwards; a nil result must NOT forward as `field: nil` (it would clobber a child's default).
+    # The reader resolves preprocess against the omitted field's nil on the read path
+    # (ContractForSubfields.resolve_value); `#inputs` reads through internal_context, so it sees that
+    # resolved value. A non-nil result (here "") is a real resolved value, so it forwards; a nil result
+    # must NOT forward as `field: nil` (it would clobber a child's default).
     action = build_axn do
       expects :role, optional: true, preprocess: ->(v) { v.to_s.strip } # nil -> ""
       expects :note, optional: true, preprocess: ->(v) { v&.strip }     # nil -> nil

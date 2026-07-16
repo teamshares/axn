@@ -46,16 +46,14 @@ module Axn
 
     # Best-effort inbound preparation for OUT-OF-BAND facet resolution — the async exhaustion/discard
     # report path (Axn::Async::ExceptionReporting), where an action is reconstructed from job args and
-    # never executed. Applies the same inbound coercion, preprocessing, and defaults a normal `.call`
-    # would (in that order), so a facet reading a coerced/defaulted/preprocessed input resolves the
-    # value the worker saw rather than the raw constructor value. Deliberately does NOT validate (a
-    # report on already-dead work must never raise) and does NOT run the action; model: readers still
-    # resolve lazily on read. Any failure is swallowed — a partially-prepared instance still yields
-    # more facets than a bare one.
+    # never executed. Top-level and subfield coerce/preprocess/default now resolve lazily on the read
+    # path (ContractForSubfields.resolve_value), so a facet reading a coerced/defaulted/preprocessed
+    # input resolves the value the worker would see with no eager pass — the same lazy behavior model:
+    # readers already relied on here. This just clears any pre-pipeline memo so those reads resolve
+    # against the settled inputs. Deliberately does NOT validate (a report on already-dead work must
+    # never raise) and does NOT run the action. Any failure is swallowed — a partially-prepared
+    # instance still yields more facets than a bare one.
     def prepare_inbound_for_facets!
-      apply_inbound_coercion!
-      apply_inbound_preprocessing!
-      apply_defaults!(:inbound)
       _clear_pre_pipeline_memos!
     rescue StandardError => e
       Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
@@ -74,10 +72,16 @@ module Axn
     # both a tag and a dimension yields two facets rather than one clobbering the other. `sources`
     # is a subset of %i[tag dimension]. See PRO-2855.
     def resolve_inbound_facets(sources)
+      # Resolve readers in raw mode (ContractForSubfields.resolve_value): a facet reading an input sees the
+      # raw serialized value, not the coerced/preprocessed/defaulted run-time value, so it stays in lockstep
+      # with the payload the worker receives and a dynamic hook is not run at enqueue.
+      @action.instance_variable_set(:@__resolve_raw_reads, true)
       maps = []
       maps << resolved_input_tags if sources.include?(:tag)
       maps << resolved_input_dimensions if sources.include?(:dimension)
       maps
+    ensure
+      @action.remove_instance_variable(:@__resolve_raw_reads) if @action.instance_variable_defined?(:@__resolve_raw_reads)
     end
 
     private
@@ -369,23 +373,18 @@ module Axn
     # =========================================================================
 
     def with_contract(&block)
-      apply_inbound_coercion!
-      return if handle_early_completion_if_raised { apply_inbound_preprocessing! }
-      return if handle_early_completion_if_raised { apply_defaults!(:inbound) }
-
-      # An early read — a hook/preprocess touching a subfield reader (which may consult a dotted
-      # sibling's value-level default via resolve_model_via_sibling_id) — can populate both
-      # ContractForSubfields' @__resolve_value_cache AND the reader's own memo before
-      # coercion/preprocess/defaults have settled. The settled pipeline is the authoritative input
-      # state, so discard any pre-pipeline cache: the validation-time reads below then resolve against
-      # the settled wire values.
+      # A pre-pipeline read — a hook/preprocess touching a reader (which may consult a sibling's
+      # value-level default via resolve_model_via_sibling_id) — can populate both
+      # ContractForSubfields' @__resolve_value_cache AND a reader's own memo before inbound validation
+      # runs. The settled inputs are the authoritative state, so discard any pre-pipeline cache: the
+      # validation-time reads below then resolve against the settled wire values.
       _clear_pre_pipeline_memos!
 
-      # Subfield coerce:/preprocess:/default: resolve lazily on the read path (ContractForSubfields
-      # .resolve_value), first triggered as inbound validation reads each subfield reader — not in the
-      # write-back passes above (which are top-level-only). A `done!` raised inside a subfield
-      # preprocess/default therefore surfaces here, during validation, so this read is wrapped to settle
-      # the early completion the same way the top-level passes above do.
+      # Top-level and subfield coerce:/preprocess:/default: resolve lazily on the read path
+      # (ContractForSubfields.resolve_value), first triggered as inbound validation reads each reader —
+      # never eagerly written back into provided_data. A `done!` raised inside a preprocess/default
+      # therefore surfaces here, during validation, so this read is wrapped to settle the early
+      # completion.
       return if handle_early_completion_if_raised { validate_contract!(:inbound) }
 
       # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
@@ -396,8 +395,13 @@ module Axn
         return
       end
 
-      apply_defaults!(:outbound)
-      validate_contract!(:outbound)
+      # The outbound copy-forward reads expects+exposes fields through the read path, which can be the
+      # first time a field's default:/preprocess: runs; a done! raised there settles the same early
+      # completion as one raised during validation or the body, rather than escaping .call.
+      return if handle_early_completion_if_raised do
+        apply_defaults!(:outbound)
+        validate_contract!(:outbound)
+      end
 
       @context.__finalize!
       trigger_on_success
@@ -429,31 +433,12 @@ module Axn
       true
     end
 
-    # Wire→Ruby coercion for declared-inbound TOP-LEVEL fields, for those that opted in via `coerce:` (a
-    # `coerce: true` flag inside the type bag) OR — when the action resolves `coerce_input_types` on —
-    # every coercible-typed field that didn't opt out (see Axn::Reflection::Coercion.field_coerces?). Runs first in the
-    # inbound pipeline — before any user preprocess:, defaults, and validation — so downstream stages
-    # see the Ruby value. Subfield coercion resolves on the read path (ContractForSubfields.resolve_value),
-    # not here. Coerce-or-leave (Axn::Reflection::Coercion): only String values are transformed, an
-    # unparseable string passes through to the normal TypeValidator error, and a present real object is
-    # untouched — so an absent/nil value never writes back and coercion never materializes anything.
-    def apply_inbound_coercion!
-      coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
-
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless (path = _resolved_path_for(config))
-
-        current = _current_value_at(path)
-        coerced = Axn::Reflection::Coercion.coerce_config_value(current, config, coerce_input_types:)
-        _write_value_at!(path, coerced) unless coerced.equal?(current)
-      end
-    end
-
     # With coerce_input_types resolved on, surface `coerce: true` in the type bag for a coercible field
     # that didn't set `coerce:` explicitly, so TypeValidator emits the "could not be coerced" message on
     # a parse failure exactly as for an explicit `coerce:` field. Message-only — the coercion itself
-    # already ran in apply_inbound_coercion!; this returns a copy and never mutates the shared config.
-    # A field with an explicit coerce flag (true or false) is left as-is, so field-level intent wins.
+    # resolves on the read path (ContractForSubfields.resolve_value); this returns a copy and never
+    # mutates the shared config. A field with an explicit coerce flag (true or false) is left as-is,
+    # so field-level intent wins.
     def _with_effective_coerce(field_validations)
       type_opt = field_validations[:type]
       return field_validations if type_opt.nil?
@@ -462,20 +447,6 @@ module Axn
 
       type_hash = type_opt.is_a?(Hash) ? type_opt : { klass: type_opt }
       field_validations.merge(type: type_hash.merge(coerce: true))
-    end
-
-    # Preprocessing for declared-inbound TOP-LEVEL fields (a top-level field is its own root, so its
-    # result always writes). Subfield preprocess resolves on the read path
-    # (ContractForSubfields.resolve_value), where it applies to the resolved value without touching the
-    # parent — a subfield preprocess never synthesizes or mutates its parent.
-    def apply_inbound_preprocessing!
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless config.preprocess
-        next unless (path = _resolved_path_for(config))
-
-        current_value = _current_value_at(path)
-        _write_value_at!(path, Internal::FieldConfig.resolve_preprocess(@action, config, current_value))
-      end
     end
 
     def validate_contract!(direction)
@@ -555,7 +526,8 @@ module Axn
     # PRO-2857 semantics). Purely diagnostic: names which nested hop stranded the failing check, so
     # a "Note can't be blank" three levels deep doesn't send the caller hunting.
     def _stranded_ancestor_path(path, config)
-      value = @context.provided_data[path.wire_path.first]
+      root_config = @action_class.send(:internal_field_configs).find { |c| c.field == path.wire_path.first }
+      value = root_config ? Axn::Core::ContractForSubfields.resolve_value(@action, root_config) : @context.provided_data[path.wire_path.first]
       return nil if value.nil?
 
       path.wire_path[1..-2].each_with_index do |seg, i|
@@ -675,13 +647,20 @@ module Axn
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
-    # that disagree. Operates purely on raw provided data (no resolution), so it never triggers a
-    # lookup. Skipped for custom finders, where `<field>_id` holds a finder-specific token rather than
-    # a primary key and a record-vs-id comparison would be meaningless. Mismatches are structurally
-    # dev-facing, aggregated into the settled exception's errors on :base (base messages render
-    # verbatim — each mismatch carries its own field prefix). Subfield checks are causally suppressed
-    # like subfield validation: a failed ancestor means this chain's data is already known-bad, so a
-    # consistency mismatch under it is stranding noise.
+    # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
+    # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
+    # `default:` participates only via resolve_model_via_sibling_id (which fires only when both record
+    # and raw id are absent). The top-level `<field>_id` is compared against the CALLER-SUPPLIED token
+    # with the declared field's own coerce:/preprocess: applied (never its default — see
+    # _consistency_id_for), so the check agrees with what the reader itself sees; a default-only id (the
+    # caller supplied nothing) resolves to nil here and never fabricates a conflict. The subfield branch
+    # still reads both record and id raw off the resolved parent — unchanged, pre-existing. Skipped for
+    # custom finders, where `<field>_id` holds a finder-specific token rather than a primary key and a
+    # record-vs-id comparison would be meaningless. Mismatches are structurally dev-facing, aggregated
+    # into the settled exception's errors on :base (base messages render verbatim — each mismatch
+    # carries its own field prefix). Subfield checks are causally suppressed like subfield validation: a
+    # failed ancestor means this chain's data is already known-bad, so a consistency mismatch under it
+    # is stranding noise.
     def _model_consistency_mismatches(failed_nodes)
       mismatches = []
 
@@ -689,7 +668,10 @@ module Axn
         next unless _id_based_model?(config)
         next if _model_gate_closed?(config) { @action.internal_context }
 
-        msg = _model_record_id_mismatch(source: @context.provided_data, field: config.field, permit_method_call: config.method_call)
+        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: @context.provided_data,
+                                                     permit_method_call: config.method_call)
+        raw_id = _consistency_id_for(config)
+        msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
       end
 
@@ -698,7 +680,11 @@ module Axn
         next if (path = _resolved_path_for(config)) && _suppressed_by_failed_ancestor?(path, failed_nodes)
         next if _model_gate_closed?(config) { _resolved_parent_value(config) }
 
-        msg = _model_record_id_mismatch(source: _resolved_parent_value(config), field: config.field, permit_method_call: config.method_call)
+        source = _resolved_parent_value(config)
+        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: source, permit_method_call: config.method_call)
+        raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(config.field),
+                                                     provided_data: source, permit_method_call: config.method_call)
+        msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
       end
 
@@ -739,12 +725,41 @@ module Axn
       model.is_a?(Hash) && model[:finder] == :find
     end
 
-    def _model_record_id_mismatch(source:, field:, permit_method_call: false)
-      return nil if source.nil?
+    # The <field>_id to check top-level model consistency against: nil unless the caller actually
+    # supplied the id (a default-only id must not fabricate a conflict with a present record — the
+    # record is authoritative), and otherwise the caller-supplied token with the declared <field>_id's
+    # coerce:/preprocess: applied — via ContractForSubfields._apply_read_path_transforms, the transform
+    # seam WITHOUT its default: fallback and WITHOUT the resolve-value cache (this is a comparison-only
+    # read, not a materializing one) — so the check agrees with what the reader itself sees. Using
+    # resolve_value here would be wrong: it substitutes the field's default: whenever the transformed
+    # value comes back nil, so a caller-supplied id that preprocesses to nil (e.g. blank-to-nil) would
+    # silently pick up a default and fabricate a conflict with a present record — a default is axn's
+    # synthetic fallback, never a caller-supplied id, and must never enter this comparison. A <field>_id
+    # with no declared field carries no transform, so the raw token is used directly.
+    def _consistency_id_for(config)
+      id_key = Internal::FieldConfig.model_id_key(config.field)
+      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: @context.provided_data,
+                                                permit_method_call: config.method_call)
+      return nil if raw.nil?
 
-      record = Core::FieldResolvers.extract_or_nil(field:, provided_data: source, permit_method_call:)
-      raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(field), provided_data: source,
-                                                   permit_method_call:)
+      id_config = @action_class.send(:internal_field_configs).find { |c| c.field == id_key }
+      return raw unless id_config
+
+      # Reuse the declared `<field>_id` field's CACHED reader value (resolve_value) rather than
+      # re-transforming: a stateful/side-effecting preprocess must run at most once per call (validation
+      # and the id reader already resolved it), and the consistency check then compares exactly what the
+      # reader saw. The `raw`-nil guard above already exempts a caller-OMITTED (default-only) id from
+      # fabricating a conflict with a present record (present-record authority); a caller-SUPPLIED id is
+      # compared as its own resolved value.
+      Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
+    end
+
+    # The comparison core, source-agnostic: a provided record whose id disagrees with a provided
+    # `<field>_id` is a contradiction. A nil/blank id, an absent record, or a record without `.id` is
+    # no conflict. Callers supply the record and the (resolved) id from the appropriate source
+    # (top-level: the caller-supplied token with its declared transform applied, never a default — see
+    # _consistency_id_for; subfield: raw off the resolved parent).
+    def _record_id_mismatch(field:, record:, raw_id:)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)
       return nil if record.id.to_s == raw_id.to_s
@@ -753,59 +768,27 @@ module Axn
     end
 
     def apply_defaults!(direction)
-      raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
-
-      return apply_inbound_defaults! if direction == :inbound
+      raise ArgumentError, "Invalid direction: #{direction} (outbound-only)" unless direction == :outbound
 
       @action_class.send(:external_field_configs).each do |config|
         field = config.field
-        # Copy an unexposed inbound value forward before considering the default, so a provided
-        # value wins over a declared default.
-        @context.exposed_data[field] = @context.provided_data[field] if !@context.exposed_data.key?(field) && @context.provided_data.key?(field)
+        # Copy an unexposed inbound value forward before considering the default, so a provided value
+        # wins over a declared default. A field that is both `expects` and `exposes` is read through
+        # internal_context, so the RESOLVED inbound value (coerce/preprocess/default applied on the
+        # read path) is forwarded. A pure-`exposes` field has no inbound reader, but the caller may
+        # still have supplied its wire key directly, so it copies the raw provided_data value.
+        unless @context.exposed_data.key?(field)
+          if @action_class.send(:internal_field_configs).any? { |c| c.field == field }
+            @context.exposed_data[field] = @action.internal_context.public_send(field)
+          elsif @context.provided_data.key?(field)
+            @context.exposed_data[field] = @context.provided_data[field]
+          end
+        end
 
         next if config.default.nil?
         next if @context.exposed_data.key?(field) && !@context.exposed_data[field].nil?
 
         @context.exposed_data[field] = _resolve_default(config)
-      end
-    end
-
-    # Defaults for declared-inbound TOP-LEVEL fields: the default value itself becomes the root value
-    # when the current value is nil/absent, matching key-absence semantics. Subfield defaults resolve
-    # on the read path (ContractForSubfields.resolve_value) as value-level defaults (PRO-2889), where
-    # they never materialize or mutate the parent.
-    def apply_inbound_defaults!
-      @action_class.send(:internal_field_configs).each do |config|
-        next unless config.applied_default?
-        next unless (path = _resolved_path_for(config))
-        next unless _current_value_at(path).nil?
-        next if _id_default_would_conflict_with_present_record?(path)
-
-        _write_value_at!(path, _resolve_default(config))
-      end
-    end
-
-    # Whether writing this config's `<field>_id` default would fabricate a model-consistency mismatch.
-    # When a sibling model route's RECORD is already present in the wire data, the caller's record is
-    # authoritative and the id default (a lookup TOKEN for the absent-record case) must not be
-    # written — otherwise _model_consistency_mismatches compares the present record against axn's own
-    # injected id and raises. Mirrors "a present value is never overridden". Works at depth (sibling =
-    # the id's own wire parent) and top level (sibling = another top-level field).
-    def _id_default_would_conflict_with_present_record?(path)
-      model_config = _sibling_model_route_for_id(path)
-      return false unless model_config
-      return false unless (model_path = _resolved_path_for(model_config))
-
-      !_current_value_at(model_path).nil?
-    end
-
-    # The sibling top-level `model:` route whose companion `<field>_id` this path is — matched by
-    # model_id_key on the field — or nil. Guards a top-level `<field>_id` default from being written
-    # when the sibling record is already present (a fabricated consistency mismatch).
-    def _sibling_model_route_for_id(path)
-      id_key = path.wire_path.last
-      @action_class.send(:internal_field_configs).find do |c|
-        c.validations[:model] && Internal::FieldConfig.model_id_key(c.field) == id_key
       end
     end
 
@@ -877,13 +860,12 @@ module Axn
     # =========================================================================
     # RESOLVED-PATH HELPERS
     # =========================================================================
-    # The inbound passes are driven by each config's ResolvedPath from the per-class cached
+    # Inbound validation is driven by each config's ResolvedPath from the per-class cached
     # SubfieldTree: the tree already translated `on:` reader aliases and dotted segments into the
     # full provided_data wire path once, at build. A top-level field is the depth-0 case
-    # (wire_path == [field], no ancestors), so one pass covers both stores.
+    # (wire_path == [field], no ancestors), so one collector covers both stores.
 
-    # Both stores in declaration order, top-level first — the order the formerly-separate
-    # top-level/subfield passes always ran in.
+    # Both stores in declaration order, top-level first — the order inbound validation collects in.
     def _inbound_configs
       @action_class.send(:internal_field_configs) + @action_class.send(:subfield_configs)
     end
@@ -892,22 +874,22 @@ module Axn
       @action_class._resolved_subfields.index[config]
     end
 
-    # Drop the per-instance caches an early pre-pipeline read may have populated before
-    # coercion/preprocess/defaults settled: ContractForSubfields' value-level-default cache
+    # Drop the per-instance caches an early pre-pipeline read (a hook/preprocess touching a reader
+    # before inbound validation runs) may have populated: ContractForSubfields' value-level cache
     # (@__resolve_value_cache, see resolve_value) AND each SUBFIELD reader's memoized value
-    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called once the
-    # inbound pipeline has settled — the settled wire values are authoritative. Without this, a
-    # preprocess/default Proc that reads a subfield reader before its parent is rewritten caches the
-    # pre-rewrite value, and validation (which public_sends the reader — see Validation::Fields) then
-    # sees stale input, so invalid data passes. Same accepted trade as the resolve_value clear: a Proc
-    # default read early and re-read post-clear runs twice.
+    # (@_memoized_reader_<reader_as>, see Memoization.define_memoized_reader_method). Called at the top
+    # of with_contract — the settled inputs are authoritative. Without this, a preprocess/default Proc
+    # that reads a reader early caches a value against pre-pipeline state, and validation (which
+    # public_sends the reader — see Validation::Fields) then sees stale input, so invalid data passes.
+    # Same accepted trade as the resolve_value clear: a Proc default read early and re-read post-clear
+    # runs twice.
     #
-    # One ivar per subfield config covers every flavor: the plain reader, and the model RECORD reader
-    # (whose stale memo would otherwise pin a record resolved from the old id). The model `<field>_id`
-    # reader is an unmemoized define_method (nothing to clear), and the boolean `?` predicate is an
-    # alias of the primary reader (sharing its ivar), so neither needs its own clear. Top-level reader
-    # memos are deliberately NOT cleared: a top-level model record would re-run its finder — pre-existing
-    # behavior, out of scope here.
+    # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
+    # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
+    # The model `<field>_id` reader is an unmemoized define_method (nothing to clear), and the boolean
+    # `?` predicate is an alias of the primary reader (sharing its ivar), so neither needs its own clear.
+    # Top-level reader memos live on the facade singleton, not the action instance, so they are not
+    # cleared here: a top-level model record would re-run its finder — pre-existing behavior.
     def _clear_pre_pipeline_memos!
       @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
 
@@ -917,29 +899,19 @@ module Axn
       end
     end
 
-    # The current inbound value at a top-level field (depth 0): the root wire key's value.
-    def _current_value_at(path)
-      @context.provided_data[path.wire_path.first]
-    end
-
     # The parent value a subfield validates against, resolved once per distinct `on:` target per
     # call — canonically, through the deepest reader-bearing ancestor (see
     # ContractForSubfields.resolve_parent), so both spellings of the same wire path share one
-    # resolution. Only populated during the inbound-validation phase, after every provided_data
-    # mutation (coercion/preprocess/defaults) has already run. Keyed by `method_call:` as well as the
-    # `on:` target: resolving an implicit method hop now depends on the resolving config's dispatch
-    # opt-in (PRO-2926), so two siblings under one `on:` that disagree on `method_call:` must each
-    # resolve per their own flag — the non-opted-in one raising its own gate regardless of order —
-    # rather than one reusing the other's dispatched (or refused) result.
+    # resolution. The parent itself is resolved on the read path (coerce/preprocess/default applied
+    # without mutating provided_data), so this observes the same values the readers do. Keyed by
+    # `method_call:` as well as the `on:` target: resolving an implicit method hop depends on the
+    # resolving config's dispatch opt-in (PRO-2926), so two siblings under one `on:` that disagree on
+    # `method_call:` must each resolve per their own flag — the non-opted-in one raising its own gate
+    # regardless of order — rather than one reusing the other's dispatched (or refused) result.
     def _resolved_parent_value(config)
       memo = (@_resolved_parent_values ||= {})
       key = [config.on.to_s, config.method_call]
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
-    end
-
-    # A top-level field (depth 0): the value IS the root key — assign directly (key-materializing).
-    def _write_value_at!(path, new_value)
-      @context.provided_data[path.wire_path.first] = new_value
     end
   end
 end

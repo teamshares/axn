@@ -905,7 +905,15 @@ module Axn
         def _define_model_id_reader(reader, source_field, model_options)
           by_primary_key = model_options.is_a?(Hash) && model_options[:finder] == :find
           _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
-            @__context.provided_data[id_key]
+            # The `<field>_id` token: reuse a DECLARED `<field>_id` field's CACHED reader value
+            # (resolve_value) so this companion agrees with that field's own reader, validation, and the
+            # model-consistency check, and a stateful preprocess runs at most once per call. An undeclared
+            # id is the caller's raw token. A caller-OMITTED id resolves nil here (present-record
+            # authority) and falls through to the resolved record's own id.
+            id_config = self.class.internal_field_configs.find { |c| c.field == id_key }
+            next @__context.provided_data[id_key] unless id_config
+
+            @__context.provided_data[id_key].nil? ? nil : Axn::Core::ContractForSubfields.resolve_value(self, id_config)
           end
         end
 

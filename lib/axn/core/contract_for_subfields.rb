@@ -36,6 +36,11 @@ module Axn
         path = action.class._resolved_subfields.index[config]
         return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if path.nil?
 
+        # A top-level field is the depth-0 case: its parent IS the raw provided_data hash (no ancestor
+        # chain to walk). Reading its leaf from here applies coerce/preprocess/default on the read path
+        # without ever writing back — the same non-materializing model the deeper subfields use.
+        return action.instance_variable_get(:@__context).provided_data if path.ancestors.empty?
+
         reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if reader_index.nil?
 
@@ -93,10 +98,10 @@ module Axn
 
       # THE subfield value read — readers and validation share it: leaf-extract from the canonically
       # resolved parent, then value-level default fallback (PRO-2889). A declared default: guarantees
-      # the RESOLVED value is never nil-by-omission even when the wire write-back couldn't apply it (a
-      # refused chain under a model:/non-object parent, a parent record whose attribute is nil, a
-      # malformed parent). No wire data is written here and the parent's own value stays untouched, so
-      # a nil-tolerant parent remains genuinely nil.
+      # the RESOLVED value is never nil-by-omission even when the parent itself can't supply one (a
+      # model:/non-object parent, a parent record whose attribute is nil, a malformed parent — none of
+      # which axn can synthesize a value into). No wire data is written here and the parent's own value
+      # stays untouched, so a nil-tolerant parent remains genuinely nil.
       def self.resolve_value(action, config)
         # Memoize on the action INSTANCE, keyed by config identity — mirrors the reader memoization
         # that already covers configs WITH a generated reader, extending it to the reader-less callers
@@ -113,25 +118,153 @@ module Axn
         return cache[config] if cache.key?(config)
 
         parent = resolve_parent(action, config)
-        value = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
-                                                         permit_method_call: config.method_call)
-        # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
-        # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
-        # value stays untouched, so axn never mutates a caller-supplied object during resolution.
-        value = _apply_read_path_transforms(action, config, value, parent)
-        value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
+        raw = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
+                                                       permit_method_call: config.method_call)
+
+        # Enqueue-time facet resolution wants the raw serialized value: no coerce/preprocess/default, so a
+        # dynamic hook runs once at perform rather than also drifting/double-executing at enqueue.
+        return raw if _raw_reads?(action)
+
+        in_progress = _resolve_in_progress_set(action)
+        # A field's value can't be defined in terms of its own transformed result: a re-entrant read of the
+        # SAME config (its preprocess/default reading a subfield whose parent is this very field) returns the
+        # pre-transform extract and breaks the cycle.
+        return raw if in_progress[config]
+
+        # A read taken while ANOTHER field is mid-transform is provisional — it resolves against a parent
+        # that hasn't settled yet, so it is returned uncached and its reader memo is dropped once the outer
+        # field settles, so a later read re-resolves against the now-settled parent.
+        nested = !in_progress.empty?
+        _mark_provisional_reader(action, config) if nested
+        in_progress[config] = true
+        begin
+          # coerce:/preprocess:/default: all resolve here, on the read path (non-materializing, value-level
+          # — the model PRO-2889 established for subfield defaults). No wire write-back and the parent's own
+          # value stays untouched, so axn never mutates a caller-supplied object during resolution.
+          value = _apply_read_path_transforms(action, config, raw, parent)
+          value = Axn::Internal::FieldConfig.resolve_default(action, config) if value.nil? && config.applied_default?
+        ensure
+          in_progress.delete(config)
+        end
+        return value if nested
+
         cache[config] = value
+        _drop_provisional_reader_memos(action)
+        value
       end
 
-      # coerce → preprocess, applied to a resolved subfield value on the read path (the top-level pass
-      # order, minus default: which the caller applies after). Preprocess is skipped when the parent is
-      # absent (nil): an absent subfield has no value to transform, matching the write-back's
-      # drop-on-nil-parent. coerce_value no-ops on a nil/non-String value, so coercion needs no guard.
+      # The per-action set of configs whose read-path resolution is mid-flight (compare_by_identity). Shared
+      # by resolve_value and resolve_model_value so a value can't be defined in terms of its own transform or
+      # default: a re-entrant read of the same config returns its pre-default value, breaking the cycle. A
+      # non-empty set also means "some field is mid-resolution", so a read taken now is provisional.
+      def self._resolve_in_progress_set(action)
+        if action.instance_variable_defined?(:@__resolve_in_progress)
+          action.instance_variable_get(:@__resolve_in_progress)
+        else
+          action.instance_variable_set(:@__resolve_in_progress, {}.compare_by_identity)
+        end
+      end
+
+      # Raw-read mode: enqueue-time facet resolution (Executor#resolve_inbound_facets) sets this so readers
+      # return the raw serialized value instead of the transformed run-time value.
+      def self._raw_reads?(action)
+        action.instance_variable_defined?(:@__resolve_raw_reads) && action.instance_variable_get(:@__resolve_raw_reads)
+      end
+
+      # The [receiver, memo-ivar] where a config's reader memoizes — the single mirror of the
+      # define_memoized_reader_method call sites. A subfield reader memoizes on the action under its
+      # reader_as (ContractForSubfields#_define_subfield_reader/_define_subfield_model_reader); a top-level
+      # model reader memoizes on the InternalContext facade under its WIRE field name (the facade method is
+      # keyed by config.field — see InternalContext#_define_reader_for and _declared_fields). A top-level
+      # plain reader isn't memoized, so its (facade, field) ivar simply never exists — dropping it is a no-op.
+      def self._reader_memo_ref(action, config)
+        if config.subfield?
+          [action, :"@_memoized_reader_#{config.reader_as}"]
+        else
+          [action.internal_context, :"@_memoized_reader_#{config.field}"]
+        end
+      end
+
+      # A reader read while another field was mid-resolution memoized a provisional value (its parent
+      # hadn't settled). Record the memo's [receiver, ivar] (via _reader_memo_ref, the single source of
+      # truth for where a config's reader memoizes) so the outermost (settling) resolve can drop it,
+      # forcing a fresh read against the settled parent — the lazy equivalent of the pipeline-boundary
+      # memo clear. A top-level plain reader isn't memoized at all, so recording it is a harmless no-op
+      # (there's no ivar to ever find set).
+      def self._mark_provisional_reader(action, config)
+        set = if action.instance_variable_defined?(:@__provisional_reader_memos)
+                action.instance_variable_get(:@__provisional_reader_memos)
+              else
+                action.instance_variable_set(:@__provisional_reader_memos, [])
+              end
+        ref = _reader_memo_ref(action, config)
+        set << ref unless set.include?(ref)
+      end
+
+      # Drop the reader memos that provisional reads populated during this (now-settled) resolution, on
+      # their ACTUAL receiver (the action for a subfield, the InternalContext facade singleton for a
+      # top-level model reader) — so a provisionally-resolved value never survives a settled resolution
+      # regardless of where its memo lives. This only fires for readers that were actually read
+      # provisionally; a normal (non-provisional) top-level model read is untouched, so its finder isn't
+      # re-run on every call.
+      def self._drop_provisional_reader_memos(action)
+        return unless action.instance_variable_defined?(:@__provisional_reader_memos)
+
+        action.remove_instance_variable(:@__provisional_reader_memos).each do |receiver, ivar|
+          receiver.remove_instance_variable(ivar) if receiver.instance_variable_defined?(ivar)
+        end
+      end
+
+      # coerce → preprocess, applied to a resolved value on the read path at any depth (minus default:,
+      # which the caller applies after). Preprocess is skipped when the parent is absent (nil): an
+      # absent subfield has no value to transform. coerce_value no-ops on a nil/non-String value, so
+      # coercion needs no guard.
       def self._apply_read_path_transforms(action, config, value, parent)
         coerce_input_types = Axn::Configuration.resolve_override_for(action.class, :coerce_input_types)
         value = Axn::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
         value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
         value
+      end
+
+      # The model-field value read: resolves the parent (provided_data at depth 0), resolves the
+      # record, falls back to a sibling-<field>_id-supplied lookup (value-level id default), then to a
+      # record-supplying default:. Non-materializing — the parent's own value stays untouched. Used by
+      # both the InternalContext facade's top-level model reader (depth 0) and
+      # _define_subfield_model_reader (depth ≥ 1). `options` is the syntactic-sugar-processed model
+      # options for this config.
+      def self.resolve_model_value(action, config, options)
+        parent = resolve_parent(action, config)
+        record = Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
+                                                   provided_data: parent, permit_method_call: config.method_call)
+
+        # Raw-read mode (enqueue-time facets): resolve the record straight from the raw parent — no
+        # sibling-<field>_id rescue and no record-supplying default, so the facet mirrors the serialized
+        # payload rather than a run-time-only rescue/default.
+        return record if _raw_reads?(action)
+
+        in_progress = _resolve_in_progress_set(action)
+        # A model field's value can't be defined in terms of its own resolution: a record-supplying `default:`
+        # OR a sibling `<field>_id` `default:` that reads this same model reader re-enters here. The re-entrant
+        # read returns the record resolved from the parent ALONE — no sibling-id rescue, no default — breaking
+        # the cycle so the Proc can complete. Mirrors resolve_value's re-entrancy guard; the marker is set
+        # BEFORE both the sibling-id rescue and the default so BOTH re-entry routes are covered.
+        return record if in_progress[config]
+
+        nested = !in_progress.empty?
+        _mark_provisional_reader(action, config) if nested
+        in_progress[config] = true
+        begin
+          record ||= resolve_model_via_sibling_id(action, config, options, parent)
+          record = Axn::Internal::FieldConfig.resolve_default(action, config) if record.nil? && config.applied_default?
+        ensure
+          in_progress.delete(config)
+        end
+        # A read taken while another field is mid-resolution is provisional — return it without dropping the
+        # provisional memos (that happens only at the outermost, settled resolve, exactly as in resolve_value).
+        return record if nested
+
+        _drop_provisional_reader_memos(action)
+        record
       end
 
       # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
@@ -155,17 +288,27 @@ module Axn
         return nil if path.nil?
 
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        sibling = path.parent_node.children[id_key.to_sym]
         # Select the sibling config with the SAME predicate the declaration credits
         # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
         # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
         # applied at runtime but is blank-guarded by the model resolver, so it is not a usable token:
         # picking it by applied_default? alone (blank route declared first) would supply no id and
         # silently defeat the rescue the declaration accepted.
-        sibling_config = sibling&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+        sibling_config =
+          if path.ancestors.empty?
+            # Top-level: the sibling <field>_id is another top-level root (a declared field), not a
+            # child of parent_node.
+            action.class.internal_field_configs.find do |c|
+              c.field == id_key && Axn::Reflection::Schema.usable_id_token_default?(c)
+            end
+          else
+            path.parent_node.children[id_key.to_sym]&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+          end
         return nil if sibling_config.nil?
 
-        # The sibling reads through its own reader (the canonical, memoized path).
+        # The sibling reads through its own reader (the canonical, memoized path). At depth 0 the
+        # top-level `<field>_id` reader routes through the read path too, so `public_send` is uniform
+        # across depths — it applies the sibling's own default:/preprocess: either way.
         sibling_value = action.public_send(sibling_config.reader_as)
         return nil if sibling_value.nil?
 
@@ -382,27 +525,9 @@ module Axn
         end
 
         def _define_subfield_model_reader(config)
-          reader = config.reader_as
-          source_field = config.field
           processed_options = _subfield_model_options(config)
-
-          Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
-            # Create a data source that contains the subfield data for the resolver
-            subfield_data = Axn::Core::ContractForSubfields.resolve_parent(self, config)
-
-            record = Axn::Core::FieldResolvers.resolve(
-              type: :model,
-              field: source_field,
-              options: processed_options,
-              provided_data: subfield_data,
-              permit_method_call: config.method_call,
-            )
-            # When the raw wire data carried no id, a sibling `<field>_id` subfield's value-level
-            # default supplies the lookup token so the record still resolves (PRO-2889).
-            record ||= Axn::Core::ContractForSubfields.resolve_model_via_sibling_id(self, config, processed_options, subfield_data)
-            # A nil-resolving model subfield falls back to a record-supplying default (validated by
-            # ModelValidator like any record) — the same value-level rule as plain subfields.
-            record.nil? && config.applied_default? ? Axn::Internal::FieldConfig.resolve_default(self, config) : record
+          Axn::Internal::Memoization.define_memoized_reader_method(self, config.reader_as) do
+            Axn::Core::ContractForSubfields.resolve_model_value(self, config, processed_options)
           end
         end
 

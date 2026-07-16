@@ -14,13 +14,7 @@ module Axn
       @declared_fields = declared_fields
 
       (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
-        if _model_fields.key?(field)
-          _define_model_field_method(field, _model_fields[field])
-        else
-          singleton_class.define_method(field) do
-            _context_data_source[field]
-          end
-        end
+        _define_reader_for(field)
       end
     end
 
@@ -35,6 +29,18 @@ module Axn
     private
 
     attr_reader :action, :context
+
+    # Define one field's reader. The base (outbound Result) facade reads the data source directly;
+    # InternalContext overrides this to resolve declared inbound fields through the read path.
+    def _define_reader_for(field)
+      if _model_fields.key?(field)
+        _define_model_field_method(field, _model_fields[field])
+      else
+        singleton_class.define_method(field) do
+          _context_data_source[field]
+        end
+      end
+    end
 
     def _model_fields
       action.internal_field_configs.each_with_object({}) do |config, hash|

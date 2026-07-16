@@ -25,13 +25,14 @@ module Axn
 
       # A config's resolved position in the tree, recorded once at build so runtime consumers never
       # re-split `on:` strings or re-resolve reader aliases. `node` is the config's leaf Node;
-      # `wire_path` is the full provided_data write path ([top-level wire key, *wire segments]);
+      # `wire_path` is the full provided_data lookup path ([top-level wire key, *wire segments]);
       # `ancestors` is the hop chain ([Node, wire segment] pairs, outermost first — each hop's node is
-      # the parent the segment is read from), so chain-aware write-backs can gate materialization on
-      # every intermediate node's own declared type. `parent_index` is the chain index of the `on:`
-      # TARGET node (the value the config's own `field` is extracted from), which canonical parent
-      # resolution resolves through the deepest reader-bearing ancestor. A top-level config is the
-      # depth-0 case: wire_path is just [field], ancestors are empty, parent_index 0.
+      # the parent the segment is read from), so canonical parent resolution (resolve_parent) can walk
+      # each hop through its own reader and reflection can reason about each intermediate node's
+      # declared type. `parent_index` is the chain index of the `on:` TARGET node (the value the
+      # config's own `field` is extracted from), which canonical parent resolution resolves through the
+      # deepest reader-bearing ancestor. A top-level config is the depth-0 case: wire_path is just
+      # [field], ancestors are empty, parent_index 0.
       ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
         # The `on:`-target Node (the config's immediate parent in contract terms). A field name is a
         # single wire key, so the leaf sits DIRECTLY under this node — it is also the leaf's wire parent,
