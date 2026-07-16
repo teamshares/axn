@@ -655,6 +655,16 @@ RSpec.shared_examples "can build Axns from callables" do
         expect(axn.call.error).to eq("shared failure")
       end
     end
+
+    context "with an overlong spec (extra positional beyond [exceptions, message])" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[err_class, "retry", :extra]] } }
+      let(:callable) { -> {} }
+
+      it "raises at declaration rather than silently dropping the extra" do
+        expect { axn }.to raise_error(ArgumentError, /Invalid fails_on spec/)
+      end
+    end
   end
 
   context "setting tag / dimension" do
@@ -801,6 +811,30 @@ RSpec.describe Axn::Factory do
       axn = Axn::Factory.build(superclass:, description: "axn description") { nil }
       expect(axn._axn_description).to eq("axn description")
       expect(axn.description).to eq("ancestor description")
+    end
+  end
+
+  context "description: relative to an inherited value" do
+    let(:base) do
+      Class.new do
+        include Axn
+        description "inherited description"
+      end
+    end
+
+    it "keeps the inherited description when description: is omitted" do
+      axn = Axn::Factory.build(superclass: base) { nil }
+      expect(axn._axn_description).to eq("inherited description")
+    end
+
+    it "clears the inherited description when passed description: nil explicitly" do
+      axn = Axn::Factory.build(superclass: base, description: nil) { nil }
+      expect(axn._axn_description).to be_nil
+    end
+
+    it "overrides the inherited description with a new value" do
+      axn = Axn::Factory.build(superclass: base, description: "override") { nil }
+      expect(axn._axn_description).to eq("override")
     end
   end
 end

@@ -25,7 +25,7 @@ module Axn
 
         # Naming and metadata
         axn_name: nil,
-        description: nil,
+        description: NOT_PROVIDED,
         semantic_hints: nil,
 
         # Failure reclassification
@@ -102,7 +102,13 @@ module Axn
           # `description` DSL is only extended onto axn when no non-Axn ancestor already defines
           # `description` (PRO-2875), so a `axn.description(...)` call would hit the ancestor's
           # setter when building on a base class (e.g. a tool base) that defines its own.
-          axn._axn_description = description unless description.nil?
+          #
+          # NOT_PROVIDED (not nil) is the omission sentinel: `_axn_description` is an inherited
+          # class_attribute, so a nil default would be indistinguishable from an explicit
+          # `description: nil`. A caller building on a superclass with an inherited description needs
+          # `description: nil` to CLEAR it (else the subclass republishes stale provider text), so an
+          # explicit nil must write through while a truly-omitted arg leaves the inherited value.
+          axn._axn_description = description unless description == NOT_PROVIDED
           axn.semantic_hints(*Array(semantic_hints)) unless semantic_hints.nil?
 
           # Failure reclassification and observability facets (fan out a single spec or a list)
@@ -210,6 +216,12 @@ module Axn
         if parts.all? { |p| p.is_a?(Class) }
           axn.fails_on(parts, **kwargs)
         else
+          # A non-all-classes spec is [exceptions, message]. More than two positional parts is a
+          # malformed spec (e.g. `[TimeoutError, "retry", :extra]`): destructuring would silently drop
+          # the extras, whereas the equivalent direct `fails_on(TimeoutError, "retry", :extra)` raises.
+          # Fail at declaration rather than mask the typo.
+          raise ArgumentError, "[Axn::Factory] Invalid fails_on spec (expected [exceptions, message?]): #{spec.inspect}" if parts.size > 2
+
           exceptions, message = parts
           axn.fails_on(exceptions, message, **kwargs)
         end

@@ -94,10 +94,10 @@ dimension: [:plan_tier, "pro"]
 
 ## Building tools
 
-When a gem exposes a caller-supplied block as a tool (see [Configuration for Axn-based Gems](/recipes/gem-configuration)), the factory is how you relocate that block into a real class. An anonymous factory-built class gets a synthetic `name` (`AnonymousAxn_<id>`) for debugging, so give it an explicit `axn_name:` — `tool_name` derives from it — and a `description:` for the provider:
+When a gem exposes a caller-supplied block as a tool (see [Configuration for Axn-based Gems](/recipes/gem-configuration)), the factory is how you relocate that block into a real Axn class the adapter then wraps. The adapter holds the built class and hands it to its own `wrap`/`define` directly — give it an explicit `axn_name:` so `tool_name` derives a clean provider name, and a `description:` for the provider:
 
 ```ruby
-Axn::Factory.build(
+tool_class = Axn::Factory.build(
   superclass: MyGem::ToolBase,               # [!code focus]
   axn_name: "list_companies",                # [!code focus]
   description: "List companies for the current account", # [!code focus]
@@ -105,4 +105,10 @@ Axn::Factory.build(
 ) do
   expose companies: Company.limit(limit || 25)
 end
+
+MyGem.wrap(tool_class) # the adapter already has the reference — no discovery needed
 ```
+
+::: warning Factory-built tools are not auto-discovered
+A factory-built class keeps a synthetic `name` (`AnonymousAxn_<id>`), which does not resolve to a loaded constant, so it is **never** enumerated by [`Axn.tools_for`](/reference/class) — even if you assign it to a constant. That's fine here: the adapter constructing it already holds the reference and wraps it directly. `Axn.tools_for` is for discovering **named** tool classes a user declares under a configured `tool_paths` directory (`class ListCompanies < MyGem::ToolBase; tool; …; end`); reach for that when you want registry discovery rather than programmatic construction.
+:::
