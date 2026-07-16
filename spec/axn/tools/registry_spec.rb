@@ -256,6 +256,87 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (non-Rails, scopes rollback to the failing file's own classes)", :aggregate_failures do
+    let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
+
+    before do
+      Axn.register_tool_adapter(:mcp)
+      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+    end
+
+    it "keeps a valid tool required by the failing file, rolling back only the failing file's own class" do
+      skip "fixture already loaded" if Object.const_defined?("NestedDep::Good")
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      tools = Axn.tools_for(:mcp)
+
+      # The dependency the failing file `require`d before raising was registered inside that file's
+      # require window, but it is SOURCED FROM dep_good.rb, so the file-scoped rollback must keep it.
+      expect(defined?(NestedDep::Good)).to be_truthy
+      expect(tools).to include(NestedDep::Good)
+      expect(described_class.send(:_classes)).to include(NestedDep::Good)
+
+      # The failing file's OWN class is sourced from the failed file and must be rolled back.
+      expect(defined?(NestedBad::Partial)).to be_truthy
+      expect(tools).not_to include(NestedBad::Partial)
+      expect(described_class.send(:_classes)).not_to include(NestedBad::Partial)
+
+      expect(warnings).to include(a_string_matching(/bad_requires_dep\.rb.*boom after requiring dep/))
+    end
+  end
+
+  describe ".ensure_loaded! (Rails eager_load_dir branch rolls back a failed dir's registrations)", :aggregate_failures do
+    # Faithfully drives ensure_loaded!'s Rails branch by stubbing the Zeitwerk surface (rather than
+    # adding a raising fixture under the dummy app's autoloaded tree, which would break CI boot).
+    let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
+
+    before { Axn.register_tool_adapter(:mcp) }
+
+    it "deletes only added classes whose source is under the failed dir, preserving those outside it" do
+      allow(Axn.config).to receive(:tool_paths).and_return([dir])
+      allow(described_class).to receive(:_rails_app?).and_return(true)
+
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+
+      # Two classes registered DURING eager_load_dir: one sourced under the dir (must be rolled
+      # back), one sourced elsewhere via a cross-dir require (must be preserved).
+      under_dir = Class.new { include Axn }
+      outside = Class.new { include Axn }
+      described_class.send(:_classes).delete(under_dir)
+      described_class.send(:_classes).delete(outside)
+
+      allow(loader).to receive(:eager_load_dir) do
+        described_class.register_class(under_dir)
+        described_class.register_class(outside)
+        raise "boom during eager load"
+      end
+
+      allow(described_class).to receive(:_class_source_file).and_call_original
+      allow(described_class).to receive(:_class_source_file).with(under_dir)
+                                                            .and_return(File.join(dir, "nested_tool.rb"))
+      allow(described_class).to receive(:_class_source_file).with(outside)
+                                                            .and_return("/somewhere/else/x.rb")
+
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      described_class.ensure_loaded!
+
+      expect(described_class.send(:_classes)).not_to include(under_dir)
+      expect(described_class.send(:_classes)).to include(outside)
+      expect(warnings).to include(a_string_matching(/tool dir skipped/))
+    ensure
+      described_class.send(:_classes).delete(under_dir)
+      described_class.send(:_classes).delete(outside)
+    end
+  end
+
   describe ".all_classes (prunes definitively-stale named entries from the backing Set)", :aggregate_failures do
     it "deletes a stale named class from _classes (not just from the return value)" do
       class_a = Class.new { include Axn }

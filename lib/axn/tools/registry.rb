@@ -72,8 +72,17 @@ module Axn
           dirs.each do |dir|
             next unless loader.respond_to?(:eager_load_dir)
 
+            # Snapshot _classes before eager-loading the directory so a file that raises partway
+            # through can't leak the classes it already registered into tools_for. Zeitwerk loads a
+            # directory as a unit, so rollback granularity is per-DIRECTORY: drop only added classes
+            # whose source file lives under this dir. A class a file `require`d from OUTSIDE the dir
+            # is preserved (it isn't this directory's tool).
+            before = _classes.dup
             loader.eager_load_dir(dir)
           rescue StandardError, LoadError => e
+            _rollback_registrations(before) do |src|
+              src == dir || src.start_with?(dir + File::SEPARATOR)
+            end
             Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
           end
         else
@@ -82,11 +91,16 @@ module Axn
               # Snapshot _classes before the require so that if the file registers an Axn class (via
               # include/inherited) and THEN raises later in the same file, we can roll those
               # registrations back — otherwise a "skipped" file would still leak its classes into
-              # tools_for. The loop is single-threaded, so a before/after diff is exact.
+              # tools_for. The loop is single-threaded, so a before/after diff is exact. Scope the
+              # rollback to classes SOURCED FROM this file: a dependency the file `require`d before
+              # raising was registered in the same window but belongs to its own (valid) file, and
+              # Ruby marks that file loaded so a later glob iteration would no-op — dropping it here
+              # would leave the valid tool's constant defined yet permanently absent from _classes.
               before = _classes.dup
               require file
             rescue StandardError, LoadError => e
-              (_classes - before).each { |added| _classes.delete(added) }
+              expanded = File.expand_path(file)
+              _rollback_registrations(before) { |src| src == expanded }
               Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
             end
           end
@@ -111,6 +125,31 @@ module Axn
       end
 
       private
+
+      # Rolls back registrations added since `before`, deleting each added class whose (expanded)
+      # source file satisfies the block predicate. Shared by both eager-load branches so the
+      # scoping loop lives in one place. Added classes with no resolvable source (anonymous classes
+      # return nil) are left registered — they're excluded from tools_for by the name filter anyway,
+      # and dropping one risks unregistering a nested dependency's not-yet-named class.
+      def _rollback_registrations(before)
+        (_classes - before).each do |added|
+          src = _class_source_file(added)
+          next unless src
+
+          _classes.delete(added) if yield(File.expand_path(src))
+        end
+      end
+
+      # The file a class was defined in, or nil. For an already-defined constant this does NOT
+      # autoload (the class was just loaded); anonymous classes (nil/empty name) return nil.
+      def _class_source_file(klass)
+        name = klass.name
+        return nil if name.nil? || name.empty?
+
+        Object.const_source_location(name)&.first
+      rescue StandardError
+        nil
+      end
 
       def _rails_app?
         defined?(Rails) && Rails.respond_to?(:application) && Rails.application
