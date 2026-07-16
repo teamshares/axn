@@ -745,6 +745,16 @@ RSpec.shared_examples "can build Axns from callables" do
         expect(axn._tags[:payload].from).to eq(:result)
       end
     end
+
+    context "with a from:-shaped Hash as the resolver (2-part spec)" do
+      let(:kwargs) { { tag: [:payload, { from: "api" }] } }
+      let(:callable) { -> {} }
+
+      it "treats the Hash as the positional resolver, not phase options" do
+        expect(axn._tags[:payload].resolver).to eq({ from: "api" })
+        expect(axn._tags[:payload].from).to eq(:inputs)
+      end
+    end
   end
 end
 

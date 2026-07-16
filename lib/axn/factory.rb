@@ -251,7 +251,8 @@ module Axn
       # unambiguously distinguishes a list from a single spec.
       #   tag: [:region, "us5"]                     -> tag(:region, "us5")
       #   tag: [:charged, "yes", { from: :result }] -> tag(:charged, "yes", from: :result)
-      #   tag: [:payload, { kind: "a" }]            -> tag(:payload, { kind: "a" })  # Hash resolver
+      #   tag: [:payload, { kind: "a" }]            -> tag(:payload, { kind: "a" })       # Hash resolver
+      #   tag: [:payload, { from: "api" }]          -> tag(:payload, { from: "api" })     # Hash resolver, not kwargs
       #   tag: [[:a, 1], [:b, 2]]                   -> tag(:a, 1); tag(:b, 2)
       def _apply_facets(axn, method_name, value)
         return if value.nil?
@@ -261,13 +262,13 @@ module Axn
           raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{spec.inspect}" unless spec.is_a?(Array)
 
           parts = spec.dup
-          # A trailing Hash is only `from:` kwargs when every key is a supported kwarg; otherwise it is a
-          # literal Hash RESOLVER value (the DSL accepts `tag(:name, { … })`), forwarded positionally to
-          # stay at parity. (An empty Hash is a resolver too — `**{}` would drop it.) The narrow
-          # unexpressible case — a resolver Hash whose only key is `:from` — needs the DSL's brace syntax,
-          # which a flat data spec can't carry.
+          # A trailing Hash is `from:` kwargs ONLY when the spec also carries a resolver — i.e. there are
+          # >=3 parts (name + resolver + the options Hash) AND every key is a supported kwarg. A valid
+          # facet always needs a resolver, so a 2-part spec's trailing Hash is unambiguously the positional
+          # RESOLVER (mirroring `tag(:name, { … })`), including a `{ from: … }` resolver — which the
+          # >=3-parts guard is what disambiguates from phase options.
           kwargs = {}
-          kwargs = parts.pop if _facet_kwargs?(parts.last)
+          kwargs = parts.pop if parts.length >= 3 && _facet_kwargs?(parts.last)
           axn.public_send(method_name, *parts, **kwargs)
         end
       end
