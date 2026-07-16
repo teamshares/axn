@@ -77,25 +77,27 @@ module Axn
           # `roots[PARENT]` is guaranteed present: `ambient` is non-empty (checked above), and every
           # config in it roots at `PARENT`, so `SubfieldTree.build` always creates that root node.
           _each_ambient_node(tree.roots[PARENT]) do |node|
-            shape_config = node.configs.find { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
-            next unless shape_config
+            # A merged wire node (two routes converging via a dotted `on:` plus a reader-anchored route)
+            # can carry more than one shape-bearing config, so check EVERY one — not just the first.
+            shape_configs = node.configs.select { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
+            next if shape_configs.empty?
 
             # An ambient value is framework-supplied, not caller input — so a violation can never be
             # user-facing, at any depth. The subfield's own `user_facing:` is already rejected upstream;
             # extend the same rule to shape members (which carry their own `user_facing:` since PRO-2925),
             # so an ambient shape can't smuggle a user-facing member classification.
-            _reject_ambient_shape_user_facing_members!(shape_config)
+            shape_configs.each { |sc| _reject_ambient_shape_user_facing_members!(sc) }
 
             # Only a filter-leaf shape validates against the copied value; a non-`model:` node WITH subfield
             # children is rebuilt from those children alone, dropping shape-only members.
             next if node.children.empty? || _ambient_model_node?(node)
 
             raise ArgumentError,
-                  "a `shape:` block on the ambient subfield `#{shape_config.field}` is only supported when it " \
+                  "a `shape:` block on the ambient subfield `#{shape_configs.first.field}` is only supported when it " \
                   "has no nested subfields — this node also has subfield children, so the ambient filter " \
                   "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
                   "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
-                  "(`expects :<member>, on: :#{shape_config.field}`), which also give readers and `sensitive:`."
+                  "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`."
           end
         end
 

@@ -508,6 +508,22 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
     end
 
+    it "checks EVERY shape config on a merged ambient node for a user_facing: member" do
+      expect do
+        build_axn do
+          expects :meta, on: :ambient_context, type: Hash
+          # route 1 (dotted on:) — shape without user_facing, seen first
+          expects :request, on: "ambient_context.meta", type: Hash do
+            field :ip, type: String
+          end
+          # route 2 (reader-anchored via as:) converges on the SAME wire node, shape WITH a user_facing member
+          expects :request, on: :meta, as: :meta_request, type: Hash do
+            field :ip, type: String, user_facing: "bad"
+          end
+        end
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
     it "still allows the equivalent nested structure declared as subfields" do
       klass = build_axn do
         expects :request, on: :ambient_context, type: Hash
