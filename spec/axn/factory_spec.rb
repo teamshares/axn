@@ -551,6 +551,221 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(result.error).to eq("Something went wrong")
     end
   end
+
+  context "setting axn_name" do
+    let(:kwargs) { { axn_name: "greet_user" } }
+    let(:callable) { -> {} }
+
+    it "sets the resolved name and the provider-facing tool_name" do
+      expect(axn.resolved_axn_name).to eq("greet_user")
+      expect(axn.tool_name).to eq("greet_user")
+    end
+  end
+
+  context "setting description" do
+    let(:kwargs) { { description: "Greets the user" } }
+    let(:callable) { -> {} }
+
+    it "sets the class-level description" do
+      expect(axn._axn_description).to eq("Greets the user")
+    end
+  end
+
+  context "setting semantic_hints" do
+    context "with a single hint" do
+      let(:kwargs) { { semantic_hints: :read_only } }
+      let(:callable) { -> {} }
+
+      it "sets the hint" do
+        expect(axn.semantic_hints).to eq([:read_only])
+      end
+    end
+
+    context "with an array of hints" do
+      let(:kwargs) { { semantic_hints: %i[read_only idempotent] } }
+      let(:callable) { -> {} }
+
+      it "sets all hints" do
+        expect(axn.semantic_hints).to contain_exactly(:read_only, :idempotent)
+      end
+    end
+
+    context "with an unknown hint" do
+      let(:kwargs) { { semantic_hints: :bogus } }
+      let(:callable) { -> {} }
+
+      it "raises" do
+        expect { axn }.to raise_error(ArgumentError, /Unknown semantic hint/)
+      end
+    end
+  end
+
+  context "setting fails_on" do
+    context "with a single exception class" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: err_class } }
+      let(:callable) do
+        boom = err_class
+        -> { raise boom, "kaboom" }
+      end
+
+      it "reclassifies the exception as a failure, preserving it on the result" do
+        result = axn.call
+        expect(result).not_to be_ok
+        expect(result.exception).to be_a(err_class)
+        expect(axn._fails_on_matchers).to include(err_class)
+      end
+    end
+
+    context "with a list of bare classes" do
+      let(:err_a) { Class.new(StandardError) }
+      let(:err_b) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [err_a, err_b] } }
+      let(:callable) { -> {} }
+
+      it "registers a matcher for each class" do
+        expect(axn._fails_on_matchers).to include(err_a, err_b)
+      end
+    end
+
+    context "with a tuple carrying a message and standalone:" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[err_class, "custom failure", { standalone: true }]] } }
+      let(:callable) do
+        boom = err_class
+        -> { raise boom }
+      end
+
+      it "wires the message through the reclassified error" do
+        expect(axn.call.error).to eq("custom failure")
+      end
+    end
+
+    context "with a nested-classes tuple sharing one message" do
+      let(:err_a) { Class.new(StandardError) }
+      let(:err_b) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[[err_a, err_b], "shared failure"]] } }
+      let(:callable) do
+        boom = err_b
+        -> { raise boom }
+      end
+
+      it "registers a single matcher over both classes with the shared message" do
+        expect(axn._fails_on_matchers).to include(err_a, err_b)
+        expect(axn.call.error).to eq("shared failure")
+      end
+    end
+
+    context "with an overlong spec (extra positional beyond [exceptions, message])" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[err_class, "retry", :extra]] } }
+      let(:callable) { -> {} }
+
+      it "raises at declaration rather than silently dropping the extra" do
+        expect { axn }.to raise_error(ArgumentError, /Invalid fails_on spec/)
+      end
+    end
+
+    context "when an error: reason also matches the reclassified exception" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) do
+        {
+          fails_on: [[err_class, "from fails_on", { standalone: true }]],
+          error: Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.build(
+            handler: "from error kwarg", if: err_class, standalone: true,
+          ),
+        }
+      end
+      let(:callable) do
+        boom = err_class
+        -> { raise boom }
+      end
+
+      it "lets the fails_on message win (applied after error: handlers, mirroring a hand-written class)" do
+        expect(axn.call.error).to eq("from fails_on")
+      end
+    end
+  end
+
+  context "setting tag / dimension" do
+    context "with a single tag spec" do
+      let(:kwargs) { { tag: [:region, "us5"] } }
+      let(:callable) { -> {} }
+
+      it "registers the tag" do
+        expect(axn._tags[:region].resolver).to eq("us5")
+        expect(axn._tags[:region].from).to eq(:inputs)
+      end
+    end
+
+    context "with a tag spec carrying from:" do
+      let(:kwargs) { { tag: [:charged, "yes", { from: :result }] } }
+      let(:callable) { -> {} }
+
+      it "forwards from:" do
+        expect(axn._tags[:charged].from).to eq(:result)
+      end
+    end
+
+    context "with a list of tag specs" do
+      let(:kwargs) { { tag: [[:a, 1], [:b, 2]] } }
+      let(:callable) { -> {} }
+
+      it "registers each tag" do
+        expect(axn._tags.keys).to contain_exactly(:a, :b)
+      end
+    end
+
+    context "with a dimension spec" do
+      let(:kwargs) { { dimension: [:plan_tier, "pro"] } }
+      let(:callable) { -> {} }
+
+      it "registers the dimension separately from tags" do
+        expect(axn._dimensions[:plan_tier].resolver).to eq("pro")
+        expect(axn._tags).to be_empty
+      end
+    end
+
+    context "with a Hash-valued literal resolver" do
+      let(:kwargs) { { tag: [:payload, { kind: "a" }] } }
+      let(:callable) { -> {} }
+
+      it "forwards the Hash as the resolver, not as keyword options" do
+        expect(axn._tags[:payload].resolver).to eq({ kind: "a" })
+        expect(axn._tags[:payload].from).to eq(:inputs)
+      end
+    end
+
+    context "with a Hash-valued resolver plus an explicit from:" do
+      let(:kwargs) { { tag: [:payload, { kind: "a" }, { from: :result }] } }
+      let(:callable) { -> {} }
+
+      it "keeps the Hash resolver positional and applies from: from the kwargs Hash" do
+        expect(axn._tags[:payload].resolver).to eq({ kind: "a" })
+        expect(axn._tags[:payload].from).to eq(:result)
+      end
+    end
+
+    context "with a from:-shaped Hash as the resolver (2-part spec)" do
+      let(:kwargs) { { tag: [:payload, { from: "api" }] } }
+      let(:callable) { -> {} }
+
+      it "treats the Hash as the positional resolver, not phase options" do
+        expect(axn._tags[:payload].resolver).to eq({ from: "api" })
+        expect(axn._tags[:payload].from).to eq(:inputs)
+      end
+    end
+
+    context "with an empty facet list" do
+      let(:kwargs) { { tag: [], dimension: [] } }
+      let(:callable) { -> {} }
+
+      it "is a no-op (no facets registered, no error), matching fails_on: []" do
+        expect(axn._tags).to be_empty
+        expect(axn._dimensions).to be_empty
+      end
+    end
+  end
 end
 
 RSpec.describe Axn::Factory do
@@ -639,4 +854,76 @@ RSpec.describe Axn::Factory do
   let(:kwargs) { {} }
 
   it_behaves_like "can build Axns from callables"
+
+  context "description: when a superclass already defines its own #description" do
+    let(:superclass) do
+      Class.new do
+        def self.description(*)
+          "ancestor description"
+        end
+      end
+    end
+
+    it "stores axn's description without invoking the shadowing ancestor setter" do
+      # PRO-2875: Naming skips extending axn's `description` DSL when a non-Axn ancestor
+      # defines one, so calling `axn.description(value)` here would hit the ancestor. The
+      # factory must write the backing attribute directly.
+      axn = Axn::Factory.build(superclass:, description: "axn description") { nil }
+      expect(axn._axn_description).to eq("axn description")
+      expect(axn.description).to eq("ancestor description")
+    end
+  end
+
+  context "description: relative to an inherited value" do
+    let(:base) do
+      Class.new do
+        include Axn
+        description "inherited description"
+      end
+    end
+
+    it "keeps the inherited description when description: is omitted" do
+      axn = Axn::Factory.build(superclass: base) { nil }
+      expect(axn._axn_description).to eq("inherited description")
+    end
+
+    it "clears the inherited description when passed description: nil explicitly" do
+      axn = Axn::Factory.build(superclass: base, description: nil) { nil }
+      expect(axn._axn_description).to be_nil
+    end
+
+    it "overrides the inherited description with a new value" do
+      axn = Axn::Factory.build(superclass: base, description: "override") { nil }
+      expect(axn._axn_description).to eq("override")
+    end
+  end
+
+  context "semantic_hints: relative to an inherited value" do
+    let(:base) do
+      Class.new do
+        include Axn
+        semantic_hints :read_only
+      end
+    end
+
+    it "keeps the inherited hints when semantic_hints: is omitted" do
+      axn = Axn::Factory.build(superclass: base) { nil }
+      expect(axn.semantic_hints).to eq([:read_only])
+    end
+
+    it "keeps the inherited hints when semantic_hints: is explicitly nil (an unset optional, not a clear)" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: nil) { nil }
+      expect(axn.semantic_hints).to eq([:read_only])
+    end
+
+    it "clears the inherited hints when passed an explicit empty list" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: []) { nil }
+      expect(axn.semantic_hints).to eq([])
+    end
+
+    it "overrides the inherited hints with a new list (validated against the vocab)" do
+      axn = Axn::Factory.build(superclass: base, semantic_hints: [:idempotent]) { nil }
+      expect(axn.semantic_hints).to contain_exactly(:idempotent)
+    end
+  end
 end

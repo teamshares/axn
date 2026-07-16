@@ -52,7 +52,10 @@ module Axn
         ensure_loaded!
         members = all_classes.select { |klass| member?(klass, adapter) }
         _assert_unique_tool_names!(members, adapter)
-        members
+        # Deterministic enumeration regardless of load/registration order. Safe to sort by
+        # tool_name because _assert_unique_tool_names! has already guaranteed the names are
+        # distinct for this adapter, so there are no ties.
+        members.sort_by(&:tool_name)
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.

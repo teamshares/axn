@@ -23,6 +23,18 @@ module Axn
         success: nil,
         error: nil,
 
+        # Naming and metadata
+        axn_name: nil,
+        description: NOT_PROVIDED,
+        semantic_hints: nil,
+
+        # Failure reclassification
+        fails_on: nil,
+
+        # Observability facets (single spec or list of specs)
+        tag: nil,
+        dimension: nil,
+
         # Hooks
         before: nil,
         after: nil,
@@ -84,6 +96,34 @@ module Axn
             axn.exposes(field, **opts)
           end
 
+          # Naming and metadata
+          axn.axn_name(axn_name) unless axn_name.nil?
+          # Write the backing attribute directly rather than calling `axn.description(...)`: the
+          # `description` DSL is only extended onto axn when no non-Axn ancestor already defines
+          # `description` (PRO-2875), so a `axn.description(...)` call would hit the ancestor's
+          # setter when building on a base class (e.g. a tool base) that defines its own.
+          #
+          # NOT_PROVIDED (not nil) is the omission sentinel: `_axn_description` is an inherited
+          # class_attribute, so a nil default would be indistinguishable from an explicit
+          # `description: nil`. A caller building on a superclass with an inherited description needs
+          # `description: nil` to CLEAR it (else the subclass republishes stale provider text), so an
+          # explicit nil must write through while a truly-omitted arg leaves the inherited value.
+          axn._axn_description = description unless description == NOT_PROVIDED
+          # `semantic_hints` needs no omission sentinel (unlike `description`): the DSL's setter rejects
+          # nil (`semantic_hints(nil)` raises on `nil.to_sym`), so nil is NOT a meaningful value and is
+          # treated as omission — leaving an inherited class_attribute intact, which is what an adapter
+          # forwarding an unset option expects. The explicit clear is an empty list: it can't go through
+          # the DSL (its zero-arg call is the getter), so it writes the backing attribute directly to
+          # clear/override inherited hints; a non-empty list goes through the DSL for vocab validation.
+          unless semantic_hints.nil?
+            hints = Array(semantic_hints)
+            hints.empty? ? (axn._semantic_hints = [].freeze) : axn.semantic_hints(*hints)
+          end
+
+          # Observability facets (fan out a single spec or a list)
+          _apply_facets(axn, :tag, tag)
+          _apply_facets(axn, :dimension, dimension)
+
           # Apply logging configuration (always apply if provided to override defaults).
           # A Hash forwards as per-outcome keywords (auto_log success: :info, ...); anything else
           # is the positional level (auto_log :warn / auto_log false).
@@ -94,6 +134,14 @@ module Axn
           # Apply success and error handlers
           _apply_handlers(axn, :success, success, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
           _apply_handlers(axn, :error, error, Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor)
+
+          # Failure reclassification — applied AFTER the error handlers on purpose. `fails_on Klass, "msg"`
+          # wires a conditional `error` message; the message registry is last-defined-wins, and among
+          # competing REASONS the most-recently-declared matches first. Mirroring the conventional
+          # hand-written order (`error ...` then `fails_on ...`), the fan-out runs here so a
+          # reclassification message out-specifies an `error:` reason that also matches the exception,
+          # rather than being shadowed by it.
+          _apply_fails_on(axn, fails_on)
 
           # Hooks
           axn.before(before) if before.present?
@@ -157,6 +205,83 @@ module Axn
           # Both descriptor objects and simple cases (string/proc) can be used directly
           axn.public_send(method_name, handler)
         end
+      end
+
+      # `fails_on` accumulates across calls, so a builder value fans out into one call per spec.
+      # A bare Class (or Array<Class>) is one matcher; an Array is a LIST of specs. Within a spec:
+      # all-Classes means one matcher over all of them (the `exceptions` arg is itself an array),
+      # otherwise the spec is [exceptions, message] with a trailing Hash forwarded as kwargs.
+      #   fails_on: MyError                                 -> one matcher
+      #   fails_on: [A, B]                                  -> two matchers (one class each)
+      #   fails_on: [[A, B]]                                -> one matcher covering both
+      #   fails_on: [[A, "msg", { standalone: true }]]      -> fails_on(A, "msg", standalone: true)
+      #   fails_on: [[[A, B], "msg"]]                       -> fails_on([A, B], "msg")
+      def _apply_fails_on(axn, value)
+        return if value.nil?
+
+        specs = value.is_a?(Array) ? value : [value]
+        specs.each { |spec| _apply_one_fails_on(axn, spec) }
+      end
+
+      def _apply_one_fails_on(axn, spec)
+        return axn.fails_on(spec) if spec.is_a?(Class)
+        raise ArgumentError, "[Axn::Factory] Invalid fails_on spec: #{spec.inspect}" unless spec.is_a?(Array)
+
+        parts = spec.dup
+        kwargs = parts.last.is_a?(Hash) ? parts.pop : {}
+        if parts.all? { |p| p.is_a?(Class) }
+          axn.fails_on(parts, **kwargs)
+        else
+          # A non-all-classes spec is [exceptions, message]. More than two positional parts is a
+          # malformed spec (e.g. `[TimeoutError, "retry", :extra]`): destructuring would silently drop
+          # the extras, whereas the equivalent direct `fails_on(TimeoutError, "retry", :extra)` raises.
+          # Fail at declaration rather than mask the typo.
+          raise ArgumentError, "[Axn::Factory] Invalid fails_on spec (expected [exceptions, message?]): #{spec.inspect}" if parts.size > 2
+
+          exceptions, message = parts
+          axn.fails_on(exceptions, message, **kwargs)
+        end
+      end
+
+      # The only keyword option the `tag`/`dimension` DSL accepts. A trailing Hash in a facet spec is
+      # forwarded as kwargs ONLY when it looks like these options; otherwise it is a positional resolver.
+      FACET_KWARG_KEYS = %i[from].freeze
+
+      # `tag`/`dimension` accumulate one facet per call. A value whose first element is itself an
+      # Array is a LIST of specs; otherwise the value is a single spec. Each spec is [name, resolver]
+      # (or [name, resolver, { from: … }]). Names are never arrays, so first-element-is-Array
+      # unambiguously distinguishes a list from a single spec.
+      #   tag: [:region, "us5"]                     -> tag(:region, "us5")
+      #   tag: [:charged, "yes", { from: :result }] -> tag(:charged, "yes", from: :result)
+      #   tag: [:payload, { kind: "a" }]            -> tag(:payload, { kind: "a" })       # Hash resolver
+      #   tag: [:payload, { from: "api" }]          -> tag(:payload, { from: "api" })     # Hash resolver, not kwargs
+      #   tag: [[:a, 1], [:b, 2]]                   -> tag(:a, 1); tag(:b, 2)
+      def _apply_facets(axn, method_name, value)
+        return if value.nil?
+        # An empty list is "no facets" — a no-op, matching `fails_on: []` and every other list-shaped
+        # factory option, so an adapter building the list from a collection need not special-case `[]`
+        # to nil. (Unlike `semantic_hints: []`, which CLEARS: that option replaces a single set-valued
+        # attribute, whereas tag/dimension accumulate, so an empty batch simply adds nothing.)
+        return if value.is_a?(Array) && value.empty?
+
+        specs = value.is_a?(Array) && value.first.is_a?(Array) ? value : [value]
+        specs.each do |spec|
+          raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{spec.inspect}" unless spec.is_a?(Array)
+
+          parts = spec.dup
+          # A trailing Hash is `from:` kwargs ONLY when the spec also carries a resolver — i.e. there are
+          # >=3 parts (name + resolver + the options Hash) AND every key is a supported kwarg. A valid
+          # facet always needs a resolver, so a 2-part spec's trailing Hash is unambiguously the positional
+          # RESOLVER (mirroring `tag(:name, { … })`), including a `{ from: … }` resolver — which the
+          # >=3-parts guard is what disambiguates from phase options.
+          kwargs = {}
+          kwargs = parts.pop if parts.length >= 3 && _facet_kwargs?(parts.last)
+          axn.public_send(method_name, *parts, **kwargs)
+        end
+      end
+
+      def _facet_kwargs?(candidate)
+        candidate.is_a?(Hash) && !candidate.empty? && (candidate.keys - FACET_KWARG_KEYS).empty?
       end
 
       def _build_axn_class(superclass:, args:, executable:, expose_return_as:, include: nil, extend: nil, prepend: nil, _creating_action_class_for: nil) # rubocop:disable Lint/UnderscorePrefixedVariableName

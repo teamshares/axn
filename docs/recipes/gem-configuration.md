@@ -2,6 +2,8 @@
 
 This recipe is for **gem authors** building on top of Axn (e.g. `axn-mcp`, `axn-ruby_llm`), not for applications configuring their own Axn instance — for that, see [Configuration](/reference/configuration).
 
+If your gem turns caller-supplied callables into tools, see [Building Axns from Callables](/reference/factory) — it's how you relocate a bare block into a real, nameable Axn class (with an `axn_name:`, `description:`, and the rest of the DSL) rather than poking a class after the fact.
+
 If your gem needs its own settings, you can declare them with the same machinery Axn uses internally rather than hand-rolling a config object, a `configure` yielder, and validation. Extend `Axn::Configurable` on your namespace module and declare each setting:
 
 ```ruby
