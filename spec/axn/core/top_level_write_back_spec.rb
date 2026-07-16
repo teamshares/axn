@@ -290,6 +290,91 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
     end
   end
 
+  describe "top-level model + transformed <field>_id feeding a STRICT finder (id-only input, PRO-2910)" do
+    # A finder that resolves ONLY the exactly-transformed token — so the raw (untransformed) token
+    # fails the lookup. This is the case PR #181 regressed: with the top-level write-back pass gone,
+    # the record lookup consumed the RAW <field>_id while the reader/validation saw the transformed one.
+    let(:co_class) do
+      Class.new do
+        def self.name = "Co"
+        def self.registry = @registry ||= {}
+        # strict: " 5 " (raw) misses; "5" (stripped) hits
+        def self.fetch(id) = registry[id]
+        attr_reader :id
+
+        def initialize(id) = (@id = id)
+      end
+    end
+
+    before { stub_const("Co", co_class) }
+
+    it "resolves the record from a preprocessed id-only input (no record supplied)" do
+      co_class.registry["5"] = co_class.new("5")
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ") # id ONLY — no company record
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5") # finder consumed the STRIPPED id, not the raw " 5 "
+    end
+
+    it "lets a REQUIRED model resolve from a valid preprocessed id-only input (the severe regression)" do
+      # Before the fix a *valid* id-only input failed model presence validation: the finder got the
+      # raw " 5 " token, returned nil, and a required (non-nil-tolerant) model then rejected the call.
+      co_class.registry["5"] = co_class.new("5")
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, optional: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 5 ")
+
+      expect(result).to be_ok
+      expect(result.cid).to eq("5")
+    end
+
+    it "still resolves nil when even the TRANSFORMED id fails the lookup (no default to override with)" do
+      # A present id that fails its lookup after transform stays nil — there is no sibling default to
+      # silently substitute (mirrors the subfield failed-lookup-stays-nil guarantee).
+      action = build_axn do
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, preprocess: lambda(&:strip)
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: " 999 ") # nothing registered under "999"
+
+      expect(result).to be_ok
+      expect(result.cid).to be_nil
+    end
+
+    it "resolves via a coerced id-only input under coerce_input_types" do
+      # The whole-action coercion setting turns the Integer coercion on without a per-field coerce:,
+      # and the transformed (coerced) id still feeds the strict finder.
+      co_class.registry[5] = co_class.new(5)
+      action = build_axn do
+        configure { |c| c.coerce_input_types = true }
+        expects :company, model: { klass: Co, finder: :fetch }, allow_nil: true
+        expects :company_id, type: Integer
+        exposes :cid, allow_nil: true
+        def call = expose(cid: company&.id)
+      end
+
+      result = action.call(company_id: "5") # coerced to Integer 5 before the finder
+
+      expect(result).to be_ok
+      expect(result.cid).to eq(5)
+    end
+  end
+
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
     it "settles rather than escaping .call when a field's read-path default runs first during copy-forward" do
       action = build_axn do

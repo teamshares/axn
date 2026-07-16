@@ -649,12 +649,11 @@ module Axn
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
     # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
-    # `default:` participates only via resolve_model_via_sibling_id (which fires only when both record
-    # and raw id are absent). The top-level `<field>_id` is compared against the CALLER-SUPPLIED token
-    # with the declared field's own coerce:/preprocess: applied (never its default — see
-    # _consistency_id_for), so the check agrees with what the reader itself sees; a default-only id (the
-    # caller supplied nothing) resolves to nil here and never fabricates a conflict. The subfield branch
-    # still reads both record and id raw off the resolved parent — unchanged, pre-existing. Skipped for
+    # `default:` participates only via resolve_model_via_sibling_id (which fires only when the record is
+    # absent). The `<field>_id` is compared against the CALLER-SUPPLIED token with the declared field's
+    # own coerce:/preprocess: applied (never its default — see _consistency_id_for) at BOTH depths, so the
+    # check agrees with what the reader and the finder path see; a default-only id (the caller supplied
+    # nothing) resolves to nil here and never fabricates a conflict. Skipped for
     # custom finders, where `<field>_id` holds a finder-specific token rather than a primary key and a
     # record-vs-id comparison would be meaningless. Mismatches are structurally dev-facing, aggregated
     # into the settled exception's errors on :base (base messages render verbatim — each mismatch
@@ -682,8 +681,7 @@ module Axn
 
         source = _resolved_parent_value(config)
         record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: source, permit_method_call: config.method_call)
-        raw_id = Core::FieldResolvers.extract_or_nil(field: Internal::FieldConfig.model_id_key(config.field),
-                                                     provided_data: source, permit_method_call: config.method_call)
+        raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
       end
@@ -725,40 +723,44 @@ module Axn
       model.is_a?(Hash) && model[:finder] == :find
     end
 
-    # The <field>_id to check top-level model consistency against: nil unless the caller actually
-    # supplied the id (a default-only id must not fabricate a conflict with a present record — the
-    # record is authoritative), and otherwise the caller-supplied token with the declared <field>_id's
-    # coerce:/preprocess: applied — via ContractForSubfields._apply_read_path_transforms, the transform
-    # seam WITHOUT its default: fallback and WITHOUT the resolve-value cache (this is a comparison-only
-    # read, not a materializing one) — so the check agrees with what the reader itself sees. Using
-    # resolve_value here would be wrong: it substitutes the field's default: whenever the transformed
-    # value comes back nil, so a caller-supplied id that preprocesses to nil (e.g. blank-to-nil) would
-    # silently pick up a default and fabricate a conflict with a present record — a default is axn's
-    # synthetic fallback, never a caller-supplied id, and must never enter this comparison. A <field>_id
-    # with no declared field carries no transform, so the raw token is used directly.
+    # The <field>_id to check model consistency against, at EITHER depth (PRO-2910): nil unless the
+    # caller actually supplied the id (a default-only id must not fabricate a conflict with a present
+    # record — the record is authoritative), and otherwise the caller-supplied token with the declared
+    # `<field>_id`'s coerce:/preprocess:/default: applied via its own reader value (resolve_value), so the
+    # check compares exactly what the `<field>_id` reader, its validation, and the finder path
+    # (resolve_model_via_sibling_id) all see. The `raw`-nil guard is what keeps a default out of the
+    # comparison: with the raw token present, resolve_value returns the transformed present value (never
+    # the field's default, which only substitutes for a nil resolved value), so a caller-SUPPLIED id is
+    # compared as its own resolved value while a caller-OMITTED id is exempted before resolution. Reusing
+    # the CACHED reader value also guarantees a stateful/side-effecting preprocess runs at most once per
+    # call. A `<field>_id` with no declared field config carries no transform, so the raw token is used.
     def _consistency_id_for(config)
       id_key = Internal::FieldConfig.model_id_key(config.field)
-      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: @context.provided_data,
-                                                permit_method_call: config.method_call)
-      return nil if raw.nil?
+      # The source and id-config lookup differ by depth: a top-level id is another declared root read off
+      # provided_data; a subfield id is a child of the model leaf's own wire parent (the `on:` target),
+      # read off the resolved parent — the same parent/child structure the finder rescue consults.
+      if config.subfield?
+        source = _resolved_parent_value(config)
+        path = _resolved_path_for(config)
+        sibling_node = path && path.parent_node.children[id_key.to_sym]
+        id_config = sibling_node&.configs&.first
+      else
+        source = @context.provided_data
+        id_config = @action_class.send(:internal_field_configs).find { |c| c.field == id_key }
+      end
 
-      id_config = @action_class.send(:internal_field_configs).find { |c| c.field == id_key }
+      raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
+      return nil if raw.nil?
       return raw unless id_config
 
-      # Reuse the declared `<field>_id` field's CACHED reader value (resolve_value) rather than
-      # re-transforming: a stateful/side-effecting preprocess must run at most once per call (validation
-      # and the id reader already resolved it), and the consistency check then compares exactly what the
-      # reader saw. The `raw`-nil guard above already exempts a caller-OMITTED (default-only) id from
-      # fabricating a conflict with a present record (present-record authority); a caller-SUPPLIED id is
-      # compared as its own resolved value.
       Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
     end
 
     # The comparison core, source-agnostic: a provided record whose id disagrees with a provided
     # `<field>_id` is a contradiction. A nil/blank id, an absent record, or a record without `.id` is
-    # no conflict. Callers supply the record and the (resolved) id from the appropriate source
-    # (top-level: the caller-supplied token with its declared transform applied, never a default — see
-    # _consistency_id_for; subfield: raw off the resolved parent).
+    # no conflict. Callers supply the record and the (resolved) id from the appropriate source: at both
+    # depths the caller-supplied token with its declared transform applied, never a default — see
+    # _consistency_id_for.
     def _record_id_mismatch(field:, record:, raw_id:)
       return nil if record.nil? || raw_id.nil? || raw_id.to_s.strip.empty?
       return nil unless record.respond_to?(:id)

@@ -254,7 +254,7 @@ module Axn
         _mark_provisional_reader(action, config) if nested
         in_progress[config] = true
         begin
-          record ||= resolve_model_via_sibling_id(action, config, options, parent)
+          record ||= resolve_model_via_sibling_id(action, config, options)
           record = Axn::Internal::FieldConfig.resolve_default(action, config) if record.nil? && config.applied_default?
         ensure
           in_progress.delete(config)
@@ -267,48 +267,49 @@ module Axn
         record
       end
 
-      # When a model subfield resolves nil AND the raw wire data carried no id token, a sibling
-      # `<field>_id` subfield's VALUE-LEVEL resolution (its own reader — which applies its default:)
-      # supplies the lookup token, and the model resolves from it. This is the model-flavored half of
-      # value-level defaults: the id the resolver consults is the id user code reads. Only fires when
-      # the raw id is absent (a present id that failed its lookup must not be silently overridden — a
-      # failed lookup stays nil). The sibling `<field>_id` lives beside the model leaf under the leaf's
-      # own WIRE parent — the `on:` target (`parent_node`), since a field name is a single wire key.
-      def self.resolve_model_via_sibling_id(action, config, options, parent_value)
-        raw_id = Axn::Core::FieldResolvers.extract_or_nil(
-          field: Axn::Internal::FieldConfig.model_id_key(config.field), provided_data: parent_value,
-          permit_method_call: config.method_call
-        )
-        return nil unless raw_id.nil?
-
+      # When a model field/subfield's RAW-token lookup resolves nil, retry the finder with the declared
+      # sibling `<field>_id`'s VALUE-LEVEL resolution — its own reader, which applies the id field's
+      # coerce:/preprocess:/default: on the read path. This routes the record lookup through the SAME
+      # transformed id the `<field>_id` reader, its validation, and the model-consistency check
+      # (`Executor#_consistency_id_for`) all see, closing the gap where the finder alone consumed the raw
+      # token (PRO-2910). It subsumes two cases uniformly, because `resolve_value` yields exactly the
+      # right token for each:
+      #   * a present-but-untransformed caller id → its transformed value (never the default), so a
+      #     present id that still fails after transform stays nil, never overridden by a sibling default;
+      #   * an ABSENT caller id → the sibling `<field>_id`'s own default (the value-level model rescue,
+      #     PRO-2889): the id the resolver consults is the id user code reads.
+      # A present record never reaches here (present-RECORD wins before the caller — `record ||=`). The
+      # sibling `<field>_id` lives beside the model leaf under the leaf's own WIRE parent — the `on:`
+      # target (`parent_node`), since a field name is a single wire key.
+      def self.resolve_model_via_sibling_id(action, config, options)
         # Ambient configs are absent from `_resolved_subfields` (they live in the ambient-scoped tree),
         # so fall back to that index — otherwise an ambient `model:` subfield could never consult a
-        # sibling `<field>_id` default (the value-level model rescue), unlike every non-ambient subfield.
+        # sibling `<field>_id` (the value-level model rescue), unlike every non-ambient subfield.
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return nil if path.nil?
 
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        # Select the sibling config with the SAME predicate the declaration credits
-        # (Schema.sibling_id_rescued? → usable_id_token_default?), so a merged id node — several routes
-        # on one `<field>_id` wire key — resolves the route the credit relied on. A blank default IS
-        # applied at runtime but is blank-guarded by the model resolver, so it is not a usable token:
-        # picking it by applied_default? alone (blank route declared first) would supply no id and
-        # silently defeat the rescue the declaration accepted.
-        sibling_config =
+        # Candidate sibling `<field>_id` configs: another top-level root at depth 0 (a declared field,
+        # not a child of parent_node), else the children of the leaf's own wire parent.
+        candidates =
           if path.ancestors.empty?
-            # Top-level: the sibling <field>_id is another top-level root (a declared field), not a
-            # child of parent_node.
-            action.class.internal_field_configs.find do |c|
-              c.field == id_key && Axn::Reflection::Schema.usable_id_token_default?(c)
-            end
+            action.class.internal_field_configs.select { |c| c.field == id_key }
           else
-            path.parent_node.children[id_key.to_sym]&.configs&.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+            path.parent_node.children[id_key.to_sym]&.configs || []
           end
+        # Prefer the config whose default the declaration credits as a usable lookup token
+        # (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate), so on an ABSENT id a merged
+        # id node resolves the route the credit relied on rather than a blank-default route declared first
+        # (a blank default is applied but blank-guarded by the resolver, supplying no token). When no
+        # candidate carries a usable default, the representative (first) config still supplies the
+        # transformed value of a PRESENT id — `resolve_value` returns the caller's transformed id, not a
+        # default, so the present-id retry works even for an id field with no default.
+        sibling_config = candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) } || candidates.first
         return nil if sibling_config.nil?
 
-        # The sibling reads through its own reader (the canonical, memoized path). At depth 0 the
-        # top-level `<field>_id` reader routes through the read path too, so `public_send` is uniform
-        # across depths — it applies the sibling's own default:/preprocess: either way.
+        # The sibling reads through its own reader (the canonical, memoized read path), so it applies the
+        # id field's coerce:/preprocess:/default: uniformly across depths — at depth 0 the top-level
+        # `<field>_id` reader routes through the read path too, so `public_send` behaves identically.
         sibling_value = action.public_send(sibling_config.reader_as)
         return nil if sibling_value.nil?
 

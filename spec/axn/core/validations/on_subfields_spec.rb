@@ -2030,6 +2030,72 @@ RSpec.describe Axn do
       end
     end
 
+    context "with a transformed sibling <field>_id feeding a STRICT finder (present id, PRO-2910)" do
+      # A finder that resolves ONLY the exactly-transformed token — so the RAW wire id misses. The
+      # record lookup must consume the same transformed id the `<field>_id` reader/validation see, not
+      # the raw token (the PR #173 subfield finding).
+      let(:strict_class) do
+        Class.new do
+          def self.registry = @registry ||= {}
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.fetch(id) = registry[id]
+        end
+      end
+
+      before { stub_const("StrictCo", strict_class) }
+
+      it "resolves the record from a coerced sibling id (string wire value → integer finder key)" do
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, coerce: Integer # wire sends "5"
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "5" })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5) # finder consumed the COERCED 5, not the raw "5"
+      end
+
+      it "resolves the record from a preprocessed sibling id" do
+        strict_class.registry["5"] = strict_class.new("5")
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: " 5 " })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq("5")
+      end
+
+      it "resolves via a coerced sibling id under coerce_input_types (no per-field coerce:)" do
+        strict_class.registry[5] = strict_class.new(5)
+        action = build_axn do
+          configure { |c| c.coerce_input_types = true }
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, type: Integer
+          expects :company, on: :meta, model: { klass: StrictCo, finder: :fetch }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta: { company_id: "5" })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(5)
+      end
+    end
+
     context "with a model subfield reached via a dotted on: and a sibling id (PRO-2889)" do
       # `expects :company, on: "payload.meta", model: ...` and `expects :company_id, on: "payload.meta", ...`
       # are siblings under the `payload.meta` wire node, so sibling lookups key off that shared wire parent.
@@ -2216,6 +2282,48 @@ RSpec.describe Axn do
         # The chain is present but omits the id; the sibling `<field>_id` default supplies the lookup
         # token on the read path (a blank `payload: {}` would now fail the parent's own presence).
         expect(action.call(payload: { meta: {} }).cid).to eq(42)
+      end
+    end
+
+    context "subfield model-consistency compares against the TRANSFORMED sibling id (PRO-2910)" do
+      # The subfield consistency check must compare a present record against the id the reader/finder
+      # actually see (its coerce:/preprocess: applied), not the raw token — mirroring top-level.
+      let(:find_class) do
+        Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+      end
+
+      before { stub_const("ConsistCo", find_class) }
+
+      it "does NOT fabricate a conflict when a present record matches the id only after preprocess:" do
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(meta: { company: ConsistCo.new("5"), company_id: " 5 " })
+
+        expect(result).to be_ok # raw " 5 " != record id "5", but the stripped "5" matches
+      end
+
+      it "still raises when the present record disagrees with the transformed id" do
+        action = build_axn do
+          expects :meta, type: Hash
+          expects :company_id, on: :meta, preprocess: lambda(&:strip)
+          expects :company, on: :meta, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(meta: { company: ConsistCo.new("5"), company_id: " 6 " })
+
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/conflicts with company_id="6"/)
       end
     end
 
