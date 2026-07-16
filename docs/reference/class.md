@@ -158,6 +158,15 @@ end
 * Unlike `expects … on:` subfields, a shape block does **not** define reader methods — there is no single value to bind (an array has many elements). It is a contract on structure only.
 * Composes with `of:`: `of:` checks each element's *class*, while the block describes the element's *fields*. `of:` is optional.
 
+::: tip Shape block vs. `on:` subfield — two tools, two jobs
+Both describe nested structure, but they answer different questions:
+
+* A **shape block** (`expects :items, type: Array do field … end`) **validates a structure** — it constrains the members of a value you already hold and defines **no** reader. Reach for it to assert the shape of an array's elements or a hash/object you pass through as one unit.
+* An **`on:` subfield** (`expects :zip, on: "address.billing"`) **reads a value out** — it lifts a nested value up to a flat, validated field with [its own reader](#nested-subfield-expectations).
+
+Rule of thumb: use a shape when you want to *check* the shape of a value; use `on:` when you want to *read* a value out of one.
+:::
+
 #### How `optional`, `allow_blank` and `allow_nil` work with validators
 
 When you specify `optional: true`, `allow_blank: true`, or `allow_nil: true` on a field, these options are automatically passed through to **all validators** applied to that field. This means:
@@ -350,7 +359,7 @@ The flat one-line spelling above is best for pulling a *single* leaf through a m
 
 #### Subfield readers always generate
 
-Every subfield defines a top-level reader method (e.g., `random` in the example above). When a sub-key's name would collide with an existing reader, rename it with `as:`/`prefix:` (below) instead — the removed `readers: false` escape hatch suppressed access entirely, while a rename keeps both values reachable.
+Every subfield defines a top-level reader method (e.g., `random` in the example above). When a sub-key's name would collide with an existing reader, rename it with `as:`/`prefix:` (below) so both values stay reachable.
 
 #### Renaming the reader (`as:` / `prefix:`)
 

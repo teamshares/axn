@@ -414,20 +414,20 @@ resolves to a **class** method, since no action instance exists during enqueuein
 supports `if:`/`unless:` conditions.
 
 ```ruby
-class StockCertificate::EoyTaxReminder
+class Orders::SendShipmentReminder
   include Axn
   async :sidekiq
 
-  expects :tax_profile, model: TaxProfile
-  enqueues_each :tax_profile, from: -> { TaxProfile.needs_address_validation }
+  expects :order, model: Order
+  enqueues_each :order, from: -> { Order.awaiting_shipment }
 
   on_enqueue_all do |sources:, count:| # [!code focus:4]
-    active, inactive = sources[:tax_profile].partition { _1.user.active? }
-    SlackSender.call(channel: :eng_ops, text: "#{active.size} active, #{inactive.size} deactivated (#{count} enqueued)")
+    rush, standard = sources[:order].partition(&:rush?)
+    Notifier.call(channel: :ops, text: "#{rush.size} rush, #{standard.size} standard (#{count} enqueued)")
   end
 
   def call
-    # per-tax-profile work
+    # per-order work
   end
 end
 ```
@@ -437,7 +437,7 @@ The handler may declare any subset of these keyword arguments (or none):
 - **`count:`** — the exact number of jobs enqueued (post-filter). Always available, including
   for cross-product runs.
 - **`sources:`** — a hash of `{ field => resolved_source }` for each iterated field, e.g.
-  `{ tax_profile: <relation> }` or, for a cross-product, `{ user: <rel>, company: <rel> }`.
+  `{ order: <relation> }` or, for a cross-product, `{ user: <rel>, company: <rel> }`.
   Sources are the resolved-but-un-materialized relations (run your own `.count` / `.group` /
   `.partition`), and reflect any kwarg overrides passed to `enqueue_all`.
 
