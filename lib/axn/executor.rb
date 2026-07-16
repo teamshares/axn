@@ -728,35 +728,35 @@ module Axn
     # record — the record is authoritative), and otherwise the caller-supplied token with the declared
     # `<field>_id`'s coerce:/preprocess:/default: applied via its own reader value (resolve_value), so the
     # check compares exactly what the `<field>_id` reader, its validation, and the finder path
-    # (resolve_model_via_sibling_id) all see. The `raw`-nil guard is what keeps a default out of the
-    # comparison: with the raw token present, resolve_value returns the transformed present value (never
-    # the field's default, which only substitutes for a nil resolved value), so a caller-SUPPLIED id is
-    # compared as its own resolved value while a caller-OMITTED id is exempted before resolution. Reusing
-    # the CACHED reader value also guarantees a stateful/side-effecting preprocess runs at most once per
-    # call. A `<field>_id` with no declared field config carries no transform, so the raw token is used.
+    # (resolve_model_via_sibling_id) all see. The `raw`-nil guard enforces present-record authority: a
+    # caller-OMITTED id is exempted before any resolution, so its default never fabricates a conflict; a
+    # caller-SUPPLIED id is compared as its own resolved value — normally its transform, or that route's
+    # default when a present value's preprocess maps it to nil (exactly what the reader returns there).
+    # Reusing the CACHED reader value also guarantees a stateful/side-effecting preprocess runs at most once
+    # per call. A `<field>_id` with no declared field config carries no transform, so the raw token is used.
     def _consistency_id_for(config)
       id_key = Internal::FieldConfig.model_id_key(config.field)
-      # The source and id-config lookup differ by depth: a top-level id is another declared root read off
-      # provided_data; a subfield id is a child of the model leaf's own wire parent (the `on:` target),
-      # read off the resolved parent — the same parent/child structure the finder rescue consults.
-      if config.subfield?
-        source = _resolved_parent_value(config)
-        # Ambient configs are kept out of `_resolved_subfields`, so fall back to the ambient-scoped tree
-        # exactly as the finder path (resolve_model_via_sibling_id) does — otherwise an ambient model
-        # subfield's id would be compared raw and fabricate the conflict PRO-2910 fixes elsewhere.
-        path = _resolved_path_for(config) || @action_class._ambient_subfield_tree.index[config]
-        sibling_node = path && path.parent_node.children[id_key.to_sym]
-        id_config = sibling_node&.configs&.first
-      else
-        source = @context.provided_data
-        id_config = @action_class.send(:internal_field_configs).find { |c| c.field == id_key }
-      end
-
+      # The raw source differs by depth: a top-level id is read off provided_data; a subfield id off the
+      # resolved parent (the model leaf's own wire parent). The `raw`-nil guard exempts a caller-OMITTED id
+      # before any resolution, so a default-only id never fabricates a conflict with a present record.
+      source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
       raw = Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
       return nil if raw.nil?
-      return raw unless id_config
 
-      Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
+      # Compare against the transformed id the finder path itself would use: the SAME priority-ordered
+      # sibling `<field>_id` routes (ContractForSubfields.sibling_id_configs — depth-agnostic, ambient-aware,
+      # own-`on:`-route first), resolved via the first that yields a non-nil value. A `<field>_id` with no
+      # declared config carries no transform, so the raw token is used; a declared id that resolves to nil
+      # (a present value its preprocess maps to nil, no default) yields nil — no conflict — matching the
+      # reader.
+      sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(@action, config)
+      return raw if sibling_configs.empty?
+
+      sibling_configs.each do |id_config|
+        resolved = Axn::Core::ContractForSubfields.resolve_value(@action, id_config)
+        return resolved unless resolved.nil?
+      end
+      nil
     end
 
     # The comparison core, source-agnostic: a provided record whose id disagrees with a provided

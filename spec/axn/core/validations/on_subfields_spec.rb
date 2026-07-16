@@ -2347,6 +2347,24 @@ RSpec.describe Axn do
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/conflicts with company_id="6"/)
       end
+
+      it "compares against the model's OWN-route id in a merged node (not declaration-order first)" do
+        # Merged `company_id` node: route A (dotted) raw and declared first, route B (on: :thing) strips —
+        # declared beside the model. The consistency check must compare the present record against route B's
+        # transformed id (matching the finder path), not route A's raw value.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", as: :pt_company_id # route A: raw, first
+          expects :company_id, on: :thing, preprocess: lambda(&:strip), as: :t_company_id # route B: beside model
+          expects :company, on: :thing, model: { klass: ConsistCo, finder: :find }, allow_nil: true
+          def call = nil
+        end
+
+        result = action.call(payload: { thing: { company: ConsistCo.new("5"), company_id: " 5 " } })
+
+        expect(result).to be_ok # route B strips " 5 " → "5" == record id "5"; route A's raw " 5 " would conflict
+      end
     end
 
     context "subfield reader memos are cleared at the pipeline boundary (PRO-2889)" do

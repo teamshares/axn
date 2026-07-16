@@ -282,46 +282,13 @@ module Axn
       # sibling `<field>_id` lives beside the model leaf under the leaf's own WIRE parent — the `on:`
       # target (`parent_node`), since a field name is a single wire key.
       def self.resolve_model_via_sibling_id(action, config, options)
-        # Ambient configs are absent from `_resolved_subfields` (they live in the ambient-scoped tree),
-        # so fall back to that index — otherwise an ambient `model:` subfield could never consult a
-        # sibling `<field>_id` (the value-level model rescue), unlike every non-ambient subfield.
-        path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
-        return nil if path.nil?
-
         id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        # Candidate sibling `<field>_id` configs: another top-level root at depth 0 (a declared field,
-        # not a child of parent_node), else the children of the leaf's own wire parent.
-        candidates =
-          if path.ancestors.empty?
-            action.class.internal_field_configs.select { |c| c.field == id_key }
-          else
-            path.parent_node.children[id_key.to_sym]&.configs || []
-          end
-
-        # Priority order for which sibling `<field>_id` route supplies the lookup token, when a merged id
-        # node carries several routes (distinct `on:` spellings onto one wire key, each with its own
-        # coerce:/preprocess:/default:):
-        #   1. the id declared beside THIS model on the SAME `on:` route — its transform is this model
-        #      field's canonical id (the reader user code reads for it);
-        #   2. a route whose default the declaration credits as a usable token (Schema.usable_id_token_default?
-        #      — sibling_id_rescued?'s predicate), so an ABSENT id falls back to the credited default even
-        #      when it lives on a different route than the model, and never onto a blank-default route;
-        #   3. declaration-order first, so a lone untransformed/undefaulted id still supplies a present token.
-        # Read them in that order and take the FIRST that yields a non-nil token: a PRESENT id resolves
-        # through its own-route transform (1), while an OMITTED id (own route yields nil) falls through to
-        # the credited default route (2). A present id never picks up a default (resolve_value returns the
-        # transformed present value, not the default), so a present id that still fails after transform
-        # stays nil rather than being overridden by another route's default.
-        ordered = [
-          candidates.find { |c| c.on.to_s == config.on.to_s },
-          candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) },
-          candidates.first,
-        ].compact.uniq
-
-        ordered.each do |sibling_config|
-          # The sibling reads through its own reader (the canonical, memoized read path), so it applies the
-          # id field's coerce:/preprocess:/default: uniformly across depths — at depth 0 the top-level
-          # `<field>_id` reader routes through the read path too, so `public_send` behaves identically.
+        # Read the declared sibling `<field>_id` routes in priority order (sibling_id_configs), taking the
+        # FIRST that yields a non-nil token: a PRESENT id resolves through its own-route transform, while an
+        # OMITTED id (own route yields nil) falls through to the credited default route. A present id never
+        # picks up a default (resolve_value returns the transformed present value, not the default), so a
+        # present id that still fails after transform stays nil rather than being overridden by a default.
+        sibling_id_configs(action, config).each do |sibling_config|
           sibling_value = action.public_send(sibling_config.reader_as)
           next if sibling_value.nil?
 
@@ -330,6 +297,40 @@ module Axn
                                                    provided_data: { id_key => sibling_value })
         end
         nil
+      end
+
+      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order both the
+      # finder rescue (resolve_model_via_sibling_id) and the consistency check (Executor#_consistency_id_for)
+      # consult, so the two can never disagree about which route's transformed id a present record/lookup
+      # sees. When a merged id node carries several routes (distinct `on:` spellings onto one wire key, each
+      # with its own coerce:/preprocess:/default:), the order is:
+      #   1. the id declared beside THIS model on the SAME `on:` route — its transform is this model field's
+      #      canonical id (the reader user code reads for it);
+      #   2. a route whose default the declaration credits as a usable token (Schema.usable_id_token_default?
+      #      — sibling_id_rescued?'s predicate), so an ABSENT id falls back to the credited default even when
+      #      it lives on a different route than the model, and never onto a blank-default route;
+      #   3. declaration-order first, so a lone untransformed/undefaulted id still supplies a present token.
+      # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
+      # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
+      def self.sibling_id_configs(action, config)
+        path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
+        return [] if path.nil?
+
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
+        # Candidate sibling `<field>_id` configs: another top-level root at depth 0 (a declared field, not a
+        # child of parent_node), else the children of the leaf's own wire parent.
+        candidates =
+          if path.ancestors.empty?
+            action.class.internal_field_configs.select { |c| c.field == id_key }
+          else
+            path.parent_node.children[id_key.to_sym]&.configs || []
+          end
+
+        [
+          candidates.find { |c| c.on.to_s == config.on.to_s },
+          candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) },
+          candidates.first,
+        ].compact.uniq
       end
 
       module ClassMethods
