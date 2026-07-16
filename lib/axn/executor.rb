@@ -667,8 +667,9 @@ module Axn
         next unless _id_based_model?(config)
         next if _model_gate_closed?(config) { @action.internal_context }
 
-        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: @context.provided_data,
-                                                     permit_method_call: config.method_call)
+        # Reuse the per-config raw memo (present_record read the same key during resolution), so the
+        # directly-provided record — and its `method_call:` dispatch — is read at most once (PRO-2910).
+        record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, @context.provided_data)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg
@@ -680,7 +681,7 @@ module Axn
         next if _model_gate_closed?(config) { _resolved_parent_value(config) }
 
         source = _resolved_parent_value(config)
-        record = Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: source, permit_method_call: config.method_call)
+        record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, source)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
         mismatches << msg if msg

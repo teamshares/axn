@@ -2531,6 +2531,34 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.cid).to eq(5) # method dispatched once; a second dispatch (nil) would miss
       end
+
+      it "reads a method_call RECORD key at most once when deriving from the implicit id (no declared id)" do
+        # No declared `<field>_id`, `method_call: true` model, PORO parent exposing BOTH `company` and
+        # `company_id`. The record key is read once (present_record); the finder must derive from the id
+        # ALONE (never re-read the record key) and the consistency check must reuse that one read. A one-shot
+        # `company` (nil, then a spurious record) would otherwise resolve the model from the wrong value.
+        strict_class.registry[5] = strict_class.new(5)
+        spurious = Struct.new(:id).new(999)
+        meta = Class.new do
+          define_method(:initialize) { @calls = 0 }
+          define_method(:company) do
+            @calls += 1
+            @calls == 1 ? nil : spurious
+          end
+          def company_id = 5
+        end.new
+        action = build_axn do
+          expects :meta
+          expects :company, on: :meta, method_call: true, model: { klass: McCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(meta:)
+
+        expect(result).to be_ok # no spurious record → no false record-vs-id conflict
+        expect(result.cid).to eq(5) # derived from the implicit id 5, not the re-read spurious record
+      end
     end
 
     context "a stateful sibling <field>_id transform runs at most once (model declared BEFORE its id, PRO-2910)" do

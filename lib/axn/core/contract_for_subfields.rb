@@ -285,9 +285,9 @@ module Axn
         return _model_from_raw_parent(config, options, parent) if _raw_reads?(action)
 
         # A directly-supplied RECORD is authoritative and read raw — never overridden by an id lookup. Read
-        # the record key exactly as the Model resolver would (extract + presence).
-        present_record = Axn::Core::FieldResolvers.extract_or_nil(field: config.field, provided_data: parent,
-                                                                  permit_method_call: config.method_call).presence
+        # the record key through the per-config raw memo so it (and its `method_call:` dispatch) is read at
+        # most once — shared with the model-consistency check, which reads the same key (PRO-2910).
+        present_record = _memoized_raw_extract(action, config, parent).presence
 
         in_progress = _resolve_in_progress_set(action)
         # A model field's value can't be defined in terms of its own resolution: a record-supplying `default:`
@@ -339,23 +339,26 @@ module Axn
                                           provided_data: parent, permit_method_call: config.method_call)
       end
 
-      # Resolve the model record from its `<field>_id` (a present RECORD is already handled by the caller).
-      # When a sibling `<field>_id` is DECLARED, the lookup is routed through that id's read-path transform
-      # (its own reader) via _declared_id_token, so the record resolves from the SAME value the `<field>_id`
-      # reader, its validation, and the model-consistency check (`Executor#_consistency_id_for`) all see —
-      # never the raw token (PRO-2910). When NO `<field>_id` is declared, the caller's RAW token is the lookup
-      # key (it carries no transform).
+      # Resolve the model record from its `<field>_id` (a present RECORD is already handled by the caller,
+      # so this derives from the id ALONE). The lookup token is a DECLARED sibling `<field>_id`'s read-path
+      # transform (its own reader, via _declared_id_token) so the record resolves from the SAME value the
+      # `<field>_id` reader, its validation, and the model-consistency check all see; with NO `<field>_id`
+      # declared it is the caller's RAW token off the parent (no transform). Either way the record is looked
+      # up through a SYNTHETIC hash keyed by the id key: the Model resolver finds no record key there, so it
+      # goes straight to the id derivation — the caller already read the record key (present_record), and
+      # re-reading it here would dispatch a one-shot/stateful record reader a second time (PRO-2910).
       def self.resolve_model_via_id(action, config, options, parent)
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
         configs = sibling_id_configs(action, config)
-        # No declared `<field>_id`: the caller's raw token is the lookup key (nothing to transform).
-        return _model_from_raw_parent(config, options, parent) if configs.empty?
-
-        token = _declared_id_token(action, configs)
+        token =
+          if configs.empty?
+            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
+          else
+            _declared_id_token(action, configs)
+          end
         return nil if token.nil?
 
-        # Synthetic resolve: the Model resolver reads `<field>_id` from a hash keyed by that same id key.
-        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:,
-                                          provided_data: { Axn::Internal::FieldConfig.model_id_key(config.field) => token })
+        Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => token })
       end
 
       # The effective transformed `<field>_id` token from the DECLARED sibling routes (`configs`, already the
