@@ -11,6 +11,11 @@ module Axn
           # instance_accessor: false — class-level DSL, not per-instance state.
           # _tool_declaration: nil (undeclared) | :all | false | Array<Symbol> (explicit adapters).
           class_attribute :_tool_declaration, :_tool_name_override, instance_accessor: false, default: nil
+
+          # Per-adapter provider-name overrides ({adapter => raw_name}), rebuilt fresh on each `tool`
+          # call. A class_attribute so a subclass inherits the parent's tool identity until it redeclares
+          # `tool`. Frozen default: never mutate in place, always assign a fresh hash.
+          class_attribute :_tool_name_overrides, instance_accessor: false, default: {}.freeze
           extend ClassMethods
         end
       end
@@ -32,69 +37,90 @@ module Axn
         #   tool :mcp, :ruby_llm  -> explicit per-adapter set
         #   tool false            -> opt out (a helper Axn living under a tool_path)
         #   tool name: "…"        -> membership in all adapters, with a provider-name override
+        #   tool mcp: { title: "…" } -> member of :mcp with per-adapter config (sugar over
+        #     configure(:mcp)); a bag `name:` overrides the provider name for that adapter only
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
         # here would be load-order-hostile) and simply never match tools_for.
-        def tool(*adapters, name: nil)
+        def tool(*adapters, name: nil, **bags)
           # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
-          # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins,
-          # e.g. `tool :mcp` then `tool name:` becomes :all), changing membership at tools_for time
-          # instead of failing here. Per axn's fail-at-declaration doctrine, reject the repeat. A
-          # subclass declaring its own `tool` is a fresh first call (fresh object, no ivar) and is fine.
+          # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins),
+          # changing membership at tools_for time instead of failing here. Per axn's fail-at-declaration
+          # doctrine, reject the repeat. A subclass declaring its own `tool` is a fresh first call
+          # (fresh object, no ivar) and is fine.
           if instance_variable_defined?(:@__axn_tool_declared)
-            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters and `name:` in a single call " \
-                                 "(e.g. `tool :mcp, :ruby_llm, name: \"...\"`)."
+            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters, `name:`, and " \
+                                 "per-adapter options in a single call (e.g. `tool :mcp, ruby_llm: { … }, name: \"...\"`)."
           end
           @__axn_tool_declared = true
 
           if adapters.include?(false)
-            raise ArgumentError, "`tool false` opts out; it can't be combined with adapters or `name:`" if adapters.length > 1 || !name.nil?
+            if adapters.length > 1 || !name.nil? || bags.any?
+              raise ArgumentError, "`tool false` opts out; it can't be combined with adapters, `name:`, or per-adapter options"
+            end
 
             self._tool_name_override = nil # a subclass opting out reports its OWN tool_name, not an inherited `tool name:` override
+            self._tool_name_overrides = {}.freeze # ...nor an inherited per-adapter `tool <adapter>: { name: }` override
             self._tool_declaration = false
             return
           end
 
-          non_symbols = adapters.reject { |a| a.is_a?(Symbol) }
+          # Adapter identity must be a Symbol on both paths. Bag keys are normally Symbols (Ruby keyword
+          # capture), but a `**string_keyed_hash` splat can smuggle a String key in — which would land in
+          # `_tool_declaration` and the config store as a String and then never match the Symbol every
+          # lookup (`member?`, `tools_for`) uses, silently omitting the tool. Reject here like positional
+          # adapters, so membership stays Symbol-keyed end to end.
+          non_symbols = (adapters + bags.keys).reject { |a| a.is_a?(Symbol) }
           raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
 
-          # A provided `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would
-          # yield a blank tool_name, violating the never-blank contract. Fail at declaration rather
-          # than silently accept an unusable override. A nil name (not provided) is not an error.
+          non_hash = bags.reject { |_adapter, opts| opts.is_a?(Hash) }
+          unless non_hash.empty?
+            raise ArgumentError,
+                  "tool per-adapter options must be Hashes (e.g. `tool mcp: { title: \"...\" }`); got #{non_hash.inspect}"
+          end
+
+          # A shared `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would yield a
+          # blank tool_name, violating the never-blank contract. Fail at declaration. A nil name is not an error.
           if !name.nil? && _tool_name_sanitize(name).empty?
             raise ArgumentError,
                   "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
                   "provide a name containing at least one such character"
           end
 
-          # Always assign (even when name is nil). `_tool_name_override` is a class_attribute, so a
-          # subclass of a class that set `tool name: "x"` INHERITS that override. A fresh `tool`
-          # declaration without `name:` means "derive from THIS class's name", so writing nil here
-          # clears the inherited value rather than letting the parent's override leak through.
+          # Always assign (even when name is nil): `_tool_name_override` is a class_attribute, so a fresh
+          # `tool` without `name:` must clear an inherited override rather than let the parent's leak through.
           self._tool_name_override = name
 
-          self._tool_declaration = adapters.empty? ? :all : adapters
+          # Membership is the union of positional adapters and per-adapter bag keys; a bag key implies
+          # membership in that adapter. Bare `tool` (no adapters, no bags) means every registered adapter.
+          declared = (adapters + bags.keys).uniq
+          self._tool_declaration = declared.empty? ? :all : declared
+
+          _apply_tool_bags!(bags)
+
           nil
         end
 
-        # The provider-facing tool name. The default mirrors an explicit `axn_name` (sanitized)
-        # when one is set — this is what lets an otherwise-anonymous tool class get a real
-        # provider-facing name (`Class.new { include Axn; axn_name "greet"; tool }`) — and
-        # otherwise derives from the Ruby class name. An explicit `tool name:` override wins
-        # over both. Derivation (from whichever source wins) strips the leading run of
-        # configured prefixes, snake_cases the rest, and restricts to [a-z0-9_]. Never blank.
-        def tool_name
+        # The provider-facing tool name. With an `adapter`, a per-adapter `tool <adapter>: { name: }`
+        # override wins first; then an explicit shared `tool name:`; then derivation from `axn_name`/class
+        # name (strip configured prefixes, snake_case, restrict to [a-z0-9_], never blank). Zero-arg
+        # `tool_name` skips the per-adapter tier and is unchanged. The `adapter` arg is consumed internally
+        # by the registry; users never pass it.
+        def tool_name(adapter = nil)
+          if adapter && (raw = _tool_name_overrides[adapter])
+            sanitized = _tool_name_sanitize(raw)
+            return sanitized unless sanitized.empty?
+          end
+
           # Defense-in-depth: the `tool` DSL rejects an override that sanitizes to empty, but an
-          # override set through some other path (a direct class_attribute write) must still never
-          # produce a blank name — sanitize first and fall through to derivation if nothing survives.
+          # override set through some other path must still never produce a blank name — sanitize and fall through.
           override = _tool_name_override
           if override
             sanitized_override = _tool_name_sanitize(override)
             return sanitized_override unless sanitized_override.empty?
           end
 
-          # `axn_name.presence || name.presence` — NOT `resolved_axn_name` — so a truly nameless
-          # class (no axn_name, no class name) falls back to "tool" below rather than deriving
-          # from the "Anonymous Axn" sentinel.
+          # `axn_name.presence || name.presence` — NOT `resolved_axn_name` — so a truly nameless class
+          # falls back to "tool" below rather than deriving from the "Anonymous Axn" sentinel.
           source = axn_name.presence || name.presence
           return "tool" if source.nil? || source.strip.empty?
 
@@ -108,6 +134,37 @@ module Axn
         end
 
         private
+
+        # A per-adapter bag is sugar over `configure(<adapter>)` for opaque config; the `name` key is
+        # the one exception — it is core-owned (feeds tool_name), so it is intercepted here and never
+        # written to the config store. Everything else routes through the same NamespaceWriter.
+        def _apply_tool_bags!(bags)
+          per_adapter_names = {}
+          bags.each do |adapter, opts|
+            opts = opts.dup
+            # `name` is core-owned; accept it whether written with a symbol or string key — the same
+            # leniency NamespaceWriter applies to the config keys below — and always delete both forms
+            # so it can never leak into the config store. A symbol key wins if the bag carries both.
+            sym_name = opts.delete(:name)
+            str_name = opts.delete("name")
+            adapter_name = sym_name.nil? ? str_name : sym_name
+            unless adapter_name.nil?
+              if _tool_name_sanitize(adapter_name).empty?
+                raise ArgumentError,
+                      "tool #{adapter.inspect} name: #{adapter_name.inspect} has no provider-safe characters " \
+                      "([a-z0-9_]); provide a name containing at least one such character"
+              end
+              per_adapter_names[adapter] = adapter_name
+            end
+
+            next if opts.empty?
+
+            axn_configure(adapter) do |writer|
+              opts.each { |key, value| writer.public_send("#{key}=", value) }
+            end
+          end
+          self._tool_name_overrides = per_adapter_names.freeze
+        end
 
         def _tool_name_strip_leading_prefixes(segments)
           prefixes = _tool_name_stripped_prefixes.map(&:to_s)
