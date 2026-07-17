@@ -894,6 +894,17 @@ module Axn
         members.any? { |m| m.equal?(nil) } ? members : members + [nil]
       end
 
+      # The literal membership set of an `inclusion:` validator, whether declared as the hash long form
+      # ({ in: [...] } / { within: [...] }) or the equivalent bare-Array shorthand (inclusion: %w[a b c]).
+      # The two enforce the same set at runtime, so reflection treats them identically (PRO-2944). Exact
+      # Array only (instance_of?, not is_a?): an Array subclass could override the map/each the enum and
+      # type inference downstream depend on, and reflection must never run user code — a subclass set (or a
+      # dynamic Symbol/Proc source) simply reflects no enum (returns nil).
+      def inclusion_enum_values(inclusion)
+        values = inclusion.is_a?(Hash) ? (inclusion[:in] || inclusion[:within]) : inclusion
+        values if values.instance_of?(Array)
+      end
+
       def build_property(config, for_output: false, subfield: false)
         prop = {}
         prop[:description] = config.description if config.description
@@ -932,10 +943,8 @@ module Axn
         end
 
         if (inclusion = config.validations[:inclusion])
-          enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          # Exact Array only: an Array subclass could override the traversal used to build the enum, and
-          # reflection must not run user code. A subclass set simply reflects no enum.
-          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values.instance_of?(Array)
+          enum_values = inclusion_enum_values(inclusion)
+          prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
         end
 
         apply_structured_schema!(prop, config, for_output:)
@@ -1180,10 +1189,8 @@ module Axn
         end
 
         if validations[:inclusion]
-          inclusion = validations[:inclusion]
-          enum_values = inclusion[:in] || inclusion[:within] if inclusion.is_a?(Hash)
-          # Exact Array only (see build_property): don't traverse an Array subclass to infer the type.
-          if enum_values.instance_of?(Array) && enum_values.any?
+          enum_values = inclusion_enum_values(validations[:inclusion])
+          if enum_values&.any?
             types = enum_values.map { |v| enum_scalar_type(v) }.uniq
             return { type: types.first } if types.size == 1 && types.first
 
@@ -1340,9 +1347,10 @@ module Axn
       # could itself run user code. A Range's bounds are Comparable, so nil is never a member.
       # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
       def set_includes_nil?(opt)
-        return nil unless opt.is_a?(Hash)
-
-        collection = opt[:in] || opt[:within]
+        # The set is the collection under in:/within: (hash long form) or the bare collection itself
+        # (shorthand — inclusion: %w[a b], exclusion: [nil, "x"]); the two are equivalent at runtime, so
+        # nil-membership is judged the same for both (PRO-2944).
+        collection = opt.is_a?(Hash) ? (opt[:in] || opt[:within]) : opt
         return false if collection.is_a?(Range)
         return nil unless collection.instance_of?(Array) || (defined?(Set) && collection.instance_of?(Set))
 
