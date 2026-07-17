@@ -8,16 +8,20 @@ module Axn
     module Registry
       extend self
 
-      def register_adapter(key)
-        adapters << key.to_sym
+      def register_adapter(key, config_source = nil)
+        _adapter_sources[key.to_sym] = config_source
       end
 
       def adapters
-        @adapters ||= Set.new
+        _adapter_sources.keys.to_set
+      end
+
+      def adapter_config_source(adapter)
+        _adapter_sources[adapter.to_sym]
       end
 
       def reset_adapters!
-        @adapters = Set.new
+        @adapter_sources = {}
       end
 
       # Called at include-Axn time (direct include) and inherited time (subclasses) for every
@@ -226,7 +230,7 @@ module Axn
       # A tolerant configure(<adapter>) write lands in @_axn_config_overrides keyed by the
       # namespace symbol; a registered adapter key there signals implicit membership.
       def _declares_adapter_config?(klass, adapter)
-        return false unless adapters.include?(adapter)
+        return false unless _adapter_sources.key?(adapter)
 
         node = klass
         while node.is_a?(Module)
@@ -281,6 +285,10 @@ module Axn
 
       def _classes
         @classes ||= Set.new
+      end
+
+      def _adapter_sources
+        @adapter_sources ||= {}
       end
 
       # A class is "currently defined" iff its name resolves — WITHOUT triggering any autoload — to

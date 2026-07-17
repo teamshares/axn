@@ -21,6 +21,26 @@ RSpec.describe Axn::Tools::Registry do
       Axn.register_tool_adapter("mcp")
       expect(described_class.adapters).to include(:mcp)
     end
+
+    it "stores an optional config source and exposes it" do
+      source = Module.new
+      Axn.register_tool_adapter(:mcp, source)
+      expect(described_class.adapter_config_source(:mcp)).to be(source)
+    end
+
+    it "defaults the config source to nil" do
+      Axn.register_tool_adapter(:mcp)
+      expect(described_class.adapter_config_source(:mcp)).to be_nil
+    end
+
+    it "last registration wins for the same key" do
+      first = Module.new
+      second = Module.new
+      Axn.register_tool_adapter(:mcp, first)
+      Axn.register_tool_adapter(:mcp, second)
+      expect(described_class.adapters.to_a).to eq([:mcp])
+      expect(described_class.adapter_config_source(:mcp)).to be(second)
+    end
   end
 
   describe "global class tracking" do

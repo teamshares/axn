@@ -58,8 +58,8 @@ module Axn
     exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
   end
 
-  def self.register_tool_adapter(key)
-    Axn::Tools::Registry.register_adapter(key)
+  def self.register_tool_adapter(key, config_source = nil)
+    Axn::Tools::Registry.register_adapter(key, config_source)
   end
 
   def self.tools_for(adapter)
