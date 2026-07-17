@@ -17,6 +17,7 @@ require "axn/core"
 require "axn/executor"
 require "axn/reflection"
 require "axn/tools/registry"
+require "axn/tools/adapter_roots"
 require "axn/tools/invoker"
 
 # Internal utilities
