@@ -110,5 +110,5 @@ MyGem.wrap(tool_class) # the adapter already has the reference — no discovery 
 ```
 
 ::: warning Factory-built tools are not auto-discovered
-A factory-built class keeps a synthetic `name` (`AnonymousAxn_<id>`), which does not resolve to a loaded constant, so it is **never** enumerated by [`Axn.tools_for`](/reference/class) — even if you assign it to a constant. That's fine here: the adapter constructing it already holds the reference and wraps it directly. `Axn.tools_for` is for discovering **named** tool classes a user declares under a configured `tool_paths` directory (`class ListCompanies < MyGem::ToolBase; tool; …; end`); reach for that when you want registry discovery rather than programmatic construction.
+A factory-built class keeps a synthetic `name` (`AnonymousAxn_<id>`), which does not resolve to a loaded constant, so it is **never** enumerated by [`Axn.tools_for`](/reference/class) — even if you assign it to a constant. That's fine here: the adapter constructing it already holds the reference and wraps it directly. `Axn.tools_for` is for discovering **named** tool classes a user declares under one of an adapter's configured `tool_roots` directories (`class ListCompanies < MyGem::ToolBase; tool; …; end`); reach for that when you want registry discovery rather than programmatic construction.
 :::

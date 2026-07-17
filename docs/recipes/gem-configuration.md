@@ -91,6 +91,14 @@ class SearchTool < Axn::MCP::Tool
 end
 ```
 
+A class's final adapter membership is a union: whatever a bag key or bare `tool :adapter` names, added to any directory grant the class already has from living under one of that adapter's [`tool_roots`](/reference/configuration#tool-directories-are-declared-per-adapter) — declaring an adapter never subtracts from a directory grant, only adds to it. `tool except: :ruby_llm` is the subtractive counterpart, removing one adapter from membership regardless of how it was granted:
+
+```ruby
+class SearchTool < Axn::MCP::Tool
+  tool except: :ruby_llm   # keep every other adapter (directory- or declaration-granted); drop ruby_llm
+end
+```
+
 Keys are validated eagerly when the adapter's settings are loaded in this process and stored tolerantly (validated on first read) otherwise, exactly like `configure`. If both spellings write the same key, last-writer-wins into the shared slot.
 
 The one reserved key is `name`: `tool name: "…"` sets the provider-facing [`tool_name`](/reference/class) shared across every adapter, while `name:` inside a bag overrides it for that adapter only (`tool mcp: { name: "search" }`). Everything else in a bag is opaque to core and belongs to the adapter.
