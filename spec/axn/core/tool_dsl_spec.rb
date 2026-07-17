@@ -162,6 +162,35 @@ RSpec.describe "Axn `tool` DSL" do
       slot = k.instance_variable_get(:@_axn_config_overrides)[:not_loaded]
       expect(slot).to eq(anything: :x)
     end
+
+    describe "per-adapter name override" do
+      it "overrides tool_name for that adapter only" do
+        k = axn { tool mcp: { name: "search" }, ruby_llm: {} }
+        expect(k.tool_name(:mcp)).to eq("search")
+        expect(k.tool_name(:ruby_llm)).not_to eq("search")
+      end
+
+      it "falls back to the shared `tool name:` for an adapter without a per-adapter name" do
+        k = axn { tool name: "shared", mcp: {} }
+        expect(k.tool_name(:mcp)).to eq("shared")
+      end
+
+      it "leaves zero-arg tool_name (shared/derived) unaffected by a per-adapter name" do
+        k = axn { tool mcp: { name: "search" } }
+        expect(k.tool_name).to eq("tool") # anonymous class, no shared name -> derived default
+      end
+
+      it "rejects a per-adapter name that sanitizes to empty" do
+        expect { axn { tool mcp: { name: "!!!" } } }.to raise_error(ArgumentError, /provider-safe/)
+      end
+
+      it "does not write the intercepted name into the config store" do
+        k = axn { tool custom_adapter: { name: "search", foo: :bar } }
+        slot = k.instance_variable_get(:@_axn_config_overrides)[:custom_adapter]
+        expect(slot).to include(foo: :bar)
+        expect(slot).not_to have_key(:name)
+      end
+    end
   end
 end
 

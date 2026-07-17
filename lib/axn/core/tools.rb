@@ -11,6 +11,11 @@ module Axn
           # instance_accessor: false — class-level DSL, not per-instance state.
           # _tool_declaration: nil (undeclared) | :all | false | Array<Symbol> (explicit adapters).
           class_attribute :_tool_declaration, :_tool_name_override, instance_accessor: false, default: nil
+
+          # Per-adapter provider-name overrides ({adapter => raw_name}), rebuilt fresh on each `tool`
+          # call. A class_attribute so a subclass inherits the parent's tool identity until it redeclares
+          # `tool`. Frozen default: never mutate in place, always assign a fresh hash.
+          class_attribute :_tool_name_overrides, instance_accessor: false, default: {}.freeze
           extend ClassMethods
         end
       end
@@ -82,39 +87,54 @@ module Axn
           declared = (adapters + bags.keys).uniq
           self._tool_declaration = declared.empty? ? :all : declared
 
-          # A per-adapter bag is sugar over `configure(<adapter>)`: route every key through the same
-          # NamespaceWriter so it lands in the same @_axn_config_overrides[adapter] slot with the same
-          # eager (source registered) / tolerant (not) validation — no second write path.
+          # A per-adapter bag is sugar over `configure(<adapter>)` for opaque config; the `name` key is
+          # the one exception — it is core-owned (feeds tool_name), so it is intercepted here and never
+          # written to the config store. Everything else routes through the same NamespaceWriter.
+          per_adapter_names = {}
           bags.each do |adapter, opts|
+            opts = opts.dup
+            if opts.key?(:name)
+              adapter_name = opts.delete(:name)
+              if !adapter_name.nil? && _tool_name_sanitize(adapter_name).empty?
+                raise ArgumentError,
+                      "tool #{adapter.inspect} name: #{adapter_name.inspect} has no provider-safe characters " \
+                      "([a-z0-9_]); provide a name containing at least one such character"
+              end
+              per_adapter_names[adapter] = adapter_name unless adapter_name.nil?
+            end
+
             next if opts.empty?
 
             axn_configure(adapter) do |writer|
               opts.each { |key, value| writer.public_send("#{key}=", value) }
             end
           end
+          self._tool_name_overrides = per_adapter_names.freeze
 
           nil
         end
 
-        # The provider-facing tool name. The default mirrors an explicit `axn_name` (sanitized)
-        # when one is set — this is what lets an otherwise-anonymous tool class get a real
-        # provider-facing name (`Class.new { include Axn; axn_name "greet"; tool }`) — and
-        # otherwise derives from the Ruby class name. An explicit `tool name:` override wins
-        # over both. Derivation (from whichever source wins) strips the leading run of
-        # configured prefixes, snake_cases the rest, and restricts to [a-z0-9_]. Never blank.
-        def tool_name
+        # The provider-facing tool name. With an `adapter`, a per-adapter `tool <adapter>: { name: }`
+        # override wins first; then an explicit shared `tool name:`; then derivation from `axn_name`/class
+        # name (strip configured prefixes, snake_case, restrict to [a-z0-9_], never blank). Zero-arg
+        # `tool_name` skips the per-adapter tier and is unchanged. The `adapter` arg is consumed internally
+        # by the registry; users never pass it.
+        def tool_name(adapter = nil)
+          if adapter && (raw = _tool_name_overrides[adapter])
+            sanitized = _tool_name_sanitize(raw)
+            return sanitized unless sanitized.empty?
+          end
+
           # Defense-in-depth: the `tool` DSL rejects an override that sanitizes to empty, but an
-          # override set through some other path (a direct class_attribute write) must still never
-          # produce a blank name — sanitize first and fall through to derivation if nothing survives.
+          # override set through some other path must still never produce a blank name — sanitize and fall through.
           override = _tool_name_override
           if override
             sanitized_override = _tool_name_sanitize(override)
             return sanitized_override unless sanitized_override.empty?
           end
 
-          # `axn_name.presence || name.presence` — NOT `resolved_axn_name` — so a truly nameless
-          # class (no axn_name, no class name) falls back to "tool" below rather than deriving
-          # from the "Anonymous Axn" sentinel.
+          # `axn_name.presence || name.presence` — NOT `resolved_axn_name` — so a truly nameless class
+          # falls back to "tool" below rather than deriving from the "Anonymous Axn" sentinel.
           source = axn_name.presence || name.presence
           return "tool" if source.nil? || source.strip.empty?
 
