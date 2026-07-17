@@ -834,3 +834,7 @@ Subfields nest to any depth: a dotted `on:` path (`on: "address.billing"`) and a
 The schema advertises each `type:` as its JSON wire form — so `expects :on, type: Date` shows `{ type: "string", format: "date" }` and `expects :mode, type: Symbol` shows `{ type: "string" }`. Add `coerce:` (see [`coerce`](#coerce) above) so a JSON client sending the string `"2026-07-08"` or `"active"` is parsed into the declared `Date`/`Symbol` — the inbound inverse of how the value serializes on output. Without `coerce:`, core still validates strictly against the Ruby type (a direct Ruby caller must pass a real `Date`).
 :::
 
+::: tip Declare `type:` on every tool input
+[`Axn::Tools::Invoker`](/reference/tool-invoker) (the entry point an adapter uses to run an Axn as a tool) always coerces, so a field only picks up that coercion — and gets a useful entry in the schema above — when it declares a `type:` axn recognizes. Declare `type:` on every tool input rather than reaching for a defensive per-field `coerce: true`; the always-on tool coercion and the schema reflection both key off the same `type:` declaration.
+:::
+

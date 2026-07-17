@@ -83,6 +83,7 @@
 * [FEAT] `Axn::Factory.build` accepts the full class-level DSL, so a factory-built Axn can declare everything a hand-written class can: `axn_name:`, `description:`, `semantic_hints:`, and the accumulating `fails_on:`/`tag:`/`dimension:` (each a single spec or a list of specs). Now documented at `/reference/factory`.
 * [FEAT] Class-level `axn_name "…"` and `description "…"`, both inherited. `axn_name` is the single source of an action's display name across logging, the `axn.call` notification `resource` (the Datadog dimension), exception breadcrumbs, and profiling labels — so a factory-built or adapter-wrapped tool reports under one canonical identity. The async enqueue/constantize path still uses the real Ruby class name.
 * [FEAT] `semantic_hints :read_only, :idempotent, :destructive` — an advisory declaration of an action's side-effect profile, inherited and extensible by adapters. Class-level extension primitives (`Axn.extension_config.register_semantic_hint`, `Klass.set_extension_metadata` / `extension_metadata`) let an adapter hang transport-specific config off any Axn with no marker mixin.
+* [FEAT] `Axn::Tools::Invoker` — run an Axn as a tool with auto-coercion and opt-in structured, non-reported inbound-validation surfacing (`user_facing_input_errors`, `reject_undeclared_inputs`); adds `ValidationError#field_errors`. Normal `.call` semantics unchanged. (PRO-2943)
 
 ### Other
 
