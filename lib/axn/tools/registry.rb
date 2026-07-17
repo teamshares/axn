@@ -62,7 +62,7 @@ module Axn
         members.sort_by { |klass| klass.tool_name(adapter) }
       end
 
-      # Ensures tool classes under the configured tool_paths are loaded before enumeration.
+      # Ensures tool classes under each adapter's tool roots are loaded before enumeration.
       # Under Rails, unless eager-loading has already completed, hands each existing tool dir to
       # the main Zeitwerk loader via `eager_load_dir`; outside Rails, requires every .rb file
       # under each existing tool dir
@@ -73,10 +73,10 @@ module Axn
       # rescued independently, so one bad FILE is logged at warn and skipped without affecting its
       # siblings. Under Rails, `eager_load_dir` loads a DIRECTORY as a single unit — Zeitwerk has no
       # public API to load or `require` a managed file in isolation — so a file that raises aborts
-      # the rest of that directory's files (logged at warn), while every other `tool_paths`
+      # the rest of that directory's files (logged at warn), while every other tool root
       # directory still loads independently.
       def ensure_loaded!
-        dirs = _tool_dirs.select { |dir| File.directory?(dir) }
+        dirs = _all_adapter_dirs.select { |dir| File.directory?(dir) }
         return if dirs.empty?
 
         if _rails_app?
@@ -122,19 +122,19 @@ module Axn
         Axn.config.logger.warn { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
       end
 
-      # Fail-safe membership: an explicit declaration wins; else auto-register when the class's
-      # source file lives under a configured tool_path dir; else treat a configure(<adapter>) bag
-      # for a registered adapter key as implicit membership for that adapter; else not a tool.
+      # Membership = (directory grant ∪ declaration grant) − except. Directory grant: adapters whose
+      # configured tool_roots contain the class's source file. Declaration grant: :all (every adapter),
+      # or the explicit adapter list, or a tolerant configure(<adapter>) bag. `tool false` and an
+      # excepted adapter both short-circuit to non-membership.
       def member?(klass, adapter)
         return false unless klass.respond_to?(:_tool_declaration)
 
-        case (decl = klass._tool_declaration)
-        when false then false
-        when :all then true
-        when Array then decl.include?(adapter)
-        else
-          _under_tool_path?(klass) || _declares_adapter_config?(klass, adapter)
-        end
+        decl = klass._tool_declaration
+        return false if decl == false
+        return false if klass._tool_except.include?(adapter)
+
+        declared_grant = decl == :all || (decl.is_a?(Array) && decl.include?(adapter))
+        declared_grant || _under_adapter_root?(klass, adapter) || _declares_adapter_config?(klass, adapter)
       end
 
       private
@@ -215,14 +215,18 @@ module Axn
         defined?(Rails) && Rails.respond_to?(:application) && Rails.application
       end
 
-      def _under_tool_path?(klass)
+      # True when the class's source file lives under one of `adapter`'s resolved tool_roots.
+      def _under_adapter_root?(klass, adapter)
         return false unless klass.name
+
+        dirs = _adapter_dirs(adapter)
+        return false if dirs.empty?
 
         path = Object.const_source_location(klass.name)&.first
         return false unless path
 
         expanded = File.expand_path(path)
-        _tool_dirs.any? { |dir| expanded == dir || expanded.start_with?(dir + File::SEPARATOR) }
+        dirs.any? { |dir| expanded == dir || expanded.start_with?(dir + File::SEPARATOR) }
       rescue StandardError
         false
       end
@@ -243,17 +247,16 @@ module Axn
         false
       end
 
-      # Feeds both eager-loading (ensure_loaded!) and membership (_under_tool_path?), so both are
-      # protected by the same fail-safe: re-checks each entry against the setter's own broad-path
-      # predicate rather than trusting `tool_paths=` already enforced it. The setter can't catch an
-      # entry that reaches the live array without going through it — in-place mutation
-      # (`Axn.config.tool_paths << "actions"`), a mutated reference held after assignment, or the
-      # never-assigned default array (also mutable) — so a broad entry smuggled in this way is
-      # skipped here and logged, never silently auto-registering every business action.
-      def _tool_dirs
-        Array(Axn.config.tool_paths).filter_map do |path|
+      # Resolved, canonical tool directories for one adapter. Re-checks each root against the broad-path
+      # guard (the same fail-safe the old global list had): a broad root reaching config via in-place
+      # mutation is skipped + warned rather than bulk-exposing every business action.
+      def _adapter_dirs(adapter)
+        _adapter_roots(adapter).filter_map do |path|
           if Axn::Configuration.broad_tool_path?(path)
-            Axn.config.logger.warn { "[Axn] tool_paths entry #{path.inspect} is too broad; skipping (see Axn::Configuration::BROAD_TOOL_PATH_LEAVES)" }
+            Axn.config.logger.warn do
+              "[Axn] tool_roots entry #{path.inspect} for adapter #{adapter.inspect} is too broad; " \
+                "skipping (see Axn::Configuration::BROAD_TOOL_PATH_LEAVES)"
+            end
             next
           end
 
@@ -261,11 +264,30 @@ module Axn
         end
       end
 
+      # The raw tool_roots array declared on an adapter's config source, or [] when the adapter has no
+      # source or the read fails. Defensive: an adapter may register before its config is set, or with a
+      # source that doesn't follow the AdapterRoots contract.
+      def _adapter_roots(adapter)
+        source = _adapter_sources[adapter]
+        return [] unless source.respond_to?(:config)
+
+        roots = source.config.tool_roots
+        roots.is_a?(Array) ? roots : []
+      rescue StandardError
+        []
+      end
+
+      # Union of every registered adapter's resolved dirs — the set ensure_loaded! must load before
+      # enumeration, since a class in any adapter's root (or declared for any adapter) may surface.
+      def _all_adapter_dirs
+        adapters.flat_map { |adapter| _adapter_dirs(adapter) }.uniq
+      end
+
       # Normalizes via the same `Axn::Configuration.normalize_tool_path` the `tool_paths=` validator
       # uses (strip + `Pathname#cleanpath`), so an entry like `"actions/./tools"` resolves to the
       # identical dir as its clean spelling `"actions/tools"` instead of a raw, uncollapsed path.
       # `File.expand_path` on the joined result makes the returned dir canonical/absolute, matching
-      # how `_under_tool_path?` expands a class's source path before comparing — without this, the
+      # how `_under_adapter_root?` expands a class's source path before comparing — without this, the
       # two comparison sides can disagree on an otherwise-equal directory (PRO-2921 follow-up).
       def _resolve_tool_dir(path)
         if defined?(Rails) && Rails.respond_to?(:root) && Rails.root

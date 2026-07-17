@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "support/tool_adapter_helpers"
+
 RSpec.describe Axn::Tools::Registry do
   before { described_class.reset_adapters! }
   after { described_class.reset_adapters! }
@@ -309,14 +311,15 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
-  describe "._tool_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
-    it "skips a broad entry that reached tool_paths via in-place mutation, warning about it" do
-      allow(Axn.config).to receive(:tool_paths).and_return(%w[actions agent_tools])
+  describe "._adapter_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
+    it "skips a broad entry that reached tool_roots via in-place mutation, warning about it" do
+      source = register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      source.config.tool_roots << "actions" # in-place mutation bypasses the setter's guard
 
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
-      dirs = described_class.send(:_tool_dirs)
+      dirs = described_class.send(:_adapter_dirs, :mcp)
 
       actions_dir = described_class.send(:_resolve_tool_dir, "actions")
       agent_tools_dir = described_class.send(:_resolve_tool_dir, "agent_tools")
@@ -331,8 +334,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools", __dir__) }
 
     before do
-      Axn.register_tool_adapter(:mcp)
-      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "requires .rb files under a configured tool dir and exposes them as tools" do
@@ -349,8 +351,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_mixed", __dir__) }
 
     before do
-      Axn.register_tool_adapter(:mcp)
-      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
@@ -403,8 +404,7 @@ RSpec.describe Axn::Tools::Registry do
         # Genuine syntax error: a def with a missing method-body expression.
         File.write(File.join(dir, "broken_tool.rb"), "class Broken\n  def call =\nend\n")
 
-        Axn.register_tool_adapter(:mcp)
-        allow(Axn.config).to receive(:tool_paths).and_return([dir])
+        register_tool_adapter_with_roots(:mcp, roots: [dir])
 
         warnings = []
         allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
@@ -425,8 +425,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_failed", __dir__) }
 
     before do
-      Axn.register_tool_adapter(:mcp)
-      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "exposes the good tool but rolls back the class registered by the failing file" do
@@ -453,8 +452,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
 
     before do
-      Axn.register_tool_adapter(:mcp)
-      allow(Axn.config).to receive(:tool_paths).and_return([fixture_dir])
+      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "keeps a valid tool required by the failing file, rolling back only the failing file's own class" do
@@ -488,7 +486,7 @@ RSpec.describe Axn::Tools::Registry do
     before { Axn.register_tool_adapter(:mcp) }
 
     it "deletes only added classes whose source is under the failed dir, preserving those outside it" do
-      allow(Axn.config).to receive(:tool_paths).and_return([dir])
+      register_tool_adapter_with_roots(:mcp, roots: [dir])
       allow(described_class).to receive(:_rails_app?).and_return(true)
 
       loader = double("zeitwerk loader")
@@ -540,8 +538,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
 
     before do
-      Axn.register_tool_adapter(:mcp)
-      allow(Axn.config).to receive(:tool_paths).and_return([dir])
+      register_tool_adapter_with_roots(:mcp, roots: [dir])
       allow(described_class).to receive(:_rails_app?).and_return(true)
     end
 
@@ -612,6 +609,89 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".member? (union of directory + declaration grants, minus except)" do
+    # A class whose source file we pin under a chosen directory via const_source_location,
+    # matching the existing member? tests' stubbing style.
+    def klass_at(name, source_path, &blk)
+      k = stub_const(name, Class.new { include Axn })
+      k.class_eval(&blk) if blk
+      allow(Object).to receive(:const_source_location).and_call_original
+      allow(Object).to receive(:const_source_location).with(name).and_return([source_path, 1])
+      k
+    end
+
+    let(:shared_dir) { File.expand_path("agent_tools") }
+
+    it "grants every adapter whose roots contain the class (directory grant)" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      k = klass_at("MemberUnion::Shared", File.join(shared_dir, "shared.rb"))
+
+      expect(described_class.member?(k, :mcp)).to be(true)
+      expect(described_class.member?(k, :ruby_llm)).to be(true)
+    end
+
+    it "does NOT grant an adapter whose roots exclude the class" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:openapi, roots: %w[http_tools])
+      k = klass_at("MemberUnion::SharedOnly", File.join(shared_dir, "shared.rb"))
+
+      expect(described_class.member?(k, :openapi)).to be(false)
+    end
+
+    it "adds a declared adapter on top of the directory grant (union, not replace)" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:openapi, roots: %w[http_tools])
+      k = klass_at("MemberUnion::PlusOpenapi", File.join(shared_dir, "shared.rb")) { tool :openapi }
+
+      expect(described_class.member?(k, :mcp)).to be(true)      # still from directory
+      expect(described_class.member?(k, :ruby_llm)).to be(true) # still from directory
+      expect(described_class.member?(k, :openapi)).to be(true)  # added by declaration
+    end
+
+    it "subtracts an excepted adapter from the directory grant (all-but-a-few)" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:openapi, roots: %w[agent_tools])
+      k = klass_at("MemberUnion::AllBut", File.join(shared_dir, "shared.rb")) { tool except: :openapi }
+
+      expect(described_class.member?(k, :mcp)).to be(true)
+      expect(described_class.member?(k, :openapi)).to be(false)
+    end
+
+    it "except:-only does not re-expose the class to an adapter its directory never granted" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:data_shifter_web, roots: %w[support_tools])
+      k = klass_at("MemberUnion::NoLeak", File.join(shared_dir, "shared.rb")) { tool except: :mcp }
+
+      expect(described_class.member?(k, :mcp)).to be(false) # excepted
+      expect(described_class.member?(k, :data_shifter_web)).to be(false) # never granted, not :all
+    end
+
+    it "`tool false` opts out of every adapter regardless of directory" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      k = klass_at("MemberUnion::OptOut", File.join(shared_dir, "shared.rb")) { tool false }
+
+      expect(described_class.member?(k, :mcp)).to be(false)
+    end
+
+    it "bare `tool` grants every registered adapter even with no matching root" do
+      register_tool_adapter_with_roots(:mcp, roots: [])
+      register_tool_adapter_with_roots(:openapi, roots: [])
+      k = klass_at("MemberUnion::All", "/somewhere/else/thing.rb") { tool }
+
+      expect(described_class.member?(k, :mcp)).to be(true)
+      expect(described_class.member?(k, :openapi)).to be(true)
+    end
+
+    it "an adapter with no config source has an empty directory grant" do
+      Axn.register_tool_adapter(:mcp) # no source
+      k = klass_at("MemberUnion::NoSource", File.join(shared_dir, "shared.rb"))
+
+      expect(described_class.member?(k, :mcp)).to be(false)
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 
@@ -635,38 +715,8 @@ RSpec.describe Axn::Tools::Registry do
       expect(described_class.member?(k, :ruby_llm)).to be(true)
     end
 
-    it "`tool false` is never a member, even under a tool path" do
-      allow(Axn.config).to receive(:tool_paths).and_return([File.expand_path("spec")])
-      k = stub_const("MemberSpec::OptOut", Class.new do
-        include Axn
-        tool false
-      end)
-      allow(Object).to receive(:const_source_location).with("MemberSpec::OptOut")
-                                                      .and_return([File.expand_path("spec/dummy.rb"), 1])
-      expect(described_class.member?(k, :mcp)).to be(false)
-    end
-
-    it "an undeclared class whose source is under a tool_path auto-registers for all adapters" do
-      Axn.register_tool_adapter(:ruby_llm)
-      allow(Axn.config).to receive(:tool_paths).and_return([File.expand_path("spec")])
-      k = stub_const("MemberSpec::AutoReg", Class.new { include Axn })
-      allow(Object).to receive(:const_source_location).with("MemberSpec::AutoReg")
-                                                      .and_return([File.expand_path("spec/some_tool.rb"), 1])
-      expect(described_class.member?(k, :mcp)).to be(true)
-      expect(described_class.member?(k, :ruby_llm)).to be(true)
-    end
-
-    it "an undeclared class outside every tool_path is not a member" do
-      allow(Axn.config).to receive(:tool_paths).and_return([File.expand_path("spec")])
-      k = stub_const("MemberSpec::Outside", Class.new { include Axn })
-      allow(Object).to receive(:const_source_location).with("MemberSpec::Outside")
-                                                      .and_return(["/somewhere/else/x.rb", 1])
-      expect(described_class.member?(k, :mcp)).to be(false)
-    end
-
     it "a class with `configure(:mcp)` is an implicit member for :mcp only" do
       Axn.register_tool_adapter(:ruby_llm)
-      allow(Axn.config).to receive(:tool_paths).and_return([])
       k = stub_const("MemberSpec::ConfigNS", Class.new do
         include Axn
         configure(:mcp) { |c| c.some_setting = 1 }
@@ -677,7 +727,7 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "an undeclared class under a sibling dir whose name merely prefixes the tool dir is not a member" do
-      allow(Axn.config).to receive(:tool_paths).and_return([File.expand_path("spec/support")])
+      register_tool_adapter_with_roots(:mcp, roots: [File.expand_path("spec/support")])
       k = stub_const("MemberSpec::SiblingPrefix", Class.new { include Axn })
       allow(Object).to receive(:const_source_location).with("MemberSpec::SiblingPrefix")
                                                       .and_return([File.expand_path("spec/support_helpers/x.rb"), 1])
@@ -685,7 +735,6 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "a class with a `configure(:foo)` bag is not a member for an unregistered :foo adapter" do
-      allow(Axn.config).to receive(:tool_paths).and_return([])
       allow(Object).to receive(:const_source_location).and_return(nil)
       k = stub_const("MemberSpec::UnregisteredAdapter", Class.new do
         include Axn
@@ -695,7 +744,6 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "a subclass of a class with `configure(:mcp)` is an implicit member via the inherited bag" do
-      allow(Axn.config).to receive(:tool_paths).and_return([])
       allow(Object).to receive(:const_source_location).and_return(nil)
       parent = Class.new do
         include Axn
