@@ -124,4 +124,76 @@ RSpec.describe "Axn `tool` DSL" do
       end.to raise_error(ArgumentError, /already declared/)
     end
   end
+
+  describe "per-adapter option bags" do
+    it "`tool mcp: {}` declares membership in that adapter" do
+      expect(axn { tool mcp: {} }._tool_declaration).to eq([:mcp])
+    end
+
+    it "unions positional adapters and bag keys for membership" do
+      k = axn { tool :ruby_llm, mcp: { present_as: :message } }
+      expect(k._tool_declaration).to eq(%i[ruby_llm mcp])
+    end
+
+    it "allows a redundant positional adapter and bag for the same key" do
+      expect(axn { tool :mcp, mcp: { present_as: :message } }._tool_declaration).to eq([:mcp])
+    end
+
+    it "rejects a non-Hash bag value" do
+      expect { axn { tool mcp: :message } }.to raise_error(ArgumentError, /must be Hashes/)
+    end
+
+    it "rejects `tool false` combined with a per-adapter bag" do
+      expect { axn { tool false, mcp: { present_as: :message } } }.to raise_error(ArgumentError, /opts out/)
+    end
+
+    it "extends the repeated-`tool` guard to the bag form" do
+      expect do
+        axn do
+          tool :mcp
+          tool ruby_llm: {}
+        end
+      end.to raise_error(ArgumentError, /already declared/)
+    end
+
+    it "stores config tolerantly for an unregistered adapter and still declares membership" do
+      k = axn { tool not_loaded: { anything: :x } }
+      expect(k._tool_declaration).to eq([:not_loaded])
+      slot = k.instance_variable_get(:@_axn_config_overrides)[:not_loaded]
+      expect(slot).to eq(anything: :x)
+    end
+  end
+end
+
+RSpec.describe "Axn `tool` DSL — per-adapter bags write into the config store" do
+  let(:mcp) do
+    Module.new do
+      extend Axn::Configurable
+      config_namespace :mcp
+      setting :present_as, default: :structured, one_of: %i[structured message], overridable: true
+    end
+  end
+
+  def tool_class(overrides, &blk)
+    Class.new do
+      include Axn
+      include overrides
+      class_eval(&blk)
+    end
+  end
+
+  it "resolves a bag key identically to configure(:mcp)" do
+    klass = tool_class(mcp.overrides) { tool mcp: { present_as: :message } }
+    expect(mcp.resolve_override_for(klass, :present_as)).to eq(:message)
+  end
+
+  it "validates an unknown key eagerly when the adapter's source is registered" do
+    expect { tool_class(mcp.overrides) { tool mcp: { bogus: :x } } }
+      .to raise_error(ArgumentError, /unknown overridable setting/)
+  end
+
+  it "validates a bad value eagerly when the adapter's source is registered" do
+    expect { tool_class(mcp.overrides) { tool mcp: { present_as: :nonsense } } }
+      .to raise_error(ArgumentError, /present_as/)
+  end
 end

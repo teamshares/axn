@@ -34,20 +34,22 @@ module Axn
         #   tool name: "…"        -> membership in all adapters, with a provider-name override
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
         # here would be load-order-hostile) and simply never match tools_for.
-        def tool(*adapters, name: nil)
+        def tool(*adapters, name: nil, **bags)
           # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
-          # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins,
-          # e.g. `tool :mcp` then `tool name:` becomes :all), changing membership at tools_for time
-          # instead of failing here. Per axn's fail-at-declaration doctrine, reject the repeat. A
-          # subclass declaring its own `tool` is a fresh first call (fresh object, no ivar) and is fine.
+          # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins),
+          # changing membership at tools_for time instead of failing here. Per axn's fail-at-declaration
+          # doctrine, reject the repeat. A subclass declaring its own `tool` is a fresh first call
+          # (fresh object, no ivar) and is fine.
           if instance_variable_defined?(:@__axn_tool_declared)
-            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters and `name:` in a single call " \
-                                 "(e.g. `tool :mcp, :ruby_llm, name: \"...\"`)."
+            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters, `name:`, and " \
+                                 "per-adapter options in a single call (e.g. `tool :mcp, ruby_llm: { … }, name: \"...\"`)."
           end
           @__axn_tool_declared = true
 
           if adapters.include?(false)
-            raise ArgumentError, "`tool false` opts out; it can't be combined with adapters or `name:`" if adapters.length > 1 || !name.nil?
+            if adapters.length > 1 || !name.nil? || bags.any?
+              raise ArgumentError, "`tool false` opts out; it can't be combined with adapters, `name:`, or per-adapter options"
+            end
 
             self._tool_name_override = nil # a subclass opting out reports its OWN tool_name, not an inherited `tool name:` override
             self._tool_declaration = false
@@ -57,22 +59,40 @@ module Axn
           non_symbols = adapters.reject { |a| a.is_a?(Symbol) }
           raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
 
-          # A provided `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would
-          # yield a blank tool_name, violating the never-blank contract. Fail at declaration rather
-          # than silently accept an unusable override. A nil name (not provided) is not an error.
+          non_hash = bags.reject { |_adapter, opts| opts.is_a?(Hash) }
+          unless non_hash.empty?
+            raise ArgumentError,
+                  "tool per-adapter options must be Hashes (e.g. `tool mcp: { title: \"...\" }`); got #{non_hash.inspect}"
+          end
+
+          # A shared `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would yield a
+          # blank tool_name, violating the never-blank contract. Fail at declaration. A nil name is not an error.
           if !name.nil? && _tool_name_sanitize(name).empty?
             raise ArgumentError,
                   "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
                   "provide a name containing at least one such character"
           end
 
-          # Always assign (even when name is nil). `_tool_name_override` is a class_attribute, so a
-          # subclass of a class that set `tool name: "x"` INHERITS that override. A fresh `tool`
-          # declaration without `name:` means "derive from THIS class's name", so writing nil here
-          # clears the inherited value rather than letting the parent's override leak through.
+          # Always assign (even when name is nil): `_tool_name_override` is a class_attribute, so a fresh
+          # `tool` without `name:` must clear an inherited override rather than let the parent's leak through.
           self._tool_name_override = name
 
-          self._tool_declaration = adapters.empty? ? :all : adapters
+          # Membership is the union of positional adapters and per-adapter bag keys; a bag key implies
+          # membership in that adapter. Bare `tool` (no adapters, no bags) means every registered adapter.
+          declared = (adapters + bags.keys).uniq
+          self._tool_declaration = declared.empty? ? :all : declared
+
+          # A per-adapter bag is sugar over `configure(<adapter>)`: route every key through the same
+          # NamespaceWriter so it lands in the same @_axn_config_overrides[adapter] slot with the same
+          # eager (source registered) / tolerant (not) validation — no second write path.
+          bags.each do |adapter, opts|
+            next if opts.empty?
+
+            axn_configure(adapter) do |writer|
+              opts.each { |key, value| writer.public_send("#{key}=", value) }
+            end
+          end
+
           nil
         end
 
