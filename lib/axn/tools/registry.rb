@@ -248,8 +248,8 @@ module Axn
       end
 
       # Resolved, canonical tool directories for one adapter. Re-checks each root against the broad-path
-      # guard (the same fail-safe the old global list had): a broad root reaching config via in-place
-      # mutation is skipped + warned rather than bulk-exposing every business action.
+      # guard: a broad root reaching config via in-place mutation is skipped + warned rather than
+      # bulk-exposing every business action.
       def _adapter_dirs(adapter)
         _adapter_roots(adapter).filter_map do |path|
           if Axn::Configuration.broad_tool_path?(path)

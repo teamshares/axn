@@ -84,12 +84,16 @@ module Axn
                   "tool per-adapter options must be Hashes (e.g. `tool mcp: { title: \"...\" }`); got #{non_hash.inspect}"
           end
 
+          # A shared `name:` that sanitizes away entirely (e.g. "!!!" or whitespace-only) would yield a
+          # blank tool_name, violating the never-blank contract. Fail at declaration. A nil name is not an error.
           if !name.nil? && _tool_name_sanitize(name).empty?
             raise ArgumentError,
                   "tool name: #{name.inspect} has no provider-safe characters ([a-z0-9_]); " \
                   "provide a name containing at least one such character"
           end
 
+          # Always assign (even when name is nil): `_tool_name_override` is a class_attribute, so a fresh
+          # `tool` without `name:` must clear an inherited override rather than let the parent's leak through.
           self._tool_name_override = name
           self._tool_except = except_list.freeze
 
