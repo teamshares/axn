@@ -45,11 +45,15 @@ This is the cohesive shape: an adapter's entire setup — its behavioral config 
 
 ### The registry aggregates roots lazily
 
-`register_tool_adapter` grows a config-source handle so the registry can read each adapter's roots:
+`register_tool_adapter` grows an **optional trailing positional** config source so the registry can read each adapter's roots. The adapter registers itself from its own module body, so the source is just `self`:
 
 ```ruby
-Axn.register_tool_adapter(:openapi, config_source: Axn::OpenAPI)
+# inside the adapter's own module (e.g. Axn::OpenAPI):
+Axn.register_tool_adapter(:openapi, self)   # registry reads self.config.tool_roots lazily
+Axn.register_tool_adapter(:some_adapter)    # source omitted → declaration-driven only, no directory roots
 ```
+
+A positional (not a kwarg) is deliberate: the source is the only payload registration will ever carry — there is no other per-adapter registration metadata today or anticipated — and passing `self` from the adapter's own module is self-evident, so a named kwarg buys nothing over the positional and an options bag would be premature. Omitting it is a first-class state: an adapter with no config source is purely declaration-driven (empty directory grant).
 
 An adapter becomes a registered *thing* with a config source rather than a bare symbol in a Set. At `ensure_loaded!` time (already lazy), the registry iterates registered adapters, reads each one's current `tool_roots`, and computes a tool's directory grant as the set of adapters whose roots contain that tool's `const_source_location`. Reading roots lazily is required: `tool_roots` is set in the app initializer, which runs after gem load / adapter registration.
 
@@ -95,7 +99,7 @@ All downstream gems have in-flight, not-yet-landed work; they update in sync wit
 
 - `Axn.config.tool_paths` (the global list) is **removed**. The directory→adapter mapping moves to per-adapter `tool_roots`.
 - An explicit `tool` adapter list changes from *replace* to *add* (union) semantics.
-- `register_tool_adapter` gains a `config_source:` argument.
+- `register_tool_adapter` gains an optional trailing positional config-source argument.
 
 ## Cross-cutting details
 
