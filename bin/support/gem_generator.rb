@@ -19,11 +19,13 @@ class GemGenerator
   # bundle gem output the base layer deliberately drops.
   CRUFT = %w[bin/console bin/setup].freeze
 
-  def initialize(name, dest_parent: Dir.pwd, install: true, output: $stdout)
+  def initialize(name, dest_parent: Dir.pwd, install: true, output: $stdout, input: $stdin, summary: nil)
     @name = name
     @dest_parent = dest_parent
     @install = install
     @out = output
+    @in = input
+    @provided_summary = summary
   end
 
   def run
@@ -109,6 +111,7 @@ class GemGenerator
                                     version_const:,
                                     version_require:,
                                     homepage:,
+                                    summary_ruby: summary.dump,
                                     axn_lower: AXN_LOWER_BOUND))
   end
 
@@ -136,7 +139,7 @@ class GemGenerator
   end
 
   def write_docs
-    write("README.md", render("readme.md.tmpl", gem_name: name))
+    write("README.md", render("readme.md.tmpl", gem_name: name, summary:))
     write("AGENTS.md", render("agents.md.tmpl", gem_name: name))
     claude = File.join(gem_dir, "CLAUDE.md")
     FileUtils.rm_f(claude)
@@ -168,6 +171,21 @@ class GemGenerator
   def namespace_key = name.sub(/\Aaxn-/, "").tr("-", "_")
 
   def homepage = "https://github.com/teamshares/#{name}"
+
+  # The one field worth capturing at creation time. Precedence: explicit summary: arg > interactive
+  # tty prompt > a gem-name-aware fallback stub. Fills both gemspec (summary + description) and the
+  # README description line.
+  def summary = @summary ||= @provided_summary || prompt_summary || "#{name}: an axn-consuming gem."
+
+  # Prompt only when input is an interactive terminal, so the spec and any non-interactive/CI run
+  # (piped or --no-install) fall through to the stub instead of blocking on gets.
+  def prompt_summary
+    return nil unless @in.respond_to?(:tty?) && @in.tty?
+
+    @out.print "One-line summary for #{name} (blank to fill in later): "
+    line = @in.gets&.strip
+    line unless line.nil? || line.empty?
+  end
 
   def relative(path) = path.sub("#{gem_dir}/", "")
 
