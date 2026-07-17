@@ -90,6 +90,7 @@ RSpec.describe GemGenerator do
       expect(entry).to include('require "axn"')
       expect(entry).to include("extend Axn::Configurable")
       expect(entry).to include("config_namespace :foo_bar")
+      expect(entry).to include("setting :enabled, default: true")
       expect(entry).to include("def self.deprecator")
       expect(entry).to include('ActiveSupport::Deprecation.new("1.0", "foo_bar")')
     end

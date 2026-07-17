@@ -212,9 +212,16 @@ class GemGenerator
     <<~RUBY.chomp
       extend Axn::Configurable
 
-      # Per-gem config namespace (Axn::Configurable, PRO-2880), so settings declared here don't
-      # collide with another adapter configured on the same action.
+      # Per-gem config namespace (Axn::Configurable, PRO-2880). Set globally with
+      # `#{module_const}.configure { |c| c.enabled = false }`; read via `#{module_const}.config.enabled`
+      # (and the generated `enabled?` predicate). The namespace keeps these settings from colliding
+      # with another adapter's `configure(:...)` bag on the same action.
       config_namespace :#{namespace_key}
+
+      # Starter setting — replace with your gem's own. Add `overridable: true` to let a consuming Axn
+      # set it per-class via `configure(:#{namespace_key}) { |c| c.enabled = false }` (read back with
+      # `#{module_const}.resolve_override_for(axn_class, :enabled)`); `callable: true` for a lambda default.
+      setting :enabled, default: true
 
       class Error < StandardError; end
 
