@@ -283,7 +283,7 @@ module Axn
         adapters.flat_map { |adapter| _adapter_dirs(adapter) }.uniq
       end
 
-      # Normalizes via the same `Axn::Configuration.normalize_tool_path` the `tool_paths=` validator
+      # Normalizes via the same `Axn::Configuration.normalize_tool_path` that `AdapterRoots.validate!`
       # uses (strip + `Pathname#cleanpath`), so an entry like `"actions/./tools"` resolves to the
       # identical dir as its clean spelling `"actions/tools"` instead of a raw, uncollapsed path.
       # `File.expand_path` on the joined result makes the returned dir canonical/absolute, matching
