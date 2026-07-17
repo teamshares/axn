@@ -137,14 +137,19 @@ module Axn
           per_adapter_names = {}
           bags.each do |adapter, opts|
             opts = opts.dup
-            if opts.key?(:name)
-              adapter_name = opts.delete(:name)
-              if !adapter_name.nil? && _tool_name_sanitize(adapter_name).empty?
+            # `name` is core-owned; accept it whether written with a symbol or string key — the same
+            # leniency NamespaceWriter applies to the config keys below — and always delete both forms
+            # so it can never leak into the config store. A symbol key wins if the bag carries both.
+            sym_name = opts.delete(:name)
+            str_name = opts.delete("name")
+            adapter_name = sym_name.nil? ? str_name : sym_name
+            unless adapter_name.nil?
+              if _tool_name_sanitize(adapter_name).empty?
                 raise ArgumentError,
                       "tool #{adapter.inspect} name: #{adapter_name.inspect} has no provider-safe characters " \
                       "([a-z0-9_]); provide a name containing at least one such character"
               end
-              per_adapter_names[adapter] = adapter_name unless adapter_name.nil?
+              per_adapter_names[adapter] = adapter_name
             end
 
             next if opts.empty?

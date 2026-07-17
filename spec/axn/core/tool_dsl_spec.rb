@@ -191,6 +191,14 @@ RSpec.describe "Axn `tool` DSL" do
         expect(slot).not_to have_key(:name)
       end
 
+      it "intercepts a string-keyed name too (does not leak into the config store)" do
+        k = axn { tool custom_adapter: { "name" => "search", foo: :bar } }
+        expect(k.tool_name(:custom_adapter)).to eq("search")
+        slot = k.instance_variable_get(:@_axn_config_overrides)[:custom_adapter]
+        expect(slot).to include(foo: :bar)
+        expect(slot).not_to have_key(:name)
+      end
+
       it "a subclass opting out via `tool false` does not inherit the parent's per-adapter name overrides" do
         parent = axn { tool mcp: { name: "search" } }
         sub = Class.new(parent) { tool false }
@@ -231,5 +239,11 @@ RSpec.describe "Axn `tool` DSL — per-adapter bags write into the config store"
   it "validates a bad value eagerly when the adapter's source is registered" do
     expect { tool_class(mcp.overrides) { tool mcp: { present_as: :nonsense } } }
       .to raise_error(ArgumentError, /present_as/)
+  end
+
+  it "intercepts a string-keyed name for a registered adapter without treating it as a setting" do
+    klass = tool_class(mcp.overrides) { tool mcp: { "name" => "search", present_as: :message } }
+    expect(klass.tool_name(:mcp)).to eq("search")
+    expect(mcp.resolve_override_for(klass, :present_as)).to eq(:message)
   end
 end
