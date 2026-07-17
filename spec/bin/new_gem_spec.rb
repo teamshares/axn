@@ -117,6 +117,79 @@ RSpec.describe GemGenerator do
     it "seeds an Unreleased CHANGELOG section" do
       expect(read("CHANGELOG.md")).to include("## [Unreleased]")
     end
+
+    it "scaffolds a bootable Rails dummy app under spec_rails by default" do
+      expect(exist?("spec_rails/dummy_app/config/application.rb")).to be(true)
+      expect(exist?("spec_rails/dummy_app/config/database.yml")).to be(true)
+      gemfile = read("spec_rails/dummy_app/Gemfile")
+      expect(gemfile).to include('gem "foo_bar", path: "../../"')
+      expect(gemfile).to include('gem "rails"')
+      expect(read("spec_rails/dummy_app/spec/integration_spec.rb")).to include("FooBar")
+    end
+
+    it "keeps the default rake Rails-free and gates both suites behind verify" do
+      rake = read("Rakefile")
+      expect(rake).to include("task default: %i[spec rubocop]")
+      expect(rake).to include("task verify: %i[spec spec_rails rubocop]")
+      expect(rake).to include('Rake::Task["build"].enhance([:verify])')
+    end
+
+    it "excludes spec_rails from the packaged gem" do
+      expect(read("foo_bar.gemspec")).to include("spec_rails/")
+    end
+
+    it "gives the dual CI a dedicated rails_specs job" do
+      ci = read(".github/workflows/ci.yml")
+      expect(ci).to include("rails_specs")
+      expect(ci).to include("bundle exec rake spec_rails")
+    end
+  end
+
+  context "with --no-rails (pure Ruby)" do
+    before(:context) do
+      @parent = Dir.mktmpdir("axn-new-gem")
+      @gem_dir = described_class.new("plain_gem", dest_parent: @parent, install: false,
+                                                  output: StringIO.new, input: StringIO.new, rails: :none).run
+    end
+
+    after(:context) { FileUtils.remove_entry(@parent) if @parent && File.directory?(@parent) }
+
+    it "omits the Rails dummy app" do
+      expect(exist?("spec_rails")).to be(false)
+    end
+
+    it "keeps the simple default rake and single-job CI" do
+      rake = read("Rakefile")
+      expect(rake).to include('Rake::Task["build"].enhance([:default])')
+      expect(rake).not_to include("spec_rails")
+      ci = read(".github/workflows/ci.yml")
+      expect(ci).to include("run: bundle exec rake")
+      expect(ci).not_to include("spec_rails")
+    end
+
+    it "keeps the non-Rails spec suite" do
+      expect(exist?("spec/plain_gem_spec.rb")).to be(true)
+    end
+  end
+
+  context "with --rails-only" do
+    before(:context) do
+      @parent = Dir.mktmpdir("axn-new-gem")
+      @gem_dir = described_class.new("rails_gem", dest_parent: @parent, install: false,
+                                                  output: StringIO.new, input: StringIO.new, rails: :only).run
+    end
+
+    after(:context) { FileUtils.remove_entry(@parent) if @parent && File.directory?(@parent) }
+
+    it "has only the Rails dummy-app suite (no root spec/ or .rspec)" do
+      expect(exist?("spec_rails/dummy_app/config/application.rb")).to be(true)
+      expect(exist?("spec")).to be(false)
+      expect(exist?(".rspec")).to be(false)
+    end
+
+    it "runs the Rails suite in the default rake" do
+      expect(read("Rakefile")).to include("task default: %i[spec_rails rubocop]")
+    end
   end
 
   context "with a hyphenated (axn-*) gem name" do
@@ -161,8 +234,9 @@ RSpec.describe GemGenerator do
       parent = Dir.mktmpdir("axn-new-gem")
       @cleanup << parent
       # Force a non-interactive input so the tty prompt never fires (and never hangs) under specs.
+      # rails: :none keeps these summary-focused runs fast (no dummy app to scaffold).
       described_class.new(name, dest_parent: parent, install: false, output: StringIO.new,
-                                input: StringIO.new, **opts).run
+                                input: StringIO.new, rails: :none, **opts).run
     end
 
     before { @cleanup = [] }

@@ -19,13 +19,23 @@ class GemGenerator
   # bundle gem output the base layer deliberately drops.
   CRUFT = %w[bin/console bin/setup].freeze
 
-  def initialize(name, dest_parent: Dir.pwd, install: true, output: $stdout, input: $stdin, summary: nil)
+  # Rails testing topology:
+  #   :dual — non-Rails spec/ + a spec_rails/dummy_app Rails suite (default; mirrors axn core)
+  #   :only — Rails-only; all specs live in spec_rails/dummy_app, no non-Rails spec/
+  #   :none — pure Ruby; no dummy app
+  RAILS_MODES = %i[dual only none].freeze
+
+  RAKEFILE_TEMPLATES = { none: "Rakefile.tmpl", dual: "Rakefile_dual.tmpl", only: "Rakefile_rails_only.tmpl" }.freeze
+  CI_TEMPLATES = { none: "ci.yml.tmpl", dual: "ci_dual.yml.tmpl", only: "ci_rails_only.yml.tmpl" }.freeze
+
+  def initialize(name, dest_parent: Dir.pwd, install: true, output: $stdout, input: $stdin, summary: nil, rails: :dual)
     @name = name
     @dest_parent = dest_parent
     @install = install
     @out = output
     @in = input
     @provided_summary = summary
+    @rails = rails
   end
 
   def run
@@ -45,9 +55,14 @@ class GemGenerator
 
   def hyphenated? = name.include?("-")
 
+  def rails? = @rails != :none
+
+  def rails_only? = @rails == :only
+
   def validate!
     raise Error, "gem name is required" if name.to_s.strip.empty?
     raise Error, "invalid gem name #{name.inspect} (lowercase letters, digits, _ and - only)" unless name.match?(/\A[a-z][a-z0-9_-]*\z/)
+    raise Error, "invalid rails mode #{@rails.inspect} (one of #{RAILS_MODES.inspect})" unless RAILS_MODES.include?(@rails)
     raise Error, "#{gem_dir} already exists" if File.exist?(gem_dir)
   end
 
@@ -59,6 +74,7 @@ class GemGenerator
 
   def install!
     shell!(%w[bundle install], chdir: gem_dir)
+    shell!(%w[bundle install], chdir: File.join(gem_dir, "spec_rails", "dummy_app")) if rails?
   rescue Error => e
     say "WARNING: #{e.message}. Run `bundle install` manually in #{gem_dir}."
   end
@@ -77,12 +93,15 @@ class GemGenerator
   def overlay!
     delete_cruft
     write_static_files
+    write_rakefile
+    write_ci
     write_gemspec
     write_gemfile
-    write_spec_files
     write_entry_files
     write_rubocop
     write_docs
+    configure_specs
+    write_dummy_app if rails?
   end
 
   def delete_cruft
@@ -96,14 +115,15 @@ class GemGenerator
     FileUtils.cp(File.join(CORE_ROOT, "bin", "refresh"), refresh)
     File.chmod(0o755, refresh)
 
-    write(".rspec", render("rspec.tmpl"))
     write(".gitignore", render("gitignore.tmpl"))
-    write("Rakefile", render("Rakefile.tmpl"))
     write("CHANGELOG.md", render("changelog.md.tmpl"))
     write(".github/CODEOWNERS", render("codeowners.tmpl"))
     write(".github/renovate.json5", render("renovate.json5.tmpl"))
-    write(".github/workflows/ci.yml", render("ci.yml.tmpl"))
   end
+
+  def write_rakefile = write("Rakefile", render(RAKEFILE_TEMPLATES.fetch(@rails)))
+
+  def write_ci = write(".github/workflows/ci.yml", render(CI_TEMPLATES.fetch(@rails)))
 
   def write_gemspec
     write("#{name}.gemspec", render("gemspec.tmpl",
@@ -119,12 +139,36 @@ class GemGenerator
     write("Gemfile", render("Gemfile.tmpl", gem_name: name))
   end
 
-  def write_spec_files
+  def configure_specs
+    if rails_only?
+      # Rails-only: all specs live in the dummy app; drop the root Rails-free suite and its .rspec.
+      FileUtils.rm_rf(File.join(gem_dir, "spec"))
+      FileUtils.rm_f(File.join(gem_dir, ".rspec"))
+      return
+    end
+
+    write(".rspec", render("rspec.tmpl"))
     write("spec/spec_helper.rb", render("spec_helper.rb.tmpl", gem_name: name))
     spec_file = Dir[File.join(gem_dir, "spec", "**", "*_spec.rb")].first
-    raise Error, "could not find generated spec file" unless spec_file
+    write(relative(spec_file), render("entry_spec.rb.tmpl", module: module_const)) if spec_file
+  end
 
-    write(relative(spec_file), render("entry_spec.rb.tmpl", module: module_const))
+  # A minimal, bootable Rails dummy app (ActiveRecord + sqlite) with its own bundle. Its specs run
+  # via the `spec_rails` rake task (`cd spec_rails/dummy_app && BUNDLE_GEMFILE=Gemfile rspec`).
+  def write_dummy_app
+    base = "spec_rails/dummy_app"
+    write("#{base}/config/boot.rb", render("dummy/boot.rb.tmpl"))
+    write("#{base}/config/application.rb", render("dummy/application.rb.tmpl"))
+    write("#{base}/config/environment.rb", render("dummy/environment.rb.tmpl"))
+    write("#{base}/config/database.yml", render("dummy/database.yml.tmpl"))
+    write("#{base}/config/routes.rb", render("dummy/routes.rb.tmpl"))
+    write("#{base}/config/storage.yml", render("dummy/storage.yml.tmpl"))
+    write("#{base}/Rakefile", render("dummy/Rakefile.tmpl"))
+    write("#{base}/Gemfile", render("dummy/Gemfile.tmpl", gem_name: name))
+    write("#{base}/.rspec", render("dummy/rspec.tmpl"))
+    write("#{base}/.gitignore", render("dummy/gitignore.tmpl"))
+    write("#{base}/spec/spec_helper.rb", render("dummy/spec_helper.rb.tmpl"))
+    write("#{base}/spec/integration_spec.rb", render("dummy/integration_spec.rb.tmpl", module: module_const))
   end
 
   def write_entry_files

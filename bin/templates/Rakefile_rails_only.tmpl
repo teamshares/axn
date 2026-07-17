@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+require "bundler/gem_tasks"
+require "rubocop/rake_task"
+
+# This gem is Rails-only: all specs run in the embedded dummy app under spec_rails/dummy_app,
+# which carries its own bundle.
+task :spec_rails do
+  Dir.chdir("spec_rails/dummy_app") do
+    sh "BUNDLE_GEMFILE=Gemfile bundle exec rspec spec/"
+  end
+end
+
+RuboCop::RakeTask.new
+
+task default: %i[spec_rails rubocop]
+
+# Gate release on the default task (bundler/gem_tasks' release depends on build).
+Rake::Task["build"].enhance([:default])
