@@ -373,6 +373,17 @@ module Axn
     # =========================================================================
 
     def with_contract(&block)
+      # Take sole ownership of any per-call gates set by the caller (e.g. Axn::Tools::Invoker),
+      # clearing the holder so a nested `.call` in the body runs with default semantics. Stash the
+      # consumed Options on the action instance (where per-call state lives) so the read-path
+      # coercion honors the same gate this executor's validation-message path reads.
+      #
+      # Two copies, deliberately not unified: the action-anchored copy is the only one reachable from
+      # ContractForSubfields' read-path coercion (it has just the action, not this executor), while the
+      # boolean gates below are read only from this executor, off its own copy.
+      @__call_options = Internal::CurrentCallOptions.consume
+      @action.instance_variable_set(:@__call_options, @__call_options) if @__call_options
+
       # A pre-pipeline read — a hook/preprocess touching a reader (which may consult a sibling's
       # value-level default via resolve_model_via_id) — can populate both
       # ContractForSubfields' @__resolve_value_cache AND a reader's own memo before inbound validation
@@ -483,10 +494,21 @@ module Axn
       # top-level config marks its root node, so its whole subtree suppresses through the same rule.
       failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
       mismatches = _model_consistency_mismatches(failed_nodes)
+      base_extras = mismatches.map(&:message) + _undeclared_input_messages
 
-      return if failures.empty? && mismatches.empty?
+      return if failures.empty? && base_extras.empty?
 
-      raise InboundValidationError, _aggregate_errors(failures, mismatches) unless mismatches.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
+      # Tool-invocation opt-in: treat the WHOLE inbound contract as user-facing for this call —
+      # compose every violation (including model-consistency mismatches and unknown-input messages)
+      # into one non-reported failure. No new classification; the existing user_facing settling,
+      # applied contract-wide. EXCEPT when any ambient-rooted violation is present: ambient context is
+      # trusted/adapter-supplied, not model input (the DSL already rejects `user_facing:` on ambient
+      # subfields), so an ambient violation must stay dev-facing and report. Per the dominance doctrine,
+      # one such violation makes the WHOLE set settle dev-facing via the path below (an ambient config's
+      # `user_facing` is false, so `_failure_fully_user_facing?` already excludes it).
+      raise _composed_user_facing_error(failures, base_extras) if _user_facing_input_errors? && !_any_ambient_violation?(failures, mismatches)
+
+      raise InboundValidationError, _aggregate_errors(failures, base_extras) unless base_extras.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
       # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
@@ -496,13 +518,31 @@ module Axn
 
     ContractFailure = Data.define(:config, :path, :errors, :stranded_at)
 
+    # A model-consistency mismatch (record vs. `<field>_id`), carrying its :base message plus whether
+    # the failing config is ambient-rooted — so the tool-invocation gate can keep an ambient mismatch
+    # dev-facing (see `_any_ambient_violation?`) without re-running the side-effecting resolution.
+    ConsistencyMismatch = Data.define(:message, :ambient)
+
+    # Whether any unsuppressed inbound violation roots at ambient context (trusted/adapter-supplied,
+    # never model input). Used only by the tool-invocation gate to refuse the contract-wide user-facing
+    # compose when an ambient violation is present, so the dev-facing settle path reports it instead.
+    def _any_ambient_violation?(failures, mismatches)
+      failures.any? { |failure| _ambient_config?(failure.config) } || mismatches.any?(&:ambient)
+    end
+
+    # A config is ambient-rooted when it's a subfield whose `on:` chain roots at :ambient_context.
+    # Reuses the canonical class-level predicate; a top-level field (`on: nil`) is never ambient.
+    def _ambient_config?(config)
+      config.subfield? && @action_class.send(:_on_roots_at_ambient?, config.on)
+    end
+
     # Every inbound config's errors — top-level fields and subfields through the one collector —
     # gathered in declaration order with no early exit: settling needs the complete set (both to
     # aggregate the report and to suppress stranded descendants accurately). A top-level field
     # validates against the inbound facade (which resolves model records and reads by wire key); a
     # subfield against its canonically-resolved parent, with its reader supplied for model resolution.
     def _collect_contract_failures
-      coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
+      coerce_input_types = _coerce_input_types?
 
       _inbound_configs.filter_map do |config|
         errors = Axn::Validation::Fields.collect_errors(
@@ -578,9 +618,12 @@ module Axn
     # unit — each failing config's own `user_facing:` and each shape-member's own tagged intent — one
     # uniform path for every depth. Parts are de-duplicated so a String/Symbol member override on an
     # Array shape surfaces once rather than repeating per failing element.
-    def _composed_user_facing_error(failures)
-      parts = failures.flat_map { |failure| _user_facing_parts(failure) }
-      InboundValidationError.new(_aggregate_errors(failures, []),
+    # base_extras are :base-level message strings (model-consistency mismatches and, under
+    # reject_undeclared_inputs, unknown-input messages) that compose into the user-facing message and
+    # aggregate onto :base. Empty by default, so the per-field-declared path is unchanged.
+    def _composed_user_facing_error(failures, base_extras = [])
+      parts = failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras
+      InboundValidationError.new(_aggregate_errors(failures, base_extras),
                                  user_facing: true, user_facing_message: parts.uniq.to_sentence)
     end
 
@@ -646,6 +689,42 @@ module Axn
       Array(override).filter_map { |m| m.presence&.to_s }.presence || own
     end
 
+    # Under reject_undeclared_inputs, every provided top-level wire key that is neither a declared
+    # field/subfield wire root nor the reserved ambient parent becomes a normal inbound error. Top-level
+    # only: keys nested inside a Hash field are not the top-level contract's concern.
+    def _undeclared_input_messages
+      return [] unless _reject_undeclared_inputs?
+
+      (@context.provided_data.keys - _declared_top_level_keys).map { |key| "unknown input: #{key}" }
+    end
+
+    # The set of legitimate top-level wire keys: each inbound config's resolved-path root (top-level
+    # fields fall back to their own field name), plus the reserved always-present ambient parent.
+    # Ambient subfields live in a separate ambient-scoped tree (no `_resolved_path_for`), so their leaf
+    # name is never a top-level input — only the reserved ambient parent exempts them.
+    def _declared_top_level_keys
+      roots = _inbound_configs.filter_map do |config|
+        next if _ambient_config?(config)
+
+        path = _resolved_path_for(config)
+        path ? path.wire_path.first : config.field
+      end
+      (roots + _model_id_top_level_keys + [Core::AmbientContext::PARENT]).uniq
+    end
+
+    # Every top-level `model:` field derives a `<field>_id` reader (Contract._define_model_id_reader)
+    # that the resolver consumes as its lookup token (FieldResolvers::Model#derive_value) whenever no
+    # record is provided, so a caller may legitimately supply `<field>_id` at the top level even with
+    # no explicit sibling declared. Exempt that implicit key from the undeclared-input gate. Same
+    # `<field>_id` convention (any config carrying a `model:`, not just id-based finders — a custom
+    # finder reads its token off the same key) Contract keys off for sensitive-alias filtering. Only
+    # top-level configs contribute: a subfield model's id key is nested, not a top-level provided key.
+    def _model_id_top_level_keys
+      @action_class.send(:internal_field_configs).filter_map do |config|
+        Internal::FieldConfig.model_id_key(config.field) if config.validations[:model]
+      end
+    end
+
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
     # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
@@ -672,7 +751,7 @@ module Axn
         record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, @context.provided_data)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
-        mismatches << msg if msg
+        mismatches << ConsistencyMismatch.new(message: msg, ambient: false) if msg
       end
 
       @action_class.send(:subfield_configs).each do |config|
@@ -684,7 +763,7 @@ module Axn
         record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, source)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
-        mismatches << msg if msg
+        mismatches << ConsistencyMismatch.new(message: msg, ambient: _ambient_config?(config)) if msg
       end
 
       mismatches
@@ -928,5 +1007,16 @@ module Axn
       key = [config.on.to_s, config.method_call]
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
+
+    # Per-call gate readers, anchored differently on purpose. coerce resolves through
+    # CurrentCallOptions.coerce_input_types_for(@action) — the ACTION-anchored copy — because the
+    # read-path value coercion in ContractForSubfields only has the action to read from, so both
+    # readers must resolve off the same anchor to agree; it's tri-state, so a nil per-call value falls
+    # back to the class/global setting (a normal call is unchanged) while the tool invoker forces
+    # `true`. The other two gates are only ever consulted here in the executor, so they read the
+    # executor's own `@__call_options` (nil for a normal call) directly.
+    def _coerce_input_types? = Internal::CurrentCallOptions.coerce_input_types_for(@action)
+    def _user_facing_input_errors? = @__call_options&.user_facing_input_errors || false
+    def _reject_undeclared_inputs? = @__call_options&.reject_undeclared_inputs || false
   end
 end

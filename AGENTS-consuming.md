@@ -77,6 +77,11 @@ These validations are the **developer contract** (how the action is called) — 
 user-facing copy. For user-facing input validation reach for `use :form`. Full option detail:
 <https://teamshares.github.io/axn/reference/class>.
 
+If this action runs as a tool (via `Axn::Tools::Invoker`, an adapter's runtime for model-supplied
+args), declare a `type:` on every field rather than a defensive per-field `coerce: true` — tool
+calls always coerce, and coercion plus schema reflection (`input_schema`) both key off `type:`.
+See <https://teamshares.github.io/axn/reference/tool-invoker>.
+
 ## Inside `call`
 
 | Helper | Effect |
@@ -263,7 +268,8 @@ with the step name prefixed (`"validate: Email is invalid"`).
 Human docs — <https://teamshares.github.io/axn/>:
 build (`/usage/writing`), use (`/usage/using`), class DSL (`/reference/class`), instance helpers
 (`/reference/instance`), result (`/reference/axn-result`), strategies (`/strategies/`), steps
-(`/usage/steps`), async (`/reference/async`), config (`/reference/configuration`).
+(`/usage/steps`), async (`/reference/async`), config (`/reference/configuration`), tool invoker
+(`/reference/tool-invoker`).
 
 Source entry points (resolve with `bundle show axn`):
 - `lib/axn.rb` — `include Axn` wiring.

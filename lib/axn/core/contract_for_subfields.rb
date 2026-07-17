@@ -264,7 +264,7 @@ module Axn
       # absent subfield has no value to transform. coerce_value no-ops on a nil/non-String value, so
       # coercion needs no guard.
       def self._apply_read_path_transforms(action, config, value, parent)
-        coerce_input_types = Axn::Configuration.resolve_override_for(action.class, :coerce_input_types)
+        coerce_input_types = Axn::Internal::CurrentCallOptions.coerce_input_types_for(action)
         value = Axn::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
         value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
         value

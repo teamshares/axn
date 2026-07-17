@@ -133,6 +133,11 @@ module Axn
     def __present_as(string) = @presentation = string.presence
     def message = @presentation.presence || errors.full_messages.to_sentence
     def to_s = message
+
+    # Structured per-field view of the validation errors, for callers that want to format each
+    # failure individually (e.g. a tool adapter handing per-argument reasons back to a model).
+    # `full_message` so each entry reads standalone; base-level errors surface with field == :base.
+    def field_errors = errors.map { |error| { field: error.attribute, message: error.full_message } }
   end
 
   class InboundValidationError < ValidationError; end
