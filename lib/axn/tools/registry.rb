@@ -55,7 +55,7 @@ module Axn
         # Deterministic enumeration regardless of load/registration order. Safe to sort by
         # tool_name because _assert_unique_tool_names! has already guaranteed the names are
         # distinct for this adapter, so there are no ties.
-        members.sort_by(&:tool_name)
+        members.sort_by { |klass| klass.tool_name(adapter) }
       end
 
       # Ensures tool classes under the configured tool_paths are loaded before enumeration.
@@ -142,7 +142,7 @@ module Axn
       # per-adapter: the same name reused under a DIFFERENT adapter is fine (checked by the caller
       # passing only that adapter's members).
       def _assert_unique_tool_names!(members, adapter)
-        collisions = members.group_by(&:tool_name).select { |_name, klasses| klasses.length > 1 }
+        collisions = members.group_by { |klass| klass.tool_name(adapter) }.select { |_name, klasses| klasses.length > 1 }
         return if collisions.empty?
 
         details = collisions.map { |tname, klasses| "#{tname.inspect} (#{klasses.map(&:name).sort.join(', ')})" }.join("; ")

@@ -242,6 +242,51 @@ RSpec.describe Axn::Tools::Registry do
 
       expect(Axn.tools_for(:mcp)).to include(distinct_a, distinct_b)
     end
+
+    it "detects a within-adapter collision produced by a per-adapter bag name" do
+      stub_const("PerAdapterDup::First", Class.new do
+        include Axn
+        tool mcp: { name: "search" }
+      end)
+      stub_const("PerAdapterDup::Second", Class.new do
+        include Axn
+        tool mcp: { name: "search" }
+      end)
+
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /search/)
+    end
+
+    it "does not collide when the shared derived names differ but only one adapter is overridden" do
+      Axn.register_tool_adapter(:ruby_llm)
+      a = stub_const("PerAdapterName::Alpha", Class.new do
+        include Axn
+        tool mcp: { name: "shared" }, ruby_llm: {}
+      end)
+      b = stub_const("PerAdapterName::Beta", Class.new do
+        include Axn
+        tool ruby_llm: { name: "shared" }
+      end)
+
+      # "shared" is the mcp name of Alpha and the ruby_llm name of Beta — different adapters, no clash.
+      expect(Axn.tools_for(:mcp)).to contain_exactly(a)
+      expect(Axn.tools_for(:ruby_llm)).to contain_exactly(a, b)
+    end
+
+    it "sorts members by the per-adapter name" do
+      # Class-name-derived order is the OPPOSITE of the per-adapter override order ("Apple" <
+      # "Zebra" by class name, but "zzz" > "aaa" by override), so this only passes when the sort
+      # actually keys off the per-adapter tool_name rather than the zero-arg derived name.
+      z = stub_const("PerAdapterSort::Apple", Class.new do
+        include Axn
+        tool mcp: { name: "zzz" }
+      end)
+      a = stub_const("PerAdapterSort::Zebra", Class.new do
+        include Axn
+        tool mcp: { name: "aaa" }
+      end)
+
+      expect(Axn.tools_for(:mcp)).to eq([a, z])
+    end
   end
 
   describe "._tool_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
