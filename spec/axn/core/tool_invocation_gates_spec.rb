@@ -171,4 +171,52 @@ RSpec.describe "tool invocation gates: reject_undeclared_inputs" do
     end
     expect(result.outcome).to eq("exception")
   end
+
+  describe "implicit <field>_id for a top-level model: field with no explicit sibling" do
+    let(:co_class) do
+      Class.new do
+        def self.name = "Co"
+        attr_reader :id
+
+        def initialize(id) = @id = id
+        def self.find(id) = new(id)
+      end
+    end
+
+    it "does NOT reject <field>_id (default finder) supplied at the top level" do
+      klass = co_class
+      model_action = build_axn do
+        expects :company, model: { klass:, finder: :find }
+        exposes :cid
+
+        def call = expose(cid: company_id)
+      end
+
+      result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+        model_action.call(company_id: 5)
+      end
+      expect(result).to be_ok
+      expect(result.cid).to eq(5)
+    end
+
+    it "does NOT reject <field>_id (custom finder) supplied at the top level" do
+      co = co_class
+      dir = Class.new do
+        define_singleton_method(:find_by_token) { |tok| tok == "abc" ? co.new(42) : nil }
+      end
+      klass = co_class
+      model_action = build_axn do
+        expects :company, model: { klass:, finder: dir.method(:find_by_token) }
+        exposes :cid
+
+        def call = expose(cid: company_id)
+      end
+
+      result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+        model_action.call(company_id: "abc")
+      end
+      expect(result).to be_ok
+      expect(result.cid).to eq(42)
+    end
+  end
 end

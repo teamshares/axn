@@ -679,7 +679,20 @@ module Axn
         path = _resolved_path_for(config)
         path ? path.wire_path.first : config.field
       end
-      (roots + [Core::AmbientContext::PARENT]).uniq
+      (roots + _model_id_top_level_keys + [Core::AmbientContext::PARENT]).uniq
+    end
+
+    # Every top-level `model:` field derives a `<field>_id` reader (Contract._define_model_id_reader)
+    # that the resolver consumes as its lookup token (FieldResolvers::Model#derive_value) whenever no
+    # record is provided, so a caller may legitimately supply `<field>_id` at the top level even with
+    # no explicit sibling declared. Exempt that implicit key from the undeclared-input gate. Same
+    # `<field>_id` convention (any config carrying a `model:`, not just id-based finders — a custom
+    # finder reads its token off the same key) Contract keys off for sensitive-alias filtering. Only
+    # top-level configs contribute: a subfield model's id key is nested, not a top-level provided key.
+    def _model_id_top_level_keys
+      @action_class.send(:internal_field_configs).filter_map do |config|
+        Internal::FieldConfig.model_id_key(config.field) if config.validations[:model]
+      end
     end
 
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
