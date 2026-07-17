@@ -377,6 +377,10 @@ module Axn
       # clearing the holder so a nested `.call` in the body runs with default semantics. Stash the
       # consumed Options on the action instance (where per-call state lives) so the read-path
       # coercion honors the same gate this executor's validation-message path reads.
+      #
+      # Two copies, deliberately not unified: the action-anchored copy is the only one reachable from
+      # ContractForSubfields' read-path coercion (it has just the action, not this executor), while the
+      # boolean gates below are read only from this executor, off its own copy.
       @__call_options = Internal::CurrentCallOptions.consume
       @action.instance_variable_set(:@__call_options, @__call_options) if @__call_options
 
@@ -978,10 +982,13 @@ module Axn
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
 
-    # Per-call gate readers. `@__call_options` is the consumed CurrentCallOptions (or nil for a
-    # normal call). coerce is tri-state: a nil per-call value falls back to the class/global setting,
-    # so a normal call is unchanged; the tool invoker forces `true`. Resolved through the shared
-    # CurrentCallOptions layer so this validation-message path and the read-path value coercion agree.
+    # Per-call gate readers, anchored differently on purpose. coerce resolves through
+    # CurrentCallOptions.coerce_input_types_for(@action) — the ACTION-anchored copy — because the
+    # read-path value coercion in ContractForSubfields only has the action to read from, so both
+    # readers must resolve off the same anchor to agree; it's tri-state, so a nil per-call value falls
+    # back to the class/global setting (a normal call is unchanged) while the tool invoker forces
+    # `true`. The other two gates are only ever consulted here in the executor, so they read the
+    # executor's own `@__call_options` (nil for a normal call) directly.
     def _coerce_input_types? = Internal::CurrentCallOptions.coerce_input_types_for(@action)
     def _user_facing_input_errors? = @__call_options&.user_facing_input_errors || false
     def _reject_undeclared_inputs? = @__call_options&.reject_undeclared_inputs || false
