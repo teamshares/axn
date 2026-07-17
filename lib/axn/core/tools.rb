@@ -64,7 +64,12 @@ module Axn
             return
           end
 
-          non_symbols = adapters.reject { |a| a.is_a?(Symbol) }
+          # Adapter identity must be a Symbol on both paths. Bag keys are normally Symbols (Ruby keyword
+          # capture), but a `**string_keyed_hash` splat can smuggle a String key in — which would land in
+          # `_tool_declaration` and the config store as a String and then never match the Symbol every
+          # lookup (`member?`, `tools_for`) uses, silently omitting the tool. Reject here like positional
+          # adapters, so membership stays Symbol-keyed end to end.
+          non_symbols = (adapters + bags.keys).reject { |a| a.is_a?(Symbol) }
           raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
 
           non_hash = bags.reject { |_adapter, opts| opts.is_a?(Hash) }

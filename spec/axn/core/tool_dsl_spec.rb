@@ -143,6 +143,10 @@ RSpec.describe "Axn `tool` DSL" do
       expect { axn { tool mcp: :message } }.to raise_error(ArgumentError, /must be Hashes/)
     end
 
+    it "rejects a non-Symbol bag adapter key (smuggled via a string-keyed splat), like positional adapters" do
+      expect { axn { tool(**{ "mcp" => { present_as: :message } }) } }.to raise_error(ArgumentError, /must be Symbols/)
+    end
+
     it "rejects `tool false` combined with a per-adapter bag" do
       expect { axn { tool false, mcp: { present_as: :message } } }.to raise_error(ArgumentError, /opts out/)
     end
