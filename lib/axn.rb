@@ -19,6 +19,7 @@ require "axn/reflection"
 require "axn/tools/registry"
 
 # Internal utilities
+require "axn/internal/current_call_options"
 require "axn/internal/memoization"
 require "axn/internal/callable"
 require "axn/internal/call_logger"
