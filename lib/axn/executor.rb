@@ -490,10 +490,17 @@ module Axn
       # top-level config marks its root node, so its whole subtree suppresses through the same rule.
       failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
       mismatches = _model_consistency_mismatches(failed_nodes)
+      base_extras = mismatches + _undeclared_input_messages
 
-      return if failures.empty? && mismatches.empty?
+      return if failures.empty? && base_extras.empty?
 
-      raise InboundValidationError, _aggregate_errors(failures, mismatches) unless mismatches.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
+      # Tool-invocation opt-in: treat the WHOLE inbound contract as user-facing for this call —
+      # compose every violation (including model-consistency mismatches and unknown-input messages)
+      # into one non-reported failure. No new classification; the existing user_facing settling,
+      # applied contract-wide.
+      raise _composed_user_facing_error(failures, base_extras) if _user_facing_input_errors?
+
+      raise InboundValidationError, _aggregate_errors(failures, base_extras) unless base_extras.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
 
       # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
       # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
@@ -585,9 +592,12 @@ module Axn
     # unit — each failing config's own `user_facing:` and each shape-member's own tagged intent — one
     # uniform path for every depth. Parts are de-duplicated so a String/Symbol member override on an
     # Array shape surfaces once rather than repeating per failing element.
-    def _composed_user_facing_error(failures)
-      parts = failures.flat_map { |failure| _user_facing_parts(failure) }
-      InboundValidationError.new(_aggregate_errors(failures, []),
+    # base_extras are :base-level message strings (model-consistency mismatches and, under
+    # reject_undeclared_inputs, unknown-input messages) that compose into the user-facing message and
+    # aggregate onto :base. Empty by default, so the per-field-declared path is unchanged.
+    def _composed_user_facing_error(failures, base_extras = [])
+      parts = failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras
+      InboundValidationError.new(_aggregate_errors(failures, base_extras),
                                  user_facing: true, user_facing_message: parts.uniq.to_sentence)
     end
 
@@ -667,6 +677,9 @@ module Axn
     # carries its own field prefix). Subfield checks are causally suppressed like subfield validation: a
     # failed ancestor means this chain's data is already known-bad, so a consistency mismatch under it
     # is stranding noise.
+    # Placeholder until Task 4 wires undeclared-input rejection; returns [] so base_extras == mismatches.
+    def _undeclared_input_messages = []
+
     def _model_consistency_mismatches(failed_nodes)
       mismatches = []
 
