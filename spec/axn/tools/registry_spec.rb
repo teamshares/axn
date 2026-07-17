@@ -43,6 +43,13 @@ RSpec.describe Axn::Tools::Registry do
       expect(described_class.adapters.to_a).to eq([:mcp])
       expect(described_class.adapter_config_source(:mcp)).to be(second)
     end
+
+    it "keeps the existing source when re-registered with no source (idempotent ensure)" do
+      source = Module.new
+      Axn.register_tool_adapter(:mcp, source)
+      Axn.register_tool_adapter(:mcp) # bare "ensure registered" must not wipe the source
+      expect(described_class.adapter_config_source(:mcp)).to be(source)
+    end
   end
 
   describe "global class tracking" do

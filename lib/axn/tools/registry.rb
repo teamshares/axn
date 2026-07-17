@@ -8,8 +8,16 @@ module Axn
     module Registry
       extend self
 
+      # A nil source on RE-registration keeps the existing source: the idempotent "ensure this
+      # adapter is registered" call (no source) must not wipe a source an adapter gem already
+      # supplied, which would strip its tool_roots and drop every directory-granted tool. A non-nil
+      # source always updates (last-wins); a first-time nil registration stores nil (a
+      # declaration-driven adapter with no directory roots).
       def register_adapter(key, config_source = nil)
-        _adapter_sources[key.to_sym] = config_source
+        key = key.to_sym
+        return if config_source.nil? && _adapter_sources.key?(key)
+
+        _adapter_sources[key] = config_source
       end
 
       def adapters
