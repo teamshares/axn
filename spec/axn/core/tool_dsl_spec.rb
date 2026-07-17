@@ -251,6 +251,16 @@ RSpec.describe "Axn `tool` DSL" do
       expect(axn { tool except: :ruby_llm }._tool_declaration).to eq([])
     end
 
+    it "treats an explicit `except: nil` (e.g. a dynamic list resolving to nil) like `except: []`, not omitted" do
+      k = axn { tool except: nil }
+      expect(k._tool_declaration).to eq([]) # narrowing form, NOT :all
+      expect(k._tool_except).to eq([])
+    end
+
+    it "still grants :all when except: is omitted entirely" do
+      expect(axn { tool }._tool_declaration).to eq(:all)
+    end
+
     it "composes positional adapters with except:" do
       k = axn { tool :mcp, :openapi, except: :openapi }
       expect(k._tool_declaration).to eq(%i[mcp openapi])

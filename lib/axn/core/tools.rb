@@ -26,6 +26,11 @@ module Axn
       end
 
       module ClassMethods
+        # Distinguishes an omitted `except:` keyword from an explicit `except: nil`. A caller passing
+        # `except:` at all — even a dynamic value that resolves to nil — is using the narrowing form
+        # (directory-grant base); only omitting it entirely leaves the broad `:all` default in play.
+        EXCEPT_OMITTED = Object.new.freeze
+        private_constant :EXCEPT_OMITTED
         # A concrete tool commonly SUBCLASSES an Axn base (`class MyTool < ApplicationAction`)
         # rather than including Axn directly, so `Axn.included` never re-fires for it and the
         # registry would otherwise omit it. Register every subclass here too. `super` runs FIRST
@@ -47,7 +52,7 @@ module Axn
         #     a bag `name:` overrides the provider name for that adapter only
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check here
         # would be load-order-hostile) and simply never match tools_for.
-        def tool(*adapters, name: nil, except: nil, **bags)
+        def tool(*adapters, name: nil, except: EXCEPT_OMITTED, **bags)
           # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
           # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins),
           # changing membership at tools_for time instead of failing here. Per axn's fail-at-declaration
@@ -59,8 +64,10 @@ module Axn
           end
           @__axn_tool_declared = true
 
+          except_given = !except.equal?(EXCEPT_OMITTED)
+
           if adapters.include?(false)
-            if adapters.length > 1 || !name.nil? || bags.any? || !except.nil?
+            if adapters.length > 1 || !name.nil? || bags.any? || except_given
               raise ArgumentError, "`tool false` opts out; it can't be combined with adapters, `name:`, `except:`, or per-adapter options"
             end
 
@@ -71,7 +78,7 @@ module Axn
             return
           end
 
-          except_list = Array(except).uniq
+          except_list = except_given ? Array(except).uniq : []
 
           # Adapter identity must be a Symbol everywhere it appears — positional, bag key, or except —
           # so membership stays Symbol-keyed end to end (a `**string_keyed` splat can smuggle a String).
@@ -104,11 +111,12 @@ module Axn
           #   - a bare `except:` (narrowing with no adapters/bags/name) grants nothing itself and relies
           #     on the directory grant (an empty Array — NOT :all, which would re-expose the tool to
           #     every adapter but the excepted one, defeating directory scoping). Its base is the
-          #     directory grant whether the except list is empty or populated.
+          #     directory grant whether `except:` is empty, populated, or an explicit nil — passing the
+          #     keyword at all selects the narrowing form.
           # `name:` is a broad gesture, so `tool name:, except:` stays :all-minus-except rather than
           # collapsing to directory-only.
           declared = (adapters + bags.keys).uniq
-          narrowing_only = declared.empty? && name.nil? && !except.nil?
+          narrowing_only = declared.empty? && name.nil? && except_given
           self._tool_declaration =
             if declared.any?
               declared
