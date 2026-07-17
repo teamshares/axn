@@ -1,0 +1,21 @@
+# AGENTS.md
+
+Guidance for agents working on **__GEM_NAME__**, an [axn](https://github.com/teamshares/axn)-consuming gem.
+
+## Axn
+
+Before writing or modifying an Axn action (`include Axn`): run `bundle show axn` and read
+`AGENTS-consuming.md` there — the `expects`/`exposes`/`call` contract, failure surfaces
+(`fail!`/`fails_on`/unhandled exception, `standalone:`/`join:`), and gotchas.
+
+## Rules
+
+- TDD: failing test first.
+- Works outside Rails — guard `Rails`/`ActiveRecord`/`ActiveJob` references with `defined?(...)`.
+- `bundle exec rake` (specs + rubocop) before done.
+- `axn` is pinned to `branch: "main"` in the Gemfile; `Gemfile.lock` is gitignored and CI resolves
+  fresh. Re-run tests after `bundle update axn` if it may have moved.
+
+## Changes & compatibility
+
+- CHANGELOG every user-visible change under `## [Unreleased]`.

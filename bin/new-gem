@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Dev-only: scaffold a new downstream axn-consuming gem (PRO-2949).
+#
+#   bin/new-gem NAME [--no-install]
+#
+# Creates ./NAME in the current working directory, so cd to where you want the gem first. Shells
+# out to `bundle gem NAME` for the generic baseline, then lays axn's canonical delta on top.
+# Pass --no-install to skip the final `bundle install` (used by the spec).
+
+require_relative "support/gem_generator"
+
+install = !ARGV.delete("--no-install")
+name = ARGV.shift
+
+if name.nil? || name.start_with?("-")
+  warn "usage: bin/new-gem NAME [--no-install]"
+  exit 1
+end
+
+begin
+  GemGenerator.new(name, install:).run
+rescue GemGenerator::Error => e
+  warn "Error: #{e.message}"
+  exit 1
+end

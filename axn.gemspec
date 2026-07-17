@@ -30,11 +30,15 @@ Gem::Specification.new do |spec|
   spec.files = Dir.chdir(__dir__) do
     `git ls-files -z`.split("\x0").reject do |f|
       (File.expand_path(f) == __FILE__) ||
+        # NOTE: `.rubocop.yml` is deliberately NOT excluded — it ships so internally-built
+        # downstream gems can `inherit_gem: { axn: ".rubocop.yml" }` (PRO-2949). This is an
+        # internal Teamshares convention, not a documented public API. `.rubocop_todo.yml` and
+        # other `.rubocop*` files stay out via the explicit tokens below.
         f.start_with?(*%w[
                         bin/ test/ spec/ spec_rubocop/ spec_rails/ features/ examples/ benchmark/
                         internal-docs/ log/
                         .git .github appveyor Gemfile Gemfile.lock yarn.lock .rspec_status pkg/
-                        node_modules/ tmp/ .rspec .rubocop .tool-versions package.json
+                        node_modules/ tmp/ .rspec .rubocop_todo .tool-versions package.json
                       ])
     end
   end
