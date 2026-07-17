@@ -697,6 +697,15 @@ RSpec.describe Axn::Tools::Registry do
 
       expect(described_class.member?(k, :mcp)).to be(false)
     end
+
+    it "a named tool outside all roots is a member of every adapter except the excepted one" do
+      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      k = klass_at("MemberUnion::NamedExcept", "/outside/roots/thing.rb") { tool name: "search", except: :ruby_llm }
+
+      expect(described_class.member?(k, :mcp)).to be(true) # :all grant from name:, minus nothing
+      expect(described_class.member?(k, :ruby_llm)).to be(false) # excepted
+    end
   end
 
   describe ".member?" do

@@ -240,6 +240,17 @@ RSpec.describe "Axn `tool` DSL" do
       expect(axn { tool name: "x" }._tool_declaration).to eq(:all)
     end
 
+    it "`tool name:, except:` keeps the all-adapter grant (name: is a broad gesture), not directory-only" do
+      k = axn { tool name: "search", except: :ruby_llm }
+      expect(k._tool_declaration).to eq(:all)
+      expect(k._tool_except).to eq([:ruby_llm])
+    end
+
+    it "a bare `except:` narrows the directory grant regardless of list emptiness (same base as a populated except:)" do
+      expect(axn { tool except: [] }._tool_declaration).to eq([])
+      expect(axn { tool except: :ruby_llm }._tool_declaration).to eq([])
+    end
+
     it "composes positional adapters with except:" do
       k = axn { tool :mcp, :openapi, except: :openapi }
       expect(k._tool_declaration).to eq(%i[mcp openapi])

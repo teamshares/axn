@@ -97,19 +97,25 @@ module Axn
           self._tool_name_override = name
           self._tool_except = except_list.freeze
 
-          # Membership grant from the declaration: an explicit list unions positional adapters with
-          # bag keys; bare `tool` (nothing at all) grants every registered adapter; `except:` with no
-          # positional/bags is pure narrowing, so it grants nothing itself and relies on the directory
-          # grant (an empty Array — NOT :all, which would re-expose the tool to every adapter but the
-          # excepted one, defeating directory scoping).
+          # Membership grant from the declaration:
+          #   - an explicit list (positional adapters ∪ bag keys) grants exactly those adapters;
+          #   - a broad gesture with no list — bare `tool`, or `tool name:` — grants every registered
+          #     adapter (:all);
+          #   - a bare `except:` (narrowing with no adapters/bags/name) grants nothing itself and relies
+          #     on the directory grant (an empty Array — NOT :all, which would re-expose the tool to
+          #     every adapter but the excepted one, defeating directory scoping). Its base is the
+          #     directory grant whether the except list is empty or populated.
+          # `name:` is a broad gesture, so `tool name:, except:` stays :all-minus-except rather than
+          # collapsing to directory-only.
           declared = (adapters + bags.keys).uniq
+          narrowing_only = declared.empty? && name.nil? && !except.nil?
           self._tool_declaration =
             if declared.any?
               declared
-            elsif except.nil?
-              :all
-            else
+            elsif narrowing_only
               []
+            else
+              :all
             end
 
           _apply_tool_bags!(bags)
