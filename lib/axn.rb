@@ -17,6 +17,7 @@ require "axn/core"
 require "axn/executor"
 require "axn/reflection"
 require "axn/tools/registry"
+require "axn/tools/invoker"
 
 # Internal utilities
 require "axn/internal/current_call_options"
