@@ -37,6 +37,8 @@ module Axn
         #   tool :mcp, :ruby_llm  -> explicit per-adapter set
         #   tool false            -> opt out (a helper Axn living under a tool_path)
         #   tool name: "…"        -> membership in all adapters, with a provider-name override
+        #   tool mcp: { title: "…" } -> member of :mcp with per-adapter config (sugar over
+        #     configure(:mcp)); a bag `name:` overrides the provider name for that adapter only
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
         # here would be load-order-hostile) and simply never match tools_for.
         def tool(*adapters, name: nil, **bags)

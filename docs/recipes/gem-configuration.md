@@ -70,6 +70,31 @@ The no-argument `<name>` reader is the supported way to read an overridable sett
 `Foo.overrides` only exists once `Foo` has run `extend Axn::Configurable`, and an action captures the override accessors at the moment it runs `include Foo.overrides`. So your namespace's `extend Axn::Configurable` must be evaluated **before** any action that includes its overrides is defined — in practice, declare the module (the `extend` line) above the `require`s that pull in your actions. The order of individual `setting` declarations does not matter: a setting declared after an action includes the overrides is still picked up.
 :::
 
+## Declaring per-adapter tool config inline
+
+An action that participates as a tool can declare its per-adapter config right on the `tool` line instead of a detached `configure` block. `tool <adapter>: { … }` is sugar over `configure(<adapter>) { … }` — each key/value lands in the same per-class override store and resolves through the same path, and naming an adapter in the bag implies membership in it:
+
+```ruby
+class SearchTool < Axn::MCP::Tool
+  tool mcp: { present_as: :message, title: "Search" },
+       ruby_llm: { halt_after: true }
+end
+```
+
+is equivalent to:
+
+```ruby
+class SearchTool < Axn::MCP::Tool
+  tool :mcp, :ruby_llm
+  configure(:mcp)      { |c| c.present_as = :message; c.title = "Search" }
+  configure(:ruby_llm) { |c| c.halt_after = true }
+end
+```
+
+Keys are validated eagerly when the adapter's settings are loaded in this process and stored tolerantly (validated on first read) otherwise, exactly like `configure`. If both spellings write the same key, last-writer-wins into the shared slot.
+
+The one reserved key is `name`: `tool name: "…"` sets the provider-facing [`tool_name`](/reference/class) shared across every adapter, while `name:` inside a bag overrides it for that adapter only (`tool mcp: { name: "search" }`). Everything else in a bag is opaque to core and belongs to the adapter.
+
 ## Declaring validated settings on a class
 
 The same kernel powers Axn's own `Axn::Configuration`. If you have a plain class (rather than a singleton namespace) that needs validated settings-with-defaults on its instances, extend `Axn::Configurable::Settings`:
