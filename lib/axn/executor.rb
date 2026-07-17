@@ -663,6 +663,25 @@ module Axn
       Array(override).filter_map { |m| m.presence&.to_s }.presence || own
     end
 
+    # Under reject_undeclared_inputs, every provided top-level wire key that is neither a declared
+    # field/subfield wire root nor the reserved ambient parent becomes a normal inbound error. Top-level
+    # only: keys nested inside a Hash field are not the top-level contract's concern.
+    def _undeclared_input_messages
+      return [] unless _reject_undeclared_inputs?
+
+      (@context.provided_data.keys - _declared_top_level_keys).map { |key| "unknown input: #{key}" }
+    end
+
+    # The set of legitimate top-level wire keys: each inbound config's resolved-path root (top-level
+    # fields fall back to their own field name), plus the reserved always-present ambient parent.
+    def _declared_top_level_keys
+      roots = _inbound_configs.filter_map do |config|
+        path = _resolved_path_for(config)
+        path ? path.wire_path.first : config.field
+      end
+      (roots + [Core::AmbientContext::PARENT]).uniq
+    end
+
     # For id-based (`:find`) `model:` fields, reject contradictory input: a record AND a `<field>_id`
     # that disagree. The RECORD is always extracted raw (never a model lookup): a present record is
     # authoritative, so a defaulted sibling id must not override it into a fabricated conflict — the id
@@ -677,9 +696,6 @@ module Axn
     # carries its own field prefix). Subfield checks are causally suppressed like subfield validation: a
     # failed ancestor means this chain's data is already known-bad, so a consistency mismatch under it
     # is stranding noise.
-    # Placeholder until Task 4 wires undeclared-input rejection; returns [] so base_extras == mismatches.
-    def _undeclared_input_messages = []
-
     def _model_consistency_mismatches(failed_nodes)
       mismatches = []
 

@@ -117,3 +117,58 @@ RSpec.describe "tool invocation gates: user_facing_input_errors" do
     expect(result.outcome).to eq("exception")
   end
 end
+
+RSpec.describe "tool invocation gates: reject_undeclared_inputs" do
+  let(:action) do
+    Class.new do
+      include Axn
+      expects :name, type: String
+      expects :address, type: Hash
+      expects :city, on: :address, type: String # subfield: :address is a legitimate top-level wire root
+      def call; end
+    end
+  end
+
+  it "rejects an undeclared top-level key as an inbound error" do
+    result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+      action.call(name: "ok", address: { city: "NYC" }, bogus: 1)
+    end
+    expect(result).not_to be_ok
+    expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(result.error).to include("unknown input: bogus")
+  end
+
+  it "exempts declared fields and subfield wire roots" do
+    result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+      action.call(name: "ok", address: { city: "NYC" })
+    end
+    expect(result).to be_ok
+  end
+
+  it "exempts the reserved ambient_context key" do
+    result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+      action.call(name: "ok", address: { city: "NYC" }, ambient_context: {})
+    end
+    expect(result).to be_ok
+  end
+
+  it "does NOT reject undeclared keys NESTED inside a hash field" do
+    result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+      action.call(name: "ok", address: { city: "NYC", zip: "10001" })
+    end
+    expect(result).to be_ok
+  end
+
+  it "silently ignores undeclared keys when the gate is off" do
+    result = action.call(name: "ok", address: { city: "NYC" }, bogus: 1)
+    expect(result).to be_ok
+  end
+
+  it "surfaces an undeclared key as a dev-facing reported bug when user_facing is off but reject is on" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true) do
+      action.call(name: "ok", address: { city: "NYC" }, bogus: 1)
+    end
+    expect(result.outcome).to eq("exception")
+  end
+end
