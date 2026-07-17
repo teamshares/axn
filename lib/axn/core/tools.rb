@@ -57,6 +57,7 @@ module Axn
             end
 
             self._tool_name_override = nil # a subclass opting out reports its OWN tool_name, not an inherited `tool name:` override
+            self._tool_name_overrides = {}.freeze # ...nor an inherited per-adapter `tool <adapter>: { name: }` override
             self._tool_declaration = false
             return
           end
@@ -87,29 +88,7 @@ module Axn
           declared = (adapters + bags.keys).uniq
           self._tool_declaration = declared.empty? ? :all : declared
 
-          # A per-adapter bag is sugar over `configure(<adapter>)` for opaque config; the `name` key is
-          # the one exception — it is core-owned (feeds tool_name), so it is intercepted here and never
-          # written to the config store. Everything else routes through the same NamespaceWriter.
-          per_adapter_names = {}
-          bags.each do |adapter, opts|
-            opts = opts.dup
-            if opts.key?(:name)
-              adapter_name = opts.delete(:name)
-              if !adapter_name.nil? && _tool_name_sanitize(adapter_name).empty?
-                raise ArgumentError,
-                      "tool #{adapter.inspect} name: #{adapter_name.inspect} has no provider-safe characters " \
-                      "([a-z0-9_]); provide a name containing at least one such character"
-              end
-              per_adapter_names[adapter] = adapter_name unless adapter_name.nil?
-            end
-
-            next if opts.empty?
-
-            axn_configure(adapter) do |writer|
-              opts.each { |key, value| writer.public_send("#{key}=", value) }
-            end
-          end
-          self._tool_name_overrides = per_adapter_names.freeze
+          _apply_tool_bags!(bags)
 
           nil
         end
@@ -148,6 +127,32 @@ module Axn
         end
 
         private
+
+        # A per-adapter bag is sugar over `configure(<adapter>)` for opaque config; the `name` key is
+        # the one exception — it is core-owned (feeds tool_name), so it is intercepted here and never
+        # written to the config store. Everything else routes through the same NamespaceWriter.
+        def _apply_tool_bags!(bags)
+          per_adapter_names = {}
+          bags.each do |adapter, opts|
+            opts = opts.dup
+            if opts.key?(:name)
+              adapter_name = opts.delete(:name)
+              if !adapter_name.nil? && _tool_name_sanitize(adapter_name).empty?
+                raise ArgumentError,
+                      "tool #{adapter.inspect} name: #{adapter_name.inspect} has no provider-safe characters " \
+                      "([a-z0-9_]); provide a name containing at least one such character"
+              end
+              per_adapter_names[adapter] = adapter_name unless adapter_name.nil?
+            end
+
+            next if opts.empty?
+
+            axn_configure(adapter) do |writer|
+              opts.each { |key, value| writer.public_send("#{key}=", value) }
+            end
+          end
+          self._tool_name_overrides = per_adapter_names.freeze
+        end
 
         def _tool_name_strip_leading_prefixes(segments)
           prefixes = _tool_name_stripped_prefixes.map(&:to_s)

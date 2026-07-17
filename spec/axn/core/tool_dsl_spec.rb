@@ -190,6 +190,13 @@ RSpec.describe "Axn `tool` DSL" do
         expect(slot).to include(foo: :bar)
         expect(slot).not_to have_key(:name)
       end
+
+      it "a subclass opting out via `tool false` does not inherit the parent's per-adapter name overrides" do
+        parent = axn { tool mcp: { name: "search" } }
+        sub = Class.new(parent) { tool false }
+        expect(sub._tool_name_overrides).to eq({})
+        expect(sub.tool_name(:mcp)).not_to eq("search")
+      end
     end
   end
 end
