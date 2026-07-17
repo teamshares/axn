@@ -47,10 +47,12 @@ invoker.call(ListCompanies, { ambient_context: { current_user: attacker_id } }, 
 result = invoker.call(ListCompanies, args)
 
 Axn::Tools::Invoker.input_invalid?(result)
-# equivalent to: result.exception.is_a?(Axn::InboundValidationError)
+# equivalent to: Axn::ValidationError.user_facing?(result.exception)
 ```
 
-`input_invalid?` is mode-independent: it answers `true` whenever the call failed on an inbound contract violation, regardless of whether `user_facing_input_errors:` was on for that profile (i.e. regardless of whether the violation was reported to `on_exception` or surfaced as a non-reported user-facing failure). It's `false` for a deliberate `fail!`, an outbound (`exposes`) violation, or any other raised exception.
+`input_invalid?` answers `true` only when the inbound violation was surfaced as a **user-facing** caller error — a correctable, model-facing failure composed under `user_facing_input_errors:`. An inbound failure that stayed **dev-facing** (a normal reported bug, or one that occurred with the gate off) reported to `on_exception` and is **not** flagged `input_invalid?`, so the adapter returns its generic error rather than telling the model its arguments were wrong. It's also `false` for a deliberate `fail!`, an outbound (`exposes`) violation, or any other raised exception.
+
+Ambient (`on: :ambient_context`) failures stay dev-facing even under `user_facing_input_errors:`. Ambient context is trusted, adapter-supplied input (the Invoker injects it — see the guard above), not model input, so a missing or malformed ambient value is an integration bug: it reports to `on_exception` and `input_invalid?` is `false`. When an ambient violation co-occurs with a model-supplied one, the whole set settles dev-facing and reports (a real bug always pages, with every co-occurring violation in one report).
 
 ## Per-field detail
 

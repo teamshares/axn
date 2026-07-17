@@ -93,6 +93,48 @@ RSpec.describe Axn::Tools::Invoker do
     expect(result.tenant).to eq("trusted")
   end
 
+  it "keeps a MISSING ambient value dev-facing under user_facing_input_errors (input_invalid? false)" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    ambient_action = Class.new do
+      include Axn
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    invoker = described_class.new(user_facing_input_errors: true)
+    result = invoker.call(ambient_action, {}) # adapter injects NO ambient_context
+    expect(result).not_to be_ok
+    expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+    expect(described_class.input_invalid?(result)).to be(false)
+  end
+
+  it "keeps a MALFORMED adapter-supplied ambient value dev-facing (input_invalid? false)" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    ambient_action = Class.new do
+      include Axn
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    invoker = described_class.new(user_facing_input_errors: true)
+    result = invoker.call(ambient_action, {}, ambient_context: { current_user: 123 })
+    expect(result).not_to be_ok
+    expect(described_class.input_invalid?(result)).to be(false)
+  end
+
+  it "reports the whole set (input_invalid? false) when ambient and model-supplied fail together" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    mixed = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    invoker = described_class.new(user_facing_input_errors: true)
+    result = invoker.call(mixed, { name: 123 })
+    expect(result).not_to be_ok
+    expect(described_class.input_invalid?(result)).to be(false)
+  end
+
   it "clears CurrentCallOptions after the call" do
     described_class.new(user_facing_input_errors: true).call(action, { name: "ada", age: 36 })
     expect(Axn::Internal::CurrentCallOptions.current).to be_nil

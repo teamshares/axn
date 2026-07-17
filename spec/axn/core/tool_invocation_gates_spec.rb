@@ -118,6 +118,69 @@ RSpec.describe "tool invocation gates: user_facing_input_errors" do
   end
 end
 
+RSpec.describe "tool invocation gates: user_facing_input_errors with ambient context" do
+  def invoke(klass, **args)
+    Axn::Internal::CurrentCallOptions.with(user_facing_input_errors: true) { klass.call(**args) }
+  end
+
+  let(:ambient_action) do
+    Class.new do
+      include Axn
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+  end
+
+  it "keeps a MISSING ambient value dev-facing (reports) even under the gate" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    result = invoke(ambient_action) # no ambient_context supplied → current_user unresolved
+    expect(result).not_to be_ok
+    expect(result.outcome).to eq("exception")
+    expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+    expect(result.error).not_to match(/current_user/i) # generic headline, not the ambient field detail
+  end
+
+  it "keeps a MALFORMED ambient value dev-facing (reports) even under the gate" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    result = invoke(ambient_action, ambient_context: { current_user: 123 }) # wrong type, adapter-supplied
+    expect(result).not_to be_ok
+    expect(result.outcome).to eq("exception")
+    expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+  end
+
+  it "reports the WHOLE set dev-facing when an ambient failure co-occurs with a model-supplied one" do
+    expect(Axn.config).to receive(:on_exception).at_least(:once)
+    mixed = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    result = invoke(mixed, name: 123) # bad model-supplied name + missing ambient current_user
+    expect(result).not_to be_ok
+    expect(result.outcome).to eq("exception")
+    expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+  end
+
+  it "still composes user-facing when ONLY model-supplied fields fail (regression)" do
+    expect(Axn.config).not_to receive(:on_exception)
+    supplied = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    # ambient current_user is validly supplied; only the model-supplied name is bad
+    result = invoke(supplied, name: 123, ambient_context: { current_user: "trusted" })
+    expect(result).not_to be_ok
+    expect(result.outcome).to eq("failure")
+    expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    expect(result.error).to match(/name/i)
+  end
+end
+
 RSpec.describe "tool invocation gates: reject_undeclared_inputs" do
   let(:action) do
     Class.new do

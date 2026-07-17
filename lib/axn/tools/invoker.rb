@@ -39,10 +39,14 @@ module Axn
         end
       end
 
-      # Whether a returned result failed on an inbound contract violation (as opposed to a `fail!`,
-      # an outbound violation, or a genuine exception). Mode-independent — true regardless of whether
-      # the violation was reported or surfaced as user-facing.
-      def self.input_invalid?(result) = result.exception.is_a?(Axn::InboundValidationError)
+      # Whether a returned result failed on an inbound contract violation that was surfaced as a
+      # correctable CALLER (model) error — i.e. an inbound violation settled user-facing under
+      # `user_facing_input_errors`. A dev-facing inbound failure (a normal reported bug, or an
+      # ambient-context violation, which stays dev-facing because ambient context is trusted/
+      # adapter-supplied) already paged `on_exception` and is NOT flagged here, so the adapter returns
+      # its generic error rather than telling the model "Invalid tool arguments" for an infra bug.
+      # False for a `fail!`, an outbound violation, or any other raised exception.
+      def self.input_invalid?(result) = Axn::ValidationError.user_facing?(result.exception)
     end
   end
 end

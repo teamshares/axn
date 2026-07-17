@@ -494,15 +494,19 @@ module Axn
       # top-level config marks its root node, so its whole subtree suppresses through the same rule.
       failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
       mismatches = _model_consistency_mismatches(failed_nodes)
-      base_extras = mismatches + _undeclared_input_messages
+      base_extras = mismatches.map(&:message) + _undeclared_input_messages
 
       return if failures.empty? && base_extras.empty?
 
       # Tool-invocation opt-in: treat the WHOLE inbound contract as user-facing for this call —
       # compose every violation (including model-consistency mismatches and unknown-input messages)
       # into one non-reported failure. No new classification; the existing user_facing settling,
-      # applied contract-wide.
-      raise _composed_user_facing_error(failures, base_extras) if _user_facing_input_errors?
+      # applied contract-wide. EXCEPT when any ambient-rooted violation is present: ambient context is
+      # trusted/adapter-supplied, not model input (the DSL already rejects `user_facing:` on ambient
+      # subfields), so an ambient violation must stay dev-facing and report. Per the dominance doctrine,
+      # one such violation makes the WHOLE set settle dev-facing via the path below (an ambient config's
+      # `user_facing` is false, so `_failure_fully_user_facing?` already excludes it).
+      raise _composed_user_facing_error(failures, base_extras) if _user_facing_input_errors? && !_any_ambient_violation?(failures, mismatches)
 
       raise InboundValidationError, _aggregate_errors(failures, base_extras) unless base_extras.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
 
@@ -513,6 +517,24 @@ module Axn
     end
 
     ContractFailure = Data.define(:config, :path, :errors, :stranded_at)
+
+    # A model-consistency mismatch (record vs. `<field>_id`), carrying its :base message plus whether
+    # the failing config is ambient-rooted — so the tool-invocation gate can keep an ambient mismatch
+    # dev-facing (see `_any_ambient_violation?`) without re-running the side-effecting resolution.
+    ConsistencyMismatch = Data.define(:message, :ambient)
+
+    # Whether any unsuppressed inbound violation roots at ambient context (trusted/adapter-supplied,
+    # never model input). Used only by the tool-invocation gate to refuse the contract-wide user-facing
+    # compose when an ambient violation is present, so the dev-facing settle path reports it instead.
+    def _any_ambient_violation?(failures, mismatches)
+      failures.any? { |failure| _ambient_config?(failure.config) } || mismatches.any?(&:ambient)
+    end
+
+    # A config is ambient-rooted when it's a subfield whose `on:` chain roots at :ambient_context.
+    # Reuses the canonical class-level predicate; a top-level field (`on: nil`) is never ambient.
+    def _ambient_config?(config)
+      config.subfield? && @action_class.send(:_on_roots_at_ambient?, config.on)
+    end
 
     # Every inbound config's errors — top-level fields and subfields through the one collector —
     # gathered in declaration order with no early exit: settling needs the complete set (both to
@@ -725,7 +747,7 @@ module Axn
         record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, @context.provided_data)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
-        mismatches << msg if msg
+        mismatches << ConsistencyMismatch.new(message: msg, ambient: false) if msg
       end
 
       @action_class.send(:subfield_configs).each do |config|
@@ -737,7 +759,7 @@ module Axn
         record = Axn::Core::ContractForSubfields._memoized_raw_extract(@action, config, source)
         raw_id = _consistency_id_for(config)
         msg = _record_id_mismatch(field: config.field, record:, raw_id:)
-        mismatches << msg if msg
+        mismatches << ConsistencyMismatch.new(message: msg, ambient: _ambient_config?(config)) if msg
       end
 
       mismatches
