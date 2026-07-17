@@ -373,6 +373,13 @@ module Axn
     # =========================================================================
 
     def with_contract(&block)
+      # Take sole ownership of any per-call gates set by the caller (e.g. Axn::Tools::Invoker),
+      # clearing the holder so a nested `.call` in the body runs with default semantics. Stash the
+      # consumed Options on the action instance (where per-call state lives) so the read-path
+      # coercion honors the same gate this executor's validation-message path reads.
+      @__call_options = Internal::CurrentCallOptions.consume
+      @action.instance_variable_set(:@__call_options, @__call_options) if @__call_options
+
       # A pre-pipeline read — a hook/preprocess touching a reader (which may consult a sibling's
       # value-level default via resolve_model_via_id) — can populate both
       # ContractForSubfields' @__resolve_value_cache AND a reader's own memo before inbound validation
@@ -502,7 +509,7 @@ module Axn
     # validates against the inbound facade (which resolves model records and reads by wire key); a
     # subfield against its canonically-resolved parent, with its reader supplied for model resolution.
     def _collect_contract_failures
-      coerce_input_types = Axn::Configuration.resolve_override_for(@action_class, :coerce_input_types)
+      coerce_input_types = _coerce_input_types?
 
       _inbound_configs.filter_map do |config|
         errors = Axn::Validation::Fields.collect_errors(
@@ -928,5 +935,13 @@ module Axn
       key = [config.on.to_s, config.method_call]
       memo.fetch(key) { memo[key] = Axn::Core::ContractForSubfields.resolve_parent(@action, config) }
     end
+
+    # Per-call gate readers. `@__call_options` is the consumed CurrentCallOptions (or nil for a
+    # normal call). coerce is tri-state: a nil per-call value falls back to the class/global setting,
+    # so a normal call is unchanged; the tool invoker forces `true`. Resolved through the shared
+    # CurrentCallOptions layer so this validation-message path and the read-path value coercion agree.
+    def _coerce_input_types? = Internal::CurrentCallOptions.coerce_input_types_for(@action)
+    def _user_facing_input_errors? = @__call_options&.user_facing_input_errors || false
+    def _reject_undeclared_inputs? = @__call_options&.reject_undeclared_inputs || false
   end
 end
