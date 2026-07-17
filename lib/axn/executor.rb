@@ -700,8 +700,12 @@ module Axn
 
     # The set of legitimate top-level wire keys: each inbound config's resolved-path root (top-level
     # fields fall back to their own field name), plus the reserved always-present ambient parent.
+    # Ambient subfields live in a separate ambient-scoped tree (no `_resolved_path_for`), so their leaf
+    # name is never a top-level input — only the reserved ambient parent exempts them.
     def _declared_top_level_keys
       roots = _inbound_configs.filter_map do |config|
+        next if _ambient_config?(config)
+
         path = _resolved_path_for(config)
         path ? path.wire_path.first : config.field
       end

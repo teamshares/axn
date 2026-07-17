@@ -235,6 +235,40 @@ RSpec.describe "tool invocation gates: reject_undeclared_inputs" do
     expect(result.outcome).to eq("exception")
   end
 
+  describe "ambient subfields never enter the top-level allow-list" do
+    let(:ambient_action) do
+      Class.new do
+        include Axn
+        expects :name, type: String
+        expects :current_user, on: :ambient_context, type: String
+        def call; end
+      end
+    end
+
+    def invoke(klass, **args)
+      Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+        klass.call(**args)
+      end
+    end
+
+    it "rejects a model-supplied top-level key matching the ambient leaf name" do
+      result = invoke(ambient_action, name: "ok", current_user: "evil", ambient_context: { current_user: "trusted" })
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.error).to include("unknown input: current_user")
+    end
+
+    it "accepts the ambient value supplied the trusted way via ambient_context" do
+      result = invoke(ambient_action, name: "ok", ambient_context: { current_user: "trusted" })
+      expect(result).to be_ok
+    end
+
+    it "still accepts a normal declared top-level field alongside a valid ambient value" do
+      result = invoke(ambient_action, name: "ok", ambient_context: { current_user: "trusted" })
+      expect(result).to be_ok
+    end
+  end
+
   describe "implicit <field>_id for a top-level model: field with no explicit sibling" do
     let(:co_class) do
       Class.new do

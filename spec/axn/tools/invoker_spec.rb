@@ -93,6 +93,37 @@ RSpec.describe Axn::Tools::Invoker do
     expect(result.tenant).to eq("trusted")
   end
 
+  it "rejects a model-supplied top-level key matching an ambient leaf name under reject_undeclared_inputs" do
+    ambient_action = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    invoker = described_class.new(reject_undeclared_inputs: true, user_facing_input_errors: true)
+    result = invoker.call(
+      ambient_action,
+      { name: "ok", current_user: "evil" }, # hallucinated top-level key mirroring the ambient leaf
+      ambient_context: { current_user: "trusted" },
+    )
+    expect(result).not_to be_ok
+    expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(result.error).to include("unknown input: current_user")
+    expect(described_class.input_invalid?(result)).to be(true)
+  end
+
+  it "accepts the trusted ambient value alongside a declared field under reject_undeclared_inputs" do
+    ambient_action = Class.new do
+      include Axn
+      expects :name, type: String
+      expects :current_user, on: :ambient_context, type: String
+      def call; end
+    end
+    invoker = described_class.new(reject_undeclared_inputs: true, user_facing_input_errors: true)
+    result = invoker.call(ambient_action, { name: "ok" }, ambient_context: { current_user: "trusted" })
+    expect(result).to be_ok
+  end
+
   it "keeps a MISSING ambient value dev-facing under user_facing_input_errors (input_invalid? false)" do
     expect(Axn.config).to receive(:on_exception).at_least(:once)
     ambient_action = Class.new do
