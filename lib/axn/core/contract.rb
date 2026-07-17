@@ -746,7 +746,11 @@ module Axn
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
-          raise ArgumentError, "coerce: is not supported on a shape member (top-level `expects` fields only)." if config.validations.dig(:type, :coerce)
+          if config.validations.dig(:type, :coerce)
+            raise ArgumentError,
+                  "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
+                  "onto; use it on a top-level `expects` field or an `on:` subfield)."
+          end
 
           # `user_facing:` (full parity with a field's) is validated in ShapeConfig's constructor below,
           # so the block and raw `shape:` paths hold members to one grammar.
