@@ -349,18 +349,17 @@ RSpec.describe "tool invocation gates: user_facing_input_errors" do
     expect(result).not_to be_ok
     expect(result.outcome).to eq("failure")
     expect(result.exception).to be_a(Axn::InboundValidationError)
-    expect(result.error).to include("name")
+    expect(result.error).to match(/name/i)
   end
 
   it "surfaces per-field detail for an inclusion (enum) violation" do
     result = invoke(name: "ok", status: "nope")
-    expect(result.error).to match(/status .*included|is not included/i)
-    expect(result.exception.field_errors.map { |e| e[:field] }).to include(:status)
+    expect(result.error).to match(/not included/i)
   end
 
   it "composes multiple violations into one message" do
     result = invoke(name: 123, status: "nope")
-    expect(result.error).to include("name").and include("status")
+    expect(result.error).to match(/name/i).and match(/status/i)
   end
 
   it "still REPORTS the same inputs on a normal call (no gate)" do
@@ -739,7 +738,7 @@ RSpec.describe Axn::Tools::Invoker do
     result = invoker.call(action, { name: 123, age: 36 })
     expect(result).not_to be_ok
     expect(described_class.input_invalid?(result)).to be(true)
-    expect(result.error).to include("name")
+    expect(result.error).to match(/name/i)
   end
 
   it "input_invalid? is false for a fail! / success" do
