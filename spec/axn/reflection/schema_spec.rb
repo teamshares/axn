@@ -976,6 +976,55 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
+  # A bare-Array inclusion (`inclusion: %w[a b c]`) is equivalent at runtime to `{ in: %w[a b c] }`, so
+  # reflection must emit the same enum and infer the same type from its members (PRO-2944).
+  describe "bare-Array inclusion shorthand reflects identically to the { in: } / { within: } long form" do
+    it "emits the enum and infers the type for a bare-Array string inclusion" do
+      klass = Class.new do
+        include Axn
+        expects :s, inclusion: %w[a b c]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:s]).to include(type: "string", enum: %w[a b c])
+    end
+
+    it "infers an integer type from a bare-Array integer inclusion" do
+      klass = Class.new do
+        include Axn
+        expects :s, inclusion: [1, 2]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:s]).to include(type: "integer", enum: [1, 2])
+    end
+
+    it "reflects a bare-Array inclusion identically to the { in: } long form" do
+      bare = Class.new do
+        include Axn
+        expects :s, inclusion: %w[a b c]
+      end
+      long = Class.new do
+        include Axn
+        expects :s, inclusion: { in: %w[a b c] }
+      end
+      bare_prop = described_class.build_input(bare.internal_field_configs, bare.subfield_configs)[:properties][:s]
+      long_prop = described_class.build_input(long.internal_field_configs, long.subfield_configs)[:properties][:s]
+      expect(bare_prop).to eq(long_prop)
+    end
+
+    it "does not run user traversal code for an Array-subclass inclusion set (reflects no enum)" do
+      exploding_array = Class.new(Array) do
+        def map(*) = raise("reflection must not traverse an Array subclass")
+        def each(*) = raise("reflection must not traverse an Array subclass")
+      end.new(%w[a b])
+      klass = Class.new do
+        include Axn
+        expects :s, inclusion: exploding_array
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+      expect(schema[:properties][:s]).not_to have_key(:enum)
+    end
+  end
+
   describe "model: fields" do
     it "emits a nested <field>_id (not the field itself) for a nested model: subfield" do
       klass = Class.new do
@@ -2956,6 +3005,37 @@ RSpec.describe Axn::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:required]).to include("role")
+    end
+
+    # Bare-collection shorthands (PRO-2944): nil-membership must be inspected the same as the { in: } form.
+    it "does not require a field whose bare-Array exclusion set does not contain nil" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, exclusion: %w[admin]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("role")
+    end
+
+    it "still requires a field whose bare-Array inclusion set does not contain nil" do
+      klass = Class.new do
+        include Axn
+        expects :role, inclusion: %w[a b]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required]).to include("role")
+    end
+
+    it "does not require a field whose bare-Array inclusion set explicitly contains nil" do
+      klass = Class.new do
+        include Axn
+        expects :role, presence: false, inclusion: [nil, "a"]
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:required] || []).not_to include("role")
     end
   end
 
