@@ -34,9 +34,19 @@ RSpec.describe Axn::Tools::Invoker do
     expect(result.error).to match(/name/i)
   end
 
-  it "input_invalid? is false for a fail! / success" do
+  it "input_invalid? is false for a success" do
     ok = described_class.new.call(action, { name: "ada", age: 36 })
     expect(described_class.input_invalid?(ok)).to be(false)
+  end
+
+  it "input_invalid? is false for a fail!" do
+    failing = Class.new do
+      include Axn
+      def call = fail!("nope")
+    end
+    result = described_class.new.call(failing, {})
+    expect(result).not_to be_ok
+    expect(described_class.input_invalid?(result)).to be(false)
   end
 
   it "strips a model-supplied ambient_context from untrusted args" do
@@ -47,6 +57,23 @@ RSpec.describe Axn::Tools::Invoker do
       attr_reader :seen
     end
     result = described_class.new.call(sensing, { x: 1, ambient_context: { tenant: "evil" } })
+    expect(result.__action__.seen).to eq({})
+  end
+
+  it "strips a model-supplied ambient_context passed as a STRING key from untrusted args" do
+    # A declared ambient subfield is required here: with none declared, `ambient_context` short-circuits
+    # to {} unconditionally (Bug Z1), which would pass this assertion even if the strip predicate were
+    # broken to symbol-only comparison. Declaring :tenant (optional, so a stripped/absent value doesn't
+    # fail validation before `call` runs) forces real resolution against `provided_data`, so a leaked
+    # string-keyed "ambient_context" surfaces as `{ tenant: "evil" }` instead of `{}`.
+    sensing = Class.new do
+      include Axn
+      expects :tenant, on: :ambient_context, type: String, optional: true
+      define_method(:call) { @seen = ambient_context }
+      attr_reader :seen
+    end
+    result = described_class.new.call(sensing, { "ambient_context" => { tenant: "evil" } })
+    expect(result).to be_ok
     expect(result.__action__.seen).to eq({})
   end
 
