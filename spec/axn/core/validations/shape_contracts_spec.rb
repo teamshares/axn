@@ -247,6 +247,21 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         end.to raise_error(ArgumentError, /does not support/)
       end
     end
+
+    # as:/prefix: rename a field's generated reader; a shape member is reader-less, so they are rejected
+    # with a shape-member-specific message rather than the generic "Unknown key(s)" a bare validations
+    # parse would emit (which would wrongly imply they are never valid keys).
+    %i[as prefix].each do |opt|
+      it "raises a shape-member-specific (not generic unknown-key) error when a member declares #{opt}:" do
+        expect do
+          build_axn do
+            expects :items, type: Array do
+              field :secret, type: String, opt => :renamed
+            end
+          end
+        end.to raise_error(ArgumentError, /shape member `secret` does not support.*reader/m)
+      end
+    end
   end
 
   describe "declaration-time guards" do

@@ -686,6 +686,12 @@ module Axn
         SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive user_facing].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
 
+        # Reader-renaming options (`as:`/`prefix:`) rename the reader a field generates. A shape member is
+        # reader-less, so they have nothing to rename — but they are legitimate keys elsewhere, so a bare
+        # validations parse would reject them as "Unknown key(s)" (wrongly implying they are never valid).
+        # `_build_shape_member` rejects them explicitly with the reader-less reason instead.
+        SHAPE_MEMBER_READER_OPTIONS = %i[as prefix].freeze
+
         # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
         # so wholesale-masked values read identically to per-key-filtered ones.
         SENSITIVE_FILTERED_MASK = "[FILTERED]"
@@ -714,6 +720,14 @@ module Axn
             raise ArgumentError,
                   "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
                   "(shape blocks declare validation/schema only)"
+          end
+
+          reader_opts = opts.keys & SHAPE_MEMBER_READER_OPTIONS
+          if reader_opts.any?
+            raise ArgumentError,
+                  "shape member `#{name}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
+                  "(they rename a field's generated reader, but a shape member is reader-less; " \
+                  "use them on a top-level `expects` field or an `on:` subfield)."
           end
 
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
