@@ -4,6 +4,9 @@ set -euo pipefail
 echo "Installing dependencies..."
 bundle install
 
+# Install git hooks (pre-commit RuboCop lint on staged files); config lives in lefthook.yml.
+bundle exec lefthook install
+
 # Rails-testing gems carry a second bundle in the embedded dummy app.
 if [ -d spec_rails/dummy_app ]; then
   echo "Installing dummy app dependencies..."

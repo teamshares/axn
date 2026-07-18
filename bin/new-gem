@@ -1,12 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Dev-only: scaffold a new downstream axn-consuming gem (PRO-2949).
+# Dev-only: scaffold a new downstream axn-consuming gem, or audit an existing one (PRO-2949).
 #
-#   bin/new-gem NAME [--rails-only | --no-rails] [--no-install]
+#   bin/new-gem NAME [--rails-only | --no-rails] [--no-install]   # scaffold ./NAME
+#   bin/new-gem --check [PATH]                                    # audit PATH (default: .)
 #
-# Creates ./NAME in the current working directory, so cd to where you want the gem first. Shells
-# out to `bundle gem NAME` for the generic baseline, then lays axn's canonical delta on top.
+# Scaffold creates ./NAME in the current working directory, so cd to where you want the gem first.
+# Shells out to `bundle gem NAME` for the generic baseline, then lays axn's canonical delta on top.
 #
 # Rails testing topology (default: dual):
 #   (default)     non-Rails spec/ + a Rails suite in spec_rails/dummy_app; `rake` runs the
@@ -15,6 +16,22 @@
 #   --no-rails    pure Ruby; no dummy app.
 #
 # Pass --no-install to skip the final `bundle install` (used by the spec).
+#
+# --check reports how far an existing gem has drifted from the shared conventions (byte-identical
+# bin/refresh + lefthook.yml, reusable CI, allowlist gemspec, …). Report-only; exits non-zero if any
+# check fails, so it can gate CI.
+
+# Audit mode is a distinct entrypoint — handle it before parsing scaffold flags.
+if ARGV.delete("--check")
+  require_relative "support/gem_conformance"
+  target = ARGV.shift || "."
+  begin
+    exit(GemConformance.new(target).run ? 0 : 1)
+  rescue GemConformance::Error => e
+    warn "Error: #{e.message}"
+    exit 1
+  end
+end
 
 require_relative "support/gem_generator"
 

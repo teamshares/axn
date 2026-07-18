@@ -13,8 +13,15 @@ RSpec.describe GemGenerator do
   def read(relative) = File.read(File.join(@gem_dir, relative))
   def exist?(relative) = File.exist?(File.join(@gem_dir, relative))
 
+  # The files the gemspec would actually package (its `git ls-files` allowlist runs against @gem_dir,
+  # whose index the generator populates via `git add -A`).
+  def packaged_files = Gem::Specification.load(Dir[File.join(@gem_dir, "*.gemspec")].first).files
+
   # The canonical bin/refresh is core's own — the generated copy must stay byte-identical to it.
   def canonical_refresh = File.read(File.expand_path("../../bin/refresh", __dir__))
+
+  # Likewise the lefthook git-hook config is copied byte-identical from core.
+  def canonical_lefthook = File.read(File.expand_path("../../lefthook.yml", __dir__))
 
   context "with a single-word gem name" do
     before(:context) do
@@ -35,8 +42,27 @@ RSpec.describe GemGenerator do
     end
 
     it "deletes bundle gem cruft the base layer doesn't want" do
-      expect(exist?("bin/console")).to be(false)
       expect(exist?("sig")).to be(false)
+    end
+
+    it "emits an executable bin/console that loads the gem" do
+      expect(File.executable?(File.join(@gem_dir, "bin/console"))).to be(true)
+      console = read("bin/console")
+      expect(console).to include('require "foo_bar"')
+      expect(console).to include("IRB.start")
+    end
+
+    it "ships a lefthook config byte-identical to core's, installed and depended on for dev" do
+      expect(read("lefthook.yml")).to eq(canonical_lefthook)
+      expect(read("bin/setup")).to include("bundle exec lefthook install")
+      expect(read("Gemfile")).to include('gem "lefthook"')
+      expect(read("AGENTS.md")).to include("--no-verify")
+    end
+
+    it "keeps lefthook out of the packaged gem (dev-only)" do
+      # lefthook.yml is a dev config; the lefthook gem lives in the Gemfile, never the gemspec.
+      expect(packaged_files).not_to include("lefthook.yml")
+      expect(read("foo_bar.gemspec")).not_to include('add_dependency "lefthook"')
     end
 
     it "emits an executable bin/setup that bundles the app and any dummy app" do
@@ -50,13 +76,12 @@ RSpec.describe GemGenerator do
       expect(read(".tool-versions")).to match(/\Aruby \d+\.\d+\.\d+/)
     end
 
-    it "standardizes CI on ci.yml (not main.yml)" do
+    it "standardizes CI on a ci.yml that calls axn's reusable workflow (not main.yml)" do
       expect(exist?(".github/workflows/ci.yml")).to be(true)
       expect(exist?(".github/workflows/main.yml")).to be(false)
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("actions/checkout@v6")
-      expect(ci).to include("bundle exec rake")
-      %w[3.2 3.3 3.4].each { |v| expect(ci).to include("'#{v}'") }
+      # Thin caller — the matrix/steps live in axn core's reusable gem-ci.yml, not duplicated here.
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
     end
 
     it "always emits CODEOWNERS and renovate.json5" do
@@ -106,8 +131,8 @@ RSpec.describe GemGenerator do
       expect(gemspec).to include('require_relative "lib/foo_bar/version"')
       expect(gemspec).to include("FooBar::VERSION")
       expect(gemspec).to include("rubygems_mfa_required")
-      # The full canonical reject list (axn-ruby_llm's short/old variant is the drift we kill).
-      expect(gemspec).to include("node_modules/")
+      # Allowlist gemspec: ships lib/ + root docs only, no ever-growing reject list.
+      expect(gemspec).to include("git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt AGENTS-consuming.md")
     end
 
     it "pins axn to the teamshares main branch in the Gemfile" do
@@ -143,8 +168,24 @@ RSpec.describe GemGenerator do
       expect(exist?("AGENTS.md")).to be(true)
     end
 
-    it "seeds an Unreleased CHANGELOG section" do
-      expect(read("CHANGELOG.md")).to include("## [Unreleased]")
+    it "seeds an Unreleased CHANGELOG section matching axn's heading style" do
+      # axn uses `## Unreleased` (no brackets); keep downstream gems consistent with the parent.
+      expect(read("CHANGELOG.md")).to include("## Unreleased")
+      expect(read("CHANGELOG.md")).not_to include("## [Unreleased]")
+    end
+
+    it "documents axn's CHANGELOG tag convention in AGENTS" do
+      agents = read("AGENTS.md")
+      expect(agents).to include("## Unreleased")
+      expect(agents).to include("[FEAT]")
+      expect(agents).to include("[BREAKING]")
+    end
+
+    it "rounds out the README with Usage and License sections" do
+      readme = read("README.md")
+      expect(readme).to include("## Usage")
+      expect(readme).to include("## License")
+      expect(readme).to include("LICENSE.txt")
     end
 
     it "scaffolds a bootable Rails dummy app under spec_rails by default" do
@@ -163,19 +204,64 @@ RSpec.describe GemGenerator do
       expect(rake).to include('Rake::Task["build"].enhance([:verify])')
     end
 
-    it "excludes spec_rails from the packaged gem" do
-      expect(read("foo_bar.gemspec")).to include("spec_rails/")
+    it "packages only the runtime payload (lib + root docs), never dev/test dirs" do
+      files = packaged_files
+      expect(files).to include("lib/foo_bar.rb", "README.md", "CHANGELOG.md", "LICENSE.txt")
+      # Dev/test/site content stays out by default (allowlist), no per-dir exclusion needed.
+      %w[spec_rails/ spec/ bin/ internal-docs/ docs/].each do |dir|
+        expect(files.grep(/\A#{Regexp.escape(dir)}/)).to be_empty
+      end
     end
 
-    it "gives the dual CI a dedicated rails_specs job" do
+    it "asks the reusable workflow for the separate Rails-specs job" do
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("rails_specs")
-      expect(ci).to include("bundle exec rake spec_rails")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      expect(ci).to include("rails-specs-job: true")
     end
 
     it "tells agents (and the README) to run rake verify for the dual Rails suite" do
       expect(read("AGENTS.md")).to include("rake verify")
       expect(read("README.md")).to include("rake verify")
+    end
+
+    it "reserves docs/ for user-facing docs and seeds internal-docs/ for working docs" do
+      # No public docs scaffolded up front — docs/ is left for a future user-facing site.
+      expect(exist?("docs")).to be(false)
+      internal = read("internal-docs/README.md")
+      expect(internal).to include("internal-docs/")
+      expect(internal).to include("docs/")
+    end
+
+    it "would ship an agent-facing AGENTS-consuming.md if the gem adds one" do
+      # Not scaffolded by default, so it's absent from the package now...
+      expect(packaged_files).not_to include("AGENTS-consuming.md")
+      # ...but the allowlist names it, so a downstream gem that writes one ships it (git ls-files
+      # simply omits it while absent).
+      expect(read("foo_bar.gemspec")).to include("AGENTS-consuming.md")
+    end
+
+    it "ships neither internal-docs (seeded) nor a future docs/ site — repo content, not payload" do
+      # internal-docs/ IS in the tree (generator seeds it), yet must not package.
+      expect(exist?("internal-docs/README.md")).to be(true)
+      expect(packaged_files.grep(%r{\Ainternal-docs/})).to be_empty
+      # docs/ isn't in the allowlist, so a hosted-site docs/ wouldn't ship when added either.
+      expect(read("foo_bar.gemspec")).not_to match(/git ls-files.*docs/)
+    end
+
+    it "points agents at internal-docs and scopes the CHANGELOG rule to public-facing changes" do
+      agents = read("AGENTS.md")
+      expect(agents).to include("internal-docs/")
+      expect(agents).to include("CHANGELOG every public-facing change")
+    end
+
+    it "refreshes the git index after overlay so a first commit records the scaffold, not cruft" do
+      status = `git -C #{@gem_dir} status --porcelain`.lines
+      # Everything is staged: nothing untracked (??) and no unstaged worktree changes (col 2 non-space).
+      # Without the refresh, overlay files (which bundle gem never staged) would show as untracked.
+      expect(status.none? { |l| l.start_with?("??") }).to be(true)
+      expect(status.all? { |l| l[1] == " " }).to be(true)
+      # The canonical overlay files are staged as additions.
+      expect(status.any? { |l| l.start_with?("A") && l.include?("AGENTS.md") }).to be(true)
     end
   end
 
@@ -192,13 +278,15 @@ RSpec.describe GemGenerator do
       expect(exist?("spec_rails")).to be(false)
     end
 
-    it "keeps the simple default rake and single-job CI" do
+    it "keeps the simple default rake and a no-frills CI caller" do
       rake = read("Rakefile")
       expect(rake).to include('Rake::Task["build"].enhance([:default])')
       expect(rake).not_to include("spec_rails")
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("run: bundle exec rake")
-      expect(ci).not_to include("spec_rails")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      # Pure Ruby → no Rails-topology inputs.
+      expect(ci).not_to include("rails-specs-job")
+      expect(ci).not_to include("main-needs-dummy-app")
     end
 
     it "keeps the non-Rails spec suite" do
@@ -227,6 +315,12 @@ RSpec.describe GemGenerator do
 
     it "runs the Rails suite in the default rake" do
       expect(read("Rakefile")).to include("task default: %i[spec_rails rubocop]")
+    end
+
+    it "tells the reusable workflow the main job needs the dummy-app bundle" do
+      ci = read(".github/workflows/ci.yml")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      expect(ci).to include("main-needs-dummy-app: true")
     end
   end
 

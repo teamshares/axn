@@ -8,7 +8,7 @@ See our [User Guide](https://teamshares.github.io/axn/) for details.
 
 ## Using Axn with an AI agent
 
-Axn ships a dense, agent-facing usage guide at the gem root (`AGENTS-consuming.md`) — the contract surface, the canonical idioms, and the subtle gotchas, distilled for an LLM writing code that *uses* Axn. (It's the consuming-audience sibling of this repo's own [`AGENTS.md`](AGENTS.md), which guides agents working *on* Axn.) It's version-accurate and readable offline from the installed gem.
+Axn ships a dense, agent-facing usage guide at the gem root (`AGENTS-consuming.md`) — the contract surface, the canonical idioms, and the subtle gotchas, distilled for an LLM writing code that *uses* Axn. (It's the consuming-audience sibling of this repo's own [`AGENTS.md`](https://github.com/teamshares/axn/blob/main/AGENTS.md), which guides agents working *on* Axn.) It's version-accurate and readable offline from the installed gem.
 
 To point your project's coding agent at it, drop a snippet like this into your `AGENTS.md` / `CLAUDE.md`:
 
@@ -32,7 +32,7 @@ After checking out the repo, run `bin/setup` to install dependencies. Then, run 
 
 Axn is open source and contributions from the community are encouraged! No contribution is too small.
 
-See our [contribution guidelines](CONTRIBUTING.md) for more information.
+See our [contribution guidelines](https://github.com/teamshares/axn/blob/main/CONTRIBUTING.md) for more information.
 
 ## Thank You
 
