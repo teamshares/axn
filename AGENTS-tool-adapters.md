@@ -132,7 +132,9 @@ Server/session data (`current_user`, `company`) an author declares via `expects 
 
 - **Spread it AS `ambient_context:`** — pass the injected context as the `ambient_context:` keyword, NOT
   nested under an adapter key. Nesting couples the Axn to one adapter; spreading keeps it portable (the
-  same class resolves from an MCP server context, from `Current` on a direct call, or from ruby_llm).
+  same class resolves from an MCP server context, from `Current` on a direct call, or from ruby_llm). On a
+  direct `.call`, strip any model-supplied `ambient_context` from the args before splatting them (`**`) or
+  the model could override your trusted value — or just use the Invoker, which strips it for you.
 - It's **filtered to declared keys**; the injected value must be a `Hash` / hash-like (responds to
   `key?`/`[]`, e.g. `HashWithIndifferentAccess`) — axn keys into it and drops any source it can't key into,
   so a bare opaque object resolves every ambient field as absent. Wrap a transport context object in a Hash

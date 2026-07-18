@@ -211,9 +211,13 @@ Server/session data an app injects (`current_user`, `company`) reaches a tool th
 - **Spread the injected context *as* `ambient_context:`** — pass it as the `ambient_context:` keyword, **not** nested under an adapter-specific key. This is what keeps the Axn portable: the same `expects :user_id, on: :ambient_context` class resolves from an MCP server context, from `Current` on a direct call, or from ruby_llm. Nesting it (`ambient_context: { mcp: server_ctx }`) couples the Axn to one adapter and defeats the feature.
 
   ```ruby
-  # axn-mcp: server_context spread directly as ambient_context
-  axn_class.call(ambient_context: server_context || {}, **model_args)
+  # axn-mcp: strip any model-supplied ambient_context, THEN spread the trusted server context as
+  # the kwarg — otherwise a model that sent an `ambient_context` arg would override it via the splat.
+  safe_args = model_args.except(:ambient_context, "ambient_context")
+  axn_class.call(ambient_context: server_context || {}, **safe_args)
   ```
+
+  Better, let [`Axn::Tools::Invoker`](/reference/tool-invoker#ambient-context-guard) do this for you — it strips any model-supplied `ambient_context` before merging your trusted value: `invoker.call(axn_class, model_args, ambient_context: server_context || {})`.
 
 - **`ambient_context` is filtered to declared keys**, so the injected value must be a `Hash` (or a hash-like that responds to `key?`/`[]`, e.g. an `ActiveSupport::HashWithIndifferentAccess`) — axn keys into it to extract each declared field and **drops any source it can't key into**, so passing a bare opaque transport object resolves every ambient field as *absent*. Wrap a context object in a Hash of the fields you're injecting (`ambient_context: { user_id: ctx.user_id }`). Keys may be strings or symbols (indifferent); an undeclared key is dropped, never leaked into the call.
 - **Always pass an explicit `ambient_context:` (even `{}`).** An explicit value *replaces* the `Current`-derived default entirely (no merge), so passing `{}` prevents ambient server-side state from silently leaking into a tool call. The Invoker also strips any `ambient_context` a model tried to smuggle through the tool arguments before merging your trusted value — see the [ambient_context guard](/reference/tool-invoker#ambient-context-guard).
