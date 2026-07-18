@@ -191,21 +191,29 @@ Rake::Task["release"].enhance do
   Rake::Task["benchmark:release"].invoke
 end
 
-# Downstream gem compatibility check
-DOWNSTREAM_GEMS = {
-  "slack_sender" => File.expand_path("../slack_sender/slack_sender.gemspec", __dir__),
-  "data_shifter" => File.expand_path("../data_shifter/data_shifter.gemspec", __dir__),
-  "axn-mcp" => File.expand_path("../axn-mcp/axn-mcp.gemspec", __dir__),
-  "axn-ruby_llm" => File.expand_path("../axn-ruby_llm/axn-ruby_llm.gemspec", __dir__),
-}.freeze
-
+# Downstream gem compatibility check.
 PARSE_AXN_REQUIREMENT = lambda { |gemspec_path|
   content = File.read(gemspec_path)
-  match = content.match(/add_dependency\s+["']axn["']\s*,\s*(.+)$/)
+  # Match both `add_dependency` and the (deprecated but valid) `add_runtime_dependency` form, so a
+  # sibling using either is still recognized as a downstream consumer.
+  match = content.match(/add(?:_runtime)?_dependency\s+["']axn["']\s*,\s*(.+)$/)
   return nil unless match
 
   constraints = match[1].scan(/["']([^"']+)["']/).flatten
   Gem::Requirement.new(constraints)
+}
+
+# Discover downstream gems dynamically: any gem checked out as a sibling of this repo whose gemspec
+# declares an `axn` runtime dependency. A newly generated gem (see bin/new-gem) is picked up
+# automatically with no list to maintain. axn's own gemspec is excluded naturally (it doesn't depend
+# on itself), and the check is a graceful no-op when the sibling layout isn't present (e.g. a git
+# worktree), returning {}.
+DISCOVER_DOWNSTREAM_GEMS = lambda {
+  Dir[File.expand_path("../*/*.gemspec", __dir__)].each_with_object({}) do |path, gems|
+    next unless PARSE_AXN_REQUIREMENT.call(path)
+
+    gems[File.basename(path, ".gemspec")] = path
+  end
 }
 
 namespace :downstream do
@@ -215,23 +223,15 @@ namespace :downstream do
     require_relative "lib/axn/version"
 
     current_version = Gem::Version.new(Axn::VERSION)
+    downstream_gems = DISCOVER_DOWNSTREAM_GEMS.call
     warnings = []
 
     puts "Downstream gem compatibility with axn #{current_version}:"
     puts ""
+    puts "  (no sibling axn-consuming gems found next to this checkout)" if downstream_gems.empty?
 
-    DOWNSTREAM_GEMS.each do |name, gemspec_path|
-      unless File.exist?(gemspec_path)
-        puts "  #{name}: gemspec not found at #{gemspec_path}"
-        next
-      end
-
+    downstream_gems.each do |name, gemspec_path|
       requirement = PARSE_AXN_REQUIREMENT.call(gemspec_path)
-
-      unless requirement
-        puts "  #{name}: no axn dependency found in gemspec"
-        next
-      end
 
       if requirement.satisfied_by?(current_version)
         puts "  #{name}: OK  (#{requirement})"

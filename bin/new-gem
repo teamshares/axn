@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Dev-only: scaffold a new downstream axn-consuming gem (PRO-2949).
+#
+#   bin/new-gem NAME [--rails-only | --no-rails] [--no-install]
+#
+# Creates ./NAME in the current working directory, so cd to where you want the gem first. Shells
+# out to `bundle gem NAME` for the generic baseline, then lays axn's canonical delta on top.
+#
+# Rails testing topology (default: dual):
+#   (default)     non-Rails spec/ + a Rails suite in spec_rails/dummy_app; `rake` runs the
+#                 Rails-free suite, `rake verify` (and CI) runs both.
+#   --rails-only  all specs run in spec_rails/dummy_app; no non-Rails spec/.
+#   --no-rails    pure Ruby; no dummy app.
+#
+# Pass --no-install to skip the final `bundle install` (used by the spec).
+
+require_relative "support/gem_generator"
+
+install = !ARGV.delete("--no-install")
+rails_only = ARGV.delete("--rails-only")
+no_rails = ARGV.delete("--no-rails")
+name = ARGV.shift
+
+if rails_only && no_rails
+  warn "Error: --rails-only and --no-rails are mutually exclusive"
+  exit 1
+end
+
+if name.nil? || name.start_with?("-")
+  warn "usage: bin/new-gem NAME [--rails-only | --no-rails] [--no-install]"
+  exit 1
+end
+
+rails = if rails_only
+          :only
+        elsif no_rails
+          :none
+        else
+          :dual
+        end
+
+begin
+  GemGenerator.new(name, install:, rails:).run
+rescue GemGenerator::Error => e
+  warn "Error: #{e.message}"
+  exit 1
+end

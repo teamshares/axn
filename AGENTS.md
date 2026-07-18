@@ -103,6 +103,16 @@ nothing internal belongs there. Brainstorming specs and implementation plans —
 `superpowers` skills generate — go in `internal-docs/specs/` and `internal-docs/plans/`, **never**
 under `docs/`. (This is the location preference the `writing-plans` / `brainstorming` skills defer to.)
 
+## Creating a downstream gem
+
+Scaffold a new axn-consuming gem with `bin/new-gem NAME` (dev-only, run from a checkout) rather than
+copying an existing gem — it lays down the canonical, drift-free boilerplate (`bin/refresh`/`bin/setup`,
+release-gated `Rakefile`, CI, gemspec, `Axn::Configurable` config stub + `deprecator`, `AGENTS.md`).
+Defaults to axn's works-with-and-without-Rails shape (non-Rails `spec/` + a `spec_rails/dummy_app`
+suite; `--rails-only` / `--no-rails` for the other topologies). Generated gems `inherit_gem` core's
+`.rubocop.yml` (internal convention, not a documented public API). Any gem it creates as a sibling of
+this checkout is auto-picked-up by `rake downstream:check`.
+
 ## Review feedback
 
 Fresh-context, adversarial review catches real base-layer bugs. Verify each point against the code —

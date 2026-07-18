@@ -1,0 +1,16 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+# The gem under test — pulls in its own axn dependency and any Railtie/Engine it defines.
+gem "__GEM_NAME__", path: "../../"
+
+# Track axn's main branch, mirroring the gem's own Gemfile pin.
+gem "axn", github: "teamshares/axn", branch: "main"
+
+gem "rails", "~> 7.0"
+gem "sqlite3", "~> 2.0"
+
+group :development, :test do
+  gem "rspec", "~> 3.0"
+end

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+
+jobs:
+  main_specs:
+    runs-on: ubuntu-latest
+    name: Main Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby:
+          - '3.2'
+          - '3.3'
+          - '3.4'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Run library specs
+        run: bundle exec rake spec
+      - name: Run RuboCop
+        run: bundle exec rake rubocop
+
+  rails_specs:
+    runs-on: ubuntu-latest
+    name: Rails Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby:
+          - '3.2'
+          - '3.3'
+          - '3.4'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Cache dummy app bundle
+        uses: actions/cache@v6
+        with:
+          path: spec_rails/dummy_app/vendor/bundle
+          key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles('spec_rails/dummy_app/Gemfile') }}
+          restore-keys: |
+            ${{ runner.os }}-dummy-app-bundle-
+      - name: Install dummy app dependencies
+        run: |
+          cd spec_rails/dummy_app
+          bundle install --path vendor/bundle
+      - name: Run Rails specs
+        run: bundle exec rake spec_rails
