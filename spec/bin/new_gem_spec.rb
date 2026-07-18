@@ -16,6 +16,9 @@ RSpec.describe GemGenerator do
   # The canonical bin/refresh is core's own — the generated copy must stay byte-identical to it.
   def canonical_refresh = File.read(File.expand_path("../../bin/refresh", __dir__))
 
+  # Likewise the lefthook git-hook config is copied byte-identical from core.
+  def canonical_lefthook = File.read(File.expand_path("../../lefthook.yml", __dir__))
+
   context "with a single-word gem name" do
     before(:context) do
       @parent = Dir.mktmpdir("axn-new-gem")
@@ -35,8 +38,28 @@ RSpec.describe GemGenerator do
     end
 
     it "deletes bundle gem cruft the base layer doesn't want" do
-      expect(exist?("bin/console")).to be(false)
       expect(exist?("sig")).to be(false)
+    end
+
+    it "emits an executable bin/console that loads the gem" do
+      expect(File.executable?(File.join(@gem_dir, "bin/console"))).to be(true)
+      console = read("bin/console")
+      expect(console).to include('require "foo_bar"')
+      expect(console).to include("IRB.start")
+    end
+
+    it "ships a lefthook config byte-identical to core's, installed and depended on for dev" do
+      expect(read("lefthook.yml")).to eq(canonical_lefthook)
+      expect(read("bin/setup")).to include("bundle exec lefthook install")
+      expect(read("Gemfile")).to include('gem "lefthook"')
+      expect(read("AGENTS.md")).to include("--no-verify")
+    end
+
+    it "keeps lefthook out of the packaged gem (dev-only)" do
+      # lefthook.yml is a dev config; the lefthook gem lives in the Gemfile, never the gemspec.
+      reject_tokens = read("foo_bar.gemspec")[/start_with\?\(\*%w\[(.+?)\]/m, 1].split
+      expect(reject_tokens).to include("lefthook.yml")
+      expect(read("foo_bar.gemspec")).not_to include('add_dependency "lefthook"')
     end
 
     it "emits an executable bin/setup that bundles the app and any dummy app" do
@@ -143,8 +166,24 @@ RSpec.describe GemGenerator do
       expect(exist?("AGENTS.md")).to be(true)
     end
 
-    it "seeds an Unreleased CHANGELOG section" do
-      expect(read("CHANGELOG.md")).to include("## [Unreleased]")
+    it "seeds an Unreleased CHANGELOG section matching axn's heading style" do
+      # axn uses `## Unreleased` (no brackets); keep downstream gems consistent with the parent.
+      expect(read("CHANGELOG.md")).to include("## Unreleased")
+      expect(read("CHANGELOG.md")).not_to include("## [Unreleased]")
+    end
+
+    it "documents axn's CHANGELOG tag convention in AGENTS" do
+      agents = read("AGENTS.md")
+      expect(agents).to include("## Unreleased")
+      expect(agents).to include("[FEAT]")
+      expect(agents).to include("[BREAKING]")
+    end
+
+    it "rounds out the README with Usage and License sections" do
+      readme = read("README.md")
+      expect(readme).to include("## Usage")
+      expect(readme).to include("## License")
+      expect(readme).to include("LICENSE.txt")
     end
 
     it "scaffolds a bootable Rails dummy app under spec_rails by default" do
@@ -176,6 +215,38 @@ RSpec.describe GemGenerator do
     it "tells agents (and the README) to run rake verify for the dual Rails suite" do
       expect(read("AGENTS.md")).to include("rake verify")
       expect(read("README.md")).to include("rake verify")
+    end
+
+    it "reserves docs/ for user-facing docs and seeds internal-docs/ for working docs" do
+      # No public docs scaffolded up front — docs/ is left for a future user-facing site.
+      expect(exist?("docs")).to be(false)
+      internal = read("internal-docs/README.md")
+      expect(internal).to include("internal-docs/")
+      expect(internal).to include("docs/")
+    end
+
+    it "excludes internal-docs from the packaged gem but not docs/" do
+      gemspec = read("foo_bar.gemspec")
+      reject_tokens = gemspec[/start_with\?\(\*%w\[(.+?)\]/m, 1].split
+      expect(reject_tokens).to include("internal-docs/")
+      # docs/ ships when added, so it must NOT be its own token in the reject list.
+      expect(reject_tokens).not_to include("docs/")
+    end
+
+    it "points agents at internal-docs and scopes the CHANGELOG rule to public-facing changes" do
+      agents = read("AGENTS.md")
+      expect(agents).to include("internal-docs/")
+      expect(agents).to include("CHANGELOG every public-facing change")
+    end
+
+    it "refreshes the git index after overlay so a first commit records the scaffold, not cruft" do
+      status = `git -C #{@gem_dir} status --porcelain`.lines
+      # Everything is staged: nothing untracked (??) and no unstaged worktree changes (col 2 non-space).
+      # Without the refresh, overlay files (which bundle gem never staged) would show as untracked.
+      expect(status.none? { |l| l.start_with?("??") }).to be(true)
+      expect(status.all? { |l| l[1] == " " }).to be(true)
+      # The canonical overlay files are staged as additions.
+      expect(status.any? { |l| l.start_with?("A") && l.include?("AGENTS.md") }).to be(true)
     end
   end
 

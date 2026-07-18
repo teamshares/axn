@@ -16,9 +16,6 @@ class GemGenerator
   # tool registry) downstream gems build on; the temporary Gemfile main pin tracks ahead of it.
   AXN_LOWER_BOUND = ">= 0.1.0-alpha.4.3"
 
-  # bundle gem output the base layer deliberately drops. (bin/setup is replaced, not dropped.)
-  CRUFT = %w[bin/console].freeze
-
   # Rails testing topology:
   #   :dual — non-Rails spec/ + a spec_rails/dummy_app Rails suite (default; mirrors axn core)
   #   :only — Rails-only; all specs live in spec_rails/dummy_app, no non-Rails spec/
@@ -42,6 +39,7 @@ class GemGenerator
     validate!
     bundle_gem!
     overlay!
+    refresh_git_index
     install! if @install
     say "Scaffolded #{@name} at #{gem_dir}"
     gem_dir
@@ -87,6 +85,18 @@ class GemGenerator
     say "WARNING: could not rename the generated repo's branch to main; rename it manually so CI runs."
   end
 
+  # bundle gem (Bundler 2.5+) ends by staging its generated tree (`git add .`). The overlay then
+  # adds and deletes files without touching the index, so the repo is left with stale staged entries
+  # (deleted bin/console, main.yml) and untracked canonical files (AGENTS.md, spec_rails/, ...) — a
+  # user who commits the fresh scaffold would record Bundler's boilerplate and omit what we shipped.
+  # Re-stage so the index reflects the final tree. Best-effort: a git hiccup here shouldn't sink an
+  # otherwise-good scaffold.
+  def refresh_git_index
+    shell!(%w[git add -A], chdir: gem_dir, quiet: true)
+  rescue Error
+    say "WARNING: could not refresh the generated repo's git index; run `git add -A` before committing."
+  end
+
   def install!
     shell!(%w[bundle install], chdir: gem_dir)
     shell!(%w[bundle install], chdir: File.join(gem_dir, "spec_rails", "dummy_app")) if rails?
@@ -119,8 +129,9 @@ class GemGenerator
     write_dummy_app if rails?
   end
 
+  # Drop bundle gem output the base layer doesn't want. (bin/setup and bin/console are replaced with
+  # our own versions in write_static_files, not dropped here.)
   def delete_cruft
-    CRUFT.each { |f| FileUtils.rm_f(File.join(gem_dir, f)) }
     FileUtils.rm_rf(File.join(gem_dir, "sig"))
     FileUtils.rm_f(File.join(gem_dir, ".github", "workflows", "main.yml"))
   end
@@ -132,6 +143,14 @@ class GemGenerator
 
     write("bin/setup", render("setup.tmpl"))
     File.chmod(0o755, File.join(gem_dir, "bin", "setup"))
+
+    write("bin/console", render("console.tmpl", gem_name: name))
+    File.chmod(0o755, File.join(gem_dir, "bin", "console"))
+
+    # The lefthook git-hook config is core's own — copy it byte-identical (like bin/refresh) so every
+    # gem shares one config. bin/setup runs `lefthook install` to wire it into .git/hooks; the lefthook
+    # gem is dev-only (Gemfile, not the gemspec) and lefthook.yml is excluded from the packaged gem.
+    FileUtils.cp(File.join(CORE_ROOT, "lefthook.yml"), File.join(gem_dir, "lefthook.yml"))
 
     write(".gitignore", render("gitignore.tmpl"))
     write(".tool-versions", render("tool_versions.tmpl"))
@@ -204,6 +223,9 @@ class GemGenerator
   def write_docs
     write("README.md", render("readme.md.tmpl", gem_name: name, summary:, test_guidance:))
     write("AGENTS.md", render("agents.md.tmpl", gem_name: name, test_guidance:))
+    # Reserve top-level docs/ for future user-facing docs (which ship); working docs (planning
+    # specs/plans, design notes) live under internal-docs/, excluded from the packaged gem.
+    write("internal-docs/README.md", render("internal_docs_readme.md.tmpl", gem_name: name))
     claude = File.join(gem_dir, "CLAUDE.md")
     FileUtils.rm_f(claude)
     File.symlink("AGENTS.md", claude)

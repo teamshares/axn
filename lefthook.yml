@@ -1,0 +1,12 @@
+# Git hooks, managed by lefthook (installed via `bin/setup` → `bundle exec lefthook install`).
+# Fast by design: runs only on staged files. CI runs the full `rake` (RuboCop + specs) regardless.
+# Skip once with `git commit --no-verify`.
+pre-commit:
+  parallel: true
+  commands:
+    rubocop:
+      glob: "*.{rb,rake,gemspec}"
+      # --force-exclusion so explicitly-passed files still honor the .rubocop.yml Exclude list.
+      # -a is safe autocorrect; stage_fixed re-stages what RuboCop fixed.
+      run: bundle exec rubocop --force-exclusion -a {staged_files}
+      stage_fixed: true

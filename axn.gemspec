@@ -38,7 +38,7 @@ Gem::Specification.new do |spec|
                         bin/ test/ spec/ spec_rubocop/ spec_rails/ features/ examples/ benchmark/
                         internal-docs/ log/
                         .git .github appveyor Gemfile Gemfile.lock yarn.lock .rspec_status pkg/
-                        node_modules/ tmp/ .rspec .rubocop_todo .tool-versions package.json
+                        node_modules/ tmp/ .rspec .rubocop_todo .tool-versions package.json lefthook.yml
                       ])
     end
   end
