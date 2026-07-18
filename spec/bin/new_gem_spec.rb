@@ -154,6 +154,11 @@ RSpec.describe GemGenerator do
       expect(ci).to include("rails_specs")
       expect(ci).to include("bundle exec rake spec_rails")
     end
+
+    it "tells agents (and the README) to run rake verify for the dual Rails suite" do
+      expect(read("AGENTS.md")).to include("rake verify")
+      expect(read("README.md")).to include("rake verify")
+    end
   end
 
   context "with --no-rails (pure Ruby)" do
@@ -180,6 +185,10 @@ RSpec.describe GemGenerator do
 
     it "keeps the non-Rails spec suite" do
       expect(exist?("spec/plain_gem_spec.rb")).to be(true)
+    end
+
+    it "keeps agent guidance to plain rake (no verify task exists)" do
+      expect(read("AGENTS.md")).not_to include("rake verify")
     end
   end
 

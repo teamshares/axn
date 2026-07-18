@@ -202,11 +202,25 @@ class GemGenerator
   end
 
   def write_docs
-    write("README.md", render("readme.md.tmpl", gem_name: name, summary:))
-    write("AGENTS.md", render("agents.md.tmpl", gem_name: name))
+    write("README.md", render("readme.md.tmpl", gem_name: name, summary:, test_guidance:))
+    write("AGENTS.md", render("agents.md.tmpl", gem_name: name, test_guidance:))
     claude = File.join(gem_dir, "CLAUDE.md")
     FileUtils.rm_f(claude)
     File.symlink("AGENTS.md", claude)
+  end
+
+  # The "run before done" command, flavor-aware — so the guidance never tells an agent to stop at a
+  # `rake` that skips the Rails suite (dual puts spec_rails behind `verify`).
+  def test_guidance
+    case @rails
+    when :dual
+      "`bundle exec rake` runs the Rails-free specs + rubocop; run `bundle exec rake verify` to also " \
+      "run the Rails dummy-app suite (`spec_rails`) — required for any Rails-affecting change."
+    when :only
+      "`bundle exec rake` runs the Rails dummy-app specs (`spec_rails`) + rubocop."
+    else
+      "`bundle exec rake` runs the specs + rubocop."
+    end
   end
 
   # --- derivations (reuse bundle gem's own name/nesting decisions) --------------------------------
