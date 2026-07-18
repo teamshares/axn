@@ -26,8 +26,10 @@ Gem::Specification.new do |spec|
   # silently leaks new dev artifacts into the package. `git ls-files` keeps this to tracked files.
   # Anything not listed (bin/, spec*, docs/, internal-docs/, lefthook.yml, …) simply never ships;
   # add a token here only when you add a genuinely new shippable path (e.g. exe/ for a CLI).
+  # AGENTS-consuming.md ships if you write one (agent-facing usage guide, read via `bundle show`);
+  # `git ls-files` just omits it when absent, so it's a harmless no-op until then.
   spec.files = IO.popen(
-    %w[git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt],
+    %w[git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt AGENTS-consuming.md],
     chdir: __dir__, err: IO::NULL,
   ) { |ls| ls.readlines("\x0", chomp: true) }
   spec.bindir = "exe"

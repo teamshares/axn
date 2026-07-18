@@ -132,7 +132,7 @@ RSpec.describe GemGenerator do
       expect(gemspec).to include("FooBar::VERSION")
       expect(gemspec).to include("rubygems_mfa_required")
       # Allowlist gemspec: ships lib/ + root docs only, no ever-growing reject list.
-      expect(gemspec).to include("git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt")
+      expect(gemspec).to include("git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt AGENTS-consuming.md")
     end
 
     it "pins axn to the teamshares main branch in the Gemfile" do
@@ -230,6 +230,14 @@ RSpec.describe GemGenerator do
       internal = read("internal-docs/README.md")
       expect(internal).to include("internal-docs/")
       expect(internal).to include("docs/")
+    end
+
+    it "would ship an agent-facing AGENTS-consuming.md if the gem adds one" do
+      # Not scaffolded by default, so it's absent from the package now...
+      expect(packaged_files).not_to include("AGENTS-consuming.md")
+      # ...but the allowlist names it, so a downstream gem that writes one ships it (git ls-files
+      # simply omits it while absent).
+      expect(read("foo_bar.gemspec")).to include("AGENTS-consuming.md")
     end
 
     it "ships neither internal-docs (seeded) nor a future docs/ site — repo content, not payload" do
