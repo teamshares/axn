@@ -22,6 +22,8 @@ run `bundle show axn` and read `AGENTS-consuming.md` at that path. It covers the
 
 The guide links out to the [full docs](https://teamshares.github.io/axn/) and to the source entry points for anything it doesn't cover.
 
+If you're instead writing a gem that exposes Axns over a tool/agent transport (like `axn-mcp` or `axn-ruby_llm`), there's a companion guide for *adapter* authors: `AGENTS-tool-adapters.md` at the gem root, with a matching [Authoring a Tool-Adapter Gem](https://teamshares.github.io/axn/recipes/authoring-tool-adapters) docs page.
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
