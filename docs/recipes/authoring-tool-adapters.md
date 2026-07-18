@@ -81,12 +81,11 @@ Axn::MCP.configure { |c| c.tool_roots = %w[agent_tools] }
 
 ## Naming & description
 
-**Names come from `axn_class.tool_name` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. When the registry hands you classes, it already resolved per-adapter name overrides; if you need the name yourself, call `axn_class.tool_name` (the zero-arg form) and pass nothing:
+**Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn.tools_for` sorts and de-duplicates the set using `tool_name(:your_key)`, and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry deduped on:
 
 ```ruby
-# axn-mcp/lib/axn/mcp/wrap.rb
-tool_name = axn_class.tool_name          # provider-safe, never blank
-description(description || axn_class.description)
+tool_name = axn_class.tool_name(:mcp)    # provider-safe, never blank; honors a per-adapter `tool mcp: { name: }`
+description = description || axn_class.description
 ```
 
 **Description comes from `axn_class.description`**, and `wrap`'s `description:` option should default to it so `.tools` stays zero-arg:
@@ -216,7 +215,7 @@ Server/session data an app injects (`current_user`, `company`) reaches a tool th
   axn_class.call(ambient_context: server_context || {}, **model_args)
   ```
 
-- **`ambient_context` is filtered to declared keys**, and the axn extracts each declared field via `#[]`/`#dig` — so a plain `Hash` or an opaque object both work as the injected value. An undeclared key is dropped, never leaked into the call.
+- **`ambient_context` is filtered to declared keys**, so the injected value must be a `Hash` (or a hash-like that responds to `key?`/`[]`, e.g. an `ActiveSupport::HashWithIndifferentAccess`) — axn keys into it to extract each declared field and **drops any source it can't key into**, so passing a bare opaque transport object resolves every ambient field as *absent*. Wrap a context object in a Hash of the fields you're injecting (`ambient_context: { user_id: ctx.user_id }`). Keys may be strings or symbols (indifferent); an undeclared key is dropped, never leaked into the call.
 - **Always pass an explicit `ambient_context:` (even `{}`).** An explicit value *replaces* the `Current`-derived default entirely (no merge), so passing `{}` prevents ambient server-side state from silently leaking into a tool call. The Invoker also strips any `ambient_context` a model tried to smuggle through the tool arguments before merging your trusted value — see the [ambient_context guard](/reference/tool-invoker#ambient-context-guard).
 
 ## Live transport capabilities
@@ -249,7 +248,7 @@ Axn::MCP.wrap(
   Axn::Factory.build(
     expects: { query: { type: String } },
     exposes: { results: { type: Array } },
-    name: "search", description: "Search for items",
+    axn_name: "search", description: "Search for items",
   ) { expose results: Item.search(query) },
 )
 ```
