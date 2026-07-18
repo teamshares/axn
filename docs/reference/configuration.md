@@ -73,6 +73,24 @@ When an extension is loaded and its overrides are in play, its setters are valid
 
 Global (non-per-class) config stays on each module — `Axn.configure` for Axn's own settings, `Axn::MCP.configure` for MCP's, and so on. There is no single combined entry point, though nothing stops you from keeping the calls together in one initializer.
 
+### Tool directories are declared per adapter
+
+Each tool adapter names the directories it consumes, on its own global config, via `tool_roots`. A directory listed by more than one adapter is a shared population; an adapter with empty `tool_roots` is purely declaration-driven.
+
+```ruby
+Axn::MCP.configure            { |c| c.tool_roots = %w[agent_tools] }
+Axn::RubyLLM.configure        { |c| c.tool_roots = %w[agent_tools] }
+Axn::OpenAPI.configure        { |c| c.tool_roots = %w[agent_tools http_tools] }
+```
+
+A tool's final adapter membership is the union of its directory grant (adapters whose `tool_roots` contain its file) and its `tool` declaration, minus any `except:` opt-out. An explicit `tool :openapi` *adds* openapi on top of the directory grant; `tool except: :ruby_llm` subtracts; `tool false` opts out entirely. `tool_roots` rejects broad entries (`actions`, `app`, `.`, `..`).
+
+An adapter registers itself, passing its own module as the config source the registry reads roots from:
+
+```ruby
+Axn.register_tool_adapter(:openapi, self) # inside Axn::OpenAPI
+```
+
 ## `on_exception`
 
 By default any swallowed errors are noted in the logs, but it's _highly recommended_ to wire up an `on_exception` handler so those get reported to your error tracking service.

@@ -2,18 +2,28 @@
 
 RSpec.describe "Axn tool registry under Rails" do
   around do |example|
-    original_tool_paths = Axn.config.tool_paths
     original_adapters = Axn::Tools::Registry.adapters.dup
 
-    Axn.config.tool_paths = %w[actions/tools]
     Axn::Tools::Registry.reset_adapters!
-    Axn.register_tool_adapter(:mcp)
 
     example.run
   ensure
-    Axn.config.tool_paths = original_tool_paths
     Axn::Tools::Registry.reset_adapters!
     original_adapters.each { |adapter| Axn.register_tool_adapter(adapter) }
+  end
+
+  # Registers `:mcp` with a real config source (an anonymous module carrying a validated
+  # `tool_roots` list), so the spec exercises the production read path
+  # (`source.config.tool_roots`) rather than stubbing it. Stored on the example instance
+  # (`@tool_source`) so individual examples below can reassign `tool_roots` to exercise
+  # alternate path spellings.
+  before do
+    @tool_source = Module.new do
+      extend Axn::Configurable
+      extend Axn::Tools::AdapterRoots
+    end
+    @tool_source.config.tool_roots = %w[actions/tools]
+    Axn.register_tool_adapter(:mcp, @tool_source)
   end
 
   # Force the on-demand `ensure_loaded! -> eager_load_dir` branch to run regardless of the
@@ -29,7 +39,7 @@ RSpec.describe "Axn tool registry under Rails" do
   # The dummy app namespaces app/actions under `Actions` (see
   # config/initializers/axn.rb -> app_actions_autoload_namespace = :Actions), so the
   # fixture at app/actions/tools/sample_widget.rb autoloads as Actions::Tools::SampleWidget.
-  it "eager-loads the tool_paths dir on demand and finds the tool without referencing it first" do
+  it "eager-loads the tool_roots dir on demand and finds the tool without referencing it first" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
@@ -44,8 +54,8 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Actions::Tools::SampleWidget.tool_name).to eq("sample_widget")
   end
 
-  it "resolves an app/-prefixed tool_paths entry to the same real dir as the bare spelling" do
-    Axn.config.tool_paths = %w[app/actions/tools]
+  it "resolves an app/-prefixed tool_roots entry to the same real dir as the bare spelling" do
+    @tool_source.config.tool_roots = %w[app/actions/tools]
 
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
@@ -56,8 +66,8 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
-  it "resolves an ABSOLUTE tool_paths entry directly instead of re-rooting it under app/" do
-    Axn.config.tool_paths = [Rails.root.join("app/actions/tools").to_s]
+  it "resolves an ABSOLUTE tool_roots entry directly instead of re-rooting it under app/" do
+    @tool_source.config.tool_roots = [Rails.root.join("app/actions/tools").to_s]
 
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
@@ -69,7 +79,7 @@ RSpec.describe "Axn tool registry under Rails" do
   end
 
   it "resolves a `.`-segment alternate spelling to the same real dir as the clean spelling" do
-    Axn.config.tool_paths = %w[actions/./tools]
+    @tool_source.config.tool_roots = %w[actions/./tools]
 
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original

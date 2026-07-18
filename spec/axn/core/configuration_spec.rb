@@ -27,100 +27,7 @@ RSpec.describe Axn::Configuration do
     it { expect(config.additional_includes).to eq([]) }
     it { expect(config.logger).to be_a(Logger) }
     it { expect(config.env.test?).to eq(true) }
-    it { expect(config.tool_paths).to eq(%w[agent_tools actions/tools]) }
     it { expect(config.tool_name_stripped_prefixes).to eq(%w[actions tools agent_tools]) }
-
-    describe "#tool_paths=" do
-      it "accepts an array of strings" do
-        config.tool_paths = %w[agent_tools]
-        expect(config.tool_paths).to eq(%w[agent_tools])
-      end
-
-      it "rejects a non-array" do
-        expect { config.tool_paths = "agent_tools" }.to raise_error(ArgumentError)
-      end
-
-      it "rejects a bare broad `actions` entry, naming the offender" do
-        expect { config.tool_paths = ["actions"] }.to raise_error(ArgumentError, /"actions"/)
-      end
-
-      it "rejects `app/actions`" do
-        expect { config.tool_paths = ["app/actions"] }.to raise_error(ArgumentError, %r{app/actions})
-      end
-
-      it "rejects `app`" do
-        expect { config.tool_paths = ["app"] }.to raise_error(ArgumentError, /"app"/)
-      end
-
-      it "rejects an empty-string entry" do
-        expect { config.tool_paths = [""] }.to raise_error(ArgumentError)
-      end
-
-      it "rejects a `.` entry" do
-        expect { config.tool_paths = ["."] }.to raise_error(ArgumentError)
-      end
-
-      it "rejects a broad entry even with surrounding whitespace and slashes" do
-        expect { config.tool_paths = ["  /actions/  "] }.to raise_error(ArgumentError)
-      end
-
-      it "rejects `./actions` (a `.`-prefixed alternate spelling of the broad `actions` dir)" do
-        expect { config.tool_paths = ["./actions"] }.to raise_error(ArgumentError, %r{\./actions})
-      end
-
-      it "rejects `actions/.` (a trailing-`.` alternate spelling of the broad `actions` dir)" do
-        expect { config.tool_paths = ["actions/."] }.to raise_error(ArgumentError, %r{actions/\.})
-      end
-
-      it "rejects `actions/../actions` (a `..`-round-trip alternate spelling of the broad `actions` dir)" do
-        expect { config.tool_paths = ["actions/../actions"] }.to raise_error(ArgumentError, %r{actions/\.\./actions})
-      end
-
-      it "rejects a `..` traversal entry that escapes the app root" do
-        expect { config.tool_paths = ["../secret"] }.to raise_error(ArgumentError, %r{\.\./secret})
-      end
-
-      it "rejects an absolute broad `actions` entry (bypasses the exact-string blocklist otherwise)" do
-        expect { config.tool_paths = [File.expand_path("actions")] }.to raise_error(ArgumentError, /actions/)
-      end
-
-      it "rejects an absolute broad `app/actions` entry" do
-        expect { config.tool_paths = [File.expand_path("app/actions")] }.to raise_error(ArgumentError, /actions/)
-      end
-
-      it "rejects an absolute broad `app` entry" do
-        expect { config.tool_paths = [File.expand_path("app")] }.to raise_error(ArgumentError, /app/)
-      end
-
-      it "rejects an arbitrary absolute path ending in the broad `actions` leaf" do
-        expect { config.tool_paths = ["/srv/app/actions"] }.to raise_error(ArgumentError, /actions/)
-      end
-
-      it "still accepts legitimately narrow dirs" do
-        config.tool_paths = %w[agent_tools actions/tools]
-        expect(config.tool_paths).to eq(%w[agent_tools actions/tools])
-      end
-
-      it "still accepts legitimately narrow dirs (agent_tools, actions/tools, app/actions/tools)" do
-        config.tool_paths = %w[actions/tools app/actions/tools agent_tools]
-        expect(config.tool_paths).to eq(%w[actions/tools app/actions/tools agent_tools])
-      end
-
-      it "accepts app/actions/tools (a narrow subdir of app/actions)" do
-        config.tool_paths = %w[app/actions/tools]
-        expect(config.tool_paths).to eq(%w[app/actions/tools])
-      end
-
-      it "accepts an absolute narrow dir (agent_tools)" do
-        config.tool_paths = [File.expand_path("agent_tools")]
-        expect(config.tool_paths).to eq([File.expand_path("agent_tools")])
-      end
-
-      it "accepts an absolute narrow dir (actions/tools, leaf is `tools` not `actions`)" do
-        config.tool_paths = [File.expand_path("actions/tools")]
-        expect(config.tool_paths).to eq([File.expand_path("actions/tools")])
-      end
-    end
 
     describe ".normalize_tool_path" do
       it "collapses a `.`-segment alternate spelling" do
@@ -184,6 +91,17 @@ RSpec.describe Axn::Configuration do
       it "rejects a non-array" do
         expect { config.tool_name_stripped_prefixes = :actions }.to raise_error(ArgumentError)
       end
+    end
+  end
+
+  describe "tool_paths removal (PRO-2948)" do
+    it "no longer exposes a global tool_paths setting" do
+      expect(Axn.config).not_to respond_to(:tool_paths)
+    end
+
+    it "still exposes the broad-path guard used by adapter tool_roots" do
+      expect(Axn::Configuration.broad_tool_path?("actions")).to be(true)
+      expect(Axn::Configuration.broad_tool_path?("agent_tools")).to be(false)
     end
   end
 

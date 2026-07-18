@@ -17,6 +17,7 @@ require "axn/core"
 require "axn/executor"
 require "axn/reflection"
 require "axn/tools/registry"
+require "axn/tools/adapter_roots"
 require "axn/tools/invoker"
 
 # Internal utilities
@@ -57,8 +58,8 @@ module Axn
     exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
   end
 
-  def self.register_tool_adapter(key)
-    Axn::Tools::Registry.register_adapter(key)
+  def self.register_tool_adapter(key, config_source = nil)
+    Axn::Tools::Registry.register_adapter(key, config_source)
   end
 
   def self.tools_for(adapter)

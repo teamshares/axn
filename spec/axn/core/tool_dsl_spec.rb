@@ -211,6 +211,76 @@ RSpec.describe "Axn `tool` DSL" do
       end
     end
   end
+
+  describe "except: opt-out" do
+    it "stores a single excepted adapter" do
+      k = axn { tool except: :ruby_llm }
+      expect(k._tool_except).to eq([:ruby_llm])
+    end
+
+    it "stores a list of excepted adapters" do
+      k = axn { tool except: %i[ruby_llm openapi] }
+      expect(k._tool_except).to eq(%i[ruby_llm openapi])
+    end
+
+    it "defaults _tool_except to an empty array when no except: is given" do
+      expect(axn { tool :mcp }._tool_except).to eq([])
+    end
+
+    it "except:-only (no positional/bags) yields an empty-array declaration, not :all" do
+      k = axn { tool except: :ruby_llm }
+      expect(k._tool_declaration).to eq([])
+    end
+
+    it "bare `tool` is still :all (all adapters), distinct from except:-only" do
+      expect(axn { tool }._tool_declaration).to eq(:all)
+    end
+
+    it "`tool name:` with no adapters is still :all" do
+      expect(axn { tool name: "x" }._tool_declaration).to eq(:all)
+    end
+
+    it "`tool name:, except:` keeps the all-adapter grant (name: is a broad gesture), not directory-only" do
+      k = axn { tool name: "search", except: :ruby_llm }
+      expect(k._tool_declaration).to eq(:all)
+      expect(k._tool_except).to eq([:ruby_llm])
+    end
+
+    it "a bare `except:` narrows the directory grant regardless of list emptiness (same base as a populated except:)" do
+      expect(axn { tool except: [] }._tool_declaration).to eq([])
+      expect(axn { tool except: :ruby_llm }._tool_declaration).to eq([])
+    end
+
+    it "treats an explicit `except: nil` (e.g. a dynamic list resolving to nil) like `except: []`, not omitted" do
+      k = axn { tool except: nil }
+      expect(k._tool_declaration).to eq([]) # narrowing form, NOT :all
+      expect(k._tool_except).to eq([])
+    end
+
+    it "still grants :all when except: is omitted entirely" do
+      expect(axn { tool }._tool_declaration).to eq(:all)
+    end
+
+    it "composes positional adapters with except:" do
+      k = axn { tool :mcp, :openapi, except: :openapi }
+      expect(k._tool_declaration).to eq(%i[mcp openapi])
+      expect(k._tool_except).to eq([:openapi])
+    end
+
+    it "rejects a non-Symbol except entry" do
+      expect { axn { tool except: "mcp" } }.to raise_error(ArgumentError, /must be Symbols/)
+    end
+
+    it "rejects `tool false` combined with except:" do
+      expect { axn { tool false, except: :mcp } }.to raise_error(ArgumentError, /opts out/)
+    end
+
+    it "clears an inherited _tool_except when a subclass redeclares tool" do
+      parent = axn { tool except: :ruby_llm }
+      child = Class.new(parent) { tool :mcp }
+      expect(child._tool_except).to eq([])
+    end
+  end
 end
 
 RSpec.describe "Axn `tool` DSL — per-adapter bags write into the config store" do

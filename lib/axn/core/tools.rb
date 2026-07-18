@@ -16,11 +16,21 @@ module Axn
           # call. A class_attribute so a subclass inherits the parent's tool identity until it redeclares
           # `tool`. Frozen default: never mutate in place, always assign a fresh hash.
           class_attribute :_tool_name_overrides, instance_accessor: false, default: {}.freeze
+
+          # Per-adapter opt-out ({adapter}), rebuilt fresh on each `tool` call. Subtracted from the
+          # union of directory + declaration grants at membership time. class_attribute so a subclass
+          # inherits until it redeclares; frozen default, never mutated in place.
+          class_attribute :_tool_except, instance_accessor: false, default: [].freeze
           extend ClassMethods
         end
       end
 
       module ClassMethods
+        # Distinguishes an omitted `except:` keyword from an explicit `except: nil`. A caller passing
+        # `except:` at all — even a dynamic value that resolves to nil — is using the narrowing form
+        # (directory-grant base); only omitting it entirely leaves the broad `:all` default in play.
+        EXCEPT_OMITTED = Object.new.freeze
+        private_constant :EXCEPT_OMITTED
         # A concrete tool commonly SUBCLASSES an Axn base (`class MyTool < ApplicationAction`)
         # rather than including Axn directly, so `Axn.included` never re-fires for it and the
         # registry would otherwise omit it. Register every subclass here too. `super` runs FIRST
@@ -32,44 +42,47 @@ module Axn
           Axn::Tools::Registry.register_class(subclass)
         end
 
-        # Declares tool membership.
-        #   tool                  -> member of every registered adapter (the common case)
-        #   tool :mcp, :ruby_llm  -> explicit per-adapter set
-        #   tool false            -> opt out (a helper Axn living under a tool_path)
-        #   tool name: "…"        -> membership in all adapters, with a provider-name override
-        #   tool mcp: { title: "…" } -> member of :mcp with per-adapter config (sugar over
-        #     configure(:mcp)); a bag `name:` overrides the provider name for that adapter only
-        # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check
-        # here would be load-order-hostile) and simply never match tools_for.
-        def tool(*adapters, name: nil, **bags)
+        # Declares tool membership. Final membership is (directory grant ∪ this declaration) − except.
+        #   tool                  -> grant every registered adapter (regardless of directory)
+        #   tool :mcp, :ruby_llm  -> add these adapters to the directory grant
+        #   tool false            -> opt out of every adapter (a helper Axn living under a tool root)
+        #   tool except: :ruby_llm-> directory grant, minus :ruby_llm (pure narrowing; grants nothing itself)
+        #   tool name: "…"        -> grant all adapters, with a provider-name override
+        #   tool mcp: { title: "…" } -> add :mcp with per-adapter config (sugar over configure(:mcp));
+        #     a bag `name:` overrides the provider name for that adapter only
+        # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check here
+        # would be load-order-hostile) and simply never match tools_for.
+        def tool(*adapters, name: nil, except: EXCEPT_OMITTED, **bags)
           # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
           # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins),
           # changing membership at tools_for time instead of failing here. Per axn's fail-at-declaration
           # doctrine, reject the repeat. A subclass declaring its own `tool` is a fresh first call
           # (fresh object, no ivar) and is fine.
           if instance_variable_defined?(:@__axn_tool_declared)
-            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters, `name:`, and " \
+            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters, `name:`, `except:`, and " \
                                  "per-adapter options in a single call (e.g. `tool :mcp, ruby_llm: { … }, name: \"...\"`)."
           end
           @__axn_tool_declared = true
 
+          except_given = !except.equal?(EXCEPT_OMITTED)
+
           if adapters.include?(false)
-            if adapters.length > 1 || !name.nil? || bags.any?
-              raise ArgumentError, "`tool false` opts out; it can't be combined with adapters, `name:`, or per-adapter options"
+            if adapters.length > 1 || !name.nil? || bags.any? || except_given
+              raise ArgumentError, "`tool false` opts out; it can't be combined with adapters, `name:`, `except:`, or per-adapter options"
             end
 
-            self._tool_name_override = nil # a subclass opting out reports its OWN tool_name, not an inherited `tool name:` override
-            self._tool_name_overrides = {}.freeze # ...nor an inherited per-adapter `tool <adapter>: { name: }` override
+            self._tool_name_override = nil
+            self._tool_name_overrides = {}.freeze
+            self._tool_except = [].freeze
             self._tool_declaration = false
             return
           end
 
-          # Adapter identity must be a Symbol on both paths. Bag keys are normally Symbols (Ruby keyword
-          # capture), but a `**string_keyed_hash` splat can smuggle a String key in — which would land in
-          # `_tool_declaration` and the config store as a String and then never match the Symbol every
-          # lookup (`member?`, `tools_for`) uses, silently omitting the tool. Reject here like positional
-          # adapters, so membership stays Symbol-keyed end to end.
-          non_symbols = (adapters + bags.keys).reject { |a| a.is_a?(Symbol) }
+          except_list = except_given ? Array(except).uniq : []
+
+          # Adapter identity must be a Symbol everywhere it appears — positional, bag key, or except —
+          # so membership stays Symbol-keyed end to end (a `**string_keyed` splat can smuggle a String).
+          non_symbols = (adapters + bags.keys + except_list).reject { |a| a.is_a?(Symbol) }
           raise ArgumentError, "tool adapters must be Symbols (e.g. `tool :mcp`); got #{non_symbols.inspect}" if non_symbols.any?
 
           non_hash = bags.reject { |_adapter, opts| opts.is_a?(Hash) }
@@ -89,11 +102,29 @@ module Axn
           # Always assign (even when name is nil): `_tool_name_override` is a class_attribute, so a fresh
           # `tool` without `name:` must clear an inherited override rather than let the parent's leak through.
           self._tool_name_override = name
+          self._tool_except = except_list.freeze
 
-          # Membership is the union of positional adapters and per-adapter bag keys; a bag key implies
-          # membership in that adapter. Bare `tool` (no adapters, no bags) means every registered adapter.
+          # Membership grant from the declaration:
+          #   - an explicit list (positional adapters ∪ bag keys) grants exactly those adapters;
+          #   - a broad gesture with no list — bare `tool`, or `tool name:` — grants every registered
+          #     adapter (:all);
+          #   - a bare `except:` (narrowing with no adapters/bags/name) grants nothing itself and relies
+          #     on the directory grant (an empty Array — NOT :all, which would re-expose the tool to
+          #     every adapter but the excepted one, defeating directory scoping). Its base is the
+          #     directory grant whether `except:` is empty, populated, or an explicit nil — passing the
+          #     keyword at all selects the narrowing form.
+          # `name:` is a broad gesture, so `tool name:, except:` stays :all-minus-except rather than
+          # collapsing to directory-only.
           declared = (adapters + bags.keys).uniq
-          self._tool_declaration = declared.empty? ? :all : declared
+          narrowing_only = declared.empty? && name.nil? && except_given
+          self._tool_declaration =
+            if declared.any?
+              declared
+            elsif narrowing_only
+              []
+            else
+              :all
+            end
 
           _apply_tool_bags!(bags)
 
