@@ -6,7 +6,8 @@ pre-commit:
   commands:
     rubocop:
       glob: "*.{rb,rake,gemspec}"
+      # Check-only, deliberately no autocorrect: lefthook doesn't isolate the staged content, so
+      # `-a` + stage_fixed would re-stage a partially-staged file wholesale and sweep in hunks the
+      # author left unstaged. Block on offenses and let them fix + re-stage instead.
       # --force-exclusion so explicitly-passed files still honor the .rubocop.yml Exclude list.
-      # -a is safe autocorrect; stage_fixed re-stages what RuboCop fixed.
-      run: bundle exec rubocop --force-exclusion -a {staged_files}
-      stage_fixed: true
+      run: bundle exec rubocop --force-exclusion {staged_files}
