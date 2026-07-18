@@ -75,7 +75,7 @@ The no-argument `<name>` reader is the supported way to read an overridable sett
 An action that participates as a tool can declare its per-adapter config right on the `tool` line instead of a detached `configure` block. `tool <adapter>: { … }` is sugar over `configure(<adapter>) { … }` — each key/value lands in the same per-class override store and resolves through the same path, and naming an adapter in the bag implies membership in it:
 
 ```ruby
-class SearchTool < Axn::MCP::Tool
+class SearchTool < MyGem::ToolBase
   tool mcp: { present_as: :message, title: "Search" },
        ruby_llm: { halt_after: true }
 end
@@ -84,7 +84,7 @@ end
 is equivalent to:
 
 ```ruby
-class SearchTool < Axn::MCP::Tool
+class SearchTool < MyGem::ToolBase
   tool :mcp, :ruby_llm
   configure(:mcp)      { |c| c.present_as = :message; c.title = "Search" }
   configure(:ruby_llm) { |c| c.halt_after = true }
@@ -94,7 +94,7 @@ end
 A class's final adapter membership is a union: whatever a bag key or bare `tool :adapter` names, added to any directory grant the class already has from living under one of that adapter's [`tool_roots`](/reference/configuration#tool-directories-are-declared-per-adapter) — declaring an adapter never subtracts from a directory grant, only adds to it. `tool except: :ruby_llm` is the subtractive counterpart, removing one adapter from membership regardless of how it was granted:
 
 ```ruby
-class SearchTool < Axn::MCP::Tool
+class SearchTool < MyGem::ToolBase
   tool except: :ruby_llm   # keep every other adapter (directory- or declaration-granted); drop ruby_llm
 end
 ```
