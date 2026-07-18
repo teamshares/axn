@@ -16,8 +16,8 @@ class GemGenerator
   # tool registry) downstream gems build on; the temporary Gemfile main pin tracks ahead of it.
   AXN_LOWER_BOUND = ">= 0.1.0-alpha.4.3"
 
-  # bundle gem output the base layer deliberately drops.
-  CRUFT = %w[bin/console bin/setup].freeze
+  # bundle gem output the base layer deliberately drops. (bin/setup is replaced, not dropped.)
+  CRUFT = %w[bin/console].freeze
 
   # Rails testing topology:
   #   :dual — non-Rails spec/ + a spec_rails/dummy_app Rails suite (default; mirrors axn core)
@@ -115,7 +115,11 @@ class GemGenerator
     FileUtils.cp(File.join(CORE_ROOT, "bin", "refresh"), refresh)
     File.chmod(0o755, refresh)
 
+    write("bin/setup", render("setup.tmpl"))
+    File.chmod(0o755, File.join(gem_dir, "bin", "setup"))
+
     write(".gitignore", render("gitignore.tmpl"))
+    write(".tool-versions", render("tool_versions.tmpl"))
     write("CHANGELOG.md", render("changelog.md.tmpl"))
     write(".github/CODEOWNERS", render("codeowners.tmpl"))
     write(".github/renovate.json5", render("renovate.json5.tmpl"))

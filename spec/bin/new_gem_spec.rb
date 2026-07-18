@@ -35,8 +35,18 @@ RSpec.describe GemGenerator do
 
     it "deletes bundle gem cruft the base layer doesn't want" do
       expect(exist?("bin/console")).to be(false)
-      expect(exist?("bin/setup")).to be(false)
       expect(exist?("sig")).to be(false)
+    end
+
+    it "emits an executable bin/setup that bundles the app and any dummy app" do
+      expect(File.executable?(File.join(@gem_dir, "bin/setup"))).to be(true)
+      setup = read("bin/setup")
+      expect(setup).to include("bundle install")
+      expect(setup).to include("spec_rails/dummy_app")
+    end
+
+    it "pins a Ruby version in .tool-versions" do
+      expect(read(".tool-versions")).to match(/\Aruby \d+\.\d+\.\d+/)
     end
 
     it "standardizes CI on ci.yml (not main.yml)" do

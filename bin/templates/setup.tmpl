@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Installing dependencies..."
+bundle install
+
+# Rails-testing gems carry a second bundle in the embedded dummy app.
+if [ -d spec_rails/dummy_app ]; then
+  echo "Installing dummy app dependencies..."
+  (cd spec_rails/dummy_app && bundle install)
+fi
