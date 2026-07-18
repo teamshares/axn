@@ -61,7 +61,11 @@ class GemGenerator
 
   def validate!
     raise Error, "gem name is required" if name.to_s.strip.empty?
-    raise Error, "invalid gem name #{name.inspect} (lowercase letters, digits, _ and - only)" unless name.match?(/\A[a-z][a-z0-9_-]*\z/)
+    # Each hyphen-delimited segment must start with a letter, so every generated module segment is a
+    # valid Ruby constant. `axn-1foo` would otherwise scaffold `module 1foo` / `:1foo` — syntax errors.
+    unless name.match?(/\A[a-z][a-z0-9_]*(-[a-z][a-z0-9_]*)*\z/)
+      raise Error, "invalid gem name #{name.inspect} (each '-'-separated segment must start with a letter; use a-z, 0-9, _)"
+    end
     raise Error, "invalid rails mode #{@rails.inspect} (one of #{RAILS_MODES.inspect})" unless RAILS_MODES.include?(@rails)
     raise Error, "#{gem_dir} already exists" if File.exist?(gem_dir)
   end
@@ -70,6 +74,17 @@ class GemGenerator
     shell!(["bundle", "gem", name, "--test=rspec", "--linter=rubocop", "--ci=github", "--mit", "--no-coc", "--changelog"],
            chdir: @dest_parent, quiet: true)
     raise Error, "bundle gem did not create #{gem_dir}" unless File.directory?(gem_dir)
+
+    normalize_git_branch
+  end
+
+  # bundle gem inits the repo on the machine's git default branch (often master), but the generated
+  # CI only listens on main — so a push to master would get no CI. Rename to main. Best-effort:
+  # a git hiccup here shouldn't sink an otherwise-good scaffold.
+  def normalize_git_branch
+    shell!(%w[git branch -M main], chdir: gem_dir, quiet: true)
+  rescue Error
+    say "WARNING: could not rename the generated repo's branch to main; rename it manually so CI runs."
   end
 
   def install!

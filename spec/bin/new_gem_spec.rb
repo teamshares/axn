@@ -251,6 +251,36 @@ RSpec.describe GemGenerator do
     end
   end
 
+  describe "name and repo validation" do
+    it "rejects a name whose hyphen segment is not a valid constant (would emit `module 1foo`)" do
+      Dir.mktmpdir("axn-new-gem") do |parent|
+        expect do
+          described_class.new("axn-1foo", dest_parent: parent, install: false,
+                                          output: StringIO.new, input: StringIO.new).run
+        end.to raise_error(described_class::Error, /invalid gem name/)
+      end
+    end
+
+    it "normalizes the generated repo to the main branch even when git defaults to master" do
+      executable = File.expand_path("../../bin/new-gem", __dir__)
+      Dir.mktmpdir("axn-new-gem") do |parent|
+        Dir.mktmpdir("git-cfg") do |cfgdir|
+          cfg = File.join(cfgdir, "gitconfig")
+          File.write(cfg, "[init]\n\tdefaultBranch = master\n")
+          # Run bin/new-gem in a clean (unbundled) env with a master git default, so `bundle gem`
+          # actually initializes on master and the fix has something to rename.
+          status = Bundler.with_unbundled_env do
+            _out, st = Open3.capture2e({ "GIT_CONFIG_GLOBAL" => cfg }, executable,
+                                       "branch_demo", "--no-rails", "--no-install", chdir: parent)
+            st
+          end
+          expect(status.exitstatus).to eq(0)
+          expect(`git -C #{File.join(parent, "branch_demo")} branch --show-current`.strip).to eq("main")
+        end
+      end
+    end
+  end
+
   # The summary is the one field genuinely worth capturing at creation time (RubyGems requires it);
   # it flows into both the gemspec (summary + description) and the README description line.
   describe "summary resolution" do
