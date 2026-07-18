@@ -76,13 +76,12 @@ RSpec.describe GemGenerator do
       expect(read(".tool-versions")).to match(/\Aruby \d+\.\d+\.\d+/)
     end
 
-    it "standardizes CI on ci.yml (not main.yml)" do
+    it "standardizes CI on a ci.yml that calls axn's reusable workflow (not main.yml)" do
       expect(exist?(".github/workflows/ci.yml")).to be(true)
       expect(exist?(".github/workflows/main.yml")).to be(false)
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("actions/checkout@v6")
-      expect(ci).to include("bundle exec rake")
-      %w[3.2 3.3 3.4].each { |v| expect(ci).to include("'#{v}'") }
+      # Thin caller — the matrix/steps live in axn core's reusable gem-ci.yml, not duplicated here.
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
     end
 
     it "always emits CODEOWNERS and renovate.json5" do
@@ -214,10 +213,10 @@ RSpec.describe GemGenerator do
       end
     end
 
-    it "gives the dual CI a dedicated rails_specs job" do
+    it "asks the reusable workflow for the separate Rails-specs job" do
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("rails_specs")
-      expect(ci).to include("bundle exec rake spec_rails")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      expect(ci).to include("rails-specs-job: true")
     end
 
     it "tells agents (and the README) to run rake verify for the dual Rails suite" do
@@ -271,13 +270,15 @@ RSpec.describe GemGenerator do
       expect(exist?("spec_rails")).to be(false)
     end
 
-    it "keeps the simple default rake and single-job CI" do
+    it "keeps the simple default rake and a no-frills CI caller" do
       rake = read("Rakefile")
       expect(rake).to include('Rake::Task["build"].enhance([:default])')
       expect(rake).not_to include("spec_rails")
       ci = read(".github/workflows/ci.yml")
-      expect(ci).to include("run: bundle exec rake")
-      expect(ci).not_to include("spec_rails")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      # Pure Ruby → no Rails-topology inputs.
+      expect(ci).not_to include("rails-specs-job")
+      expect(ci).not_to include("main-needs-dummy-app")
     end
 
     it "keeps the non-Rails spec suite" do
@@ -306,6 +307,12 @@ RSpec.describe GemGenerator do
 
     it "runs the Rails suite in the default rake" do
       expect(read("Rakefile")).to include("task default: %i[spec_rails rubocop]")
+    end
+
+    it "tells the reusable workflow the main job needs the dummy-app bundle" do
+      ci = read(".github/workflows/ci.yml")
+      expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
+      expect(ci).to include("main-needs-dummy-app: true")
     end
   end
 

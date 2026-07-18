@@ -4,26 +4,9 @@ on:
   push:
     branches:
       - main
-
   pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }}
-    strategy:
-      matrix:
-        ruby:
-          - '3.2'
-          - '3.3'
-          - '3.4'
-
-    steps:
-      - uses: actions/checkout@v6
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
-      - name: Run the default task
-        run: bundle exec rake
+  ci:
+    # Reusable workflow in axn core — fix CI once there, every gem inherits it.
+    uses: teamshares/axn/.github/workflows/gem-ci.yml@main

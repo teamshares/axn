@@ -1,0 +1,79 @@
+name: Gem CI
+
+# Reusable CI for downstream axn-consuming gems (PRO-2949). Each gem's own .github/workflows/ci.yml
+# is a thin caller: `uses: teamshares/axn/.github/workflows/gem-ci.yml@main`. Fix CI once here and
+# every gem inherits it — no per-repo edits. The main job always runs `bundle exec rake` (each gem's
+# Rakefile default task runs the right suite); the two inputs cover the Rails-topology differences.
+on:
+  workflow_call:
+    inputs:
+      ruby-versions:
+        description: JSON array of Ruby versions for the test matrix.
+        type: string
+        default: '["3.2", "3.3", "3.4"]'
+      main-needs-dummy-app:
+        description: Install the spec_rails/dummy_app bundle before the main task (rails-only gems, whose default rake runs spec_rails).
+        type: boolean
+        default: false
+      rails-specs-job:
+        description: Add a separate job running the Rails dummy-app suite (dual-topology gems, whose default rake is Rails-free).
+        type: boolean
+        default: false
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    name: Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby: ${{ fromJSON(inputs.ruby-versions) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Cache dummy app bundle
+        if: ${{ inputs.main-needs-dummy-app }}
+        uses: actions/cache@v6
+        with:
+          path: spec_rails/dummy_app/vendor/bundle
+          key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles('spec_rails/dummy_app/Gemfile') }}
+          restore-keys: |
+            ${{ runner.os }}-dummy-app-bundle-
+      - name: Install dummy app dependencies
+        if: ${{ inputs.main-needs-dummy-app }}
+        run: |
+          cd spec_rails/dummy_app
+          bundle install --path vendor/bundle
+      - name: Run the default task
+        run: bundle exec rake
+
+  rails_specs:
+    if: ${{ inputs.rails-specs-job }}
+    runs-on: ubuntu-latest
+    name: Rails Specs (Ruby ${{ matrix.ruby }})
+    strategy:
+      matrix:
+        ruby: ${{ fromJSON(inputs.ruby-versions) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Cache dummy app bundle
+        uses: actions/cache@v6
+        with:
+          path: spec_rails/dummy_app/vendor/bundle
+          key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles('spec_rails/dummy_app/Gemfile') }}
+          restore-keys: |
+            ${{ runner.os }}-dummy-app-bundle-
+      - name: Install dummy app dependencies
+        run: |
+          cd spec_rails/dummy_app
+          bundle install --path vendor/bundle
+      - name: Run Rails specs
+        run: bundle exec rake spec_rails
