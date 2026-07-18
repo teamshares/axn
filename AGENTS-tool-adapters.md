@@ -53,9 +53,11 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tools.rb` (`tool` D
 
 ## Naming & description
 
-- **Name = `axn_class.tool_name`.** Don't roll your own — the same Axn must yield the same name across
-  adapters. It's provider-safe, never blank, honors `tool name:` and prefix stripping. The zero-arg form
-  (`axn_class.tool_name`) is what you want; the registry already applied per-adapter overrides.
+- **Name = `axn_class.tool_name(:your_key)` — pass your adapter key.** Don't roll your own — the same Axn
+  must yield the same name across adapters. It's provider-safe, never blank, honors `tool name:` and prefix
+  stripping. `tools_for` sorts/dedupes on `tool_name(:your_key)` and a per-adapter `tool your_key: { name: }`
+  override is only returned when you pass the key — the zero-arg form ignores per-adapter overrides, so
+  reading it would publish a name the registry didn't dedupe on.
 - **Description = `axn_class.description`.** `wrap`'s `description:` defaults to it (keeps `.tools` zero-arg).
 
 ## Schema reflection
@@ -131,8 +133,10 @@ Server/session data (`current_user`, `company`) an author declares via `expects 
 - **Spread it AS `ambient_context:`** — pass the injected context as the `ambient_context:` keyword, NOT
   nested under an adapter key. Nesting couples the Axn to one adapter; spreading keeps it portable (the
   same class resolves from an MCP server context, from `Current` on a direct call, or from ruby_llm).
-- It's **filtered to declared keys**; axn extracts each field via `#[]`/`#dig`, so a Hash or an opaque
-  object both work.
+- It's **filtered to declared keys**; the injected value must be a `Hash` / hash-like (responds to
+  `key?`/`[]`, e.g. `HashWithIndifferentAccess`) — axn keys into it and drops any source it can't key into,
+  so a bare opaque object resolves every ambient field as absent. Wrap a transport context object in a Hash
+  of the injected fields (keys string or symbol, indifferent).
 - **Always pass an explicit `ambient_context:` (even `{}`)** — it *replaces* the `Current`-derived default
   (no merge), preventing server-side state leaking into the call. The Invoker also strips any
   `ambient_context` smuggled through model args before merging yours.
@@ -150,7 +154,7 @@ Source: `lib/axn/core/ambient_context.rb`, `lib/axn/tools/invoker.rb`.
 ## Inline / one-off tools
 
 - **Don't ship a per-gem `define`.** Wrap a core `Axn::Factory.build`:
-  `GemName.wrap(Axn::Factory.build(expects:, exposes:, name: "…", description: "…") { … })`. The block is
+  `GemName.wrap(Axn::Factory.build(expects:, exposes:, axn_name: "…", description: "…") { … })`. The block is
   the `#call` body (keyword-only args; not available for `exposes`/`shape:` coercion). A factory-built
   class is **not** auto-discovered by `tools_for` (synthetic name) — the constructor holds the reference
   and wraps it directly. See <https://teamshares.github.io/axn/reference/factory>.
