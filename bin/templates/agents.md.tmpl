@@ -15,8 +15,10 @@ Before writing or modifying an Axn action (`include Axn`): run `bundle show axn`
 - Before done: __TEST_GUIDANCE__
 - `axn` is pinned to `branch: "main"` in the Gemfile; `Gemfile.lock` is gitignored and CI resolves
   fresh. Re-run tests after `bundle update axn` if it may have moved.
-- Working docs (planning specs/plans, design notes) go in `internal-docs/` — excluded from the
-  packaged gem. Reserve top-level `docs/` for user-facing documentation, which ships.
+- Working docs (planning specs/plans, design notes) go in `internal-docs/`. Reserve top-level
+  `docs/` for user-facing documentation (a hosted site). The gem packages only `lib/` + root docs
+  (README/CHANGELOG/LICENSE), so neither `internal-docs/` nor `docs/` ships — the README is the
+  packaged doc.
 - `bin/setup` installs a lefthook pre-commit hook (config in `lefthook.yml`) that runs RuboCop
   safe-autocorrect on staged Ruby files and re-stages the fixes, blocking on any offense it can't
   auto-fix. `git commit --no-verify` skips it; CI runs the full `rake` (RuboCop + specs) regardless.

@@ -1,8 +1,9 @@
 # Internal docs
 
-Working documentation for **__GEM_NAME__** that is *not* shipped in the packaged gem: planning
-specs and plans (e.g. superpowers `specs/` and `plans/`), design notes, and other agent/contributor
-scratch. The gemspec excludes `internal-docs/` from `spec.files`, so nothing here reaches consumers.
+Working documentation for **__GEM_NAME__**: planning specs and plans (e.g. superpowers `specs/` and
+`plans/`), design notes, and other agent/contributor scratch. None of it reaches consumers — the
+gemspec ships only `lib/` and the root docs (allowlist), so `internal-docs/` never packages.
 
-Reserve the top-level `docs/` directory for user-facing documentation (a docs site, guides) when the
-gem grows one — that content DOES ship. Keep internal working docs here instead.
+Reserve the top-level `docs/` directory for user-facing documentation (a hosted docs site, guides)
+when the gem grows one. That's repo/site content, not gem payload — like `internal-docs/`, it isn't
+in the packaged gem; the README is the doc that ships. Keep internal working docs here.

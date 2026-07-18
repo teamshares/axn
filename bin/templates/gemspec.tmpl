@@ -21,18 +21,15 @@ Gem::Specification.new do |spec|
   spec.metadata["changelog_uri"] = "__HOMEPAGE__/blob/main/CHANGELOG.md"
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  # Specify which files should be added to the gem when it is released.
-  # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
-  gemspec = File.basename(__FILE__)
-  spec.files = IO.popen(%w[git ls-files -z], chdir: __dir__, err: IO::NULL) do |ls|
-    ls.readlines("\x0", chomp: true).reject do |f|
-      (f == gemspec) ||
-        # internal-docs/ holds working docs (planning specs/plans, design notes) and never ships;
-        # docs/ is reserved for future user-facing documentation and DOES ship when added.
-        f.start_with?(*%w[bin/ spec/ spec_rails/ internal-docs/ .git .github Gemfile Gemfile.lock .rspec_status pkg/
-                          node_modules/ tmp/ .rspec .rubocop .tool-versions package.json lefthook.yml])
-    end
-  end
+  # Ship the runtime payload only — allowlist, not denylist. A gem's shippable surface is small and
+  # stable (lib/ + a few root docs), so enumerating it beats an ever-growing exclude list that
+  # silently leaks new dev artifacts into the package. `git ls-files` keeps this to tracked files.
+  # Anything not listed (bin/, spec*, docs/, internal-docs/, lefthook.yml, …) simply never ships;
+  # add a token here only when you add a genuinely new shippable path (e.g. exe/ for a CLI).
+  spec.files = IO.popen(
+    %w[git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt],
+    chdir: __dir__, err: IO::NULL,
+  ) { |ls| ls.readlines("\x0", chomp: true) }
   spec.bindir = "exe"
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]

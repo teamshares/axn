@@ -13,6 +13,10 @@ RSpec.describe GemGenerator do
   def read(relative) = File.read(File.join(@gem_dir, relative))
   def exist?(relative) = File.exist?(File.join(@gem_dir, relative))
 
+  # The files the gemspec would actually package (its `git ls-files` allowlist runs against @gem_dir,
+  # whose index the generator populates via `git add -A`).
+  def packaged_files = Gem::Specification.load(Dir[File.join(@gem_dir, "*.gemspec")].first).files
+
   # The canonical bin/refresh is core's own — the generated copy must stay byte-identical to it.
   def canonical_refresh = File.read(File.expand_path("../../bin/refresh", __dir__))
 
@@ -57,8 +61,7 @@ RSpec.describe GemGenerator do
 
     it "keeps lefthook out of the packaged gem (dev-only)" do
       # lefthook.yml is a dev config; the lefthook gem lives in the Gemfile, never the gemspec.
-      reject_tokens = read("foo_bar.gemspec")[/start_with\?\(\*%w\[(.+?)\]/m, 1].split
-      expect(reject_tokens).to include("lefthook.yml")
+      expect(packaged_files).not_to include("lefthook.yml")
       expect(read("foo_bar.gemspec")).not_to include('add_dependency "lefthook"')
     end
 
@@ -129,8 +132,8 @@ RSpec.describe GemGenerator do
       expect(gemspec).to include('require_relative "lib/foo_bar/version"')
       expect(gemspec).to include("FooBar::VERSION")
       expect(gemspec).to include("rubygems_mfa_required")
-      # The full canonical reject list (axn-ruby_llm's short/old variant is the drift we kill).
-      expect(gemspec).to include("node_modules/")
+      # Allowlist gemspec: ships lib/ + root docs only, no ever-growing reject list.
+      expect(gemspec).to include("git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt")
     end
 
     it "pins axn to the teamshares main branch in the Gemfile" do
@@ -202,8 +205,13 @@ RSpec.describe GemGenerator do
       expect(rake).to include('Rake::Task["build"].enhance([:verify])')
     end
 
-    it "excludes spec_rails from the packaged gem" do
-      expect(read("foo_bar.gemspec")).to include("spec_rails/")
+    it "packages only the runtime payload (lib + root docs), never dev/test dirs" do
+      files = packaged_files
+      expect(files).to include("lib/foo_bar.rb", "README.md", "CHANGELOG.md", "LICENSE.txt")
+      # Dev/test/site content stays out by default (allowlist), no per-dir exclusion needed.
+      %w[spec_rails/ spec/ bin/ internal-docs/ docs/].each do |dir|
+        expect(files.grep(/\A#{Regexp.escape(dir)}/)).to be_empty
+      end
     end
 
     it "gives the dual CI a dedicated rails_specs job" do
@@ -225,12 +233,12 @@ RSpec.describe GemGenerator do
       expect(internal).to include("docs/")
     end
 
-    it "excludes internal-docs from the packaged gem but not docs/" do
-      gemspec = read("foo_bar.gemspec")
-      reject_tokens = gemspec[/start_with\?\(\*%w\[(.+?)\]/m, 1].split
-      expect(reject_tokens).to include("internal-docs/")
-      # docs/ ships when added, so it must NOT be its own token in the reject list.
-      expect(reject_tokens).not_to include("docs/")
+    it "ships neither internal-docs (seeded) nor a future docs/ site — repo content, not payload" do
+      # internal-docs/ IS in the tree (generator seeds it), yet must not package.
+      expect(exist?("internal-docs/README.md")).to be(true)
+      expect(packaged_files.grep(%r{\Ainternal-docs/})).to be_empty
+      # docs/ isn't in the allowlist, so a hosted-site docs/ wouldn't ship when added either.
+      expect(read("foo_bar.gemspec")).not_to match(/git ls-files.*docs/)
     end
 
     it "points agents at internal-docs and scopes the CHANGELOG rule to public-facing changes" do

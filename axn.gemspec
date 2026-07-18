@@ -25,23 +25,20 @@ Gem::Specification.new do |spec|
 
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  # Specify which files should be added to the gem when it is released.
-  # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
-  spec.files = Dir.chdir(__dir__) do
-    `git ls-files -z`.split("\x0").reject do |f|
-      (File.expand_path(f) == __FILE__) ||
-        # NOTE: `.rubocop.yml` is deliberately NOT excluded — it ships so internally-built
-        # downstream gems can `inherit_gem: { axn: ".rubocop.yml" }` (PRO-2949). This is an
-        # internal Teamshares convention, not a documented public API. `.rubocop_todo.yml` and
-        # other `.rubocop*` files stay out via the explicit tokens below.
-        f.start_with?(*%w[
-                        bin/ test/ spec/ spec_rubocop/ spec_rails/ features/ examples/ benchmark/
-                        internal-docs/ log/
-                        .git .github appveyor Gemfile Gemfile.lock yarn.lock .rspec_status pkg/
-                        node_modules/ tmp/ .rspec .rubocop_todo .tool-versions package.json lefthook.yml
-                      ])
-    end
-  end
+  # Ship the runtime payload only — allowlist, not denylist. A gem's shippable surface is small and
+  # stable (lib/ + a few root docs), so enumerating it beats an ever-growing exclude list that
+  # silently leaks new dev artifacts (docs site, editor config, tool configs) into the package.
+  # `git ls-files` keeps this to tracked files. Anything not listed here (bin/, spec*, docs/,
+  # internal-docs/, benchmark/, examples/, .cursor/, lefthook.yml, …) simply never ships.
+  #
+  # `.rubocop.yml` ships deliberately: internally-built downstream gems `inherit_gem: { axn:
+  # ".rubocop.yml" }`. AGENTS-consuming.md / AGENTS-tool-adapters.md ship as consumer-facing guidance
+  # the runtime references (`bundle show axn`).
+  spec.files = IO.popen(
+    %w[git ls-files -z --
+       lib .rubocop.yml README.md CHANGELOG.md LICENSE.txt AGENTS-consuming.md AGENTS-tool-adapters.md],
+    chdir: __dir__, err: IO::NULL,
+  ) { |ls| ls.readlines("\x0", chomp: true) }
   spec.bindir = "exe"
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
