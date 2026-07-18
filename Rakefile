@@ -194,7 +194,9 @@ end
 # Downstream gem compatibility check.
 PARSE_AXN_REQUIREMENT = lambda { |gemspec_path|
   content = File.read(gemspec_path)
-  match = content.match(/add_dependency\s+["']axn["']\s*,\s*(.+)$/)
+  # Match both `add_dependency` and the (deprecated but valid) `add_runtime_dependency` form, so a
+  # sibling using either is still recognized as a downstream consumer.
+  match = content.match(/add(?:_runtime)?_dependency\s+["']axn["']\s*,\s*(.+)$/)
   return nil unless match
 
   constraints = match[1].scan(/["']([^"']+)["']/).flatten

@@ -19,15 +19,27 @@
 require_relative "support/gem_generator"
 
 install = !ARGV.delete("--no-install")
-rails = :dual
-rails = :only if ARGV.delete("--rails-only")
-rails = :none if ARGV.delete("--no-rails")
+rails_only = ARGV.delete("--rails-only")
+no_rails = ARGV.delete("--no-rails")
 name = ARGV.shift
+
+if rails_only && no_rails
+  warn "Error: --rails-only and --no-rails are mutually exclusive"
+  exit 1
+end
 
 if name.nil? || name.start_with?("-")
   warn "usage: bin/new-gem NAME [--rails-only | --no-rails] [--no-install]"
   exit 1
 end
+
+rails = if rails_only
+          :only
+        elsif no_rails
+          :none
+        else
+          :dual
+        end
 
 begin
   GemGenerator.new(name, install:, rails:).run

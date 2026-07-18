@@ -3,6 +3,7 @@
 require "tmpdir"
 require "stringio"
 require "fileutils"
+require "open3"
 require_relative "../../bin/support/gem_generator"
 
 # The generator is a dev-only tool (bin/, absent from the packaged gem). It shells out to
@@ -234,6 +235,19 @@ RSpec.describe GemGenerator do
       gemspec = read("axn-foo.gemspec")
       expect(gemspec).to include("Axn::Foo::VERSION")
       expect(gemspec).to include('require_relative "lib/axn/foo/version"')
+    end
+  end
+
+  describe "the bin/new-gem CLI" do
+    let(:executable) { File.expand_path("../../bin/new-gem", __dir__) }
+
+    it "rejects passing both --rails-only and --no-rails" do
+      Dir.mktmpdir("axn-new-gem") do |dir|
+        out, status = Open3.capture2e(executable, "somegem", "--rails-only", "--no-rails", "--no-install", chdir: dir)
+        expect(status.exitstatus).to eq(1)
+        expect(out).to include("mutually exclusive")
+        expect(File.exist?(File.join(dir, "somegem"))).to be(false)
+      end
     end
   end
 
