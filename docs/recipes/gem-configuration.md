@@ -47,14 +47,14 @@ module Axn::MCP
   setting :mcp_text_content, default: :structured, one_of: %i[structured message], overridable: true
 end
 
-# Once, in your gem's base class:
-class Axn::MCP::Tool
+# Once, in a base class your gem's actions inherit from:
+class MyGem::ToolBase
   include Axn
   include Axn::MCP.overrides
 end
 
 # Action authors just inherit — no extra include:
-class MyTool < Axn::MCP::Tool
+class MyTool < MyGem::ToolBase
   mcp_text_content :message     # class-level override (validated like any assignment)
 end
 
