@@ -2,3 +2,16 @@
 # (Internal Teamshares convention — deliberately not a documented public API.)
 inherit_gem:
   axn: ".rubocop.yml"
+
+# axn core's AllCops/Exclude globs resolve relative to the axn GEM dir when pulled in via
+# inherit_gem, so they never cover THIS repo's own vendored installs. Re-declare project-relative
+# vendor excludes and merge (not override) them with the inherited config, so a CI `bundler-cache`
+# / `bundle --path vendor/bundle` install is never linted.
+inherit_mode:
+  merge:
+    - Exclude
+
+AllCops:
+  Exclude:
+    - "vendor/**/*"
+    - "spec_rails/dummy_app/vendor/**/*"

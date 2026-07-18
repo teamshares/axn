@@ -79,6 +79,24 @@ RSpec.describe GemGenerator do
       expect(gitignore).to include(".rspec_status")
     end
 
+    # Regression: axn core's AllCops/Exclude globs resolve relative to the axn GEM dir when pulled in
+    # via inherit_gem, so they never cover THIS repo's own vendored installs. CI's bundler-cache
+    # installs gems under vendor/ and then lints them, so the generated config must re-declare
+    # project-relative vendor excludes and MERGE them with the inherited config (not override it).
+    it "excludes the consuming repo's own vendor/ from rubocop" do
+      rubocop = read(".rubocop.yml")
+      expect(rubocop).to include("inherit_mode:")
+      expect(rubocop).to match(/merge:\s*\n\s*- Exclude/)
+      expect(rubocop).to include('- "vendor/**/*"')
+      expect(rubocop).to include('- "spec_rails/dummy_app/vendor/**/*"')
+    end
+
+    it "gitignores locally-vendored bundles so they're never committed or linted" do
+      lines = read(".gitignore").lines.map(&:chomp)
+      expect(lines).to include("/vendor/")
+      expect(lines).to include("spec_rails/dummy_app/vendor/")
+    end
+
     it "emits a canonical gemspec with no TODO placeholders" do
       gemspec = read("foo_bar.gemspec")
       expect(gemspec).not_to include("TODO")
