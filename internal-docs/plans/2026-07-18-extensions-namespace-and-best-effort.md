@@ -16,7 +16,7 @@
 - **No historical comments** ("used to X / now Y", ticket labels). Comments describe current behavior + intrinsic why.
 - **Behavior of the guard is unchanged:** log-in-prod/test, raise-in-dev only when the knob is set; return `nil` on rescue, block's value on success.
 - **Config knob name:** `best_effort_raises_in_dev` (renamed from `raise_piping_errors_in_dev`).
-- Run `bundle exec rspec` for `spec/`; run `spec_rails/` via its dummy-app bundle (`BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`).
+- Run `bundle exec rspec` for `spec/`; run the Rails suite with `bundle exec rake spec_rails` (the canonical runner — it `chdir`s into `spec_rails/dummy_app` and runs `BUNDLE_GEMFILE=Gemfile bundle exec rspec spec/`). Do NOT run `rspec spec_rails` from the repo root — it fails to load Rails and is not the real suite.
 - Frequent commits — one per task.
 
 ---
@@ -199,7 +199,7 @@ grep -rn "raise_piping_errors_in_dev" lib docs
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS. (Un-migrated sites route through `swallow` → `best_effort`; the old-knob stub in remaining specs is retargeted in Task 2.)
 
@@ -254,7 +254,7 @@ grep -rn "Axn::Internal::PipingError\|expect_piping_error_called\|piping_error" 
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS. Confirm no `piping` references remain in specs except intentional none:
 
@@ -379,7 +379,7 @@ Confirm `self` here responds to `:warn` (it is the action class); if it does not
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
@@ -436,7 +436,7 @@ These keep their custom rescue selection (flow-control exceptions, loop `next`) 
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS. Confirm no call sites remain on the old API:
 
@@ -476,7 +476,7 @@ grep -rn "PipingError\|piping_error" lib spec docs
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
@@ -545,7 +545,7 @@ grep -rln "Axn::ExtensionConfig\|Axn\.extension_config" spec
 grep -rn "ExtensionConfig\|extension_config" lib spec
 # Expected: only the new Axn::Extensions::Config / Axn::Extensions.config forms
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
@@ -599,7 +599,7 @@ grep -rn "\bExecutor\b" lib | grep -v "Core::Executor\|module Core\|class Execut
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
@@ -650,7 +650,7 @@ grep -rn "\bContextFacade\b\|\bInternalContext\b\|\bContextFacadeInspector\b" li
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
@@ -722,7 +722,7 @@ Expected: PASS. (If `const_defined?(..., false)` still finds a relocated constan
 
 ```bash
 bundle exec rspec
-BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
+bundle exec rake spec_rails
 ```
 Expected: PASS.
 
