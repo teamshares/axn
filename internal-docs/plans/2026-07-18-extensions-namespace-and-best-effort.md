@@ -469,7 +469,7 @@ git commit -m "PRO-2950: migrate bespoke best-effort call sites (invoker, via-ex
 - [ ] **Step 3: Verify no references remain**
 
 ```bash
-grep -rn "PipingError\|piping_error" lib spec docs
+grep -rn "PipingError\|piping_error" lib spec spec_rails docs
 # Expected: no output
 ```
 
