@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "axn/internal/piping_error"
-
 require "axn/context"
 
 require "axn/strategies"
