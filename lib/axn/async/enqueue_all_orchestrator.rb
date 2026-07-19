@@ -353,10 +353,7 @@ module Axn
                       begin
                         item.public_send(config.via)
                       rescue StandardError => e
-                        Axn::Internal::PipingError.swallow(
-                          "via extraction (:#{config.via}) for :#{config.field}",
-                          exception: e,
-                        )
+                        Axn::Extensions.best_effort("via extraction (:#{config.via}) for :#{config.field}") { raise e }
                         next
                       end
                     else
