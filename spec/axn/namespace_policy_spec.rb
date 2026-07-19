@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/testing/spec_helpers"
+
 RSpec.describe "Axn top-level namespace" do
   # Public constants + module namespaces core reserves at Axn::. A future accidental
   # clobber (or a machinery constant leaking back to top-level) fails this.
