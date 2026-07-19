@@ -147,10 +147,12 @@ RSpec.describe Axn do
 
     it "calls Axn::Extensions.best_effort when event handler matcher raises" do
       action.call
+      # Matcher and each SingleRuleMatcher now guard their own call in block form, so best_effort is
+      # invoked once per matcher rather than once overall.
       expect(Axn::Extensions).to have_received(:best_effort).with(
         a_string_including("determining if handler applies to exception"),
         hash_including(action:),
-      )
+      ).at_least(:once)
     end
   end
 end

@@ -841,9 +841,13 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       it "logs the swallowed error via best_effort" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Extensions).to receive(:best_effort).with("filter block for :number", any_args)
+        allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
         action_class.enqueue_all
+
+        # The filter block is guarded per item (block form), so best_effort wraps each call; the
+        # raising item (2) is the one it actually swallows.
+        expect(Axn::Extensions).to have_received(:best_effort).with("filter block for :number", any_args).at_least(:once)
       end
     end
 

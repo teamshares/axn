@@ -54,9 +54,9 @@ module Axn
     # never raise) and does NOT run the action. Any failure is swallowed — a partially-prepared
     # instance still yields more facets than a bare one.
     def prepare_inbound_for_facets!
-      _clear_pre_pipeline_memos!
-    rescue StandardError => e
-      Internal::PipingError.swallow("preparing inbound context for async facet resolution", action: @action, exception: e)
+      Axn::Extensions.best_effort("preparing inbound context for async facet resolution", action: @action) do
+        _clear_pre_pipeline_memos!
+      end
     end
 
     # Input-phase facet resolution for enqueue-time sinks (e.g. Sidekiq job tags), where there is
@@ -95,16 +95,16 @@ module Axn
       payload = { resource:, action: @action }
 
       update_payload = proc do
-        result = @action.result
-        outcome = result.outcome.to_s
-        payload[:outcome] = outcome
-        payload[:result] = result
-        payload[:elapsed_time] = result.elapsed_time
-        payload[:exception] = result.exception if result.exception
-        payload[:tags] = Core::Tagging.dup_facets(resolved_tags) if @action_class._tags.any?
-        payload[:dimensions] = Core::Tagging.dup_facets(resolved_dimensions) if @action_class._dimensions.any?
-      rescue StandardError => e
-        Internal::PipingError.swallow("updating notification payload while tracing axn.call", action: @action, exception: e)
+        Axn::Extensions.best_effort("updating notification payload while tracing axn.call", action: @action) do
+          result = @action.result
+          outcome = result.outcome.to_s
+          payload[:outcome] = outcome
+          payload[:result] = result
+          payload[:elapsed_time] = result.elapsed_time
+          payload[:exception] = result.exception if result.exception
+          payload[:tags] = Core::Tagging.dup_facets(resolved_tags) if @action_class._tags.any?
+          payload[:dimensions] = Core::Tagging.dup_facets(resolved_dimensions) if @action_class._dimensions.any?
+        end
       end
 
       # Enrich the payload from inside the instrument block — after the action settles but
@@ -133,33 +133,31 @@ module Axn
         instrument_block.call
       end
     ensure
-      begin
+      Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do
         emit_metrics_proc = Axn.config.emit_metrics
         if emit_metrics_proc
           result = @action.result
           Internal::Callable.call_with_desired_shape(emit_metrics_proc,
                                                      kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
         end
-      rescue StandardError => e
-        Internal::PipingError.swallow("calling emit_metrics while tracing axn.call", action: @action, exception: e)
       end
     end
 
     def finalize_span(span)
-      result = @action.result
-      outcome = result.outcome.to_s
-      span.set_attribute("axn.outcome", outcome)
+      Axn::Extensions.best_effort("updating OTel span while tracing axn.call", action: @action) do
+        result = @action.result
+        outcome = result.outcome.to_s
+        span.set_attribute("axn.outcome", outcome)
 
-      if %w[failure exception].include?(outcome) && result.exception
-        span.record_exception(result.exception)
-        error_message = result.exception.message || result.exception.class.name
-        span.status = OpenTelemetry::Trace::Status.error(error_message)
+        if %w[failure exception].include?(outcome) && result.exception
+          span.record_exception(result.exception)
+          error_message = result.exception.message || result.exception.class.name
+          span.status = OpenTelemetry::Trace::Status.error(error_message)
+        end
+
+        resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
+        resolved_dimensions.each { |name, value| span.set_attribute("axn.dimension.#{name}", value) }
       end
-
-      resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
-      resolved_dimensions.each { |name, value| span.set_attribute("axn.dimension.#{name}", value) }
-    rescue StandardError => e
-      Internal::PipingError.swallow("updating OTel span while tracing axn.call", action: @action, exception: e)
     end
 
     # Facets resolve in two phases (see Core::Tagging::Facet): input-phase facets resolve from
@@ -281,10 +279,8 @@ module Axn
     rescue Internal::EarlyCompletion
       raise
     rescue StandardError => e
-      begin
+      Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action) do
         apply_defaults!(:outbound)
-      rescue StandardError => defaults_error
-        Internal::PipingError.swallow("applying outbound defaults on failure", exception: defaults_error, action: @action)
       end
 
       @context.__record_exception(e)
@@ -332,40 +328,40 @@ module Axn
     end
 
     def trigger_on_exception(exception)
-      retry_context = Async::CurrentRetryContext.current if defined?(Async::CurrentRetryContext)
-      if retry_context
-        mode = @action_class.try(:_async_exception_reporting)
-        return unless retry_context.should_trigger_on_exception?(mode)
+      Axn::Extensions.best_effort("executing on_exception hooks", action: @action) do
+        retry_context = Async::CurrentRetryContext.current if defined?(Async::CurrentRetryContext)
+        if retry_context
+          mode = @action_class.try(:_async_exception_reporting)
+          return unless retry_context.should_trigger_on_exception?(mode)
+        end
+
+        # Per-action :exception callbacks fire at each level (an action may legitimately observe its
+        # own failure), but the GLOBAL report is sent at most once per exception, at the INNERMOST action
+        # that treats it as a bug (where the failing action and full nesting stack are still live). A
+        # nested `call!` re-raises the same object up the stack; the `reported?` guard stops each ancestor
+        # from reporting it again.
+        @action_class._dispatch_callbacks(:exception, action: @action, exception:)
+        return if Internal::ExceptionClassification.reported?(exception)
+
+        # Mark BEFORE attempting, so the report is best-effort EXACTLY once: if on_exception (or building
+        # its context) raises, best_effort swallows and logs it and it is NOT retried from an ancestor
+        # (which would describe the wrong action anyway). Deterministic regardless of nesting depth.
+        Internal::ExceptionClassification.mark_reported!(exception)
+
+        context = Internal::ExceptionContext.build(
+          action: @action,
+          retry_context:,
+          # Pre-body input snapshot (memoized) + freshly-resolved result-phase facets; see resolve_report_facets.
+          tags: resolve_report_facets(resolved_input_tags, @action_class._tags),
+          dimensions: resolve_report_facets(resolved_input_dimensions, @action_class._dimensions),
+        )
+        Axn.config.on_exception(exception, action: @action, context:)
+
+        # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises,
+        # best_effort swallows it and nothing is marked here — so an ancestor executor still attempts
+        # the report rather than seeing `reported?` and dropping the exception entirely.
+        Internal::ExceptionClassification.mark_reported!(exception)
       end
-
-      # Per-action :exception callbacks fire at each level (an action may legitimately observe its
-      # own failure), but the GLOBAL report is sent at most once per exception, at the INNERMOST action
-      # that treats it as a bug (where the failing action and full nesting stack are still live). A
-      # nested `call!` re-raises the same object up the stack; the `reported?` guard stops each ancestor
-      # from reporting it again.
-      @action_class._dispatch_callbacks(:exception, action: @action, exception:)
-      return if Internal::ExceptionClassification.reported?(exception)
-
-      # Mark BEFORE attempting, so the report is best-effort EXACTLY once: if on_exception (or building
-      # its context) raises, it's swallowed and logged below and NOT retried from an ancestor (which
-      # would describe the wrong action anyway). Deterministic regardless of nesting depth.
-      Internal::ExceptionClassification.mark_reported!(exception)
-
-      context = Internal::ExceptionContext.build(
-        action: @action,
-        retry_context:,
-        # Pre-body input snapshot (memoized) + freshly-resolved result-phase facets; see resolve_report_facets.
-        tags: resolve_report_facets(resolved_input_tags, @action_class._tags),
-        dimensions: resolve_report_facets(resolved_input_dimensions, @action_class._dimensions),
-      )
-      Axn.config.on_exception(exception, action: @action, context:)
-
-      # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises, the
-      # rescue below swallows it WITHOUT marking — so an ancestor executor still attempts the report
-      # rather than seeing `reported?` and dropping the exception entirely.
-      Internal::ExceptionClassification.mark_reported!(exception)
-    rescue StandardError => e
-      Internal::PipingError.swallow("executing on_exception hooks", action: @action, exception: e)
     end
 
     # =========================================================================

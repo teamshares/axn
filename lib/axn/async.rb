@@ -115,14 +115,15 @@ module Axn
       private
 
       def _emit_call_async_notification(kwargs)
-        resource = resolved_axn_name
-        # Use dup to ensure kwargs modifications don't affect the notification payload
-        payload = { resource:, action_class: self, kwargs: kwargs.dup, adapter: _async_adapter_name }
+        # Best-effort so a subscriber error never interferes with async enqueueing. `self` is the
+        # action class, which responds to :warn (Core::Logging), so it is the warn-target.
+        Axn::Extensions.best_effort("emitting notification for axn.call_async", action: self) do
+          resource = resolved_axn_name
+          # Use dup to ensure kwargs modifications don't affect the notification payload
+          payload = { resource:, action_class: self, kwargs: kwargs.dup, adapter: _async_adapter_name }
 
-        ActiveSupport::Notifications.instrument("axn.call_async", payload)
-      rescue StandardError => e
-        # Don't raise in notification emission to avoid interfering with async enqueueing
-        Axn::Internal::PipingError.swallow("emitting notification for axn.call_async", action_class: self, exception: e)
+          ActiveSupport::Notifications.instrument("axn.call_async", payload)
+        end
       end
 
       def _log_async_invocation(kwargs, adapter_name:)

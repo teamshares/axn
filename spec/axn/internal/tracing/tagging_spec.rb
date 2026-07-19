@@ -58,7 +58,7 @@ RSpec.describe "Axn tagging integration" do
     end
 
     it "isolates a raising resolver — siblings still land" do
-      allow(Axn::Extensions).to receive(:best_effort)
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
       action = build_axn do
         tag(:good) { "ok" }
         tag(:bad) { raise "boom" }

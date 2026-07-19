@@ -669,9 +669,13 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       end
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Extensions).to receive(:best_effort).with("filter block for :number", any_args)
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
       mounted_action.enqueue_all
+
+      # The filter block is guarded per item (block form), so best_effort wraps each call; the
+      # raising item (2) is the one it actually swallows.
+      expect(Axn::Extensions).to have_received(:best_effort).with("filter block for :number", any_args).at_least(:once)
     end
   end
 

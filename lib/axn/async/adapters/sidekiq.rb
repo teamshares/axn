@@ -151,14 +151,15 @@ module Axn
             declares_facets = (sources.include?(:tag) && _tags.any?) || (sources.include?(:dimension) && _dimensions.any?)
             return [] unless declares_facets
 
-            action = send(:new, **kwargs)
-            # One resolved map per enabled source (tags/dimensions), kept separate so a name declared
-            # as both survives — format each independently and concatenate rather than merging maps.
-            maps = Axn::Executor.new(action).resolve_inbound_facets(sources)
-            maps.flat_map { |map| Axn::Async::Adapters::Sidekiq.job_tags_for(map) }
-          rescue StandardError => e
-            Axn::Internal::PipingError.swallow("resolving Sidekiq job tags at enqueue", exception: e)
-            []
+            # Empty list on any failure (best_effort yields nil) — never breaks the enqueue, and the
+            # caller reads the result with `.any?`.
+            Axn::Extensions.best_effort("resolving Sidekiq job tags at enqueue") do
+              action = send(:new, **kwargs)
+              # One resolved map per enabled source (tags/dimensions), kept separate so a name declared
+              # as both survives — format each independently and concatenate rather than merging maps.
+              maps = Axn::Executor.new(action).resolve_inbound_facets(sources)
+              maps.flat_map { |map| Axn::Async::Adapters::Sidekiq.job_tags_for(map) }
+            end || []
           end
         end
       end
