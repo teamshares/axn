@@ -157,7 +157,7 @@ module Axn
               action = send(:new, **kwargs)
               # One resolved map per enabled source (tags/dimensions), kept separate so a name declared
               # as both survives — format each independently and concatenate rather than merging maps.
-              maps = Axn::Executor.new(action).resolve_inbound_facets(sources)
+              maps = Axn::Core::Executor.new(action).resolve_inbound_facets(sources)
               maps.flat_map { |map| Axn::Async::Adapters::Sidekiq.job_tags_for(map) }
             end || []
           end

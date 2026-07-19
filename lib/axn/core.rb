@@ -98,7 +98,7 @@ module Axn
 
     # Main entry point for action execution
     def _run
-      Axn::Executor.new(self).run
+      Axn::Core::Executor.new(self).run
     end
 
     def fail!(message = nil, standalone: false, **exposures)

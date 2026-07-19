@@ -15,7 +15,7 @@ require "axn/extensions/config"
 
 # The core implementation
 require "axn/core"
-require "axn/executor"
+require "axn/core/executor"
 require "axn/reflection"
 require "axn/tools/registry"
 require "axn/tools/adapter_roots"
