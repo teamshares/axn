@@ -11,6 +11,7 @@ require "axn/configurable"
 require "axn/configuration"
 require "axn/extension_config"
 require "axn/exceptions"
+require "axn/extensions"
 
 # The core implementation
 require "axn/core"
