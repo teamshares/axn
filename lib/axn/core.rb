@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/context"
+require "axn/core/context"
 
 require "axn/strategies"
 require "axn/extras"
@@ -114,7 +114,7 @@ module Axn
     private
 
     def initialize(**)
-      @__context = Axn::Context.new(**)
+      @__context = Axn::Core::Context.new(**)
     end
   end
 end

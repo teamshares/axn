@@ -1277,7 +1277,7 @@ module Axn
         def _build_context_facade(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
 
-          klass = direction == :inbound ? Axn::InternalContext : Axn::Result
+          klass = direction == :inbound ? Axn::Core::InternalContext : Axn::Result
           implicitly_allowed_fields = direction == :inbound ? self.class._declared_fields(:outbound) : []
 
           klass.new(action: self, context: @__context, declared_fields: self.class._declared_fields(direction), implicitly_allowed_fields:)
