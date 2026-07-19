@@ -6,6 +6,10 @@ module Axn
   # this is the API sibling gems (Axn::Webhooks, Axn::MCP, ...) may rely on.
   module Extensions
     class << self
+      def config
+        @config ||= Config.new
+      end
+
       # Runs the block, guarding a best-effort side effect (a hook, callback, observability
       # facet, or a reporter that itself throws). On StandardError the error is logged and
       # swallowed (returning nil) so it never breaks the main action flow — EXCEPT in

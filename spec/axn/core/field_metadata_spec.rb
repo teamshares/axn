@@ -123,13 +123,13 @@ RSpec.describe "Field metadata" do
 
   describe "custom registered metadata keys" do
     around do |example|
-      original_keys = Axn.extension_config.registered_field_metadata_keys.dup
+      original_keys = Axn::Extensions.config.registered_field_metadata_keys.dup
       example.run
-      Axn.extension_config.instance_variable_set(:@registered_field_metadata_keys, original_keys)
+      Axn::Extensions.config.instance_variable_set(:@registered_field_metadata_keys, original_keys)
     end
 
     it "allows custom keys after registration" do
-      Axn.extension_config.register_field_metadata_key(:mcp_title)
+      Axn::Extensions.config.register_field_metadata_key(:mcp_title)
 
       action = build_axn do
         expects :input, mcp_title: "Input Title", description: "Input description"

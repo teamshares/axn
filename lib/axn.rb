@@ -9,9 +9,9 @@ require "axn/field_declarations"
 require "axn/factory"
 require "axn/configurable"
 require "axn/configuration"
-require "axn/extension_config"
 require "axn/exceptions"
 require "axn/extensions"
+require "axn/extensions/config"
 
 # The core implementation
 require "axn/core"
@@ -48,10 +48,6 @@ require "axn/async"
 require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 
 module Axn
-  def self.extension_config
-    @extension_config ||= ExtensionConfig.new
-  end
-
   # Whether axn owns this exception's #message (and may stamp the resolved presentation onto it).
   # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
   def self.owns_failure_exception?(exception)
