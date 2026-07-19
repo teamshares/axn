@@ -132,21 +132,17 @@ RSpec.describe Axn::Validators::ValidateValidator do
     end
   end
 
-  describe "Axn::Internal::PipingError.piping_error integration" do
+  describe "Axn::Extensions.best_effort integration" do
     let(:validator) { ->(_v) { raise ArgumentError, "fail message" } }
 
     before do
-      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
     end
 
-    it "calls Axn::Internal::PipingError.piping_error when custom validation raises" do
+    it "calls Axn::Extensions.best_effort when custom validation raises" do
       result = action.call(foo: 1)
       expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect_piping_error_called(
-        message_substring: "applying custom validation",
-        error_class: ArgumentError,
-        error_message: "fail message",
-      )
+      expect_best_effort_called(message_substring: "applying custom validation")
     end
   end
 end

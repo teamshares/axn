@@ -58,7 +58,7 @@ RSpec.describe "Axn tagging integration" do
     end
 
     it "isolates a raising resolver — siblings still land" do
-      allow(Axn::Internal::PipingError).to receive(:swallow)
+      allow(Axn::Extensions).to receive(:best_effort)
       action = build_axn do
         tag(:good) { "ok" }
         tag(:bad) { raise "boom" }
@@ -67,7 +67,7 @@ RSpec.describe "Axn tagging integration" do
       result = action.call
       expect(result).to be_ok
       expect(notifications.first[:tags]).to eq(good: "ok")
-      expect_piping_error_called(message_substring: "resolving observability facet bad", error_class: RuntimeError, error_message: "boom")
+      expect_best_effort_called(message_substring: "resolving observability facet bad")
     end
 
     it "coerces non-primitive values to strings" do

@@ -839,12 +839,9 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         )
       end
 
-      it "logs the swallowed error via piping_error" do
+      it "logs the swallowed error via best_effort" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Internal::PipingError).to receive(:swallow).with(
-          "filter block for :number",
-          exception: an_instance_of(RuntimeError),
-        )
+        expect(Axn::Extensions).to receive(:best_effort).with("filter block for :number", any_args)
 
         action_class.enqueue_all
       end
@@ -878,12 +875,9 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         )
       end
 
-      it "logs the swallowed error via piping_error" do
+      it "logs the swallowed error via best_effort" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Internal::PipingError).to receive(:swallow).with(
-          "via extraction (:id) for :item_id",
-          exception: an_instance_of(NoMethodError),
-        )
+        expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args)
 
         action_class.enqueue_all
       end
@@ -1099,10 +1093,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       enqueued = []
       allow(action_class).to receive(:call_async) { |**args| enqueued << args }
-      expect(Axn::Internal::PipingError).to receive(:swallow).with(
-        a_string_including("on_enqueue_all callback"),
-        exception: an_instance_of(RuntimeError),
-      )
+      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args)
 
       # Must not propagate: a raise here would fail the orchestrator and retry/duplicate the batch.
       expect { action_class.enqueue_all }.not_to raise_error
@@ -1269,20 +1260,17 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       action_class.on_enqueue_all { raise "summary exploded" }
       enqueued = []
       allow(action_class).to receive(:call_async) { |**args| enqueued << args }
-      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
       expect { action_class.enqueue_all }.not_to raise_error
       expect(enqueued.length).to eq(3) # all jobs still enqueued
     end
 
-    it "swallows the error via PipingError" do
+    it "swallows the error via best_effort" do
       action_class.on_enqueue_all { raise "summary exploded" }
       allow(action_class).to receive(:call_async)
 
-      expect(Axn::Internal::PipingError).to receive(:swallow).with(
-        a_string_including("on_enqueue_all callback"),
-        exception: an_instance_of(RuntimeError),
-      )
+      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args)
 
       action_class.enqueue_all
     end
@@ -1292,7 +1280,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       action_class.on_enqueue_all { raise "boom" }
       action_class.on_enqueue_all { fired << :second }
       allow(action_class).to receive(:call_async)
-      allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
       action_class.enqueue_all
 

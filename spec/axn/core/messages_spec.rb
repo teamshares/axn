@@ -148,18 +148,14 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
-        it "calls Axn::Internal::PipingError.piping_error when success message callable raises" do
+        it "calls Axn::Extensions.best_effort when success message callable raises" do
           result = action.call
           expect(result).to be_ok
           expect(result.success).to eq("Action completed successfully")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "fail message",
-          )
+          expect_best_effort_called(message_substring: "determining message callable")
         end
 
         # no exception should bubble; it is piped and we fall back
@@ -175,18 +171,14 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
         it "falls back to next non-failing success message" do
           result = action.call
           expect(result).to be_ok
           expect(result.success).to eq("Fallback success message")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "fail message",
-          )
+          expect_best_effort_called(message_substring: "determining message callable")
         end
       end
 
@@ -204,7 +196,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
         it "falls back to next non-failing success message when condition is false" do
@@ -219,11 +211,7 @@ RSpec.describe Axn do
           # "Final fallback" is the unconditional headline (base); "Conditional fallback" is a
           # conditional reason, so it gains the base prefix.
           expect(result.success).to eq("Final fallback: Conditional fallback")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "fail message",
-          )
+          expect_best_effort_called(message_substring: "determining message callable")
         end
       end
 
@@ -242,7 +230,7 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
         it "falls back to next non-failing success message" do
@@ -251,11 +239,7 @@ RSpec.describe Axn do
           # All three are unconditional headlines; most-recent-first, the raising lambda is skipped
           # and :fallback_method wins (replacing — not prefixing — the earlier "Final fallback").
           expect(result.success).to eq("Method fallback")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "fail message",
-          )
+          expect_best_effort_called(message_substring: "determining message callable")
         end
       end
 
@@ -275,18 +259,16 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
         it "falls back to static message when all dynamic ones fail" do
           result = action.call
           expect(result).to be_ok
           expect(result.success).to eq("Static fallback")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "first fail",
-          )
+          # All 3 dynamic candidates (:failing_method, and the two raising lambdas) fail and are
+          # swallowed before the static fallback is reached.
+          expect_best_effort_called(message_substring: "determining message callable", times: 3)
         end
       end
 
@@ -301,18 +283,16 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
         it "falls back to default success message when all configured ones fail" do
           result = action.call
           expect(result).to be_ok
           expect(result.success).to eq("Action completed successfully")
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "first fail",
-          )
+          # All 3 configured success candidates raise and are swallowed before the built-in
+          # default message is reached.
+          expect_best_effort_called(message_substring: "determining message callable", times: 3)
         end
       end
 
@@ -771,22 +751,17 @@ RSpec.describe Axn do
         end
 
         before do
-          allow(Axn::Internal::PipingError).to receive(:swallow).and_call_original
+          allow(Axn::Extensions).to receive(:best_effort).and_call_original
         end
 
-        it "calls Axn::Internal::PipingError.piping_error when error message callable raises" do
+        it "calls Axn::Extensions.best_effort when error message callable raises" do
           result = action.call
           expect(result).not_to be_ok
           expect(result.exception).to be_a(RuntimeError)
           expect(result.error).to eq("Something went wrong")
           # Resolved once for the whole result (memoized on the Result) — the raising callable is
           # invoked a single time across the lifecycle log + this read, not once per read.
-          expect_piping_error_called(
-            message_substring: "determining message callable",
-            error_class: ArgumentError,
-            error_message: "fail message",
-            times: 1,
-          )
+          expect_best_effort_called(message_substring: "determining message callable", times: 1)
         end
       end
     end
