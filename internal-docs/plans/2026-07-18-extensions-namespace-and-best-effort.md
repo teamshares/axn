@@ -398,7 +398,8 @@ These keep their custom rescue selection (flow-control exceptions, loop `next`) 
 
 **Files:**
 - `lib/axn/core/flow/handlers/invoker.rb:20-31`
-- `lib/axn/async/enqueue_all_orchestrator.rb:362`
+- `lib/axn/async/enqueue_all_orchestrator.rb:362` (now ~:356 after Task 3 line shifts)
+- Delete the now-unused `expect_piping_error_called` helper from `spec_rails/dummy_app/spec/spec_helper.rb` (no longer called by any spec; it references `Axn::Internal::PipingError`, deleted in Task 5).
 
 - [ ] **Step 1: Convert `invoker.rb`** — preserve the two-rescue structure and `allow_flow_control` re-raise:
 
