@@ -18,48 +18,48 @@ module Axn
         # @param extra_context [Hash] additional context to merge (e.g., discarded: true, _job_metadata)
         # @param log_prefix [String] prefix for error logging (e.g., "Sidekiq death handler")
         def trigger_on_exception(exception:, action_class:, retry_context:, job_args:, extra_context: {}, log_prefix: "async")
-          # NOTE: deliberately NOT guarded by `_fails_on?`. This is the discard/death-handler path,
-          # which only fires after a job exhausts retries or is discarded. A `fails_on` exception
-          # settles as `outcome.failure?` and is never re-raised by the adapter (see the
-          # `raise … if result.outcome.exception?` gate in the Sidekiq/ActiveJob `perform`), so it
-          # never reaches here. Anything that does reach here either was a genuine `exception`
-          # outcome (so `_fails_on?` is necessarily false) or bypassed the executor entirely (job
-          # deserialization / proxy errors) — and a broad declaration like `fails_on StandardError`
-          # must NOT suppress the only global report for those.
+          Axn::Extensions.best_effort("in #{log_prefix}") do
+            # NOTE: deliberately NOT guarded by `_fails_on?`. This is the discard/death-handler path,
+            # which only fires after a job exhausts retries or is discarded. A `fails_on` exception
+            # settles as `outcome.failure?` and is never re-raised by the adapter (see the
+            # `raise … if result.outcome.exception?` gate in the Sidekiq/ActiveJob `perform`), so it
+            # never reaches here. Anything that does reach here either was a genuine `exception`
+            # outcome (so `_fails_on?` is necessarily false) or bypassed the executor entirely (job
+            # deserialization / proxy errors) — and a broad declaration like `fails_on StandardError`
+            # must NOT suppress the only global report for those.
 
-          # Filter sensitive values using the action class's internal _context_slice
-          filtered_context = action_class._context_slice(data: job_args, direction: :inbound)
+            # Filter sensitive values using the action class's internal _context_slice
+            filtered_context = action_class._context_slice(data: job_args, direction: :inbound)
 
-          # Build final context with async info (avoid mutating extra_context)
-          async_extra = extra_context[:async] || {}
-          context = filtered_context.merge(
-            async: retry_context.to_h.merge(async_extra),
-          ).merge(extra_context.except(:async))
+            # Build final context with async info (avoid mutating extra_context)
+            async_extra = extra_context[:async] || {}
+            context = filtered_context.merge(
+              async: retry_context.to_h.merge(async_extra),
+            ).merge(extra_context.except(:async))
 
-          # Attach declared observability facets (PRO-2853) so an exhausted/discarded-job report
-          # carries the same context[:tags]/context[:dimensions] as the synchronous executor path.
-          # There's no settled action instance here (the run died in a prior attempt), so facets are
-          # resolved best-effort against an instance reconstructed from the (deserialized) job_args:
-          # input-derived facets (company_id, record ids) resolve; output-derived ones find no exposes
-          # and are skipped per-facet — the same partial-resolution contract as the failure path.
-          #
-          # Reserve the facet keys first: unlike the sync report (where inputs nest under :inputs and
-          # RESERVED_EXECUTION_CONTEXT_KEYS guards the top level), this path merges the job-arg slice
-          # in at the top level, so an action with an input literally named `tags`/`dimensions` would
-          # otherwise expose that user value under the framework key whenever no facet overwrites it.
-          # Strip, then assign only the resolved facets (when any) — framework owns these keys.
-          %i[tags dimensions].each { |key| context.delete(key) }
-          facets = resolve_facets(action_class:, job_args:)
-          context[:tags] = facets[:tags] if facets[:tags].any?
-          context[:dimensions] = facets[:dimensions] if facets[:dimensions].any?
+            # Attach declared observability facets (PRO-2853) so an exhausted/discarded-job report
+            # carries the same context[:tags]/context[:dimensions] as the synchronous executor path.
+            # There's no settled action instance here (the run died in a prior attempt), so facets are
+            # resolved best-effort against an instance reconstructed from the (deserialized) job_args:
+            # input-derived facets (company_id, record ids) resolve; output-derived ones find no exposes
+            # and are skipped per-facet — the same partial-resolution contract as the failure path.
+            #
+            # Reserve the facet keys first: unlike the sync report (where inputs nest under :inputs and
+            # RESERVED_EXECUTION_CONTEXT_KEYS guards the top level), this path merges the job-arg slice
+            # in at the top level, so an action with an input literally named `tags`/`dimensions` would
+            # otherwise expose that user value under the framework key whenever no facet overwrites it.
+            # Strip, then assign only the resolved facets (when any) — framework owns these keys.
+            %i[tags dimensions].each { |key| context.delete(key) }
+            facets = resolve_facets(action_class:, job_args:)
+            context[:tags] = facets[:tags] if facets[:tags].any?
+            context[:dimensions] = facets[:dimensions] if facets[:dimensions].any?
 
-          # Create proxy action for the on_exception interface
-          proxy_action = DiscardedJobAction.new(action_class, exception)
+            # Create proxy action for the on_exception interface
+            proxy_action = DiscardedJobAction.new(action_class, exception)
 
-          # Trigger on_exception
-          Axn.config.on_exception(exception, action: proxy_action, context:)
-        rescue StandardError => e
-          Axn::Internal::PipingError.swallow("in #{log_prefix}", exception: e)
+            # Trigger on_exception
+            Axn.config.on_exception(exception, action: proxy_action, context:)
+          end
         end
 
         private
@@ -79,17 +79,18 @@ module Axn
           # for a result-only declaration that adds no context.
           return { tags: {}, dimensions: {} } unless _has_input_phase_facets?(action_class)
 
-          instance = action_class.send(:new, **_deserialize_job_args(job_args))
-          # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
-          # preprocessed inputs resolve as the worker saw them (not the raw job args).
-          Axn::Executor.new(instance).prepare_inbound_for_facets!
-          {
-            tags: Core::Tagging.resolve(action_class._tags, action: instance, from: :inputs),
-            dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance, from: :inputs),
-          }
-        rescue StandardError => e
-          Axn::Internal::PipingError.swallow("resolving facets for async exhaustion report", exception: e)
-          { tags: {}, dimensions: {} }
+          # Returns empty maps on any failure (best_effort yields nil) — a facet-less report beats a
+          # lost one, and the caller reads facets[:tags]/[:dimensions] unconditionally.
+          Axn::Extensions.best_effort("resolving facets for async exhaustion report") do
+            instance = action_class.send(:new, **_deserialize_job_args(job_args))
+            # Apply the same inbound preprocessing/defaults a normal `.call` would, so defaulted /
+            # preprocessed inputs resolve as the worker saw them (not the raw job args).
+            Axn::Core::Executor.new(instance).prepare_inbound_for_facets!
+            {
+              tags: Core::Tagging.resolve(action_class._tags, action: instance, from: :inputs),
+              dimensions: Core::Tagging.resolve(action_class._dimensions, action: instance, from: :inputs),
+            }
+          end || { tags: {}, dimensions: {} }
         end
 
         # True iff any declared tag/dimension resolves in the input phase — the only phase this path

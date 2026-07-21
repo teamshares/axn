@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Executor do
+RSpec.describe Axn::Core::Executor do
   describe "#resolve_inbound_facets" do
     # Build a throwaway (non-run) instance and resolve, mirroring the enqueue path. Returns one
     # resolved map per enabled source (tags, then dimensions).

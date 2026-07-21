@@ -146,27 +146,27 @@ module Axn
         # if the handler requests it. A raise — from the handler OR from resolving sources — is
         # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
         def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
-          if handler.is_a?(Symbol)
-            unless target.respond_to?(handler, true)
-              target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
-              return
+          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}") do
+            if handler.is_a?(Symbol)
+              unless target.respond_to?(handler, true)
+                target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
+                return
+              end
+              callable = target.method(handler)
+            else
+              callable = handler
             end
-            callable = target.method(handler)
-          else
-            callable = handler
-          end
 
-          available = { count: }
-          available[:sources] = resolve_sources.call if requests_param?(callable, :sources)
-          args, kwargs = Axn::Internal::Callable.only_requested_params(callable, kwargs: available)
+            available = { count: }
+            available[:sources] = resolve_sources.call if requests_param?(callable, :sources)
+            args, kwargs = Axn::Internal::Callable.only_requested_params(callable, kwargs: available)
 
-          if handler.is_a?(Symbol)
-            target.send(handler, *args, **kwargs)
-          else
-            target.instance_exec(*args, **kwargs, &handler)
+            if handler.is_a?(Symbol)
+              target.send(handler, *args, **kwargs)
+            else
+              target.instance_exec(*args, **kwargs, &handler)
+            end
           end
-        rescue StandardError => e
-          Axn::Internal::PipingError.swallow("on_enqueue_all callback for #{target.name}", exception: e)
         end
 
         # Whether a callable accepts a given keyword (directly or via **kwargs / keyrest).
@@ -342,14 +342,8 @@ module Axn
 
             # Apply filter block if present - swallow errors, skip item
             if config.filter_block
-              filter_result = begin
+              filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}") do
                 config.filter_block.call(item)
-              rescue StandardError => e
-                Axn::Internal::PipingError.swallow(
-                  "filter block for :#{config.field}",
-                  exception: e,
-                )
-                false
               end
               next unless filter_result
             end
@@ -359,10 +353,7 @@ module Axn
                       begin
                         item.public_send(config.via)
                       rescue StandardError => e
-                        Axn::Internal::PipingError.swallow(
-                          "via extraction (:#{config.via}) for :#{config.field}",
-                          exception: e,
-                        )
+                        Axn::Extensions.best_effort("via extraction (:#{config.via}) for :#{config.field}") { raise e }
                         next
                       end
                     else

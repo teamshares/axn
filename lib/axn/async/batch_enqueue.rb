@@ -112,7 +112,7 @@ module Axn
         # (against the action with no exception); they cannot observe `sources`/`count`.
         #
         # A raise inside the handler is swallowed (logged; re-raised in dev only when
-        # `Axn.config.raise_piping_errors_in_dev` is set) and cannot change the enqueue
+        # `Axn.config.best_effort_raises_in_dev` is set) and cannot change the enqueue
         # outcome — rescue inside your handler if you need stronger guarantees.
         #
         # @example Post a run summary to Slack

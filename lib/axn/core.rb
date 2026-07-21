@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/internal/piping_error"
-
-require "axn/context"
+require "axn/core/context"
 
 require "axn/strategies"
 require "axn/extras"
@@ -100,7 +98,7 @@ module Axn
 
     # Main entry point for action execution
     def _run
-      Axn::Executor.new(self).run
+      Axn::Core::Executor.new(self).run
     end
 
     def fail!(message = nil, standalone: false, **exposures)
@@ -116,7 +114,7 @@ module Axn
     private
 
     def initialize(**)
-      @__context = Axn::Context.new(**)
+      @__context = Axn::Core::Context.new(**)
     end
   end
 end

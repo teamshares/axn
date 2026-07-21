@@ -172,16 +172,18 @@ RSpec.describe "Global on_exception handler" do
         raise "Handler error: #{e.message}"
       end
 
-      expect(Axn::Internal::PipingError).to receive(:swallow).with(
-        "executing on_exception hooks",
-        hash_including(action: an_instance_of(action), exception: an_object_satisfying { |e|
-          e.is_a?(RuntimeError) && e.message == "Handler error: Something went wrong"
-        }),
-      )
+      # call_original so every best_effort-guarded step runs normally; assert the on_exception guard
+      # specifically fired (best_effort now guards other steps in the same call, so a bare `.with`
+      # message expectation would reject those unrelated calls).
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
       result = action.call(trigger_error: true)
       expect(result).not_to be_ok
       expect(result.error).to eq("Something went wrong")
+      expect(Axn::Extensions).to have_received(:best_effort).with(
+        "executing on_exception hooks",
+        hash_including(action: an_instance_of(action)),
+      )
     end
   end
 

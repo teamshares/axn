@@ -157,11 +157,11 @@ A **render toggle** — structured serialized `exposes` vs. the Axn's human mess
 
 ## Extension registry
 
-For transport-only vocabulary that core doesn't know about, extend the registry rather than patching core. `Axn.extension_config.register_semantic_hint(*hints)` adds allowed [`semantic_hints`](/reference/class) values so an author can declare them on a tool:
+For transport-only vocabulary that core doesn't know about, extend the registry rather than patching core. `Axn::Extensions.config.register_semantic_hint(*hints)` adds allowed [`semantic_hints`](/reference/class) values so an author can declare them on a tool:
 
 ```ruby
 # axn-mcp, at load
-Axn.extension_config.register_semantic_hint(:open_world, :closed_world)
+Axn::Extensions.config.register_semantic_hint(:open_world, :closed_world)
 ```
 
 Then read `axn_class._semantic_hints` in `wrap` to map the declared hints to your annotations, letting an explicit adapter override win:
