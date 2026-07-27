@@ -84,7 +84,7 @@ RSpec.describe GemGenerator do
       # Thin caller — the matrix/steps live in axn core's reusable gem-ci.yml, not duplicated here.
       expect(ci).to include("uses: teamshares/axn/.github/workflows/gem-ci.yml@main")
       # GitHub prefixes the called jobs with the CALLER JOB's name, so it is half of every required
-      # status check ("CI / Main Specs (Ruby 3.2)"). Letting it drift silently breaks each consuming
+      # status check ("CI / Specs (Ruby 3.2)"). Letting it drift silently breaks each consuming
       # gem's branch-protection ruleset: the required context never reports and PRs block forever.
       # Asserted on the parsed job (not a substring) — the workflow itself is also named "CI", so a
       # string match would pass even with the job-level name missing.
