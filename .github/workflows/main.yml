@@ -67,17 +67,24 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
+    # Installed outside the working tree so nothing that lints this repo can target a vendored
+    # dependency's own .rubocop.yml (see gem-ci.yml for the full rationale). This job runs only
+    # spec_rails today, but the reusable workflow installs the same bundle before a task that DOES
+    # run RuboCop, and the two should not drift.
     - name: Cache dummy app bundle
       uses: actions/cache@v6
       with:
-        path: spec_rails/dummy_app/vendor/bundle
-        key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles('spec_rails/dummy_app/Gemfile.lock') }}
+        path: ~/dummy-app-bundle
+        # Keyed on the Gemfile, not the lockfile: the dummy app's Gemfile.lock is gitignored, so
+        # hashFiles found nothing and the key collapsed to a constant that never invalidated.
+        key: ${{ runner.os }}-dummy-app-bundle-v2-${{ hashFiles('spec_rails/dummy_app/Gemfile') }}
         restore-keys: |
-          ${{ runner.os }}-dummy-app-bundle-
+          ${{ runner.os }}-dummy-app-bundle-v2-
     - name: Install dummy app dependencies
       run: |
         cd spec_rails/dummy_app
-        bundle install --path vendor/bundle
+        bundle config set --local path "$HOME/dummy-app-bundle"
+        bundle install
     - name: Run Rails specs
       run: bundle exec rake spec_rails
 

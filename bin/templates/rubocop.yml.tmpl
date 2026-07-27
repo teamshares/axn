@@ -3,15 +3,13 @@
 inherit_gem:
   axn: ".rubocop.yml"
 
-# axn core's AllCops/Exclude globs resolve relative to the axn GEM dir when pulled in via
-# inherit_gem, so they never cover THIS repo's own vendored installs. Re-declare project-relative
-# vendor excludes and merge (not override) them with the inherited config, so a CI `bundler-cache`
-# / `bundle --path vendor/bundle` install is never linted.
-inherit_mode:
-  merge:
-    - Exclude
-
+# Core's config declares `inherit_mode: merge: Exclude`, so RuboCop's built-in AllCops/Exclude
+# (vendor, node_modules, tmp, .git) survives inheritance here and resolves against THIS repo —
+# covering the in-repo vendor/bundle that CI's bundler-cache installs. No need to re-declare those.
+# They are top-level-anchored though, so a bundle vendored under a nested dir still needs naming: CI
+# installs the dummy-app bundle outside the tree, but a local `bundle config set --local path` there
+# does not. Without the exclude, RuboCop reads each vendored gem's own .rubocop.yml and dies on the
+# plugins those `require:` but this gem doesn't bundle.
 AllCops:
   Exclude:
-    - "vendor/**/*"
     - "spec_rails/dummy_app/vendor/**/*"

@@ -3,15 +3,29 @@
 # require:
 #   - axn/rubocop
 
+# Merge with (rather than replace) RuboCop's built-in AllCops/Exclude — 'node_modules/**/*',
+# 'tmp/**/*', 'vendor/**/*', '.git/**/*'. Declaring an Exclude array replaces those built-ins, and
+# every glob resolves relative to the config file that declares it, so without this a gem doing
+# `inherit_gem: axn` ends up with nothing excluding its OWN tree: it inherits globs pointing into the
+# axn gem dir, having lost the built-ins that pointed at itself. CI then lints the bundle that
+# ruby/setup-ruby's bundler-cache installs into an in-repo vendor/bundle, reading each vendored gem's
+# own .rubocop.yml and dying on the plugins those `require:` but the consuming gem doesn't bundle.
+# `inherit_mode` declared HERE governs the merge for every consumer, so they inherit the built-in
+# excludes whether or not their own config remembers to re-declare them.
+inherit_mode:
+  merge:
+    - Exclude
+
 AllCops:
   TargetRubyVersion: 3.2
   SuggestExtensions: false
   NewCops: enable
+  # Deltas only — vendor/node_modules/tmp/.git arrive via the merge above. The built-in globs are
+  # top-level-anchored, so a nested bundle (a locally-vendored dummy app) still needs naming.
   Exclude:
     - 'benchmark/**/*'
     - 'bin/benchmark'
-    - 'node_modules/**/*'
-    - 'vendor/**/*'
+    - 'spec_rails/dummy_app/vendor/**/*'
     - 'spec_rails/dummy_app/tmp/**/*'
 
 Style/MultilineBlockChain:

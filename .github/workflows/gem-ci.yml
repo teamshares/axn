@@ -69,19 +69,29 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      # The dummy-app bundle is installed OUTSIDE the working tree, because this job goes on to run
+      # the default rake task — which includes RuboCop. RuboCop reads a per-directory .rubocop.yml
+      # for every file it targets, and a vendored dependency's own config commonly carries
+      # `require: rubocop-performance` (etc.) — plugins the consuming gem doesn't bundle, so config
+      # loading dies before a single file is inspected. Keeping the bundle out of the tree means
+      # there is nothing to target. RuboCop's built-in AllCops/Exclude covers a top-level `vendor/`
+      # (which is where ruby/setup-ruby's bundler-cache installs, and it hardcodes that path), but
+      # those globs are top-level-anchored, so a bundle nested under the dummy app would NOT be
+      # covered by them — hence out-of-tree rather than another exclude glob.
       - name: Cache dummy app bundle
         if: ${{ inputs.main-needs-dummy-app }}
         uses: actions/cache@v6
         with:
-          path: ${{ inputs.dummy-app-path }}/vendor/bundle
-          key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles(format('{0}/Gemfile', inputs.dummy-app-path)) }}
+          path: ~/dummy-app-bundle
+          key: ${{ runner.os }}-dummy-app-bundle-v2-${{ hashFiles(format('{0}/Gemfile', inputs.dummy-app-path)) }}
           restore-keys: |
-            ${{ runner.os }}-dummy-app-bundle-
+            ${{ runner.os }}-dummy-app-bundle-v2-
       - name: Install dummy app dependencies
         if: ${{ inputs.main-needs-dummy-app }}
         run: |
           cd ${{ inputs.dummy-app-path }}
-          bundle install --path vendor/bundle
+          bundle config set --local path "$HOME/dummy-app-bundle"
+          bundle install
       - name: Run the default task
         run: bundle exec rake
 
@@ -99,16 +109,19 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      # Out-of-tree for the same reason as the main job (see the comment there), and identically so
+      # the two jobs share cache entries.
       - name: Cache dummy app bundle
         uses: actions/cache@v6
         with:
-          path: ${{ inputs.dummy-app-path }}/vendor/bundle
-          key: ${{ runner.os }}-dummy-app-bundle-${{ hashFiles(format('{0}/Gemfile', inputs.dummy-app-path)) }}
+          path: ~/dummy-app-bundle
+          key: ${{ runner.os }}-dummy-app-bundle-v2-${{ hashFiles(format('{0}/Gemfile', inputs.dummy-app-path)) }}
           restore-keys: |
-            ${{ runner.os }}-dummy-app-bundle-
+            ${{ runner.os }}-dummy-app-bundle-v2-
       - name: Install dummy app dependencies
         run: |
           cd ${{ inputs.dummy-app-path }}
-          bundle install --path vendor/bundle
+          bundle config set --local path "$HOME/dummy-app-bundle"
+          bundle install
       - name: Run Rails specs
         run: bundle exec rake spec_rails
