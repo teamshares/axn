@@ -777,6 +777,26 @@ RSpec.describe Axn::Tools::Registry do
       expect(Axn.tools_for(:mcp)).to include(solo)
       expect(Axn.versions_for(:mcp, solo.tool_name(:mcp)).all).to eq([solo])
     end
+
+    it "raises at enumeration when a member's ::Vn constant declares no tool_version" do
+      stub_const("VerSpec::Orphan::V1", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V1.*tool_version/)
+    end
+
+    it "versions_for for one tool is not derailed by an unrelated malformed ::Vn sibling" do
+      good = stub_const("AgentTools::Billing", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      stub_const("VerSpec::Orphan2::V1", Class.new do # malformed sibling under a different name
+        include Axn
+        tool :mcp
+      end)
+      expect(Axn.versions_for(:mcp, "billing").all).to eq([good])
+    end
   end
 
   describe ".member?" do

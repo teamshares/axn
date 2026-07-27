@@ -63,6 +63,7 @@ module Axn
       def tools_for(adapter, all_versions: false)
         ensure_loaded!
         members = all_classes.select { |klass| member?(klass, adapter) }
+        _assert_versioned_naming!(members)
         groups = _version_groups(members, adapter)
         if all_versions
           # Deterministic: by tool_name, then ascending version within each group.
@@ -82,6 +83,7 @@ module Axn
         members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
         return nil if members.empty?
 
+        _assert_versioned_naming!(members)
         VersionGroup.new(adapter:, tool_name: target, members:)
       end
 
@@ -168,6 +170,25 @@ module Axn
       def _version_groups(members, adapter)
         members.group_by { |klass| klass.tool_name(adapter) }.map do |tool_name, klasses|
           VersionGroup.new(adapter:, tool_name:, members: klasses)
+        end
+      end
+
+      # A member whose constant's final segment is exactly the vN convention (`::V2`) but which
+      # declared no `tool_version` would derive an orphan `tool_name` (`..._v2`) and silently fail
+      # to group under its logical name. `tool_name` derivation is a pure reader and deliberately
+      # does not raise; the guard lives here, at enumeration, where the orphaning would happen.
+      # Scoped to the members being enumerated, so a `versions_for("foo")` lookup is not derailed
+      # by an unrelated malformed `::Vn` sibling under a different name.
+      def _assert_versioned_naming!(members)
+        members.each do |klass|
+          next unless klass._tool_version.nil?
+
+          segment = klass.name.to_s.split("::").last
+          next unless segment&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
+
+          raise ArgumentError,
+                "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but no " \
+                "`tool_version` was declared. Declare `tool_version N` to opt into versioning, or rename the constant."
         end
       end
 

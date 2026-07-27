@@ -158,9 +158,9 @@ RSpec.describe "Axn tool_name derivation" do
       expect(v2.tool_name).to eq("approve_loan")
     end
 
-    it "raises when a ::Vn constant declares no tool_version (promote-and-forget guard)" do
+    it "derives a normal (orphan) name for a ::Vn constant with no tool_version — the reader is pure; the guard lives at enumeration" do
       k = tool_klass("AgentTools::ApproveLoan::V1") # no tool_version declared
-      expect { k.tool_name }.to raise_error(ArgumentError, /::V1.*tool_version/)
+      expect(k.tool_name).to eq("approve_loan_v1")
     end
 
     it "lets an explicit tool name: win over version-segment derivation" do

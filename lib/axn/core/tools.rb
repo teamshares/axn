@@ -199,18 +199,13 @@ module Axn
 
         # The vN convention: a final constant segment like `V2`. With a declared `tool_version`,
         # derive from the enclosing namespace (`AgentTools::ApproveLoan::V2` → the ApproveLoan
-        # segments) so both versions collapse to one `tool_name` and group. With no declared
-        # version it is the promote-and-forget footgun (v1.rb would orphan itself as `..._v1`),
-        # so raise here — the earliest point it is knowable, `tool_version` never having been
-        # called. A bare `::Vn` with nothing enclosing falls through to the never-blank fallback.
+        # segments) so both versions collapse to one `tool_name` and group. Without a declared
+        # version this is a pure reader: it derives the name normally (`..._v2`) and does NOT raise.
+        # The promote-and-forget guard (a `::Vn` member that forgot `tool_version`) lives at
+        # enumeration in the registry, where the silent orphaning would actually happen.
         def _apply_version_segment_rule(segments)
           return segments unless segments.last&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
-
-          if _tool_version.nil?
-            raise ArgumentError,
-                  "#{name}: constant ends in ::#{segments.last} (the vN tool-version convention) but no " \
-                  "`tool_version` was declared. Declare `tool_version N` to opt into versioning, or rename the constant."
-          end
+          return segments if _tool_version.nil?
 
           # Not `.presence || segments`: `[][0...-1]` is `[]`, not `nil`, so a `presence` fallback
           # would revert to the ORIGINAL `::Vn`-suffixed segments (deriving "v2"). Propagating the
