@@ -75,7 +75,9 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/dummy-app-bundle
-        key: ${{ runner.os }}-dummy-app-bundle-v2-${{ hashFiles('spec_rails/dummy_app/Gemfile.lock') }}
+        # Keyed on the Gemfile, not the lockfile: the dummy app's Gemfile.lock is gitignored, so
+        # hashFiles found nothing and the key collapsed to a constant that never invalidated.
+        key: ${{ runner.os }}-dummy-app-bundle-v2-${{ hashFiles('spec_rails/dummy_app/Gemfile') }}
         restore-keys: |
           ${{ runner.os }}-dummy-app-bundle-v2-
     - name: Install dummy app dependencies
