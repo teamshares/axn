@@ -18,6 +18,19 @@ name: Gem CI
 #   dual        CI / Specs (Ruby X)  +  CI / Rails Specs (Ruby X)
 #   pure Ruby   CI / Specs (Ruby X)
 #   rails-only  CI / Specs (Ruby X)         <- its default rake IS the Rails suite
+#
+# A gated-off `rails_specs` is not absent from the check list — it reports exactly once, with the
+# literal UNEXPANDED job name, because a job skipped at the job level never expands its matrix.
+# Observed on teamshares/axn-ruby_llm#7 (head dd74c50), a pure-Ruby caller passing no
+# `rails-specs-job`: three `ci / Specs (Ruby X)` runs succeeded, beside one
+# `ci / Rails Specs (Ruby ${{ matrix.ruby }})` concluding `skipped`. A non-dual gem therefore never
+# produces `CI / Rails Specs (Ruby 3.2)` in any form, and that literal is the only string GitHub
+# emits. Neither is requirable, for opposite reasons:
+#   - `CI / Rails Specs (Ruby 3.2)` on a pure-Ruby or rails-only gem blocks every PR forever, since
+#     nothing ever reports that context.
+#   - the literal `CI / Rails Specs (Ruby ${{ matrix.ruby }})` is worse than useless: GitHub counts a
+#     `skipped` conclusion as satisfying a required check, so it would pass unconditionally while
+#     looking like real Rails coverage.
 on:
   workflow_call:
     inputs:
