@@ -8,8 +8,12 @@
 /tmp/
 /vendor/
 spec_rails/dummy_app/vendor/
+# `rake spec_rails` writes the dummy app's log/test.log; /log/ also catches local tooling.
+/log/
+spec_rails/dummy_app/log/
 Gemfile.lock
 .rspec_status
 node_modules/
 package-lock.json
 yarn.lock
+.DS_Store
