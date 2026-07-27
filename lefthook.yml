@@ -1,11 +1,27 @@
 # Git hooks, managed by lefthook (installed via `bin/setup` → `bundle exec lefthook install`).
 # Fast by design: runs only on staged files. CI runs the full `rake` (RuboCop + specs) regardless.
 # Skip once with `git commit --no-verify`.
+
+# Silent on a clean commit. A failing command's own output (the RuboCop offense report) still
+# prints, as do lefthook's own errors.
+output: false
+
 pre-commit:
   parallel: true
   commands:
     rubocop:
-      glob: "*.{rb,rake,gemspec}"
+      # Tracks RuboCop's own target list: the Ruby extensions plus the extensionless Ruby files it
+      # picks up by name. Lefthook's `*` spans path separators, so a bare `Gemfile` would match only
+      # at the repo root — the leading `*` is what reaches spec_rails/dummy_app/Gemfile and friends.
+      # Extensionless bin/ scripts are listed individually: bin/setup and bin/refresh are bash, and
+      # handing those to RuboCop would fail the hook on every commit. A gem with its own Ruby script
+      # here adds it via lefthook-local.yml rather than editing this shared file.
+      glob:
+        - "*.{rb,rake,gemspec,ru}"
+        - "*Gemfile"
+        - "*Rakefile"
+        - "bin/console"
+        - "bin/new-gem"
       # Check-only, deliberately no autocorrect: lefthook doesn't isolate the staged content, so
       # `-a` + stage_fixed would re-stage a partially-staged file wholesale and sweep in hunks the
       # author left unstaged. Block on offenses and let them fix + re-stage instead.
