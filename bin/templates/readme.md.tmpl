@@ -22,6 +22,15 @@ _Document the public API here._
 - `bin/refresh` — pull latest and install dependencies (fails on a dirty working tree).
 - Before pushing: __TEST_GUIDANCE__
 
+## Releasing
+
+Published to [RubyGems](https://rubygems.org).
+
+1. Bump the version and update `CHANGELOG.md`.
+2. Run `rake release`.
+
+`rake release` is gated on the gem's full verification suite (tests + lint): it runs as part of `build`, so a failing spec or lint aborts the release before the gem is tagged, pushed, or published. RubyGems MFA is required for the push.
+
 ## License
 
 Released under the [MIT License](LICENSE.txt).
