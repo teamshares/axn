@@ -60,14 +60,35 @@ module Axn
         live
       end
 
-      def tools_for(adapter)
+      def tools_for(adapter, all_versions: false)
         ensure_loaded!
         members = all_classes.select { |klass| member?(klass, adapter) }
-        _assert_unique_tool_names!(members, adapter)
-        # Deterministic enumeration regardless of load/registration order. Safe to sort by
-        # tool_name because _assert_unique_tool_names! has already guaranteed the names are
-        # distinct for this adapter, so there are no ties.
-        members.sort_by { |klass| klass.tool_name(adapter) }
+        _assert_versioned_naming!(members)
+        groups = _version_groups(members, adapter)
+        if all_versions
+          # Deterministic: by tool_name, then ascending version within each group.
+          groups.sort_by(&:tool_name).flat_map(&:all)
+        else
+          # Latest per tool_name. Names are distinct after collapsing, so sort_by is tie-free.
+          groups.map(&:latest).sort_by { |klass| klass.tool_name(adapter) }
+        end
+      end
+
+      # The resolved version group for one logical tool under `adapter`, or nil when nothing
+      # matches. Entry point for a path-routing adapter (all versions + default pin) and for
+      # exercising movable-default semantics without an adapter.
+      def versions_for(adapter, tool_name)
+        ensure_loaded!
+        target = tool_name.to_s
+        members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
+        return nil if members.empty?
+
+        # Validate the MATCHED members so this lookup never disagrees with tools_for: a malformed
+        # ::Vn member whose (explicit or derived) name matches `target` raises here too, exactly as
+        # it would in tools_for. Scoped to the matched set, so an unrelated malformed tool under a
+        # different name can't derail the lookup.
+        _assert_versioned_naming!(members)
+        VersionGroup.new(adapter:, tool_name: target, members:)
       end
 
       # Ensures tool classes under each adapter's tool roots are loaded before enumeration.
@@ -147,20 +168,45 @@ module Axn
 
       private
 
-      # Two independently-declared classes (different files) can derive or override the same
-      # provider-facing tool_name for the same adapter — only knowable once both are loaded and
-      # selected here. An adapter that publishes by tool_name would then silently clobber one tool
-      # or hand the provider duplicate names, so fail loudly with a fixable message instead. Scoped
-      # per-adapter: the same name reused under a DIFFERENT adapter is fine (checked by the caller
-      # passing only that adapter's members).
-      def _assert_unique_tool_names!(members, adapter)
-        collisions = members.group_by { |klass| klass.tool_name(adapter) }.select { |_name, klasses| klasses.length > 1 }
-        return if collisions.empty?
+      # One VersionGroup per (adapter, tool_name). Group construction validates the group
+      # (duplicate (tool_name, tool_version), multiple default: true), so both enumeration
+      # paths share one set of rules.
+      def _version_groups(members, adapter)
+        members.group_by { |klass| klass.tool_name(adapter) }.map do |tool_name, klasses|
+          VersionGroup.new(adapter:, tool_name:, members: klasses)
+        end
+      end
 
-        details = collisions.map { |tname, klasses| "#{tname.inspect} (#{klasses.map(&:name).sort.join(', ')})" }.join("; ")
-        raise ArgumentError,
-              "Duplicate tool_name for adapter #{adapter.inspect}: #{details}. Two tools cannot share a " \
-              "provider name; give one an explicit `tool name: \"...\"` to disambiguate."
+      # Enforces the vN-constant convention at enumeration, where the constant name is finally
+      # visible (the declaration-time guard can't see a name assigned after `Class.new`). For a
+      # member whose final constant segment is exactly `::Vn`, two things must hold:
+      #   1. it declared its OWN `tool_version` — not nothing (would orphan as `..._v2`), and not a
+      #      value merely inherited from a superclass (`_tool_version` is a class_attribute, so an
+      #      inherited value is non-nil and would let the suffix drop under the inherited number).
+      #      `_tool_version_declared_here?` is a non-inherited marker that distinguishes the two.
+      #   2. the suffix number equals the declared `tool_version` — catches the anonymous-then-named
+      #      case (`V2 = Class.new { tool_version 3 }`) the declaration-time guard couldn't see.
+      # `tool_name` derivation itself is a pure reader that does not raise. `tools_for` runs this over
+      # every member (comprehensive); `versions_for` runs it over the members it matched, so a lookup
+      # never disagrees with tools_for while an unrelated malformed tool can't derail it.
+      def _assert_versioned_naming!(members)
+        members.each do |klass|
+          suffix = klass._tool_version_suffix # nil unless the constant is vN-suffixed (parsed by Versioning)
+          next if suffix.nil?
+
+          unless klass._tool_version_declared_here?
+            raise ArgumentError,
+                  "#{klass.name}: constant ends in ::V#{suffix} (the vN tool-version convention) but this class did not " \
+                  "declare its own `tool_version` (a version inherited from a superclass does not count). Declare " \
+                  "`tool_version N` on this class, or rename the constant."
+          end
+
+          next if suffix == klass.tool_version
+
+          raise ArgumentError,
+                "#{klass.name}: constant ends in ::V#{suffix} but declares `tool_version #{klass.tool_version}`. " \
+                "Align the constant name and the version (rename to ::V#{klass.tool_version}) or drop the ::vN suffix."
+        end
       end
 
       # Eager-loads a single Rails tool dir, or warns and skips it if Zeitwerk doesn't manage it

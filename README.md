@@ -1,6 +1,6 @@
 # Axn -- [AHK-sin] (a.k.a. "Action")
 
-Just spinning this up -- not yet publicly released, changes coming frequently.
+Published as an alpha release -- changes coming frequently.
 
 ## Installation & Usage
 

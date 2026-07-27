@@ -708,6 +708,145 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe "versioning" do
+    before { Axn.register_tool_adapter(:mcp) }
+
+    def versioned_tool(const, version, default: false)
+      stub_const(const, Class.new do
+        include Axn
+        tool :mcp
+        tool_version(version, default:)
+      end)
+    end
+
+    it "returns only the latest version per tool_name by default" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      result = Axn.tools_for(:mcp)
+      expect(result).to include(v2)
+      expect(result).not_to include(v1)
+    end
+
+    it "returns every version with all_versions: true, sorted by (tool_name, version)" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      # Scope to this tool_name: earlier examples in the suite load bare-`tool` fixtures that are
+      # members of every adapter, so an unscoped strict `eq` would also see them.
+      versions = Axn.tools_for(:mcp, all_versions: true).select { |klass| klass.tool_name(:mcp) == "approve_loan" }
+      expect(versions).to eq([v1, v2])
+    end
+
+    it "versions_for returns the group with latest/default/all" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      group = Axn.versions_for(:mcp, "approve_loan")
+      expect(group.all).to eq([v1, v2])
+      expect(group.latest).to eq(v2)
+      expect(group.default).to eq(v1)
+    end
+
+    it "versions_for honors a moved default" do
+      versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2, default: true)
+      expect(Axn.versions_for(:mcp, "approve_loan").default).to eq(v2)
+    end
+
+    it "versions_for returns nil for an unknown tool_name" do
+      expect(Axn.versions_for(:mcp, "nope")).to be_nil
+    end
+
+    it "raises on two tools sharing (tool_name, version)" do
+      stub_const("VerSpec::DupeA", Class.new do
+        include Axn
+        tool :mcp, name: "dupe"
+        tool_version 2
+      end)
+      stub_const("VerSpec::DupeB", Class.new do
+        include Axn
+        tool :mcp, name: "dupe"
+        tool_version 2
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /Duplicate tool/)
+    end
+
+    it "leaves an unversioned tool enumerated exactly as before" do
+      solo = stub_const("VerSpec::Solo", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      expect(Axn.tools_for(:mcp)).to include(solo)
+      expect(Axn.versions_for(:mcp, solo.tool_name(:mcp)).all).to eq([solo])
+    end
+
+    it "raises at enumeration when a member's ::Vn constant declares no tool_version" do
+      stub_const("VerSpec::Orphan::V1", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V1.*tool_version/)
+    end
+
+    it "raises at enumeration for a ::Vn subclass that only INHERITS a tool_version (never declared its own)" do
+      base = stub_const("VerSpec::Base", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 1
+      end)
+      # Inherits `tool :mcp` membership and _tool_version=1, but declares nothing itself. Without the
+      # declared-here gate it would silently publish as version 1 while its constant says ::V2.
+      stub_const("VerSpec::Thing::V2", Class.new(base))
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version/)
+    end
+
+    it "versions_for for one tool is not derailed by an unrelated malformed ::Vn sibling" do
+      good = stub_const("AgentTools::Billing", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      stub_const("VerSpec::Orphan2::V1", Class.new do # malformed sibling under a different name
+        include Axn
+        tool :mcp
+      end)
+      expect(Axn.versions_for(:mcp, "billing").all).to eq([good])
+    end
+
+    it "versions_for excludes a forgot-tool_version sibling that derives a DIFFERENT name (not in the matched set)" do
+      v2 = stub_const("AgentTools::ApproveLoan::V2", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 2
+      end)
+      stub_const("AgentTools::ApproveLoan::V1", Class.new do # forgot tool_version → derives approve_loan_v1, not matched
+        include Axn
+        tool :mcp
+      end)
+      # V1 isn't in the "approve_loan" matched set (its name is "approve_loan_v1"), so the matched-set
+      # guard doesn't fire on it; tools_for catches it comprehensively.
+      expect(Axn.versions_for(:mcp, "approve_loan").all).to eq([v2])
+    end
+
+    it "versions_for raises for a MATCHED ::Vn member that declared no tool_version (explicit name)" do
+      # Explicit `name:` means the malformed member DOES match the lookup, so versions_for must raise
+      # just like tools_for would — the two APIs cannot disagree.
+      stub_const("VerSpec::Explicit::V1", Class.new do
+        include Axn
+        tool :mcp, name: "explicit_foo"
+      end)
+      expect { Axn.versions_for(:mcp, "explicit_foo") }.to raise_error(ArgumentError, /::V1.*tool_version/)
+    end
+
+    it "raises at enumeration for an anonymous-then-named ::Vn whose suffix disagrees with tool_version" do
+      # Anonymous when `tool_version` runs (the constant is assigned afterward), so the
+      # declaration-time guard can't see ::V2; the mismatch must be caught at enumeration.
+      stub_const("VerSpec::Late::V2", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 3
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version 3/)
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 

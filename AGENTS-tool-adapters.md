@@ -35,8 +35,9 @@ GemName.wrap(axn_class, **opts)  # one Axn -> the transport's native tool object
 - **Register at gem load, from the entry file:** `Axn.register_tool_adapter(:key)`. Pass a config source
   second arg (`Axn.register_tool_adapter(:key, self)`) ONLY if you offer directory discovery; else omit.
   Re-registering with no source is idempotent.
-- **Enumerate with `Axn.tools_for(:key)`** — returns members sorted by `tool_name`, asserted unique per
-  name (a duplicate raises), tool-root dirs eager-loaded first.
+- **Enumerate with `Axn.tools_for(:key)`** — returns the latest version per `tool_name`, sorted by
+  `tool_name` (a duplicate `(tool_name, tool_version)` raises), tool-root dirs eager-loaded first. Pass
+  `all_versions: true` for every version, or use `Axn.versions_for(:key, tool_name)` for one tool's group.
 - **Only currently-loaded classes are enumerated.** A `tool :key` class outside a tool-root dir must be
   `require`d first. Enumerate from `config.after_initialize` / `to_prepare` — **never** a
   `config/initializers` file (runs before autoload paths are wired; `tools_for` warns).
@@ -55,9 +56,10 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tools.rb` (`tool` D
 
 - **Name = `axn_class.tool_name(:your_key)` — pass your adapter key.** Don't roll your own — the same Axn
   must yield the same name across adapters. It's provider-safe, never blank, honors `tool name:` and prefix
-  stripping. `tools_for` sorts/dedupes on `tool_name(:your_key)` and a per-adapter `tool your_key: { name: }`
-  override is only returned when you pass the key — the zero-arg form ignores per-adapter overrides, so
-  reading it would publish a name the registry didn't dedupe on.
+  stripping. `tools_for` sorts on `tool_name(:your_key)` and collapses to the latest per name (uniqueness is
+  on `(tool_name, tool_version)`); a per-adapter `tool your_key: { name: }` override is only returned when
+  you pass the key — the zero-arg form ignores per-adapter overrides, so reading it would publish a name
+  the registry didn't collapse on.
 - **Description = `axn_class.description`.** `wrap`'s `description:` defaults to it (keeps `.tools` zero-arg).
 
 ## Schema reflection
