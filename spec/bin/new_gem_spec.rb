@@ -151,14 +151,9 @@ RSpec.describe GemGenerator do
       # verify/default suite first, so a red suite aborts before anything is pushed.
       expect(read("Rakefile")).to include('Rake::Task["build"].enhance')
 
-      # And the release flow is documented for the gem's author.
-      readme = read("README.md")
-      expect(readme).to include("## Releasing")
-      expect(readme).to include("rake release")
-
-      # Including the commit step: bundler's `guard_clean` fails a release run against a dirty tree,
-      # so a bump-then-release recipe that omits it doesn't actually work when followed literally.
-      expect(readme).to include("Commit those changes")
+      # The generated README stays a consumer-facing document — release mechanics are the maintainer's
+      # concern and would only be noise to someone reading it to learn what the gem does.
+      expect(read("README.md")).not_to include("## Releasing")
     end
 
     it "pins axn to the teamshares main branch in the Gemfile" do
