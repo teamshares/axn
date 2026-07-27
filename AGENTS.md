@@ -121,6 +121,12 @@ suite; `--rails-only` / `--no-rails` for the other topologies). Generated gems `
 `.rubocop.yml` (internal convention, not a documented public API). Any gem it creates as a sibling of
 this checkout is auto-picked-up by `rake downstream:check`.
 
+Core's `.rubocop.yml` declares `inherit_mode: merge: Exclude` on behalf of those gems, not for itself:
+an `AllCops/Exclude` array replaces RuboCop's built-in one, and inherited globs resolve relative to the
+axn gem dir, so without the merge every consuming gem loses the built-in excludes that pointed at its
+own tree — and CI lints its vendored bundle, dying on plugins a dependency's `.rubocop.yml` requires.
+`spec_rubocop/shared_config_spec.rb` guards this end-to-end; don't remove the merge to tidy the config.
+
 ## Review feedback
 
 Fresh-context, adversarial review catches real base-layer bugs. Verify each point against the code —
