@@ -14,10 +14,6 @@ RSpec.describe Axn::Core::Versioning do
     it "is 1 when never declared" do
       expect(tool_klass.tool_version).to eq(1)
     end
-
-    it "is not flagged the explicit default when never declared" do
-      expect(tool_klass._tool_version_default).to be(false)
-    end
   end
 
   describe "setter" do
@@ -26,18 +22,6 @@ RSpec.describe Axn::Core::Versioning do
       k.tool_version(2)
       expect(k.tool_version).to eq(2)
       expect(k._tool_version).to eq(2)
-    end
-
-    it "records the default: flag" do
-      k = tool_klass
-      k.tool_version(2, default: true)
-      expect(k._tool_version_default).to be(true)
-    end
-
-    it "defaults the default: flag to false" do
-      k = tool_klass
-      k.tool_version(2)
-      expect(k._tool_version_default).to be(false)
     end
   end
 
@@ -54,21 +38,18 @@ RSpec.describe Axn::Core::Versioning do
       expect { tool_klass.tool_version("2") }.to raise_error(ArgumentError, /Integer >= 1/)
     end
 
-    it "rejects a truthy non-boolean default: (e.g. the string \"false\")" do
-      expect { tool_klass.tool_version(2, default: "false") }.to raise_error(ArgumentError, /default.*true or false/)
-    end
+    # The removed `default:` pin option. `tool_version` takes no keywords (`**nil`), so both forms
+    # raise the plain unknown-option error a removed kwarg should — NOT the bespoke Integer message,
+    # which a lone keyword would otherwise reach by binding to `value` as a positional Hash.
+    it "rejects the removed default: option as an unknown keyword, not a bad version" do
+      expect { tool_klass.tool_version(2, default: true) }.to raise_error(ArgumentError, /no keywords accepted/)
 
-    it "rejects a nil default:" do
-      expect { tool_klass.tool_version(2, default: nil) }.to raise_error(ArgumentError, /default.*true or false/)
-    end
-
-    it "rejects default: with no version (a malformed DSL call, not a read)" do
-      expect { tool_klass.tool_version(default: true) }.to raise_error(ArgumentError, /default.*requires a version/)
-      expect { tool_klass.tool_version(default: "false") }.to raise_error(ArgumentError, /default.*requires a version/)
-    end
-
-    it "still reads as a zero-arg call" do
-      expect(tool_klass.tool_version).to eq(1)
+      # The lone-keyword form is the one that regresses silently: it binds to `value` as a positional
+      # Hash, so assert the bespoke Integer message is genuinely absent, not merely that it raised.
+      expect { tool_klass.tool_version(default: true) }.to raise_error(ArgumentError) do |error|
+        expect(error.message).to include("no keywords accepted")
+        expect(error.message).not_to match(/Integer >= 1/)
+      end
     end
   end
 
