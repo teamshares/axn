@@ -128,6 +128,16 @@ RSpec.describe GemGenerator do
       expect(lines).to include("spec_rails/dummy_app/vendor/")
     end
 
+    # `rake spec_rails` writes spec_rails/dummy_app/log/test.log the first time the Rails suite runs,
+    # and local tooling writes a top-level log/ — untracked noise in a fresh gem otherwise. Core's own
+    # .gitignore covers both; the template didn't, so every generated gem repeated the miss.
+    it "gitignores generated logs and macOS cruft" do
+      lines = read(".gitignore").lines.map(&:chomp)
+      expect(lines).to include("/log/")
+      expect(lines).to include("spec_rails/dummy_app/log/")
+      expect(lines).to include(".DS_Store")
+    end
+
     it "emits a canonical gemspec with no TODO placeholders" do
       gemspec = read("foo_bar.gemspec")
       expect(gemspec).not_to include("TODO")
