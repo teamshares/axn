@@ -141,4 +141,45 @@ RSpec.describe "Axn tool_name derivation" do
       expect(parent.tool_name).to eq("parent_custom")
     end
   end
+
+  describe "version segment handling (option B)" do
+    it "drops a trailing ::Vn and derives from the enclosing namespace when tool_version is declared" do
+      k = tool_klass("AgentTools::ApproveLoan::V2")
+      k.tool_version(2)
+      expect(k.tool_name).to eq("approve_loan")
+    end
+
+    it "groups v1 and v2 under the same derived name" do
+      v1 = tool_klass("AgentTools::ApproveLoan::V1")
+      v1.tool_version(1)
+      v2 = tool_klass("AgentTools::ApproveLoan::V2")
+      v2.tool_version(2)
+      expect(v1.tool_name).to eq("approve_loan")
+      expect(v2.tool_name).to eq("approve_loan")
+    end
+
+    it "raises when a ::Vn constant declares no tool_version (promote-and-forget guard)" do
+      k = tool_klass("AgentTools::ApproveLoan::V1") # no tool_version declared
+      expect { k.tool_name }.to raise_error(ArgumentError, /::V1.*tool_version/)
+    end
+
+    it "lets an explicit tool name: win over version-segment derivation" do
+      k = tool_klass("AgentTools::ApproveLoan::V2")
+      k.tool_version(2)
+      k.tool name: "loan_approver"
+      expect(k.tool_name).to eq("loan_approver")
+    end
+
+    it "leaves a non-::Vn trailing segment untouched" do
+      k = tool_klass("AgentTools::ApproveLoanV2") # V2 is part of the word, not its own segment
+      k.tool_version(2)
+      expect(k.tool_name).to eq("approve_loan_v2")
+    end
+
+    it "falls back to the never-blank default for a bare ::Vn with no enclosing namespace" do
+      k = tool_klass("V2")
+      k.tool_version(2)
+      expect(k.tool_name).to eq("tool")
+    end
+  end
 end

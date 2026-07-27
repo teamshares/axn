@@ -155,7 +155,7 @@ module Axn
           source = axn_name.presence || name.presence
           return "tool" if source.nil? || source.strip.empty?
 
-          segments = source.split("::")
+          segments = _apply_version_segment_rule(source.split("::"))
           kept = _tool_name_strip_leading_prefixes(segments)
           derived = _tool_name_sanitize(kept.map(&:underscore).join("_"))
           return derived unless derived.empty?
@@ -195,6 +195,27 @@ module Axn
             end
           end
           self._tool_name_overrides = per_adapter_names.freeze
+        end
+
+        # The vN convention: a final constant segment like `V2`. With a declared `tool_version`,
+        # derive from the enclosing namespace (`AgentTools::ApproveLoan::V2` → the ApproveLoan
+        # segments) so both versions collapse to one `tool_name` and group. With no declared
+        # version it is the promote-and-forget footgun (v1.rb would orphan itself as `..._v1`),
+        # so raise here — the earliest point it is knowable, `tool_version` never having been
+        # called. A bare `::Vn` with nothing enclosing falls through to the never-blank fallback.
+        def _apply_version_segment_rule(segments)
+          return segments unless segments.last&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
+
+          if _tool_version.nil?
+            raise ArgumentError,
+                  "#{name}: constant ends in ::#{segments.last} (the vN tool-version convention) but no " \
+                  "`tool_version` was declared. Declare `tool_version N` to opt into versioning, or rename the constant."
+          end
+
+          # Not `.presence || segments`: `[][0...-1]` is `[]`, not `nil`, so a `presence` fallback
+          # would revert to the ORIGINAL `::Vn`-suffixed segments (deriving "v2"). Propagating the
+          # empty array instead lets `tool_name`'s own never-blank fallback take over, as intended.
+          segments[0...-1]
         end
 
         def _tool_name_strip_leading_prefixes(segments)
