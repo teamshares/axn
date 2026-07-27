@@ -4,6 +4,20 @@ name: Gem CI
 # is a thin caller: `uses: teamshares/axn/.github/workflows/gem-ci.yml@main`. Fix CI once here and
 # every gem inherits it — no per-repo edits. The main job always runs `bundle exec rake` (each gem's
 # Rakefile default task runs the right suite); the two inputs cover the Rails-topology differences.
+#
+# CHECK NAMES — the job names below are HALF of each gem's required-status-check context. GitHub
+# prefixes a reusable workflow's jobs with the CALLER's job name, which the ci*.yml.tmpl callers pin
+# to `CI`, so a gem's branch-protection ruleset must require "CI / Specs (Ruby 3.2)" (etc.), not the
+# bare job name. Renaming a job here silently invalidates every consuming gem's required checks —
+# their PRs then block forever on a context that never reports. Rename only in lockstep with a
+# ruleset update in each gem (`gh api repos/teamshares/<gem>/rulesets/<id>`).
+#
+# The required set differs by topology, because `rails_specs` is gated off unless asked for. Require
+# exactly what runs — a context for a gated-off job is at best meaningless and at worst a permanent
+# block:
+#   dual        CI / Specs (Ruby X)  +  CI / Rails Specs (Ruby X)
+#   pure Ruby   CI / Specs (Ruby X)
+#   rails-only  CI / Specs (Ruby X)         <- its default rake IS the Rails suite
 on:
   workflow_call:
     inputs:
@@ -23,6 +37,10 @@ on:
 jobs:
   main:
     runs-on: ubuntu-latest
+    # Deliberately topology-neutral, and NOT core's own "Main Specs": this one job runs whatever the
+    # gem's default rake task is, which differs per topology. On a rails-only gem that IS the Rails
+    # dummy-app suite, so "Main Specs" would name the Rails job "main" and leave the gem with no
+    # "Rails Specs" check at all. "Specs" — i.e. "the default task" — is honest for all three.
     name: Specs (Ruby ${{ matrix.ruby }})
     strategy:
       matrix:
