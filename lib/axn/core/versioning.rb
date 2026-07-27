@@ -27,10 +27,18 @@ module Axn
         # `tool_version 2, default: true` sets; zero-arg reads the effective version (1 when
         # undeclared). `default: true` blesses this version as the movable stable pin adapters
         # that pin (e.g. an HTTP bare path) honor; it is a no-op on an only/earliest version.
-        def tool_version(value = NOT_SET, default: false)
-          return _tool_version || 1 if value.equal?(NOT_SET)
+        def tool_version(value = NOT_SET, default: NOT_SET)
+          if value.equal?(NOT_SET)
+            # Zero-arg reader. But a `default:` with no version is a malformed DSL call (you can't
+            # bless a version you didn't name), not a read — fail loud rather than silently ignore it.
+            return _tool_version || 1 if default.equal?(NOT_SET)
+
+            raise ArgumentError, "tool_version `default:` requires a version (e.g. `tool_version 2, default: true`)"
+          end
 
           raise ArgumentError, "tool_version must be an Integer >= 1 (got #{value.inspect})" unless value.is_a?(Integer) && value >= 1
+
+          default = false if default.equal?(NOT_SET)
           # A truthy non-boolean (e.g. the config string "false") would read as a real default in
           # VersionGroup's `select(&:_tool_version_default)`, silently moving the stable pin. Reject it.
           raise ArgumentError, "tool_version `default:` must be true or false (got #{default.inspect})" unless [true, false].include?(default)

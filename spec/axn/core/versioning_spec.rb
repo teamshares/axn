@@ -61,6 +61,15 @@ RSpec.describe Axn::Core::Versioning do
     it "rejects a nil default:" do
       expect { tool_klass.tool_version(2, default: nil) }.to raise_error(ArgumentError, /default.*true or false/)
     end
+
+    it "rejects default: with no version (a malformed DSL call, not a read)" do
+      expect { tool_klass.tool_version(default: true) }.to raise_error(ArgumentError, /default.*requires a version/)
+      expect { tool_klass.tool_version(default: "false") }.to raise_error(ArgumentError, /default.*requires a version/)
+    end
+
+    it "still reads as a zero-arg call" do
+      expect(tool_klass.tool_version).to eq(1)
+    end
   end
 
   describe "_tool_version_suffix (single source for parsing the ::Vn constant segment)" do
