@@ -142,6 +142,20 @@ RSpec.describe GemGenerator do
       expect(gemspec).to include("git ls-files -z -- lib README.md CHANGELOG.md LICENSE.txt AGENTS-consuming.md")
     end
 
+    it "sets up RubyGems publishing, gated on the full verification suite" do
+      # Explicit push target: `rake release` publishes to RubyGems.org and can't be redirected by a
+      # stray RUBYGEMS_HOST or a misconfigured remote.
+      expect(read("foo_bar.gemspec")).to include('spec.metadata["allowed_push_host"] = "https://rubygems.org"')
+
+      # Release is gated: bundler's `release` depends on `build`, which is enhanced to run the full
+      # verify/default suite first, so a red suite aborts before anything is pushed.
+      expect(read("Rakefile")).to include('Rake::Task["build"].enhance')
+
+      # The generated README stays a consumer-facing document — release mechanics are the maintainer's
+      # concern and would only be noise to someone reading it to learn what the gem does.
+      expect(read("README.md")).not_to include("## Releasing")
+    end
+
     it "pins axn to the teamshares main branch in the Gemfile" do
       expect(read("Gemfile")).to include('gem "axn", github: "teamshares/axn", branch: "main"')
     end
