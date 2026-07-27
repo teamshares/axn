@@ -19,6 +19,7 @@ require "axn/core/nesting_tracking"
 require "axn/core/memoization"
 require "axn/core/extension_metadata"
 require "axn/core/semantic_hints"
+require "axn/core/versioning"
 require "axn/core/schema_reflection"
 
 # CONSIDER: make class names match file paths?
@@ -81,6 +82,7 @@ module Axn
         include Core::DefaultCall
         include Core::ExtensionMetadata
         include Core::SemanticHints
+        include Core::Versioning
         include Core::SchemaReflection
 
         # Per-class config overrides: gives the action class-level accessors
