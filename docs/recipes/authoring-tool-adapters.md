@@ -42,10 +42,10 @@ Axn.register_tool_adapter(:mcp)
 
 `register_tool_adapter` takes an optional second argument — a config source the registry reads directory roots from (see [Directory-based membership](#directory-based-membership-optional)). Pass it (`Axn.register_tool_adapter(:mcp, self)`) only if your adapter offers directory discovery; omit it otherwise. Re-registering with no source is idempotent and won't wipe a source already supplied.
 
-**`Axn.tools_for(:key)` enumerates the members** — deterministically sorted by [`tool_name`](#naming-description), asserted unique-per-name, with each adapter's tool-root directories eager-loaded first. Two rules follow from *how* it enumerates:
+**`Axn.tools_for(:key)` enumerates the members** — one entry per `tool_name` (the latest [version](#versioning) when several coexist), deterministically sorted by [`tool_name`](#naming-description), with each adapter's tool-root directories eager-loaded first. Two rules follow from *how* it enumerates:
 
 - **Only currently-loaded classes are enumerated.** `tools_for` reflects over classes that are defined *now*; a `tool :key` class that lives outside a tool-root directory must already be `require`d. Enumerate from a point where your app's classes are loaded — `config.after_initialize` or a `to_prepare` block under Rails, **not** a `config/initializers` file (which runs before the app's autoload paths are wired; `tools_for` will warn that discovery is incomplete).
-- **A duplicate `tool_name` for one adapter raises.** Two classes deriving the same provider name is only knowable once both are loaded, so `tools_for` fails loudly with a message pointing at `tool name:` to disambiguate, rather than silently clobbering one.
+- **Two classes sharing both a `tool_name` *and* a `tool_version` for one adapter raise.** That conflict is only knowable once both are loaded, so `tools_for`/`versions_for` fail loudly with a message pointing at `tool name:` or [`tool_version`](#versioning) to disambiguate, rather than silently clobbering one. Two classes sharing a `tool_name` with *different* versions are not a conflict — they're the versioned-tool convention.
 
 ### Membership
 
@@ -81,7 +81,7 @@ Axn::MCP.configure { |c| c.tool_roots = %w[agent_tools] }
 
 ## Naming & description
 
-**Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn.tools_for` sorts and de-duplicates the set using `tool_name(:your_key)`, and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry deduped on:
+**Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn.tools_for` sorts and groups the set by `tool_name(:your_key)` (collapsing to the latest [version](#versioning) per name), and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry grouped on:
 
 ```ruby
 tool_name = axn_class.tool_name(:mcp)    # provider-safe, never blank; honors a per-adapter `tool mcp: { name: }`
@@ -270,6 +270,35 @@ def self.deprecator
 end
 # a consuming app: Rails.application.deprecators[:axn_mcp] = Axn::MCP.deprecator
 ```
+
+## Versioning
+
+A tool declares its contract version with `tool_version` — a first-class core attribute, a sibling of `tool_name`, never part of it. Absent, a tool is version 1 and its own default. Multiple versions of one logical tool coexist by sharing a `tool_name`:
+
+```ruby
+class ApproveLoan
+  include Axn
+  tool :mcp
+  tool_version 2, default: true
+end
+```
+
+The registry identity is `(tool_name, tool_version)`: two tools may share a `tool_name` as long as their versions differ (same name *and* version still raises). Enumeration exposes two designations for an adapter to project as fits its consumer:
+
+- `Axn.tools_for(:mcp)` returns the **latest** version per `tool_name` — a model re-reads the schema each session and wants the newest contract. Backward-compatible: today's unversioned tools are groups of one, so latest-of-one is unchanged.
+- `Axn.tools_for(:mcp, all_versions: true)` returns **every** version (sorted by `tool_name`, then ascending version) — for an adapter that surfaces all of them, e.g. path-routed HTTP.
+- `Axn.versions_for(:mcp, "approve_loan")` returns the version group: `.all`, `.latest`, and `.default` (the version flagged `default: true`, else the earliest — a movable stable pin a bare/unqualified route can honor so it never jumps when a new version lands).
+
+The MCP-latest vs bare-path-pinned asymmetry is intentional: a fresh model call wants newest; a long-lived HTTP client wants stability. Choosing `latest` vs `default` is the adapter's projection policy — core just resolves both.
+
+### Filesystem convention
+
+`tool_version N` is the sole source of truth for the number — nothing derives version from the filesystem. The recommended layout is a convention with no magic:
+
+- **Single version: stay flat** — `agent_tools/approve_loan.rb`.
+- **Second version: promote to a folder** — rename to `agent_tools/approve_loan/v1.rb` (declaring `tool_version 1`) and add `v2.rb` (`tool_version 2`). With no `approve_loan.rb`, Zeitwerk treats `approve_loan/` as a namespace module (`AgentTools::ApproveLoan`) and nests `::V1`/`::V2`; the module itself is not a tool (it does not `include Axn`).
+
+When a class declares `tool_version` and its constant ends in a `::Vn` segment, `tool_name` derives from the enclosing namespace (`AgentTools::ApproveLoan::V2` → `"approve_loan"`), so both versions group. The promotion moves the Ruby constant but not the wire contract — identity stays `tool_name`. Two guardrails keep the convention honest: a `::Vn` constant that declares no `tool_version` raises (so a promoted `v1.rb` can't silently orphan itself), and a `::V2` constant declaring a different number (`tool_version 3`) raises.
 
 ## Testing
 
