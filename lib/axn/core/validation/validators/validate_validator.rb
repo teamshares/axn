@@ -42,7 +42,9 @@ module Axn
         msg = begin
           options[:with].call(value)
         rescue StandardError => e
-          Axn::Internal::PipingError.swallow("applying custom validation on field '#{attribute}'", exception: e)
+          # Log the raised error best-effort, then surface it as this field's validation message — a
+          # crashing custom validator fails the field rather than silently passing.
+          Axn::Extensions.best_effort("applying custom validation on field '#{attribute}'") { raise e }
 
           "failed validation: #{e.message}"
         end

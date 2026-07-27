@@ -5,7 +5,7 @@ require "axn/core/context/facade_inspector"
 
 module Axn
   # Outbound / External ContextFacade
-  class Result < ContextFacade
+  class Result < Axn::Core::ContextFacade
     def initialize(...)
       super
       _define_boolean_predicate_readers

@@ -98,11 +98,11 @@ Source: `lib/axn/configurable.rb` (`config_namespace`, `resolve_override_for`, `
 
 ## Extension registry
 
-- Add transport-only vocabulary without a core change: `Axn.extension_config.register_semantic_hint(:open_world,
+- Add transport-only vocabulary without a core change: `Axn::Extensions.config.register_semantic_hint(:open_world,
   :closed_world)` at load. Read `axn_class._semantic_hints` in `wrap` to map declared hints to your
   annotations; let an explicit adapter override win. Hints are advisory (nothing enforces them).
 
-Source: `lib/axn/extension_config.rb`, `lib/axn/core/semantic_hints.rb`.
+Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
 
 ## Invocation & result → response
 
@@ -190,7 +190,8 @@ Docs — <https://teamshares.github.io/axn/>: authoring a tool-adapter gem
 (`/reference/axn-result`). Action-authoring: `AGENTS-consuming.md` (this gem).
 
 Core source entry points (resolve with `bundle show axn`):
-- `lib/axn.rb` — `register_tool_adapter`, `tools_for`, `extension_config`, `owns_failure_exception?`.
+- `lib/axn.rb` — `register_tool_adapter`, `tools_for`, `owns_failure_exception?`.
+- `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `Axn::Extensions.config` (the extension-author surface).
 - `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tools.rb` — membership, `tool_name`.
 - `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`, `lib/axn/reflection/values.rb` — reflection.
 - `lib/axn/configurable.rb` — `config_namespace`, `resolve_override_for`, `overrides`.

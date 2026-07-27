@@ -25,7 +25,7 @@ module Axn
     # values, or custom call semantics (env, logger, on_exception, the async
     # setters, async_exception_reporting, rails) remain hand-written below.
     setting :emit_metrics
-    setting :raise_piping_errors_in_dev
+    setting :best_effort_raises_in_dev
     setting :log_level, default: :info
     setting :additional_includes, default: []
 

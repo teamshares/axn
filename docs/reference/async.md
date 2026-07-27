@@ -456,7 +456,7 @@ same way as the other callbacks' matchers (against the action, with no exception
 condition on class-level state but **cannot** observe `sources`/`count`.
 
 **Error handling:** a raise inside the handler is swallowed (logged; re-raised in development
-only when `Axn.config.raise_piping_errors_in_dev` is set) and cannot change the enqueue
+only when `Axn.config.best_effort_raises_in_dev` is set) and cannot change the enqueue
 outcome — the fan-out has already completed. This matches `on_success` semantics; rescue
 inside your handler if you need stronger guarantees.
 

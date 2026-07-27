@@ -3,7 +3,7 @@
 require "spec_helper"
 
 RSpec.describe "Axn semantic_hints" do
-  after { Axn.instance_variable_set(:@extension_config, nil) }
+  after { Axn::Extensions.instance_variable_set(:@config, nil) }
 
   it "defaults to an empty array" do
     klass = Class.new { include Axn }
@@ -28,7 +28,7 @@ RSpec.describe "Axn semantic_hints" do
   end
 
   it "accepts adapter-registered vocabulary" do
-    Axn.extension_config.register_semantic_hint(:open_world)
+    Axn::Extensions.config.register_semantic_hint(:open_world)
     klass = Class.new do
       include Axn
       semantic_hints :open_world

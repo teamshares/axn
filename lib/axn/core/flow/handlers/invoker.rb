@@ -23,9 +23,9 @@ module Axn
           rescue Axn::Internal::EarlyCompletion, Axn::Failure
             raise if allow_flow_control
 
-            Axn::Internal::PipingError.swallow(operation, action:, exception: $ERROR_INFO)
+            Axn::Extensions.best_effort(operation, action:) { raise $ERROR_INFO }
           rescue StandardError => e
-            Axn::Internal::PipingError.swallow(operation, action:, exception: e)
+            Axn::Extensions.best_effort(operation, action:) { raise e }
           end
 
           # Public so the contract DSL can validate a declared handler against the same notion of

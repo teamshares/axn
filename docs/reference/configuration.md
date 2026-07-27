@@ -234,13 +234,13 @@ class ProcessPendingRecords
 end
 ```
 
-## `raise_piping_errors_in_dev`
+## `best_effort_raises_in_dev`
 
 By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development, you can opt-in to have these errors raised instead of logged:
 
 ```ruby
 Axn.configure do |c|
-  c.raise_piping_errors_in_dev = true
+  c.best_effort_raises_in_dev = true
 end
 ```
 
@@ -493,7 +493,7 @@ Several Axn behaviors change based on the detected environment:
 | Behavior | Production | Test | Development |
 | -------- | ---------- | ---- | ----------- |
 | Log separators in async calls | Hidden | Visible (`------`) | Visible (`------`) |
-| `raise_piping_errors_in_dev` | Always swallowed | Always swallowed | Configurable |
+| `best_effort_raises_in_dev` | Always swallowed | Always swallowed | Configurable |
 | Error message verbosity | Minimal | More detailed | More detailed |
 
 ### Overriding the Environment

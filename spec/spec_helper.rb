@@ -35,13 +35,13 @@ RSpec.configure do |config|
   config.before { Axn::Tools::Registry.reset_adapters! }
 end
 
-def expect_piping_error_called(message_substring:, error_class:, error_message:, action: nil, times: 1)
-  matcher = {
-    exception: an_object_satisfying { |e| e.is_a?(error_class) && e.message == error_message },
-  }
-  matcher[:action] = action unless action.nil?
-  expect(Axn::Internal::PipingError).to have_received(:swallow).with(
-    a_string_including(message_substring),
-    hash_including(matcher),
-  ).exactly(times).times
+def expect_best_effort_called(message_substring:, action: nil, times: 1)
+  # The transitional swallow-based call sites always forward an `action:` kwarg to
+  # `best_effort` — even `nil` — via its `action:` shorthand, so the trailing kwarg is
+  # present on every call regardless of whether the original call site supplied one.
+  # `any_args` tolerates that trailing arg when we don't care about it, while still
+  # matching cleanly once migrated call sites stop forwarding it at all.
+  args = [a_string_including(message_substring)]
+  args << (action.nil? ? any_args : hash_including(action:))
+  expect(Axn::Extensions).to have_received(:best_effort).with(*args).exactly(times).times
 end

@@ -24,28 +24,23 @@ module Axn
         end
 
         def derive_value
+          # `id_value` is read here, OUTSIDE the guarded block: a forgotten `method_call:` reached via
+          # the `_id` read raises MethodCallNotPermittedError, a contract bug that must stay loud
+          # (PRO-2898's "loud, never silent" guarantee) rather than being swallowed to nil.
           return nil if id_value.blank?
 
-          # Handle different finder types
-          if finder.is_a?(Method)
-            # Method object - call it directly
-            finder.call(id_value)
-          elsif klass.respond_to?(finder)
-            # Symbol/string method name on the klass
-            klass.public_send(finder, id_value)
-          else
-            raise "Unknown finder: #{finder}"
-          end
-        rescue Axn::ContractViolation::MethodCallNotPermittedError
-          # A forgotten `method_call:` reached via the `_id` read (`id_value` above) is a contract bug,
-          # not a finder failure — it must stay loud (PRO-2898's "loud, never silent" guarantee), so it
-          # propagates rather than being swallowed to nil by the finder rescue below.
-          raise
-        rescue StandardError => e
-          # Log the exception but don't re-raise
           finder_name = finder.is_a?(Method) ? finder.name : finder
-          Axn::Internal::PipingError.swallow("finding #{field} with #{finder_name}", exception: e)
-          nil
+          Axn::Extensions.best_effort("finding #{field} with #{finder_name}") do
+            if finder.is_a?(Method)
+              # Method object - call it directly
+              finder.call(id_value)
+            elsif klass.respond_to?(finder)
+              # Symbol/string method name on the klass
+              klass.public_send(finder, id_value)
+            else
+              raise "Unknown finder: #{finder}"
+            end
+          end
         end
 
         def klass

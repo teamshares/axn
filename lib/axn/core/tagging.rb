@@ -30,13 +30,13 @@ module Axn
         facets.each_with_object({}) do |(name, facet), acc|
           next unless facet.from == from
 
-          value = resolve_one(facet.resolver, action:)
-          # dup at resolution so a resolver returning a mutable input (a String, or String elements
-          # in an Array) is snapshotted here — otherwise a later in-place mutation during the body
-          # (e.g. String#replace) would rewrite the already-resolved value before the sinks read it.
-          acc[name] = dup_value(coerce(value)) unless value.nil?
-        rescue StandardError => e
-          Axn::Internal::PipingError.swallow("resolving observability facet #{name}", action:, exception: e)
+          Axn::Extensions.best_effort("resolving observability facet #{name}", action:) do
+            value = resolve_one(facet.resolver, action:)
+            # dup at resolution so a resolver returning a mutable input (a String, or String elements
+            # in an Array) is snapshotted here — otherwise a later in-place mutation during the body
+            # (e.g. String#replace) would rewrite the already-resolved value before the sinks read it.
+            acc[name] = dup_value(coerce(value)) unless value.nil?
+          end
         end
       end
 

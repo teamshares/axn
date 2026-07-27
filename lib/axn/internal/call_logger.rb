@@ -39,40 +39,40 @@ module Axn
       )
         return unless level
 
-        # Prepare and format context if needed
-        context_str = if context_instance && context_direction
-                        # Instance-level: use private inputs_for_logging / outputs_for_logging
-                        data = case context_direction
-                               when :inbound then context_instance.send(:inputs_for_logging)
-                               when :outbound then context_instance.send(:outputs_for_logging)
-                               end
-                        format_context(data)
-                      elsif context_data && context_direction
-                        # Class-level: use internal _context_slice
-                        data = action_class._context_slice(data: context_data, direction: context_direction)
-                        format_context(data)
-                      end
+        Axn::Extensions.best_effort(error_context, action: action_class) do
+          # Prepare and format context if needed
+          context_str = if context_instance && context_direction
+                          # Instance-level: use private inputs_for_logging / outputs_for_logging
+                          data = case context_direction
+                                 when :inbound then context_instance.send(:inputs_for_logging)
+                                 when :outbound then context_instance.send(:outputs_for_logging)
+                                 end
+                          format_context(data)
+                        elsif context_data && context_direction
+                          # Class-level: use internal _context_slice
+                          data = action_class._context_slice(data: context_data, direction: context_direction)
+                          format_context(data)
+                        end
 
-        # Add context to message parts if present
-        full_message_parts = context_str ? message_parts + [context_str] : message_parts
-        message = full_message_parts.compact.join(join_string)
+          # Add context to message parts if present
+          full_message_parts = context_str ? message_parts + [context_str] : message_parts
+          message = full_message_parts.compact.join(join_string)
 
-        # Annotate with resolved tag/dimension facets: structured named tags when the configured
-        # logger is a SemanticLogger (legible as log fields / Datadog facets), otherwise a readable
-        # suffix on the plain line. Mutually exclusive — semantic_logger's own formatter renders the
-        # named tags, so the suffix would be redundant there.
-        named_tags = facets ? Axn::Core::Tagging.namespaced(tags: facets[:tags] || {}, dimensions: facets[:dimensions] || {}) : {}
+          # Annotate with resolved tag/dimension facets: structured named tags when the configured
+          # logger is a SemanticLogger (legible as log fields / Datadog facets), otherwise a readable
+          # suffix on the plain line. Mutually exclusive — semantic_logger's own formatter renders the
+          # named tags, so the suffix would be redundant there.
+          named_tags = facets ? Axn::Core::Tagging.namespaced(tags: facets[:tags] || {}, dimensions: facets[:dimensions] || {}) : {}
 
-        if named_tags.any? && semantic_logger?
-          SemanticLogger.tagged(**named_tags) do
+          if named_tags.any? && semantic_logger?
+            SemanticLogger.tagged(**named_tags) do
+              action_class.public_send(level, message, before:, after:, prefix:)
+            end
+          else
+            message += facet_suffix(facets) if named_tags.any?
             action_class.public_send(level, message, before:, after:, prefix:)
           end
-        else
-          message += facet_suffix(facets) if named_tags.any?
-          action_class.public_send(level, message, before:, after:, prefix:)
         end
-      rescue StandardError => e
-        Axn::Internal::PipingError.swallow(error_context, action: action_class, exception: e)
       end
 
       # True only when the logger that will actually emit is a SemanticLogger — merely having the

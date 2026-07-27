@@ -653,7 +653,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       )
     end
 
-    it "logs the swallowed error via piping_error" do
+    it "logs the swallowed error via best_effort" do
       target = build_axn do
         mount_axn(:sync_number, expects: [:number]) do |number:|
           "Processed #{number}"
@@ -669,12 +669,13 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       end
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Internal::PipingError).to receive(:swallow).with(
-        "filter block for :number",
-        exception: an_instance_of(RuntimeError),
-      )
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
 
       mounted_action.enqueue_all
+
+      # The filter block is guarded per item (block form), so best_effort wraps each call; the
+      # raising item (2) is the one it actually swallows.
+      expect(Axn::Extensions).to have_received(:best_effort).with("filter block for :number", any_args).at_least(:once)
     end
   end
 
@@ -711,7 +712,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       )
     end
 
-    it "logs the swallowed error via piping_error" do
+    it "logs the swallowed error via best_effort" do
       items = [
         Struct.new(:id).new(1),
         Struct.new(:name).new("no id"), # doesn't respond to :id
@@ -729,10 +730,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       mounted_action.enqueues_each :item_id, from: -> { items }, via: :id
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Internal::PipingError).to receive(:swallow).with(
-        "via extraction (:id) for :item_id",
-        exception: an_instance_of(NoMethodError),
-      )
+      expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args)
 
       mounted_action.enqueue_all
     end

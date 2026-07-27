@@ -25,7 +25,7 @@ RSpec.describe Axn do
   context "inbound facade #inspect" do
     subject { result.the_internal_context.inspect }
 
-    it { is_expected.to eq "#<Axn::InternalContext foo: 11, ssn: [FILTERED]>" }
+    it { is_expected.to eq "#<Axn::Core::InternalContext foo: 11, ssn: [FILTERED]>" }
   end
 
   context "outbound facade #inspect" do
