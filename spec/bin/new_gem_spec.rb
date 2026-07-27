@@ -155,6 +155,10 @@ RSpec.describe GemGenerator do
       readme = read("README.md")
       expect(readme).to include("## Releasing")
       expect(readme).to include("rake release")
+
+      # Including the commit step: bundler's `guard_clean` fails a release run against a dirty tree,
+      # so a bump-then-release recipe that omits it doesn't actually work when followed literally.
+      expect(readme).to include("Commit those changes")
     end
 
     it "pins axn to the teamshares main branch in the Gemfile" do

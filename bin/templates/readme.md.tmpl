@@ -27,7 +27,8 @@ _Document the public API here._
 Published to [RubyGems](https://rubygems.org).
 
 1. Bump the version and update `CHANGELOG.md`.
-2. Run `rake release`.
+2. Commit those changes — `rake release` refuses to run against a dirty tree (it checks both unstaged and staged diffs, and aborts with `There are files that need to be committed first.`).
+3. Run `rake release`.
 
 `rake release` is gated on the gem's full verification suite (tests + lint): it runs as part of `build`, so a failing spec or lint aborts the release before the gem is tagged, pushed, or published. RubyGems MFA is required for the push.
 
