@@ -54,21 +54,28 @@ module Axn
           instance_variable_defined?(:@_tool_version_declared)
         end
 
+        # The version number a trailing `::Vn` constant segment encodes (`AgentTools::Approve::V2` →
+        # 2), or nil when the constant isn't vN-suffixed or the class is anonymous. The single place
+        # the vN suffix is parsed — consumed by the declaration-time guard below and by the registry's
+        # enumeration guard, so the two can't drift.
+        def _tool_version_suffix
+          match = name.to_s.split("::").last&.match(VERSION_SEGMENT)
+          match && match[1].to_i
+        end
+
         private
 
-        # When the constant follows the ::Vn convention, the segment number and the declared
-        # version must agree — the segment is what `tool_name` derivation drops, so a mismatch
-        # (`::V2` declaring `tool_version 3`) would ship a name/number that disagree. Skipped for
-        # an anonymous class (no constant name) — the factory / `Class.new` path is unaffected.
+        # When the constant follows the ::Vn convention, the segment number and the declared version
+        # must agree — the segment is what `tool_name` derivation drops, so a mismatch (`::V2`
+        # declaring `tool_version 3`) would ship a name/number that disagree. Skipped for an anonymous
+        # class (no constant name yet) — the factory / `Const = Class.new` path can't see the eventual
+        # name here, so the registry's enumeration guard is the backstop that re-checks it once named.
         def _assert_version_segment_matches!(value)
-          segment = name.to_s.split("::").last
-          return unless segment&.match(VERSION_SEGMENT)
-
-          declared_in_name = Regexp.last_match(1).to_i
-          return if declared_in_name == value
+          suffix = _tool_version_suffix
+          return if suffix.nil? || suffix == value
 
           raise ArgumentError,
-                "#{name}: constant ends in ::#{segment} but `tool_version #{value}` was declared. " \
+                "#{name}: constant ends in ::V#{suffix} but `tool_version #{value}` was declared. " \
                 "Align the constant name and the version (rename to ::V#{value}) or drop the ::vN suffix."
         end
       end

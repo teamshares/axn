@@ -191,21 +191,20 @@ module Axn
       # never disagrees with tools_for while an unrelated malformed tool can't derail it.
       def _assert_versioned_naming!(members)
         members.each do |klass|
-          match = klass.name.to_s.split("::").last&.match(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
-          next unless match
+          suffix = klass._tool_version_suffix # nil unless the constant is vN-suffixed (parsed by Versioning)
+          next if suffix.nil?
 
-          segment = match[0]
           unless klass._tool_version_declared_here?
             raise ArgumentError,
-                  "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but this class did not " \
+                  "#{klass.name}: constant ends in ::V#{suffix} (the vN tool-version convention) but this class did not " \
                   "declare its own `tool_version` (a version inherited from a superclass does not count). Declare " \
                   "`tool_version N` on this class, or rename the constant."
           end
 
-          next if match[1].to_i == klass.tool_version
+          next if suffix == klass.tool_version
 
           raise ArgumentError,
-                "#{klass.name}: constant ends in ::#{segment} but declares `tool_version #{klass.tool_version}`. " \
+                "#{klass.name}: constant ends in ::V#{suffix} but declares `tool_version #{klass.tool_version}`. " \
                 "Align the constant name and the version (rename to ::V#{klass.tool_version}) or drop the ::vN suffix."
         end
       end

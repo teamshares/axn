@@ -63,6 +63,25 @@ RSpec.describe Axn::Core::Versioning do
     end
   end
 
+  describe "_tool_version_suffix (single source for parsing the ::Vn constant segment)" do
+    it "returns the number for a vN-suffixed constant" do
+      expect(tool_klass("AgentTools::Approve::V2")._tool_version_suffix).to eq(2)
+    end
+
+    it "handles multi-digit versions" do
+      expect(tool_klass("AgentTools::Approve::V10")._tool_version_suffix).to eq(10)
+    end
+
+    it "is nil for a non-vN trailing segment" do
+      expect(tool_klass("AgentTools::ApproveV2")._tool_version_suffix).to be_nil
+      expect(tool_klass("AgentTools::Approve")._tool_version_suffix).to be_nil
+    end
+
+    it "is nil for an anonymous class" do
+      expect(tool_klass._tool_version_suffix).to be_nil
+    end
+  end
+
   describe "declared-here vs inherited" do
     it "marks the declaring class but not an inheriting subclass" do
       base = Class.new do
