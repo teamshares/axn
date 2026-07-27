@@ -711,11 +711,11 @@ RSpec.describe Axn::Tools::Registry do
   describe "versioning" do
     before { Axn.register_tool_adapter(:mcp) }
 
-    def versioned_tool(const, version, default: false)
+    def versioned_tool(const, version)
       stub_const(const, Class.new do
         include Axn
         tool :mcp
-        tool_version(version, default:)
+        tool_version(version)
       end)
     end
 
@@ -736,19 +736,12 @@ RSpec.describe Axn::Tools::Registry do
       expect(versions).to eq([v1, v2])
     end
 
-    it "versions_for returns the group with latest/default/all" do
+    it "versions_for returns the group with all/latest" do
       v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
       v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
       group = Axn.versions_for(:mcp, "approve_loan")
       expect(group.all).to eq([v1, v2])
       expect(group.latest).to eq(v2)
-      expect(group.default).to eq(v1)
-    end
-
-    it "versions_for honors a moved default" do
-      versioned_tool("AgentTools::ApproveLoan::V1", 1)
-      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2, default: true)
-      expect(Axn.versions_for(:mcp, "approve_loan").default).to eq(v2)
     end
 
     it "versions_for returns nil for an unknown tool_name" do

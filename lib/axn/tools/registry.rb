@@ -75,8 +75,8 @@ module Axn
       end
 
       # The resolved version group for one logical tool under `adapter`, or nil when nothing
-      # matches. Entry point for a path-routing adapter (all versions + default pin) and for
-      # exercising movable-default semantics without an adapter.
+      # matches. Entry point for an adapter that needs one tool's versions by name (a path-routing
+      # HTTP surface resolving `/{tool_name}/v{n}`) rather than the whole enumeration.
       def versions_for(adapter, tool_name)
         ensure_loaded!
         target = tool_name.to_s
@@ -168,9 +168,8 @@ module Axn
 
       private
 
-      # One VersionGroup per (adapter, tool_name). Group construction validates the group
-      # (duplicate (tool_name, tool_version), multiple default: true), so both enumeration
-      # paths share one set of rules.
+      # One VersionGroup per (adapter, tool_name). Group construction rejects a duplicate
+      # (tool_name, tool_version), so both enumeration paths share one set of rules.
       def _version_groups(members, adapter)
         members.group_by { |klass| klass.tool_name(adapter) }.map do |tool_name, klasses|
           VersionGroup.new(adapter:, tool_name:, members: klasses)

@@ -273,23 +273,23 @@ end
 
 ## Versioning
 
-A tool declares its contract version with `tool_version` — a first-class core attribute, a sibling of `tool_name`, never part of it. Absent, a tool is version 1 and its own default. Multiple versions of one logical tool coexist by sharing a `tool_name`:
+A tool declares its contract version with `tool_version` — a first-class core attribute, a sibling of `tool_name`, never part of it. Absent, a tool is version 1. Multiple versions of one logical tool coexist by sharing a `tool_name`:
 
 ```ruby
 class ApproveLoan
   include Axn
   tool :mcp
-  tool_version 2, default: true
+  tool_version 2
 end
 ```
 
-The registry identity is `(tool_name, tool_version)`: two tools may share a `tool_name` as long as their versions differ (same name *and* version still raises). Enumeration exposes two designations for an adapter to project as fits its consumer:
+The registry identity is `(tool_name, tool_version)`: two tools may share a `tool_name` as long as their versions differ (same name *and* version still raises). Enumeration exposes two projections for an adapter to pick between:
 
 - `Axn.tools_for(:mcp)` returns the **latest** version per `tool_name` — a model re-reads the schema each session and wants the newest contract. Backward-compatible: today's unversioned tools are groups of one, so latest-of-one is unchanged.
-- `Axn.tools_for(:mcp, all_versions: true)` returns **every** version (sorted by `tool_name`, then ascending version) — for an adapter that surfaces all of them, e.g. path-routed HTTP.
-- `Axn.versions_for(:mcp, "approve_loan")` returns the version group: `.all`, `.latest`, and `.default` (the version flagged `default: true`, else the earliest — a movable stable pin a bare/unqualified route can honor so it never jumps when a new version lands).
+- `Axn.tools_for(:mcp, all_versions: true)` returns **every** version (sorted by `tool_name`, then ascending version) — for an adapter that addresses each one separately, e.g. path-routed HTTP.
+- `Axn.versions_for(:mcp, "approve_loan")` returns one tool's version group (`.all` ascending, `.latest`) for an adapter resolving a single name rather than walking the whole enumeration.
 
-The MCP-latest vs bare-path-pinned asymmetry is intentional: a fresh model call wants newest; a long-lived HTTP client wants stability. Choosing `latest` vs `default` is the adapter's projection policy — core just resolves both.
+The latest-vs-every asymmetry is intentional: a fresh model call wants newest, while a long-lived HTTP client wants a URL that means exactly one version forever. Core resolves both; which to serve is the adapter's projection policy. Core deliberately has no "default version" concept — an adapter that wants a stable pin should make every version separately addressable (so no URL ever changes meaning) rather than blessing one behind an unqualified alias.
 
 ### Filesystem convention
 
