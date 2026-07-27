@@ -810,17 +810,40 @@ RSpec.describe Axn::Tools::Registry do
       expect(Axn.versions_for(:mcp, "billing").all).to eq([good])
     end
 
-    it "versions_for excludes a forgot-tool_version sibling (comprehensive detection is tools_for's job, not versions_for's)" do
+    it "versions_for excludes a forgot-tool_version sibling that derives a DIFFERENT name (not in the matched set)" do
       v2 = stub_const("AgentTools::ApproveLoan::V2", Class.new do
         include Axn
         tool :mcp
         tool_version 2
       end)
-      stub_const("AgentTools::ApproveLoan::V1", Class.new do # forgot tool_version → derives approve_loan_v1, excluded
+      stub_const("AgentTools::ApproveLoan::V1", Class.new do # forgot tool_version → derives approve_loan_v1, not matched
         include Axn
         tool :mcp
       end)
+      # V1 isn't in the "approve_loan" matched set (its name is "approve_loan_v1"), so the matched-set
+      # guard doesn't fire on it; tools_for catches it comprehensively.
       expect(Axn.versions_for(:mcp, "approve_loan").all).to eq([v2])
+    end
+
+    it "versions_for raises for a MATCHED ::Vn member that declared no tool_version (explicit name)" do
+      # Explicit `name:` means the malformed member DOES match the lookup, so versions_for must raise
+      # just like tools_for would — the two APIs cannot disagree.
+      stub_const("VerSpec::Explicit::V1", Class.new do
+        include Axn
+        tool :mcp, name: "explicit_foo"
+      end)
+      expect { Axn.versions_for(:mcp, "explicit_foo") }.to raise_error(ArgumentError, /::V1.*tool_version/)
+    end
+
+    it "raises at enumeration for an anonymous-then-named ::Vn whose suffix disagrees with tool_version" do
+      # Anonymous when `tool_version` runs (the constant is assigned afterward), so the
+      # declaration-time guard can't see ::V2; the mismatch must be caught at enumeration.
+      stub_const("VerSpec::Late::V2", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 3
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version 3/)
     end
   end
 

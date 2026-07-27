@@ -83,6 +83,11 @@ module Axn
         members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
         return nil if members.empty?
 
+        # Validate the MATCHED members so this lookup never disagrees with tools_for: a malformed
+        # ::Vn member whose (explicit or derived) name matches `target` raises here too, exactly as
+        # it would in tools_for. Scoped to the matched set, so an unrelated malformed tool under a
+        # different name can't derail the lookup.
+        _assert_versioned_naming!(members)
         VersionGroup.new(adapter:, tool_name: target, members:)
       end
 
@@ -172,28 +177,36 @@ module Axn
         end
       end
 
-      # A member whose constant's final segment is exactly the vN convention (`::V2`) but which did
-      # not declare its OWN `tool_version` would derive an orphan/wrong `tool_name` and misrepresent
-      # its version. Two cases: it declared nothing (derives `..._v2`, silently orphaned), or it only
-      # inherited a superclass's `tool_version` (e.g. a `::V2 < V1`-style subclass inheriting version
-      # 1) — `_tool_version` is a class_attribute, so the inherited value is non-nil and would let the
-      # suffix drop while the registry published the inherited number. Gating on
-      # `_tool_version_declared_here?` (a non-inherited marker) catches both. `tool_name` derivation
-      # is a pure reader and deliberately does not raise; the guard lives here, at enumeration, where
-      # the silent orphaning/misversioning would actually happen. Called only from `tools_for` — the
-      # comprehensive enumeration gate. `versions_for` is a post-enumeration lookup that relies on
-      # that gate and deliberately does NOT re-validate (a forgot-`tool_version` sibling derives a
-      # different name and is simply excluded from the looked-up group).
+      # Enforces the vN-constant convention at enumeration, where the constant name is finally
+      # visible (the declaration-time guard can't see a name assigned after `Class.new`). For a
+      # member whose final constant segment is exactly `::Vn`, two things must hold:
+      #   1. it declared its OWN `tool_version` — not nothing (would orphan as `..._v2`), and not a
+      #      value merely inherited from a superclass (`_tool_version` is a class_attribute, so an
+      #      inherited value is non-nil and would let the suffix drop under the inherited number).
+      #      `_tool_version_declared_here?` is a non-inherited marker that distinguishes the two.
+      #   2. the suffix number equals the declared `tool_version` — catches the anonymous-then-named
+      #      case (`V2 = Class.new { tool_version 3 }`) the declaration-time guard couldn't see.
+      # `tool_name` derivation itself is a pure reader that does not raise. `tools_for` runs this over
+      # every member (comprehensive); `versions_for` runs it over the members it matched, so a lookup
+      # never disagrees with tools_for while an unrelated malformed tool can't derail it.
       def _assert_versioned_naming!(members)
         members.each do |klass|
-          segment = klass.name.to_s.split("::").last
-          next unless segment&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
-          next if klass._tool_version_declared_here?
+          match = klass.name.to_s.split("::").last&.match(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
+          next unless match
+
+          segment = match[0]
+          unless klass._tool_version_declared_here?
+            raise ArgumentError,
+                  "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but this class did not " \
+                  "declare its own `tool_version` (a version inherited from a superclass does not count). Declare " \
+                  "`tool_version N` on this class, or rename the constant."
+          end
+
+          next if match[1].to_i == klass.tool_version
 
           raise ArgumentError,
-                "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but this class did not " \
-                "declare its own `tool_version` (a version inherited from a superclass does not count). Declare " \
-                "`tool_version N` on this class, or rename the constant."
+                "#{klass.name}: constant ends in ::#{segment} but declares `tool_version #{klass.tool_version}`. " \
+                "Align the constant name and the version (rename to ::V#{klass.tool_version}) or drop the ::vN suffix."
         end
       end
 
