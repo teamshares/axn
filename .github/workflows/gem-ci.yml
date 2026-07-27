@@ -4,6 +4,13 @@ name: Gem CI
 # is a thin caller: `uses: teamshares/axn/.github/workflows/gem-ci.yml@main`. Fix CI once here and
 # every gem inherits it — no per-repo edits. The main job always runs `bundle exec rake` (each gem's
 # Rakefile default task runs the right suite); the two inputs cover the Rails-topology differences.
+#
+# CHECK NAMES — the job names below are HALF of each gem's required-status-check context. GitHub
+# prefixes a reusable workflow's jobs with the CALLER's job name, which the ci*.yml.tmpl callers pin
+# to `CI`, so a gem's branch-protection ruleset must require "CI / Main Specs (Ruby 3.2)" (etc.), not
+# the bare job name. Renaming a job here silently invalidates every consuming gem's required checks —
+# their PRs then block forever on a context that never reports. Rename only in lockstep with a
+# ruleset update in each gem (`gh api repos/teamshares/<gem>/rulesets/<id>`).
 on:
   workflow_call:
     inputs:
@@ -23,7 +30,9 @@ on:
 jobs:
   main:
     runs-on: ubuntu-latest
-    name: Specs (Ruby ${{ matrix.ruby }})
+    # "Main Specs" rather than "Specs": matches the job name in axn core's own workflow, and the
+    # default rake task this runs covers RuboCop as well as the specs.
+    name: Main Specs (Ruby ${{ matrix.ruby }})
     strategy:
       matrix:
         ruby: ${{ fromJSON(inputs.ruby-versions) }}
