@@ -23,7 +23,11 @@ module Axn
         VERSION_SEGMENT = /\Av(\d+)\z/i
 
         # `tool_version 2` sets; zero-arg reads the effective version (1 when undeclared).
-        def tool_version(value = NOT_SET)
+        # `**nil` — takes no keywords at all. Without it, a lone keyword (`tool_version default: true`,
+        # the removed pin option) would bind to `value` as a positional Hash and surface the bespoke
+        # "must be an Integer >= 1", implying the option exists and was merely mistyped. Refusing
+        # keywords outright yields the plain `no keywords accepted` a removed option should raise.
+        def tool_version(value = NOT_SET, **nil)
           return _tool_version || 1 if value.equal?(NOT_SET)
 
           raise ArgumentError, "tool_version must be an Integer >= 1 (got #{value.inspect})" unless value.is_a?(Integer) && value >= 1
