@@ -786,6 +786,18 @@ RSpec.describe Axn::Tools::Registry do
       expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V1.*tool_version/)
     end
 
+    it "raises at enumeration for a ::Vn subclass that only INHERITS a tool_version (never declared its own)" do
+      base = stub_const("VerSpec::Base", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 1
+      end)
+      # Inherits `tool :mcp` membership and _tool_version=1, but declares nothing itself. Without the
+      # declared-here gate it would silently publish as version 1 while its constant says ::V2.
+      stub_const("VerSpec::Thing::V2", Class.new(base))
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version/)
+    end
+
     it "versions_for for one tool is not derailed by an unrelated malformed ::Vn sibling" do
       good = stub_const("AgentTools::Billing", Class.new do
         include Axn

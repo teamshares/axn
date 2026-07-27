@@ -172,25 +172,28 @@ module Axn
         end
       end
 
-      # A member whose constant's final segment is exactly the vN convention (`::V2`) but which
-      # declared no `tool_version` would derive an orphan `tool_name` (`..._v2`) and silently fail
-      # to group under its logical name. `tool_name` derivation is a pure reader and deliberately
-      # does not raise; the guard lives here, at enumeration, where the orphaning would happen.
-      # Called only from `tools_for` — the comprehensive enumeration gate that validates every
-      # member. `versions_for` is a post-enumeration lookup that relies on that gate having already
-      # run and deliberately does NOT re-validate: a forgot-`tool_version` sibling derives a
-      # different name (`..._v1`) and is simply excluded from the looked-up group, and reporting the
-      # omission is `tools_for`'s job.
+      # A member whose constant's final segment is exactly the vN convention (`::V2`) but which did
+      # not declare its OWN `tool_version` would derive an orphan/wrong `tool_name` and misrepresent
+      # its version. Two cases: it declared nothing (derives `..._v2`, silently orphaned), or it only
+      # inherited a superclass's `tool_version` (e.g. a `::V2 < V1`-style subclass inheriting version
+      # 1) — `_tool_version` is a class_attribute, so the inherited value is non-nil and would let the
+      # suffix drop while the registry published the inherited number. Gating on
+      # `_tool_version_declared_here?` (a non-inherited marker) catches both. `tool_name` derivation
+      # is a pure reader and deliberately does not raise; the guard lives here, at enumeration, where
+      # the silent orphaning/misversioning would actually happen. Called only from `tools_for` — the
+      # comprehensive enumeration gate. `versions_for` is a post-enumeration lookup that relies on
+      # that gate and deliberately does NOT re-validate (a forgot-`tool_version` sibling derives a
+      # different name and is simply excluded from the looked-up group).
       def _assert_versioned_naming!(members)
         members.each do |klass|
-          next unless klass._tool_version.nil?
-
           segment = klass.name.to_s.split("::").last
           next unless segment&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
+          next if klass._tool_version_declared_here?
 
           raise ArgumentError,
-                "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but no " \
-                "`tool_version` was declared. Declare `tool_version N` to opt into versioning, or rename the constant."
+                "#{klass.name}: constant ends in ::#{segment} (the vN tool-version convention) but this class did not " \
+                "declare its own `tool_version` (a version inherited from a superclass does not count). Declare " \
+                "`tool_version N` on this class, or rename the constant."
         end
       end
 

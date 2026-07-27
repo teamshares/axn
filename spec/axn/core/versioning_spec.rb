@@ -53,6 +53,30 @@ RSpec.describe Axn::Core::Versioning do
     it "rejects non-Integers" do
       expect { tool_klass.tool_version("2") }.to raise_error(ArgumentError, /Integer >= 1/)
     end
+
+    it "rejects a truthy non-boolean default: (e.g. the string \"false\")" do
+      expect { tool_klass.tool_version(2, default: "false") }.to raise_error(ArgumentError, /default.*true or false/)
+    end
+
+    it "rejects a nil default:" do
+      expect { tool_klass.tool_version(2, default: nil) }.to raise_error(ArgumentError, /default.*true or false/)
+    end
+  end
+
+  describe "declared-here vs inherited" do
+    it "marks the declaring class but not an inheriting subclass" do
+      base = Class.new do
+        include Axn
+        tool_version 1
+      end
+      sub = Class.new(base)
+
+      expect(base._tool_version_declared_here?).to be(true)
+      expect(sub._tool_version_declared_here?).to be(false)
+      # The subclass still inherits the effective version value...
+      expect(sub.tool_version).to eq(1)
+      # ...but is not treated as having declared its own.
+    end
   end
 
   describe "::Vn mismatch guard" do

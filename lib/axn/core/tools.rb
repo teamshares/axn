@@ -201,15 +201,17 @@ module Axn
           self._tool_name_overrides = per_adapter_names.freeze
         end
 
-        # The vN convention: a final constant segment like `V2`. With a declared `tool_version`,
-        # derive from the enclosing namespace (`AgentTools::ApproveLoan::V2` → the ApproveLoan
-        # segments) so both versions collapse to one `tool_name` and group. Without a declared
-        # version this is a pure reader: it derives the name normally (`..._v2`) and does NOT raise.
-        # The promote-and-forget guard (a `::Vn` member that forgot `tool_version`) lives at
-        # enumeration in the registry, where the silent orphaning would actually happen.
+        # The vN convention: a final constant segment like `V2`. When THIS class declared a
+        # `tool_version`, derive from the enclosing namespace (`AgentTools::ApproveLoan::V2` → the
+        # ApproveLoan segments) so both versions collapse to one `tool_name` and group. When the
+        # version was only inherited (or not declared at all), this is a pure reader: it derives the
+        # name normally (`..._v2`) and does NOT raise. Gating on `_tool_version_declared_here?` (not
+        # `_tool_version.nil?`) is what stops a `::V2` subclass that merely inherits `tool_version 1`
+        # from dropping its suffix and masquerading as version 1. The promote-and-forget/inherited
+        # guard lives at enumeration in the registry, where the silent orphaning would actually happen.
         def _apply_version_segment_rule(segments)
           return segments unless segments.last&.match?(Axn::Core::Versioning::ClassMethods::VERSION_SEGMENT)
-          return segments if _tool_version.nil?
+          return segments unless _tool_version_declared_here?
 
           # Not `.presence || segments`: `[][0...-1]` is `[]`, not `nil`, so a `presence` fallback
           # would revert to the ORIGINAL `::Vn`-suffixed segments (deriving "v2"). Propagating the
