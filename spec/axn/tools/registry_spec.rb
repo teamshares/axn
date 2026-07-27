@@ -708,6 +708,77 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe "versioning" do
+    before { Axn.register_tool_adapter(:mcp) }
+
+    def versioned_tool(const, version, default: false)
+      stub_const(const, Class.new do
+        include Axn
+        tool :mcp
+        tool_version(version, default:)
+      end)
+    end
+
+    it "returns only the latest version per tool_name by default" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      result = Axn.tools_for(:mcp)
+      expect(result).to include(v2)
+      expect(result).not_to include(v1)
+    end
+
+    it "returns every version with all_versions: true, sorted by (tool_name, version)" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      # Scope to this tool_name: earlier examples in the suite load bare-`tool` fixtures that are
+      # members of every adapter, so an unscoped strict `eq` would also see them.
+      versions = Axn.tools_for(:mcp, all_versions: true).select { |klass| klass.tool_name(:mcp) == "approve_loan" }
+      expect(versions).to eq([v1, v2])
+    end
+
+    it "versions_for returns the group with latest/default/all" do
+      v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
+      group = Axn.versions_for(:mcp, "approve_loan")
+      expect(group.all).to eq([v1, v2])
+      expect(group.latest).to eq(v2)
+      expect(group.default).to eq(v1)
+    end
+
+    it "versions_for honors a moved default" do
+      versioned_tool("AgentTools::ApproveLoan::V1", 1)
+      v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2, default: true)
+      expect(Axn.versions_for(:mcp, "approve_loan").default).to eq(v2)
+    end
+
+    it "versions_for returns nil for an unknown tool_name" do
+      expect(Axn.versions_for(:mcp, "nope")).to be_nil
+    end
+
+    it "raises on two tools sharing (tool_name, version)" do
+      stub_const("VerSpec::DupeA", Class.new do
+        include Axn
+        tool :mcp, name: "dupe"
+        tool_version 2
+      end)
+      stub_const("VerSpec::DupeB", Class.new do
+        include Axn
+        tool :mcp, name: "dupe"
+        tool_version 2
+      end)
+      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /Duplicate tool/)
+    end
+
+    it "leaves an unversioned tool enumerated exactly as before" do
+      solo = stub_const("VerSpec::Solo", Class.new do
+        include Axn
+        tool :mcp
+      end)
+      expect(Axn.tools_for(:mcp)).to include(solo)
+      expect(Axn.versions_for(:mcp, solo.tool_name(:mcp)).all).to eq([solo])
+    end
+  end
+
   describe ".member?" do
     before { Axn.register_tool_adapter(:mcp) }
 

@@ -60,14 +60,29 @@ module Axn
         live
       end
 
-      def tools_for(adapter)
+      def tools_for(adapter, all_versions: false)
         ensure_loaded!
         members = all_classes.select { |klass| member?(klass, adapter) }
-        _assert_unique_tool_names!(members, adapter)
-        # Deterministic enumeration regardless of load/registration order. Safe to sort by
-        # tool_name because _assert_unique_tool_names! has already guaranteed the names are
-        # distinct for this adapter, so there are no ties.
-        members.sort_by { |klass| klass.tool_name(adapter) }
+        groups = _version_groups(members, adapter)
+        if all_versions
+          # Deterministic: by tool_name, then ascending version within each group.
+          groups.sort_by(&:tool_name).flat_map(&:all)
+        else
+          # Latest per tool_name. Names are distinct after collapsing, so sort_by is tie-free.
+          groups.map(&:latest).sort_by { |klass| klass.tool_name(adapter) }
+        end
+      end
+
+      # The resolved version group for one logical tool under `adapter`, or nil when nothing
+      # matches. Entry point for a path-routing adapter (all versions + default pin) and for
+      # exercising movable-default semantics without an adapter.
+      def versions_for(adapter, tool_name)
+        ensure_loaded!
+        target = tool_name.to_s
+        members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
+        return nil if members.empty?
+
+        VersionGroup.new(adapter:, tool_name: target, members:)
       end
 
       # Ensures tool classes under each adapter's tool roots are loaded before enumeration.
@@ -147,20 +162,13 @@ module Axn
 
       private
 
-      # Two independently-declared classes (different files) can derive or override the same
-      # provider-facing tool_name for the same adapter — only knowable once both are loaded and
-      # selected here. An adapter that publishes by tool_name would then silently clobber one tool
-      # or hand the provider duplicate names, so fail loudly with a fixable message instead. Scoped
-      # per-adapter: the same name reused under a DIFFERENT adapter is fine (checked by the caller
-      # passing only that adapter's members).
-      def _assert_unique_tool_names!(members, adapter)
-        collisions = members.group_by { |klass| klass.tool_name(adapter) }.select { |_name, klasses| klasses.length > 1 }
-        return if collisions.empty?
-
-        details = collisions.map { |tname, klasses| "#{tname.inspect} (#{klasses.map(&:name).sort.join(', ')})" }.join("; ")
-        raise ArgumentError,
-              "Duplicate tool_name for adapter #{adapter.inspect}: #{details}. Two tools cannot share a " \
-              "provider name; give one an explicit `tool name: \"...\"` to disambiguate."
+      # One VersionGroup per (adapter, tool_name). Group construction validates the group
+      # (duplicate (tool_name, tool_version), multiple default: true), so both enumeration
+      # paths share one set of rules.
+      def _version_groups(members, adapter)
+        members.group_by { |klass| klass.tool_name(adapter) }.map do |tool_name, klasses|
+          VersionGroup.new(adapter:, tool_name:, members: klasses)
+        end
       end
 
       # Eager-loads a single Rails tool dir, or warns and skips it if Zeitwerk doesn't manage it

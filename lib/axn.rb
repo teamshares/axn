@@ -63,13 +63,23 @@ module Axn
     Axn::Tools::Registry.register_adapter(key, config_source)
   end
 
-  def self.tools_for(adapter)
+  def self.tools_for(adapter, all_versions: false)
+    adapter = _registered_tool_adapter!(adapter)
+    Axn::Tools::Registry.tools_for(adapter, all_versions:)
+  end
+
+  def self.versions_for(adapter, tool_name)
+    adapter = _registered_tool_adapter!(adapter)
+    Axn::Tools::Registry.versions_for(adapter, tool_name)
+  end
+
+  def self._registered_tool_adapter!(adapter)
     adapter = adapter.to_sym
     unless Axn::Tools::Registry.adapters.include?(adapter)
       raise ArgumentError, "#{adapter.inspect} is not a registered tool adapter (registered: #{Axn::Tools::Registry.adapters.to_a.inspect})"
     end
 
-    Axn::Tools::Registry.tools_for(adapter)
+    adapter
   end
 
   def self.included(base)
