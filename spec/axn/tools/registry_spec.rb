@@ -797,6 +797,19 @@ RSpec.describe Axn::Tools::Registry do
       end)
       expect(Axn.versions_for(:mcp, "billing").all).to eq([good])
     end
+
+    it "versions_for excludes a forgot-tool_version sibling (comprehensive detection is tools_for's job, not versions_for's)" do
+      v2 = stub_const("AgentTools::ApproveLoan::V2", Class.new do
+        include Axn
+        tool :mcp
+        tool_version 2
+      end)
+      stub_const("AgentTools::ApproveLoan::V1", Class.new do # forgot tool_version → derives approve_loan_v1, excluded
+        include Axn
+        tool :mcp
+      end)
+      expect(Axn.versions_for(:mcp, "approve_loan").all).to eq([v2])
+    end
   end
 
   describe ".member?" do

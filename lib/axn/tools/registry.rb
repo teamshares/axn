@@ -83,7 +83,6 @@ module Axn
         members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
         return nil if members.empty?
 
-        _assert_versioned_naming!(members)
         VersionGroup.new(adapter:, tool_name: target, members:)
       end
 
@@ -177,8 +176,11 @@ module Axn
       # declared no `tool_version` would derive an orphan `tool_name` (`..._v2`) and silently fail
       # to group under its logical name. `tool_name` derivation is a pure reader and deliberately
       # does not raise; the guard lives here, at enumeration, where the orphaning would happen.
-      # Scoped to the members being enumerated, so a `versions_for("foo")` lookup is not derailed
-      # by an unrelated malformed `::Vn` sibling under a different name.
+      # Called only from `tools_for` — the comprehensive enumeration gate that validates every
+      # member. `versions_for` is a post-enumeration lookup that relies on that gate having already
+      # run and deliberately does NOT re-validate: a forgot-`tool_version` sibling derives a
+      # different name (`..._v1`) and is simply excluded from the looked-up group, and reporting the
+      # omission is `tools_for`'s job.
       def _assert_versioned_naming!(members)
         members.each do |klass|
           next unless klass._tool_version.nil?

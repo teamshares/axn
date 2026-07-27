@@ -155,7 +155,11 @@ module Axn
           source = axn_name.presence || name.presence
           return "tool" if source.nil? || source.strip.empty?
 
-          segments = _apply_version_segment_rule(source.split("::"))
+          # The `::Vn`-drop is a Ruby-constant convention (the filesystem promotion), so apply it
+          # only when deriving from the class constant. An explicit `axn_name` is author-chosen and
+          # taken literally: `axn_name "Payments::V2"` derives `payments_v2`, never `payments`.
+          segments = source.split("::")
+          segments = _apply_version_segment_rule(segments) if axn_name.blank?
           kept = _tool_name_strip_leading_prefixes(segments)
           derived = _tool_name_sanitize(kept.map(&:underscore).join("_"))
           return derived unless derived.empty?

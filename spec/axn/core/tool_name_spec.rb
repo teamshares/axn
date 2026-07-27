@@ -181,5 +181,23 @@ RSpec.describe "Axn tool_name derivation" do
       k.tool_version(2)
       expect(k.tool_name).to eq("tool")
     end
+
+    it "does not drop ::Vn from an explicit axn_name (the drop is a constant convention only)" do
+      k = tool_klass("AgentTools::ApproveLoan::V2")
+      k.tool_version(2)
+      k.axn_name("Payments::V2")
+      expect(k.tool_name).to eq("payments_v2")
+    end
+
+    it "groups versioned tools under an explicit axn_name that has no ::Vn segment" do
+      v1 = tool_klass("AgentTools::ApproveLoan::V1")
+      v1.tool_version(1)
+      v1.axn_name("Payments")
+      v2 = tool_klass("AgentTools::ApproveLoan::V2")
+      v2.tool_version(2)
+      v2.axn_name("Payments")
+      expect(v1.tool_name).to eq("payments")
+      expect(v2.tool_name).to eq("payments")
+    end
   end
 end
