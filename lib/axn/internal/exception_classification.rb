@@ -16,6 +16,31 @@ module Axn
     # by the number of exceptions actually raised in one tree, and dropped wholesale on `reset!`.
     module ExceptionClassification
       class << self
+        # An exception axn must pass through completely untouched — no recorded outcome, no callbacks,
+        # no report, no log line. Two kinds qualify, and neither describes a fault in the action:
+        #
+        #   * Process lifecycle. SignalException (so Interrupt, and Sidekiq::Shutdown, which subclasses
+        #     it) and SystemExit mean the process is going away. Reporting a job killed at deploy is
+        #     noise, and running the action's callbacks during shutdown invites user code that opens a
+        #     transaction or makes an HTTP call to block it.
+        #   * A foreign library's control flow. Timeout::ExitException is Timeout's own private signal,
+        #     caught and converted to Timeout::Error by the enclosing Timeout.timeout — via an IDENTITY
+        #     check on the object it raised. Touching or (worse) wrapping it makes the timeout silently
+        #     not fire. Only the known stdlib case can be named; a gem inventing its own such signal
+        #     would need adding here.
+        #
+        # Ruby's `fatal` needs no entry: it is unrescuable, so `rescue Exception` never sees it.
+        #
+        # Deliberately a DENYLIST, the opposite of Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR's
+        # allowlist. That one asks "is this safe to swallow?", where the conservative answer is no; this
+        # asks "is this worth reporting?", where the conservative answer is yes — a spurious report
+        # costs far less than a silently unreported bug, so anything unrecognized reports.
+        def pass_through?(exception)
+          return true if exception.is_a?(SignalException) || exception.is_a?(SystemExit)
+
+          defined?(::Timeout::ExitException) && exception.is_a?(::Timeout::ExitException)
+        end
+
         # Global report de-duplication: report once per exception per call tree.
         def reported?(exception) = _reported.include?(exception)
         def mark_reported!(exception) = _reported.add(exception)

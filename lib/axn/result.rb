@@ -84,6 +84,11 @@ module Axn
     def outcome
       label = if exception.is_a?(Axn::Failure)
                 OUTCOME_FAILURE
+              elsif @context.__classified_as_aborted?
+                # An abort (an exception from outside StandardError, settled and then re-raised) is never a
+                # failure: the executor deliberately skips `fails_on` for it, so the recompute below must
+                # not reach a broad matcher and disagree with the callbacks that already fired.
+                OUTCOME_EXCEPTION
               elsif exception
                 # Three records of "this settled as a failure", in priority order:
                 #   1. context flag — durable; survives after the per-execution set is cleared.

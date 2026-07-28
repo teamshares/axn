@@ -222,14 +222,14 @@ module Axn
       end
 
       def log_after
-        # `with_timing` is nested INSIDE `with_logging`, so reaching this ensure with no elapsed_time
-        # means the body never started — the only way in is a non-StandardError escaping `log_before`
-        # (an Interrupt or Timeout::ExitException landing on the inbound line). There is no completion
-        # to report: emitting anyway both LIES ("Execution completed (with outcome: success)" for an
-        # action that never ran) and raises out of this ensure while formatting a nil duration,
-        # replacing the in-flight exception — which silently destroys an enclosing Timeout.timeout,
-        # since its ExitException never reaches the handler that converts it to Timeout::Error.
-        return if @action.result.elapsed_time.nil?
+        # Only a run that SETTLED has a completion to report. `finalized?` is that exact signal — every
+        # settling path sets it (success, `fail!`, `done!`, a recorded exception) — and it is false in the
+        # two cases that reach this ensure without one: a pass-through abort (an Interrupt or Timeout
+        # signal, which axn deliberately leaves untouched) and a body that never started, when a
+        # non-StandardError escaped `log_before`. Reporting either would state an outcome that never
+        # happened — the unsettled result reads `success` — and formatting a nil duration would raise out
+        # of this ensure, replacing the exception in flight.
+        return unless @action.result.finalized?
 
         level = @action_class._auto_log_level_for(@action.result.outcome)
         return unless level
@@ -300,13 +300,48 @@ module Axn
       rescue Internal::EarlyCompletion
         raise
       rescue StandardError => e
+        _settle_exception(e)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        # An exception from OUTSIDE StandardError aborted the run (a SystemStackError from runaway
+        # recursion in the body, a NotImplementedError from an unfinished method). Nothing rescues those,
+        # so until now the run settled as nothing at all: `outcome` read `success`, the completion line
+        # said so, and the global report never fired — a user's own runaway recursion was invisible to
+        # error tracking even though the exception escaped to the caller.
+        #
+        # So settle it as the exception outcome it is (honest `outcome`/`ok?`, on_error + on_exception per
+        # the documented superset contract, one global report) and then re-raise. Deviations from the
+        # StandardError path are in _settle_exception under `aborted:`.
+        #
+        # Two things this must NOT do. It must not consult `fails_on`: a matcher broad enough to catch a
+        # non-StandardError (`fails_on Exception`) would otherwise turn an abort into a returned failure
+        # result, swallowing it. And it must re-raise THIS object, never a wrapper — an enclosing
+        # Timeout.timeout identifies its own ExitException by identity, and pass_through? keeps that class
+        # out of here entirely.
+        raise if Internal::ExceptionClassification.pass_through?(e)
+
+        _settle_exception(e, aborted: true)
+        raise
+      end
+
+      # The one path by which an exception settles onto the result. `aborted:` marks an exception from
+      # outside StandardError, which the caller re-raises rather than returning a result for.
+      def _settle_exception(e, aborted: false)
+        # Outbound defaults let an on_error handler read sensible exposures off a failed result. Skipped
+        # when aborted: nothing consumes that result (we re-raise), and running user `default:` procs
+        # while unwinding from — say — a stack overflow risks raising over the exception in flight.
+        #
         # standard_errors_only: this MUTATES the settling result (a default's value becomes an
         # exposure the caller reads), so it is the call's own work, not an observation of it.
-        Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action, standard_errors_only: true) do
-          apply_defaults!(:outbound)
+        unless aborted
+          Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action, standard_errors_only: true) do
+            apply_defaults!(:outbound)
+          end
         end
 
         @context.__record_exception(e)
+        # Before any callback dispatch, so a handler reading result.outcome sees `exception` rather than
+        # whatever a broad `fails_on` matcher would recompute (see Result#outcome).
+        @context.__classify_as_aborted! if aborted
 
         # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
         # filter or body that reads exception.message observes the same resolved string as result.error
@@ -316,8 +351,8 @@ module Axn
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-        if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
-           Axn::ValidationError.user_facing?(e)
+        if !aborted && (e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
+           Axn::ValidationError.user_facing?(e))
           # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
           # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
           # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
