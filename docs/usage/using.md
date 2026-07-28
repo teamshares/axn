@@ -11,6 +11,17 @@ An action executed via `#call` _always_ returns an instance of the `Axn::Result`
 
 This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/axn-result)) as well as any variables that the action `exposes`.
 
+::: warning What `call` can still raise
+Swallowing covers anything that is a bug in your action, including exceptions outside `StandardError` — a `SystemStackError` from runaway recursion, a `NotImplementedError` from an unfinished method — which come back as an `exception` outcome like any other.
+
+Three kinds of exception are *not* about your action, so `call` raises them instead of capturing them into a result:
+
+* `SystemExit` (an `exit` call) and anything under `SignalException` — `Interrupt` (Ctrl-C) and `Sidekiq::Shutdown`. The process is going away; returning `ok? == false` would invite the caller to carry on through a shutdown.
+* `Timeout::ExitException`, `Timeout`'s own internal signal. It has to reach the enclosing `Timeout.timeout` for the timeout to fire at all, so axn passes it through untouched.
+
+None of these fire your callbacks or reach your `on_exception` handler either. If a caller needs to survive them, rescue at the call site rather than checking `ok?`.
+:::
+
 As a consumer, you usually want a conditional that surfaces `error` unless the result is `ok?` (remember that any exceptions have been swallowed), and otherwise takes whatever success action is relevant.
 
 For example:
