@@ -82,8 +82,10 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   `Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)` → JSON-safe Hash.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
 - Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) on a cycle or on two Hash keys that
-  stringify to one JSON property. Add `reject_opaque: true` to also reject a value or key that would render as an
-  object address (`"#<User:0x…>"`). Never write your own pre-pass — it drifts from the renderer.
+  stringify to one JSON property. Add `reject_opaque: true` to also reject a value or key that declares no
+  rendering of its own — `to_s` inherited from `Object`, or (in Rails) ActiveSupport's generic
+  `Object#as_json` ivar dump as its only projection. A meaningful `to_s`/`as_json`/`to_h` defined anywhere
+  else passes, address-looking or not. Never write your own pre-pass — it drifts from the renderer.
 
 Source: `lib/axn/reflection/values.rb`.
 

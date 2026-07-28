@@ -124,7 +124,7 @@ To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use
 # axn-mcp/lib/axn/mcp/serializer.rb
 exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
 
-# An HTTP adapter, which must not ship an object address in a response body
+# An HTTP adapter, which must not ship an undeclared rendering in a response body
 exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
 ```
 
@@ -132,7 +132,9 @@ Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the 
 
 It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it. Two cases raise always, because the body would be *wrong*: a self-referential value (a cycle has no JSON representation at all), and two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value).
 
-Pass `reject_opaque: true` to also reject a value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, which would render an object address like `"#<User:0x000055…>"`. That output is complete but unpresentable, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
+Pass `reject_opaque: true` to also reject a value — or a Hash key — that declares no rendering of its own. The rule is about where the method it would render through is *defined*, not what that method produces: a value is opaque when its `to_s` is the one inherited from `Object`, or (in a Rails app, where ActiveSupport defines a generic `Object#as_json` that dumps instance variables) when that generic method is its only `as_json` and it has no `to_h` either. So it catches the value that ships `"#<User:0x000055…>"` outside Rails and the instance-variable dump the same value ships inside Rails — but not, for instance, a `Proc`, a class doing `alias_method :to_s, :inspect`, or a delegator forwarding `to_s` to a wrapped object: each of those renders through a method defined somewhere other than `Object`, so the flag lets it through. It is not a promise that no object address reaches the wire.
+
+Such a rendering is honest — every exposed datum is there — just not one the value's author declared, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
 
 You don't need your own detection for any of the four — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
 

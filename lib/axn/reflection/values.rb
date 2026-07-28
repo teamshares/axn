@@ -12,9 +12,10 @@ require "axn/exceptions"
 
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
 # — which adds a generic Object#as_json (an instance-variable dump). To avoid that bypassing a value
-# object's declared `to_h` shape, `serialize_value` only follows `as_json` when the object defines its
-# OWN (see custom_as_json?); a plain object with a meaningful `to_h` serializes via `to_h` in Rails and
-# non-Rails alike.
+# object's declared `to_h` shape, `serialize_value` prefers `to_h` whenever the only `as_json` in reach
+# is that generic one (see follow_as_json?/generic_as_json?), so a plain object with a meaningful `to_h`
+# serializes via `to_h` in Rails and non-Rails alike. A value with neither declares no shape at all, so
+# `reject_opaque` rejects it there just as it rejects the object address it renders as outside Rails.
 
 module Axn
   module Reflection
@@ -39,6 +40,13 @@ module Axn
                           'Object#to_s (it would stringify to garbage like "#<…>").'
       private_constant :OPAQUE_KEY_REASON
 
+      OPAQUE_AS_JSON_REASON = "it declares no JSON projection of its own: outside Rails it renders as an " \
+                              "object address, and in a Rails app ActiveSupport's generic Object#as_json " \
+                              "dumps its instance variables — neither is a shape its author chose, and the " \
+                              "dump leaks internals and won't match the declared schema. Declare it " \
+                              "`type: String` and format it, or give the value its own `as_json`/`to_h`."
+      private_constant :OPAQUE_AS_JSON_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -50,9 +58,10 @@ module Axn
 
       # `path` names the value being serialized, so a failure says WHICH exposure is at fault
       # (`items[1].parent`, not just "something"). `seen` carries the containers open on the current
-      # path — see within_container. `reject_opaque` additionally rejects a value (or Hash key) that would
-      # render only as an object address: honest output, but not presentable output, so it is the
-      # caller's call rather than a universal one.
+      # path — see within_container. `reject_opaque` additionally rejects a value (or Hash key) that declares
+      # no rendering of its own — one whose `to_s` is the inherited Object#to_s, or whose only `as_json` is
+      # the generic one a Rails app adds: honest output, but not presentable output, so it is the caller's
+      # call rather than a universal one.
       def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
         case value
         when nil, String, Integer, Float, TrueClass, FalseClass
@@ -102,6 +111,11 @@ module Axn
           # every call, so an object whose projection points back at it (`to_h => { child: self }`)
           # would recurse forever with a different Hash identity each time.
           if follow_as_json?(value)
+            # Inside this branch a generic-Object owner proves follow_as_json? admitted the value only via
+            # its no-`to_h` clause, so the value declares neither an `as_json` nor a `to_h` of its own and
+            # what would render is ActiveSupport's instance-variable dump.
+            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON) if reject_opaque && generic_as_json?(value)
+
             within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
           elsif value.respond_to?(:to_h)
             within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:) }
@@ -160,7 +174,15 @@ module Axn
       def follow_as_json?(value)
         return false unless value.respond_to?(:as_json)
 
-        value.method(:as_json).owner != Object || !value.respond_to?(:to_h)
+        !generic_as_json?(value) || !value.respond_to?(:to_h)
+      end
+
+      # Whether the only `as_json` in reach is ActiveSupport's generic Object#as_json — the
+      # instance-variable dump a Rails app adds to every object — rather than one the value's class or an
+      # included module defines (an ActiveRecord model's, for instance). Shared with follow_as_json? so
+      # the routing decision and the opaqueness verdict can't drift apart.
+      def generic_as_json?(value)
+        value.method(:as_json).owner == Object
       end
 
       # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
