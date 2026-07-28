@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.5
 
 ### Field contract & subfields
 
@@ -67,6 +67,7 @@
 * [FEAT] Async argument serialization uses `ActiveJob::Arguments` whenever ActiveJob is loaded (for all adapters, including Sidekiq), so GlobalID models, `Date`/`Time`/`DateTime`, `Symbol`, `Range`, `BigDecimal`, and nested symbol-keyed hashes round-trip losslessly — fixing a Sidekiq-enqueued `expects :at, type: Time` that used to arrive as a `String`. A deployment without ActiveJob accepts only JSON-native and GlobalID-able args.
 * [BREAKING] Enqueuing an async action with an unserializable argument now raises a field-aware `Axn::Async::UnserializableArgument` at enqueue time instead of silently corrupting it. The Sidekiq wire format changed to ActiveJob's `_aj_*` tagging for rich types — drain the queue across the deploy.
 * [FEAT] `Axn::Async.owns?(candidate)` answers "is this job/notice signal Axn-owned?" for error-reporter `before_notify`-style filters that suppress duplicate backend-native reports; it accepts a Class, a class-name String, or a raw Sidekiq job Hash. `Axn::Async.register_ownership_predicate` lets an adapter extend detection.
+* [FEAT] axn's per-execution state (the nesting stack, exception classification) lives in `ActiveSupport::IsolatedExecutionState`, so it isolates correctly under a fiber-based host once `isolation_level = :fiber` is set. Because axn can't set that itself (assigning it at runtime clears the store, taking ActiveRecord and `CurrentAttributes` with it), a process running a `Fiber.scheduler` under the default `:thread` isolation now gets one warning naming the fix instead of silently sharing state across concurrent fibers. Documented at `/advanced/concurrency`.
 
 ### Logging & observability
 
@@ -112,6 +113,7 @@
 * [FEAT] `inputs` returns the action's resolved declared-inbound fields as a Hash, for splatting into nested calls (`Child.call(**inputs, role: ROLE)`); `inputs` is now a reserved field name. `expose(result)` forwards a nested action result's declared exposures (the intersection with the current action's `exposes`) in one call.
 * [BUGFIX] `Axn.config.logger` no longer returns `nil` during the Rails boot window (when `Rails` is defined but `Rails.logger` isn't set yet), which had crashed any load-time log call — notably `include Axn` on a class whose ancestor defines `description`. It falls back to a transient stdout logger without memoizing, so a later call picks up `Rails.logger` once the initializer has run.
 * [BUGFIX] Re-including `Axn` in a subclass (`class Child < Parent; include Axn; end`) is now a no-op instead of silently wiping the parent's inherited `expects`/`exposes`.
+* [BUGFIX] `require "axn"` no longer raises `NameError` in a process that hasn't already loaded the stdlib `date`. The contract's type table names `Date`/`DateTime` at load time, so any consumer not picking `date` up transitively (a plain-Ruby app, not Rails) crashed on require.
 * [BUGFIX] `include Axn` no longer shadows a `description`/`input_schema`/`output_schema` class method the including class already inherits from a non-axn base (e.g. an adapter's `Tool` base where those names carry transport meaning) — axn layers its own only when the name isn't already provided.
 * [FEAT] Ship `AGENTS-consuming.md` at the gem root (packaged in the gem, readable offline via `bundle show axn`) — a dense, agent-facing cheat-sheet for code that uses Axn. README gains an "Using Axn with an AI agent" section with a copy-paste snippet.
 * [INTERNAL] The packaged gem now uses an explicit `spec.files` allowlist (`lib/` + `README`/`CHANGELOG`/`LICENSE` + the `AGENTS-consuming.md`/`AGENTS-tool-adapters.md` guides) instead of a `git ls-files` denylist, so the VitePress `docs/` site and editor/tooling files no longer ship (177 → 132 files). Contributor tooling: the pre-commit RuboCop hook moved to lefthook (`bin/setup` installs it), and `bin/new-gem` gained a `--check` conformance audit for downstream gems.

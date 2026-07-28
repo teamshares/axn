@@ -16,13 +16,13 @@ Gem::Specification.new do |spec|
   # NOTE: uses endless methods from 3, literal value omission from 3.1, Data.define from 3.2, Vernier profiling from 3.2.1
   spec.required_ruby_version = ">= 3.2.1"
 
-  # spec.metadata["allowed_push_host"] = "TODO: Set to your gem server 'https://example.com'"
-  # spec.metadata["rubygems_mfa_required"] = "true"
-
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"] = "https://github.com/teamshares/axn/blob/main/CHANGELOG.md"
 
+  # Publish to RubyGems.org. Setting the host explicitly locks the push target, so `rake release`
+  # (which runs `gem push`) can't be redirected by a stray RUBYGEMS_HOST or a misconfigured remote.
+  spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["rubygems_mfa_required"] = "true"
 
   # Ship the runtime payload only — allowlist, not denylist. A gem's shippable surface is small and
