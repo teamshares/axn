@@ -24,19 +24,31 @@ module Axn
       CYCLE_DETECTED = Object.new.freeze
       private_constant :CYCLE_DETECTED
 
+      # Both, defensively: a class that defines no #to_s of its own inherits Object's, and in practice
+      # that is the owner reported — but Kernel is where several of Object's own hooks actually live.
+      DEFAULT_TO_S_OWNERS = [::Object, ::Kernel].freeze
+      private_constant :DEFAULT_TO_S_OWNERS
+
+      OPAQUE_VALUE_REASON = "it serializes only via the default Object#to_s (it would render as garbage " \
+                            'like "#<User:0x…>") — declare it `type: String` and format it, or give the ' \
+                            "value an `as_json`/`to_h`."
+      private_constant :OPAQUE_VALUE_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
-      def serialize_exposed(result, field_configs)
+      def serialize_exposed(result, field_configs, strict: false)
         field_configs.each_with_object({}) do |config, hash|
-          hash[config.field.to_s] = serialize_value(result.public_send(config.field), path: config.field.to_s)
+          hash[config.field.to_s] = serialize_value(result.public_send(config.field), path: config.field.to_s, strict:)
         end
       end
 
       # `path` names the value being serialized, so a failure says WHICH exposure is at fault
       # (`items[1].parent`, not just "something"). `seen` carries the containers open on the current
-      # path — see within_container.
-      def serialize_value(value, path: "(exposed value)", seen: nil)
+      # path — see within_container. `strict` additionally rejects a value (or Hash key) that would
+      # render only as an object address: honest output, but not presentable output, so it is the
+      # caller's call rather than a universal one.
+      def serialize_value(value, path: "(exposed value)", seen: nil, strict: false)
         case value
         when nil, String, Integer, Float, TrueClass, FalseClass
           value
@@ -59,7 +71,7 @@ module Axn
           within_container(value, path, seen) do |nested|
             rendered = value.each_with_object({}) do |(key, element), acc|
               wire_key = key.to_s
-              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested)
+              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, strict:)
             end
 
             # Built from the SOURCE keys rather than via transform_keys so a collapse is observable:
@@ -72,7 +84,7 @@ module Axn
           end
         when Array
           within_container(value, path, seen) do |nested|
-            value.each_with_index.map { |v, index| serialize_value(v, path: "#{path}[#{index}]", seen: nested) }
+            value.each_with_index.map { |v, index| serialize_value(v, path: "#{path}[#{index}]", seen: nested, strict:) }
           end
         when Time, DateTime, Date
           # Rendered as RFC3339/ISO-8601 regardless of Rails, matching the schema's
@@ -84,10 +96,12 @@ module Axn
           # every call, so an object whose projection points back at it (`to_h => { child: self }`)
           # would recurse forever with a different Hash identity each time.
           if follow_as_json?(value)
-            within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested) }
+            within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, strict:) }
           elsif value.respond_to?(:to_h)
-            within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested) }
+            within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, strict:) }
           else
+            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if strict && default_to_s?(value)
+
             value.to_s
           end
         end
@@ -131,6 +145,15 @@ module Axn
         return false unless value.respond_to?(:as_json)
 
         value.method(:as_json).owner != Object || !value.respond_to?(:to_h)
+      end
+
+      # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
+      # value inherits #to_s instead of defining one. Keying on the OWNER rather than respond_to? is
+      # what lets a real `def to_s = "$#{cents / 100.0}"` through. Reached only from the `to_s`
+      # fallback and from a Hash key, so the earlier branches have already routed away everything
+      # that stringifies meaningfully.
+      def default_to_s?(value)
+        DEFAULT_TO_S_OWNERS.include?(value.method(:to_s).owner)
       end
     end
   end

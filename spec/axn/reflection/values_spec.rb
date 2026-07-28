@@ -7,6 +7,21 @@ require "spec_helper"
 require "bigdecimal"
 
 RSpec.describe Axn::Reflection::Values do
+  # An object with no own as_json, no to_h, and #to_s owned by Object — but `respond_to?` is
+  # overridden to hide :as_json/:to_h rather than left to chance: another spec file's
+  # `require "globalid"` adds a generic Object#as_json globally for the rest of this process (a
+  # Rails app does the same), which would otherwise route a plain Object.new through the as_json
+  # branch instead of the to_s fallback these examples mean to exercise.
+  def opaque_object
+    Object.new.tap do |o|
+      def o.respond_to?(name, *args)
+        return false if %i[as_json to_h].include?(name)
+
+        super
+      end
+    end
+  end
+
   describe ".serialize_value" do
     it "passes through JSON scalars" do
       expect(described_class.serialize_value(1)).to eq(1)
@@ -141,6 +156,23 @@ RSpec.describe Axn::Reflection::Values do
       result = klass.call
       expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
     end
+
+    it "threads strict: to the values it serializes" do
+      owner = opaque_object
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes :owner
+
+        define_method(:call) { expose(owner:) }
+      end
+      result = klass.call
+
+      expect(described_class.serialize_exposed(result, klass.external_field_configs)["owner"])
+        .to match(/\A#<Object:0x[0-9a-f]+>\z/)
+      expect { described_class.serialize_exposed(result, klass.external_field_configs, strict: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`owner`/)
+    end
   end
 
   # Stringifying a Hash's keys collapses two keys with the same #to_s into ONE JSON property, dropping
@@ -175,6 +207,76 @@ RSpec.describe Axn::Reflection::Values do
     it "leaves a Hash whose keys stringify distinctly unchanged" do
       expect(described_class.serialize_value({ id: 1, "name" => "x", 2 => :b }))
         .to eq("id" => 1, "name" => "x", "2" => "b")
+    end
+  end
+
+  # serialize_value's last resort is `value.to_s`. When that #to_s is the one inherited from Object,
+  # the result is an object address — complete, but useless in a response body or an LLM's tool
+  # result. Strict callers reject it; the default keeps rendering it, since a lossless-but-ugly value
+  # is not worth failing an MCP call over.
+  describe "default-to_s values under strict:" do
+    let(:opaque) { opaque_object }
+
+    it "renders the object address by default" do
+      expect(described_class.serialize_value(opaque, path: "owner")).to match(/\A#<Object:0x[0-9a-f]+>\z/)
+    end
+
+    it "raises under strict:, naming the path and how to fix it" do
+      expect { described_class.serialize_value(opaque, path: "owner", strict: true) }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /`owner` \(Object\).*only via the default Object#to_s.*declare it `type: String`/m,
+        )
+    end
+
+    it "allows a value with a meaningful custom to_s under strict:" do
+      money = opaque_object.tap { |o| def o.to_s = "$5.00" }
+
+      expect(described_class.serialize_value(money, strict: true)).to eq("$5.00")
+    end
+
+    it "checks inside an Array, naming the indexed path" do
+      expect { described_class.serialize_value([1, opaque], path: "rows", strict: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[1\]`/)
+    end
+
+    it "checks inside a Hash, naming the keyed path" do
+      expect { described_class.serialize_value({ owner: opaque }, path: "rec", strict: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`rec\.owner`/)
+    end
+
+    it "checks a value reached through a custom to_h, since the checks live inside the recursion" do
+      wrapper = Object.new
+      wrapper.instance_variable_set(:@inner, opaque)
+      def wrapper.to_h = { inner: @inner }
+
+      expect { described_class.serialize_value(wrapper, path: "w", strict: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`/)
+    end
+
+    it "leaves every ordinary value untouched under strict:" do
+      as_json_obj = Object.new.tap { |o| def o.as_json(*) = { "k" => "v" } }
+
+      expect(described_class.serialize_value(:ok, strict: true)).to eq("ok")
+      expect(described_class.serialize_value(BigDecimal("3.14"), strict: true)).to eq(3.14)
+      expect(described_class.serialize_value(Date.new(2026, 7, 3), strict: true)).to eq("2026-07-03")
+      expect(described_class.serialize_value({ a: [1, nil, true] }, strict: true)).to eq("a" => [1, nil, true])
+      expect(described_class.serialize_value(as_json_obj, strict: true)).to eq("k" => "v")
+    end
+
+    it "still raises on a cycle under strict:, with the cycle reason rather than a to_s reason" do
+      cyclic = [1]
+      cyclic << cyclic
+
+      expect { described_class.serialize_value(cyclic, path: "items", strict: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /self-referential/)
+    end
+
+    it "raises on colliding keys under either setting, since a dropped value is wrong output" do
+      [false, true].each do |strict|
+        expect { described_class.serialize_value({ id: 1, "id" => 2 }, strict:) }
+          .to raise_error(Axn::Reflection::UnserializableValue, /silently collapse/)
+      end
     end
   end
 
