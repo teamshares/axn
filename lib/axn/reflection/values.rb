@@ -35,6 +35,10 @@ module Axn
                             "value an `as_json`/`to_h`."
       private_constant :OPAQUE_VALUE_REASON
 
+      OPAQUE_KEY_REASON = "a Hash key is rendered via #to_s and this one has only the default " \
+                          'Object#to_s (it would stringify to garbage like "#<…>").'
+      private_constant :OPAQUE_KEY_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -71,6 +75,7 @@ module Axn
         when Hash
           within_container(value, path, seen) do |nested|
             rendered = value.each_with_object({}) do |(key, element), acc|
+              check_opaque_key!(key, path) if reject_opaque
               wire_key = key.to_s
               acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
@@ -135,6 +140,16 @@ module Axn
           value: second,
           reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
                   "(#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value.",
+        )
+      end
+
+      # Names the key in the path (`data (hash key #<K:0x…>)`) rather than the Hash alone, so the
+      # message points at which of several keys is at fault.
+      def check_opaque_key!(key, path)
+        return unless default_to_s?(key)
+
+        raise Axn::Reflection::UnserializableValue.new(
+          path: "#{path} (hash key #{key.inspect})", value: key, reason: OPAQUE_KEY_REASON,
         )
       end
 

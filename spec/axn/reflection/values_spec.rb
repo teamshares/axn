@@ -280,6 +280,41 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  # A Hash's keys render via `to_s` and never the as_json/to_h chain, so an opaque key becomes an
+  # object address used as a JSON PROPERTY NAME.
+  describe "default-to_s Hash keys under reject_opaque:" do
+    let(:opaque_key) { Object.new }
+
+    it "renders the object address as a property name by default" do
+      expect(described_class.serialize_value({ opaque_key => 1 }).keys.first)
+        .to match(/\A#<Object:0x[0-9a-f]+>\z/)
+    end
+
+    it "raises under reject_opaque:, naming the offending key in the path" do
+      expect { described_class.serialize_value({ opaque_key => 1 }, path: "data", reject_opaque: true) }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /`data \(hash key #<Object:0x[0-9a-f]+>\)` \(Object\).*a Hash key is rendered via #to_s/m,
+        )
+    end
+
+    it "allows Symbol, String, and Integer keys under reject_opaque:" do
+      expect(described_class.serialize_value({ a: 1, "b" => 2, 3 => 4 }, reject_opaque: true))
+        .to eq("a" => 1, "b" => 2, "3" => 4)
+    end
+
+    it "allows a key with a meaningful custom to_s under reject_opaque:" do
+      key = Object.new.tap { |o| def o.to_s = "custom" }
+
+      expect(described_class.serialize_value({ key => 1 }, reject_opaque: true)).to eq("custom" => 1)
+    end
+
+    it "checks keys of a nested Hash, naming the nested path" do
+      expect { described_class.serialize_value({ rows: [{ opaque_key => 1 }] }, path: "out", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key #<Object:0x/)
+    end
+  end
+
   # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
   # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
   # UnserializableValue — both of which live outside that entrypoint, so values.rb requires them itself.
