@@ -1,8 +1,8 @@
-# Strict outbound value serialization
+# Rejecting opaque outbound values
 
 **Ticket:** [PRO-2988](https://linear.app/teamshares/issue/PRO-2988/axn-strict-mode-for-outbound-value-serialization-opaque-leaves-opaque)
 
-**Goal:** Make `Axn::Reflection::Values` the sole owner of "this exposed value has no honest JSON representation," so an adapter never re-implements core's walk in order to pre-check it. Adds a `strict:` mode covering two dishonest-but-lossless renderings, and closes one silent data-loss bug unconditionally.
+**Goal:** Make `Axn::Reflection::Values` the sole owner of "this exposed value has no honest JSON representation," so an adapter never re-implements core's walk in order to pre-check it. Adds a `reject_opaque:` mode covering two dishonest-but-lossless renderings, and closes one silent data-loss bug unconditionally.
 
 ## Motivation
 
@@ -25,9 +25,9 @@ Core will diagnose four shapes. Two gates, drawn on whether the rendered body wo
 **Unconditional — the rendering lies about the data.**
 
 1. *Self-referential value.* Already shipped in #203. No JSON representation exists at all.
-2. *Colliding Hash keys.* `transform_keys(&:to_s)` maps `{id: 1, "id" => 2}` to one property, dropping a value with no signal. This is the only defect where the caller cannot tell from the output that anything went missing, so gating it behind an opt-in would leave a correctness bug unfixed for the two adapters shipping today. Neither `axn-mcp` nor `axn-ruby_llm` would rationally set `strict: true` — an ugly `#<User:0x…>` in an LLM tool result still beats a hard tool failure — so a gated collision check would only ever fire for the adapter that already has its own guard. **This is the deliberate resolution of the open question raised in the proposal, against the proposal's own default.**
+2. *Colliding Hash keys.* `transform_keys(&:to_s)` maps `{id: 1, "id" => 2}` to one property, dropping a value with no signal. This is the only defect where the caller cannot tell from the output that anything went missing, so gating it behind an opt-in would leave a correctness bug unfixed for the two adapters shipping today. Neither `axn-mcp` nor `axn-ruby_llm` would rationally set `reject_opaque: true` — an ugly `#<User:0x…>` in an LLM tool result still beats a hard tool failure — so a gated collision check would only ever fire for the adapter that already has its own guard. **This is the deliberate resolution of the open question raised in the proposal, against the proposal's own default.**
 
-**Under `strict:` — the rendering is honest but unpresentable.** Every exposed datum is present; it just reads as garbage.
+**Under `reject_opaque:` — the rendering is honest but unpresentable.** Every exposed datum is present; it just reads as garbage.
 
 3. *Default-`to_s` leaf.* `serialize_value`'s final fallback is `value.to_s`, reached only when the value has no own `as_json` and no `to_h`. If that `to_s` is the inherited `Object#to_s`, an object address ships in the response body. The check is simpler here than downstream because the earlier `when` branches and the `as_json`/`to_h` arms have already routed away everything that stringifies meaningfully.
 4. *Default-`to_s` Hash key.* Keys render via `transform_keys(&:to_s)` and never touch the `as_json`/`to_h` chain, so the same garbage becomes a JSON *property name*.
@@ -41,16 +41,16 @@ Core will diagnose four shapes. Two gates, drawn on whether the rendered body wo
 ## API
 
 ```ruby
-serialize_exposed(result, field_configs, strict: false)
-serialize_value(value, path: "(exposed value)", seen: nil, strict: false)
+serialize_exposed(result, field_configs, reject_opaque: false)
+serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
 ```
 
-`strict` threads through the recursion alongside `seen`. Defaulting to `false` keeps `axn-mcp` and `axn-ruby_llm` byte-identical with no adapter edit, and — load-bearing, not just compatibility — keeps `Reflection::Schema` correct: `schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, where a strict rejection would turn a reflection call into a raise.
+`reject_opaque` threads through the recursion alongside `seen`. Defaulting to `false` keeps `axn-mcp` and `axn-ruby_llm` byte-identical with no adapter edit, and — load-bearing, not just compatibility — keeps `Reflection::Schema` correct: `schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, where such a rejection would turn a reflection call into a raise.
 
 `axn-openapi` becomes a one-line pass-through:
 
 ```ruby
-Axn::Reflection::Values.serialize_exposed(result, configs, strict: Axn::OpenAPI.config.strict_serialization)
+Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: Axn::OpenAPI.config.reject_opaque)
 ```
 
 ## Implementation
@@ -63,9 +63,9 @@ The `Hash` branch fuses key checking into the existing single pass rather than a
 when Hash
   within_container(value, path, seen) do |nested|
     rendered = value.each_with_object({}) do |(key, element), acc|
-      check_opaque_key!(key, path) if strict
+      check_opaque_key!(key, path) if reject_opaque
       wire_key = key.to_s
-      acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, strict:)
+      acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
     end
     raise_colliding_keys!(value, path) if rendered.size != value.size
     rendered
@@ -78,13 +78,13 @@ The leaf check sits in the existing `else` arm's final fallback, the only place 
 
 ```ruby
 else
-  raise UnserializableValue.new(path:, value:, reason: OPAQUE_LEAF_REASON) if strict && default_to_s?(value)
+  raise UnserializableValue.new(path:, value:, reason: OPAQUE_LEAF_REASON) if reject_opaque && default_to_s?(value)
 
   value.to_s
 end
 ```
 
-`default_to_s?(obj)` is `DEFAULT_TO_S_OWNERS.include?(obj.method(:to_s).owner)` with `DEFAULT_TO_S_OWNERS = [::Object, ::Kernel]` — both, defensively; in practice the owner is `Object`. Checking `owner` rather than `respond_to?` is what lets a meaningful `def to_s = "$#{cents / 100.0}"` through.
+`default_to_s?(obj)` is `DEFAULT_TO_S_OWNERS.include?(obj.method(:to_s).owner)` with `DEFAULT_TO_S_OWNERS = [::Object, ::Kernel]`. `Kernel` is the entry that actually fires — `Object.new.method(:to_s).owner` is `Kernel`, not `Object`, since that is where the default `#to_s` is defined — so dropping it would make the predicate silently never true; `Object` covers a value whose own ancestry reports it there instead. Checking `owner` rather than `respond_to?` is what lets a meaningful `def to_s = "$#{cents / 100.0}"` through.
 
 Because the checks live inside the recursion, they fire at depth for free: `[{ a: User.new }]` raises at path `rows[0].a`, and a value reached through a custom `to_h` is checked exactly like a directly-exposed one.
 
@@ -110,19 +110,27 @@ No adapter-specific escape hatch appears in any core message. `axn-openapi`'s cu
 
 `spec/axn/reflection/values_spec.rb` carries the new cases; the cycle cases stay in `spec/axn/self_referential_values_spec.rb`.
 
-- Each of defects 3 and 4 both ways: raises under `strict: true`, renders as today under the default.
+- Each of defects 3 and 4 both ways: raises under `reject_opaque: true`, renders as today under the default.
 - Defect 2 raises under both settings, and the message names both original keys and the collapsed property.
 - Nested occurrences: inside a Hash, inside an Array, and behind a custom `to_h`, asserting the reported `path`.
-- Negative cases under `strict: true`: a value with a meaningful custom `to_s`, a Symbol/String/Integer-keyed Hash, `Time`/`BigDecimal`/`Symbol` leaves, and an object with its own `as_json`.
-- A `Reflection::Schema` case proving a literal `default:` that is an opaque object still reflects rather than raising (the `schema.rb:880` path is never strict).
+- Negative cases under `reject_opaque: true`: a value with a meaningful custom `to_s`, a Symbol/String/Integer-keyed Hash, `Time`/`BigDecimal`/`Symbol` leaves, and an object with its own `as_json`.
+- A `Reflection::Schema` case proving a literal `default:` that is an opaque object still reflects rather than raising (the `schema.rb:880` path never passes the kwarg).
 - Never assert `Hash#inspect` text: Ruby 3.4 changed its spacing and CI runs 3.2–3.4. Object addresses in messages need regex or substring matching.
 
 ## Also update
 
-- `docs/recipes/authoring-tool-adapters.md` (~L121-130) — document `strict:` beside the existing `serialize_exposed` guidance, and widen "you don't need your own cycle detection" to cover all four defects.
-- `AGENTS-tool-adapters.md:82` — note the `strict:` kwarg on the one-line `serialize_exposed` reference.
-- `CHANGELOG.md` under `## Unreleased` — `[BREAKING]` for the unconditional colliding-key raise, `[FEAT]` for `strict:`.
+- `docs/recipes/authoring-tool-adapters.md` (~L121-130) — document `reject_opaque:` beside the existing `serialize_exposed` guidance, and widen "you don't need your own cycle detection" to cover all four defects.
+- `AGENTS-tool-adapters.md:82` — note the `reject_opaque:` kwarg on the one-line `serialize_exposed` reference.
+- `CHANGELOG.md` under `## 0.1.0-alpha.5` — that version is not released yet and is waiting on this work, so it is the section to edit rather than opening an `## Unreleased` above it. `[BREAKING]` for the unconditional colliding-key raise, `[FEAT]` for `reject_opaque:`.
 
 ## Downstream follow-up (not this PR)
 
-Once this lands, `axn-openapi` deletes `assert_serializable!`, `validate_hash!`, `within_container`, `SAFE_LEAVES`, `DEFAULT_TO_S_OWNERS`, and `UnserializableExposureError` (~90 lines; `errors.rb` loses its only subclass), replacing the pre-pass with the `strict:` kwarg and moving its disable hint into the dispatcher log line.
+Once this lands, `axn-openapi` deletes `assert_serializable!`, `validate_hash!`, `within_container`, `SAFE_LEAVES`, `DEFAULT_TO_S_OWNERS`, and `UnserializableExposureError` (~90 lines; `errors.rb` loses its only subclass), replacing the pre-pass with the `reject_opaque:` kwarg and moving its disable hint into the dispatcher log line.
+
+It also renames its own `strict_serialization` setting to `reject_opaque`, which is unreleased and so free to change. That knob is genuinely narrower than the word "strict" implied: it gated only the opaque pre-pass, never `Dispatcher.ensure_encodable`, which is unconditional. Keeping the two names aligned stops a reader assuming core's kwarg promises encodability.
+
+## Why `reject_opaque:` and not `strict:`
+
+The kwarg was `strict:` through the first three commits. `strict` names an intensity rather than an axis, and it over-promises: a reader reasonably expects `strict: true` to mean "the Hash I get back is JSON," and it does not — `Float::INFINITY`, `NaN`, and invalid-UTF-8 Strings all pass every check here and then raise inside `JSON.generate`.
+
+That gap cannot be closed under any name, because **core never encodes**. `serialize_exposed` returns a Hash; encoding happens in the adapter. Core could only *predict* encodability by re-implementing what the encoder already answers authoritatively — the exact mirror-walk this change exists to delete. The asymmetry is the principled scope line: an opaque `to_s` is undetectable downstream (`"#<User:0x…>"` encodes fine, so only the renderer can catch it), while a non-finite Float is authoritatively caught by `JSON.generate` with no drift possible. `reject_opaque:` names what it does and leaves encodability where it is already answered correctly.

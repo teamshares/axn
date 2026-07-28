@@ -1,20 +1,20 @@
-# Strict Outbound Value Serialization Implementation Plan
+# Opaque-Value Rejection Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `Axn::Reflection::Values` diagnose all four shapes of "this exposed value has no honest JSON representation" — adding an unconditional colliding-Hash-key raise and a `strict:` mode for default-`to_s` values and keys — so `axn-openapi` can delete the parallel walk it maintains to pre-check them.
+**Goal:** Make `Axn::Reflection::Values` diagnose all four shapes of "this exposed value has no honest JSON representation" — adding an unconditional colliding-Hash-key raise and a `reject_opaque:` mode for default-`to_s` values and keys — so `axn-openapi` can delete the parallel walk it maintains to pre-check them.
 
-**Architecture:** Every check lives inside `serialize_value`'s existing recursion, colocated with the rendering it predicts (the whole point: the adapter's separate walk drifted from it). `strict` threads through the recursion alongside `seen`, defaulting to `false`. All four defects reuse the existing `Axn::Reflection::UnserializableValue`, which gains a `reason:` kwarg, so no adapter's `rescue StandardError` needs a change.
+**Architecture:** Every check lives inside `serialize_value`'s existing recursion, colocated with the rendering it predicts (the whole point: the adapter's separate walk drifted from it). `reject_opaque` threads through the recursion alongside `seen`, defaulting to `false`. All four defects reuse the existing `Axn::Reflection::UnserializableValue`, which gains a `reason:` kwarg, so no adapter's `rescue StandardError` needs a change.
 
 **Tech Stack:** Ruby, RSpec, RuboCop. No new dependencies.
 
 **Ticket:** [PRO-2988](https://linear.app/teamshares/issue/PRO-2988/axn-strict-mode-for-outbound-value-serialization-opaque-leaves-opaque)
-**Spec:** `internal-docs/specs/2026-07-28-axn-strict-serialization-design.md`
+**Spec:** `internal-docs/specs/2026-07-28-axn-reject_opaque-serialization-design.md`
 
 ## Global Constraints
 
-- Two gates, and they are not interchangeable. **Colliding keys raise unconditionally** (the body would be *wrong* — a value silently vanishes). **Default-`to_s` value and key raise only under `strict: true`** (the body is complete, just ugly). Do not "simplify" by moving the collision check behind the flag; that reversal is the spec's central decision.
-- `strict:` defaults to `false` everywhere. This is load-bearing beyond back-compat: `lib/axn/reflection/schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, and schema reflection must never raise on user data.
+- Two gates, and they are not interchangeable. **Colliding keys raise unconditionally** (the body would be *wrong* — a value silently vanishes). **Default-`to_s` value and key raise only under `reject_opaque: true`** (the body is complete, just ugly). Do not "simplify" by moving the collision check behind the flag; that reversal is the spec's central decision.
+- `reject_opaque:` defaults to `false` everywhere. This is load-bearing beyond back-compat: `lib/axn/reflection/schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, and schema reflection must never raise on user data.
 - Existing `UnserializableValue` messages stay **byte-identical**, and the existing `UnserializableValue.new(path:, value:)` call form keeps working (it is public API).
 - Never assert `Hash#inspect` text in a spec — Ruby 3.4 changed its spacing and CI runs 3.2/3.3/3.4. Object addresses in messages need regex or substring matching, never equality.
 - Comments describe current behavior and intrinsic why. No "used to X / now Y", no ticket numbers, no review references.
@@ -28,7 +28,7 @@
 | File | Responsibility | Change |
 | --- | --- | --- |
 | `lib/axn/exceptions.rb` | `UnserializableValue` — pure message formatter | Modify (~L159-179): add `reason:`, move cycle text to a private default |
-| `lib/axn/reflection/values.rb` | The serializer and every strictness check | Modify: `strict:` kwarg, restructured `Hash` branch, three check helpers, three reason constants |
+| `lib/axn/reflection/values.rb` | The serializer and every strictness check | Modify: `reject_opaque:` kwarg, restructured `Hash` branch, three check helpers, three reason constants |
 | `spec/axn/reflection/values_spec.rb` | Unit coverage for all four defects | Modify: add `describe` blocks |
 | `docs/recipes/authoring-tool-adapters.md` | Adapter-author guidance | Modify L119-130 |
 | `AGENTS-tool-adapters.md` | Terse adapter cheat-sheet | Modify L79-83 |
@@ -92,7 +92,7 @@ Replace `lib/axn/exceptions.rb:159-179` (the `module Reflection` block through t
     # where data belongs. Four shapes, in two categories. The rendering would be WRONG: a
     # self-referential container (no JSON representation at all), or two Hash keys that stringify to
     # one JSON property (a value silently dropped). The rendering would be UGLY, rejected only under
-    # `serialize_value(strict: true)`: a value or a Hash key whose only `to_s` is the inherited
+    # `serialize_value(reject_opaque: true)`: a value or a Hash key whose only `to_s` is the inherited
     # Object#to_s, which renders an object address into a response body.
     #
     # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
@@ -256,9 +256,9 @@ git commit -m "PRO-2988: raise on Hash keys that collapse to one JSON property"
 
 ---
 
-### Task 3: `strict:` mode and the default-`to_s` value
+### Task 3: `reject_opaque:` mode and the default-`to_s` value
 
-`serialize_value`'s final fallback is `value.to_s`, reached only when the value has no own `as_json` and no `to_h`. If that `to_s` is inherited from `Object`, the "rendering" is an object address. This task adds the `strict` kwarg, threads it through all four recursion sites, and adds the leaf check.
+`serialize_value`'s final fallback is `value.to_s`, reached only when the value has no own `as_json` and no `to_h`. If that `to_s` is inherited from `Object`, the "rendering" is an object address. This task adds the `reject_opaque` kwarg, threads it through all four recursion sites, and adds the leaf check.
 
 **Files:**
 - Modify: `lib/axn/reflection/values.rb` — `serialize_exposed`, `serialize_value` signature and its four recursive calls, the `else` branch, plus two constants and one predicate
@@ -266,7 +266,7 @@ git commit -m "PRO-2988: raise on Hash keys that collapse to one JSON property"
 
 **Interfaces:**
 - Consumes: `UnserializableValue.new(path:, value:, reason:)` from Task 1; the restructured `Hash` branch from Task 2.
-- Produces: `serialize_exposed(result, field_configs, strict: false)`, `serialize_value(value, path:, seen: nil, strict: false)`, and the private predicate `default_to_s?(value)` → `true` when `value.method(:to_s).owner` is `Object` or `Kernel`. Task 4 calls `default_to_s?` for keys.
+- Produces: `serialize_exposed(result, field_configs, reject_opaque: false)`, `serialize_value(value, path:, seen: nil, reject_opaque: false)`, and the private predicate `default_to_s?(value)` → `true` when `value.method(:to_s).owner` is `Object` or `Kernel`. Task 4 calls `default_to_s?` for keys.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -277,7 +277,7 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "col
   # the result is an object address — complete, but useless in a response body or an LLM's tool
   # result. Strict callers reject it; the default keeps rendering it, since a lossless-but-ugly value
   # is not worth failing an MCP call over.
-  describe "default-to_s values under strict:" do
+  describe "default-to_s values under reject_opaque:" do
     # No own as_json (spec/ is non-Rails, so Object gains none), no to_h, and #to_s owned by Object.
     let(:opaque) { Object.new }
 
@@ -285,27 +285,27 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "col
       expect(described_class.serialize_value(opaque, path: "owner")).to match(/\A#<Object:0x[0-9a-f]+>\z/)
     end
 
-    it "raises under strict:, naming the path and how to fix it" do
-      expect { described_class.serialize_value(opaque, path: "owner", strict: true) }
+    it "raises under reject_opaque:, naming the path and how to fix it" do
+      expect { described_class.serialize_value(opaque, path: "owner", reject_opaque: true) }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
           /`owner` \(Object\).*only via the default Object#to_s.*declare it `type: String`/m,
         )
     end
 
-    it "allows a value with a meaningful custom to_s under strict:" do
+    it "allows a value with a meaningful custom to_s under reject_opaque:" do
       money = Object.new.tap { |o| def o.to_s = "$5.00" }
 
-      expect(described_class.serialize_value(money, strict: true)).to eq("$5.00")
+      expect(described_class.serialize_value(money, reject_opaque: true)).to eq("$5.00")
     end
 
     it "checks inside an Array, naming the indexed path" do
-      expect { described_class.serialize_value([1, opaque], path: "rows", strict: true) }
+      expect { described_class.serialize_value([1, opaque], path: "rows", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[1\]`/)
     end
 
     it "checks inside a Hash, naming the keyed path" do
-      expect { described_class.serialize_value({ owner: opaque }, path: "rec", strict: true) }
+      expect { described_class.serialize_value({ owner: opaque }, path: "rec", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`rec\.owner`/)
     end
 
@@ -314,31 +314,31 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "col
       wrapper.instance_variable_set(:@inner, opaque)
       def wrapper.to_h = { inner: @inner }
 
-      expect { described_class.serialize_value(wrapper, path: "w", strict: true) }
+      expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`/)
     end
 
-    it "leaves every ordinary value untouched under strict:" do
+    it "leaves every ordinary value untouched under reject_opaque:" do
       as_json_obj = Object.new.tap { |o| def o.as_json(*) = { "k" => "v" } }
 
-      expect(described_class.serialize_value(:ok, strict: true)).to eq("ok")
-      expect(described_class.serialize_value(BigDecimal("3.14"), strict: true)).to eq(3.14)
-      expect(described_class.serialize_value(Date.new(2026, 7, 3), strict: true)).to eq("2026-07-03")
-      expect(described_class.serialize_value({ a: [1, nil, true] }, strict: true)).to eq("a" => [1, nil, true])
-      expect(described_class.serialize_value(as_json_obj, strict: true)).to eq("k" => "v")
+      expect(described_class.serialize_value(:ok, reject_opaque: true)).to eq("ok")
+      expect(described_class.serialize_value(BigDecimal("3.14"), reject_opaque: true)).to eq(3.14)
+      expect(described_class.serialize_value(Date.new(2026, 7, 3), reject_opaque: true)).to eq("2026-07-03")
+      expect(described_class.serialize_value({ a: [1, nil, true] }, reject_opaque: true)).to eq("a" => [1, nil, true])
+      expect(described_class.serialize_value(as_json_obj, reject_opaque: true)).to eq("k" => "v")
     end
 
-    it "still raises on a cycle under strict:, with the cycle reason rather than a to_s reason" do
+    it "still raises on a cycle under reject_opaque:, with the cycle reason rather than a to_s reason" do
       cyclic = [1]
       cyclic << cyclic
 
-      expect { described_class.serialize_value(cyclic, path: "items", strict: true) }
+      expect { described_class.serialize_value(cyclic, path: "items", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /self-referential/)
     end
 
     it "raises on colliding keys under either setting, since a dropped value is wrong output" do
-      [false, true].each do |strict|
-        expect { described_class.serialize_value({ id: 1, "id" => 2 }, strict:) }
+      [false, true].each do |reject_opaque|
+        expect { described_class.serialize_value({ id: 1, "id" => 2 }, reject_opaque:) }
           .to raise_error(Axn::Reflection::UnserializableValue, /silently collapse/)
       end
     end
@@ -348,7 +348,7 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "col
 And add to the existing `describe ".serialize_exposed"` block (after its current single example, around L143):
 
 ```ruby
-    it "threads strict: to the values it serializes" do
+    it "threads reject_opaque: to the values it serializes" do
       klass = Class.new do
         include Axn
         auto_log false
@@ -360,15 +360,15 @@ And add to the existing `describe ".serialize_exposed"` block (after its current
 
       expect(described_class.serialize_exposed(result, klass.external_field_configs)["owner"])
         .to match(/\A#<Object:0x[0-9a-f]+>\z/)
-      expect { described_class.serialize_exposed(result, klass.external_field_configs, strict: true) }
+      expect { described_class.serialize_exposed(result, klass.external_field_configs, reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`owner`/)
     end
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `bundle exec rspec spec/axn/reflection/values_spec.rb -e "default-to_s values under strict:" -e "threads strict:"`
-Expected: FAIL with `ArgumentError: unknown keyword: :strict` on the strict examples. "renders the object address by default" and the two ordinary-value examples that don't pass `strict:` should pass.
+Run: `bundle exec rspec spec/axn/reflection/values_spec.rb -e "default-to_s values under reject_opaque:" -e "threads reject_opaque:"`
+Expected: FAIL with `ArgumentError: unknown keyword: :reject_opaque` on the reject_opaque examples. "renders the object address by default" and the two ordinary-value examples that don't pass `reject_opaque:` should pass.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -377,8 +377,9 @@ In `lib/axn/reflection/values.rb`:
 **3a.** Add these constants directly below the existing `private_constant :CYCLE_DETECTED` (L25), before `module_function`:
 
 ```ruby
-      # Both, defensively: a class that defines no #to_s of its own inherits Object's, and in practice
-      # that is the owner reported — but Kernel is where several of Object's own hooks actually live.
+      # Kernel is the entry that actually fires: `Object.new.method(:to_s).owner` is Kernel, not Object,
+      # since that is where the default #to_s is defined. Object covers a value whose own ancestry
+      # reports it there instead. Dropping Kernel would make this predicate silently never true.
       DEFAULT_TO_S_OWNERS = [::Object, ::Kernel].freeze
       private_constant :DEFAULT_TO_S_OWNERS
 
@@ -391,9 +392,9 @@ In `lib/axn/reflection/values.rb`:
 **3b.** Change `serialize_exposed` (L30-34) to thread the kwarg:
 
 ```ruby
-      def serialize_exposed(result, field_configs, strict: false)
+      def serialize_exposed(result, field_configs, reject_opaque: false)
         field_configs.each_with_object({}) do |config, hash|
-          hash[config.field.to_s] = serialize_value(result.public_send(config.field), path: config.field.to_s, strict:)
+          hash[config.field.to_s] = serialize_value(result.public_send(config.field), path: config.field.to_s, reject_opaque:)
         end
       end
 ```
@@ -403,31 +404,31 @@ In `lib/axn/reflection/values.rb`:
 ```ruby
       # `path` names the value being serialized, so a failure says WHICH exposure is at fault
       # (`items[1].parent`, not just "something"). `seen` carries the containers open on the current
-      # path — see within_container. `strict` additionally rejects a value (or Hash key) that would
+      # path — see within_container. `reject_opaque` additionally rejects a value (or Hash key) that would
       # render only as an object address: honest output, but not presentable output, so it is the
       # caller's call rather than a universal one.
-      def serialize_value(value, path: "(exposed value)", seen: nil, strict: false)
+      def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
 ```
 
-**3d.** Add `strict:` to all four recursive calls — the `Hash` branch's element call, the `Array` branch's element call, and both `within_container` blocks in the `else` branch:
+**3d.** Add `reject_opaque:` to all four recursive calls — the `Hash` branch's element call, the `Array` branch's element call, and both `within_container` blocks in the `else` branch:
 
 ```ruby
-              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, strict:)
+              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
 ```
 ```ruby
-            value.each_with_index.map { |v, index| serialize_value(v, path: "#{path}[#{index}]", seen: nested, strict:) }
+            value.each_with_index.map { |v, index| serialize_value(v, path: "#{path}[#{index}]", seen: nested, reject_opaque:) }
 ```
 ```ruby
-            within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, strict:) }
+            within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
 ```
 ```ruby
-            within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, strict:) }
+            within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:) }
 ```
 
 **3e.** Replace the `else`-branch fallback (currently the bare `value.to_s` at L82) with:
 
 ```ruby
-            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if strict && default_to_s?(value)
+            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
 
             value.to_s
 ```
@@ -450,15 +451,15 @@ In `lib/axn/reflection/values.rb`:
 Run: `bundle exec rspec spec/axn/reflection/values_spec.rb`
 Expected: PASS, all examples.
 
-- [ ] **Step 5: Verify the schema-reflection path is never strict**
+- [ ] **Step 5: Verify the schema-reflection path never passes the kwarg**
 
 Add to `spec/axn/reflection/schema_spec.rb`, at the end of the file inside the outer describe:
 
 ```ruby
   # Schema reflection renders a literal `default:` through Values.serialize_value (see
   # Schema.describe_default). Reflection must never raise on user data, so that call site stays
-  # non-strict even for a value that has no presentable JSON form.
-  it "reflects an opaque literal default rather than raising, since reflection is never strict" do
+  # non-reject_opaque even for a value that has no presentable JSON form.
+  it "reflects an opaque literal default rather than raising, since reflection never passes the kwarg" do
     klass = Class.new do
       include Axn
       expects :owner, default: Object.new
@@ -469,7 +470,7 @@ Add to `spec/axn/reflection/schema_spec.rb`, at the end of the file inside the o
 ```
 
 Run: `bundle exec rspec spec/axn/reflection/schema_spec.rb`
-Expected: PASS. If it fails, `strict` leaked into a default argument somewhere — do not "fix" it by rescuing in `Schema`.
+Expected: PASS. If it fails, `reject_opaque` leaked into a default argument somewhere — do not "fix" it by rescuing in `Schema`.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -481,12 +482,12 @@ Expected: PASS.
 ```bash
 bundle exec rubocop lib/axn/reflection/values.rb spec/axn/reflection/values_spec.rb spec/axn/reflection/schema_spec.rb
 git add lib/axn/reflection/values.rb spec/axn/reflection/values_spec.rb spec/axn/reflection/schema_spec.rb
-git commit -m "PRO-2988: add strict: mode, rejecting a value that renders as an object address"
+git commit -m "PRO-2988: add reject_opaque: mode, rejecting a value that renders as an object address"
 ```
 
 ---
 
-### Task 4: The default-`to_s` Hash key under `strict:`
+### Task 4: The default-`to_s` Hash key under `reject_opaque:`
 
 A Hash's keys render via plain `to_s` and never touch the `as_json`/`to_h` chain, so an opaque key becomes an object address used as a JSON *property name* — the same defect as Task 3's, one level worse.
 
@@ -496,16 +497,16 @@ A Hash's keys render via plain `to_s` and never touch the `as_json`/`to_h` chain
 
 **Interfaces:**
 - Consumes: `default_to_s?(value)` from Task 3; the restructured `Hash` branch from Task 2.
-- Produces: `check_opaque_key!(key, path)` — raises when `strict` and the key has only the inherited `to_s`; returns nil otherwise.
+- Produces: `check_opaque_key!(key, path)` — raises when `reject_opaque` and the key has only the inherited `to_s`; returns nil otherwise.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "default-to_s values under strict:"` block:
+Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "default-to_s values under reject_opaque:"` block:
 
 ```ruby
   # A Hash's keys render via `to_s` and never the as_json/to_h chain, so an opaque key becomes an
   # object address used as a JSON PROPERTY NAME.
-  describe "default-to_s Hash keys under strict:" do
+  describe "default-to_s Hash keys under reject_opaque:" do
     let(:opaque_key) { Object.new }
 
     it "renders the object address as a property name by default" do
@@ -513,27 +514,27 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "def
         .to match(/\A#<Object:0x[0-9a-f]+>\z/)
     end
 
-    it "raises under strict:, naming the offending key in the path" do
-      expect { described_class.serialize_value({ opaque_key => 1 }, path: "data", strict: true) }
+    it "raises under reject_opaque:, naming the offending key in the path" do
+      expect { described_class.serialize_value({ opaque_key => 1 }, path: "data", reject_opaque: true) }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
           /`data \(hash key #<Object:0x[0-9a-f]+>\)` \(Object\).*a Hash key is rendered via #to_s/m,
         )
     end
 
-    it "allows Symbol, String, and Integer keys under strict:" do
-      expect(described_class.serialize_value({ a: 1, "b" => 2, 3 => 4 }, strict: true))
+    it "allows Symbol, String, and Integer keys under reject_opaque:" do
+      expect(described_class.serialize_value({ a: 1, "b" => 2, 3 => 4 }, reject_opaque: true))
         .to eq("a" => 1, "b" => 2, "3" => 4)
     end
 
-    it "allows a key with a meaningful custom to_s under strict:" do
+    it "allows a key with a meaningful custom to_s under reject_opaque:" do
       key = Object.new.tap { |o| def o.to_s = "custom" }
 
-      expect(described_class.serialize_value({ key => 1 }, strict: true)).to eq("custom" => 1)
+      expect(described_class.serialize_value({ key => 1 }, reject_opaque: true)).to eq("custom" => 1)
     end
 
     it "checks keys of a nested Hash, naming the nested path" do
-      expect { described_class.serialize_value({ rows: [{ opaque_key => 1 }] }, path: "out", strict: true) }
+      expect { described_class.serialize_value({ rows: [{ opaque_key => 1 }] }, path: "out", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key #<Object:0x/)
     end
   end
@@ -541,7 +542,7 @@ Add to `spec/axn/reflection/values_spec.rb` immediately after the `describe "def
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `bundle exec rspec spec/axn/reflection/values_spec.rb -e "default-to_s Hash keys under strict:"`
+Run: `bundle exec rspec spec/axn/reflection/values_spec.rb -e "default-to_s Hash keys under reject_opaque:"`
 Expected: the two raise examples FAIL (no error raised); the three others PASS already.
 
 - [ ] **Step 3: Write the implementation**
@@ -558,9 +559,9 @@ Expected: the two raise examples FAIL (no error raised); the three others PASS a
 
 ```ruby
             rendered = value.each_with_object({}) do |(key, element), acc|
-              check_opaque_key!(key, path) if strict
+              check_opaque_key!(key, path) if reject_opaque
               wire_key = key.to_s
-              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, strict:)
+              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
 ```
 
@@ -593,7 +594,7 @@ Expected: PASS.
 ```bash
 bundle exec rubocop lib/axn/reflection/values.rb spec/axn/reflection/values_spec.rb
 git add lib/axn/reflection/values.rb spec/axn/reflection/values_spec.rb
-git commit -m "PRO-2988: reject a Hash key that renders as an object address under strict:"
+git commit -m "PRO-2988: reject a Hash key that renders as an object address under reject_opaque:"
 ```
 
 ---
@@ -608,7 +609,7 @@ The recipe currently tells adapter authors "You don't need your own cycle detect
 - Modify: `CHANGELOG.md` — `### Tools & adapters` under `## 0.1.0-alpha.5`
 
 **Interfaces:**
-- Consumes: the final `serialize_exposed(result, field_configs, strict: false)` signature from Task 3.
+- Consumes: the final `serialize_exposed(result, field_configs, reject_opaque: false)` signature from Task 3.
 - Produces: nothing code-facing.
 
 - [ ] **Step 1: Update the docs recipe**
@@ -621,7 +622,7 @@ In `docs/recipes/authoring-tool-adapters.md`, add a second example to the code b
 exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
 
 # An HTTP adapter, which must not ship an object address in a response body
-exposed = Axn::Reflection::Values.serialize_exposed(result, configs, strict: config.strict_serialization)
+exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
 ```
 ````
 
@@ -630,7 +631,7 @@ Then replace L130 (the single paragraph beginning "It raises `Axn::Reflection::U
 ```markdown
 It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it. Two cases raise always, because the body would be *wrong*: a self-referential value (a cycle has no JSON representation at all), and two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value).
 
-Pass `strict: true` to also reject a value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, which would render an object address like `"#<User:0x000055…>"`. That output is complete but unpresentable, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
+Pass `reject_opaque: true` to also reject a value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, which would render an object address like `"#<User:0x000055…>"`. That output is complete but unpresentable, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
 
 You don't need your own detection for any of the four — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
 ```
@@ -644,7 +645,7 @@ In `AGENTS-tool-adapters.md`, replace the `## Value serialization` bullet (L79-8
   `Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)` → JSON-safe Hash.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
 - Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) on a cycle or on two Hash keys that
-  stringify to one JSON property. Add `strict: true` to also reject a value or key that would render as an
+  stringify to one JSON property. Add `reject_opaque: true` to also reject a value or key that would render as an
   object address (`"#<User:0x…>"`). Never write your own pre-pass — it drifts from the renderer.
 ```
 
@@ -656,7 +657,7 @@ Append both entries to the end of that version's `### Tools & adapters` list (af
 
 ```markdown
 * [BREAKING] `Axn::Reflection::Values.serialize_exposed`/`serialize_value` now raise `Axn::Reflection::UnserializableValue` when two of a Hash's keys stringify to the same JSON property (`{id: 1, "id" => 2}`). Keys are rendered with `#to_s`, so such a pair collapsed into one property and silently dropped a value — a response body that was wrong rather than merely ugly, which no caller could detect from the output. The message names both original keys and the property they collapse to.
-* [FEAT] `serialize_exposed`/`serialize_value` accept `strict: true`, which additionally rejects an exposed value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, rather than rendering an object address like `"#<User:0x000055…>"` into a response body. Off by default: that output is complete, just unpresentable, so an HTTP adapter can reject it while an LLM tool adapter keeps returning an ugly string instead of failing the call. Reuses `UnserializableValue` (an `ArgumentError`) with a `reason:` naming the defect, so an adapter's existing `rescue StandardError` covers all four cases with no change — and no adapter needs its own pre-pass over the value graph, which cannot stay in sync with the renderer's branch decisions.
+* [FEAT] `serialize_exposed`/`serialize_value` accept `reject_opaque: true`, which additionally rejects an exposed value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, rather than rendering an object address like `"#<User:0x000055…>"` into a response body. Off by default: that output is complete, just unpresentable, so an HTTP adapter can reject it while an LLM tool adapter keeps returning an ugly string instead of failing the call. Reuses `UnserializableValue` (an `ArgumentError`) with a `reason:` naming the defect, so an adapter's existing `rescue StandardError` covers all four cases with no change — and no adapter needs its own pre-pass over the value graph, which cannot stay in sync with the renderer's branch decisions.
 ```
 
 - [ ] **Step 4: Verify the docs build and the prose lints**
@@ -668,7 +669,7 @@ Expected: both succeed. `docs:check` is `vitepress build docs` plus the internal
 
 ```bash
 git add docs/recipes/authoring-tool-adapters.md AGENTS-tool-adapters.md CHANGELOG.md
-git commit -m "PRO-2988: document strict: serialization for adapter authors"
+git commit -m "PRO-2988: document reject_opaque: serialization for adapter authors"
 ```
 
 ---
@@ -678,5 +679,5 @@ git commit -m "PRO-2988: document strict: serialization for adapter authors"
 - [ ] `bundle exec rspec` — full suite passes.
 - [ ] `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails` — passes. This is the only place the Rails-loaded generic `Object#as_json` exists, and `spec_rails/dummy_app/spec/axn/reflection/values_spec.rb` pins `to_h`-over-`as_json` preference through the branch Task 3 modified.
 - [ ] `bundle exec rubocop` — clean.
-- [ ] Confirm by inspection that `strict` is threaded to all four recursive `serialize_value` calls in `lib/axn/reflection/values.rb` (Hash element, Array element, `as_json` result, `to_h` result). A missed one silently stops checking below that point — no test failure, just lost coverage. `grep -n "serialize_value(" lib/axn/reflection/values.rb` should show `strict:` on every recursive call and on neither of the two public entry-point definitions' bodies beyond that.
+- [ ] Confirm by inspection that `reject_opaque` is threaded to all four recursive `serialize_value` calls in `lib/axn/reflection/values.rb` (Hash element, Array element, `as_json` result, `to_h` result). A missed one silently stops checking below that point — no test failure, just lost coverage. `grep -n "serialize_value(" lib/axn/reflection/values.rb` should show `reject_opaque:` on every recursive call and on neither of the two public entry-point definitions' bodies beyond that.
 - [ ] Confirm the four defect messages read well end to end by running the four raising cases in `bin/console` and reading the output as a downstream consumer would.
