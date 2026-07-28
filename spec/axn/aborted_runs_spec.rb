@@ -204,6 +204,25 @@ RSpec.describe "a run aborted by a non-StandardError" do
       end
     end
 
+    # The one place axn deliberately lets a swallowable exception escape a guard: a `model:` finder runs
+    # inside its own action's validation, where nothing is committed yet and this boundary settles the
+    # escape into a reported result naming the real stack — strictly better than the "can't be blank"
+    # a swallow would produce. Contrast the post-fan-out callback in batch_enqueue_spec, where an escape
+    # would duplicate an already-enqueued batch.
+    it "surfaces a runaway model: finder as the real exception rather than a blank-field violation" do
+      record = Struct.new(:id)
+      def record.boom(_id) = raise(SystemStackError)
+
+      klass = build_axn { expects :user, model: { klass: record, finder: :boom } }
+      allow(klass).to receive(:info)
+      allow(klass).to receive(:warn)
+
+      result = klass.call(user_id: 1)
+
+      expect(result.exception).to be_a(SystemStackError)
+      expect(reported.map(&:first).map(&:class)).to eq([SystemStackError])
+    end
+
     it "still applies outbound defaults, so the returned result reads like any other failed one" do
       klass = build_axn { exposes :v, default: -> { 9 } }
       klass.define_method(:call) { raise SystemStackError }

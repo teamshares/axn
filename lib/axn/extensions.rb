@@ -48,14 +48,21 @@ module Axn
       # `desc` names the intent ("resolving webhook subscribers"); `action` is an optional
       # warn-target (an action instance/class responding to :warn), defaulting to the config logger.
       #
-      # Swallows StandardError plus SWALLOWABLE_BEYOND_STANDARD_ERROR. That default is for a true
-      # side channel whose outcome nothing reads (emitting a log line, updating a span, reporting to
-      # an error tracker). Pass `standard_errors_only: true` when the block's return value or side
-      # effect feeds the call's real behavior (resolving a `model:` record, deciding whether a
-      # handler applies, filtering which records enqueue): there, swallowing a SystemStackError
-      # would surface a runaway user finder as a misleading "can't be blank" instead of the stack
-      # that names it. That flag is pinned to the StandardError class boundary, so its meaning
-      # cannot drift as the allowlist above grows.
+      # Swallows StandardError plus SWALLOWABLE_BEYOND_STANDARD_ERROR — the right default almost
+      # everywhere, and required for a true side channel whose outcome nothing reads (emitting a log
+      # line, updating a span, reporting to an error tracker).
+      #
+      # `standard_errors_only: true` narrows it to StandardError, letting the allowlisted classes
+      # through. Justified only when escaping beats swallowing, which needs BOTH: nothing already
+      # committed at that point, AND an executor boundary that will settle the escape into a reported
+      # result instead of re-raising. Resolving a `model:` record qualifies — it runs inside its own
+      # action's validation, so a runaway finder surfaces as a reported exception result naming the
+      # real stack rather than a misleading "can't be blank". A post-fan-out callback does NOT: jobs
+      # are already enqueued and the orchestrator is an async job whose adapter re-raises an exception
+      # outcome, so an escape gets the batch enqueued twice. When in doubt, use the default.
+      #
+      # The flag is pinned to the StandardError class boundary, so its meaning cannot drift as the
+      # allowlist above grows.
       def best_effort(desc, action: nil, standard_errors_only: false)
         if standard_errors_only
           begin

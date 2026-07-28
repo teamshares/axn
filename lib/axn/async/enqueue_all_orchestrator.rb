@@ -146,9 +146,12 @@ module Axn
         # if the handler requests it. A raise — from the handler OR from resolving sources — is
         # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
         def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
-          # standard_errors_only: the callback runs the user's own side effects (not an observation
-          # of the fan-out), so a runaway one surfaces its stack rather than repeating per target.
-          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}", standard_errors_only: true) do
+          # Swallow-all, including a SystemStackError from a runaway handler: this fires AFTER every job
+          # is enqueued, and the orchestrator is itself an Axn run as a background job whose adapter
+          # re-raises an exception outcome — so letting anything escape fails the job, the queue retries
+          # it, and the whole batch is enqueued a SECOND time. A duplicated fan-out is far worse than a
+          # warning, and "a raising callback can't abort the fan-out" is the documented guarantee.
+          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}") do
             if handler.is_a?(Symbol)
               unless target.respond_to?(handler, true)
                 target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
@@ -344,9 +347,11 @@ module Axn
 
             # Apply filter block if present - swallow errors, skip item
             if config.filter_block
-              # standard_errors_only: the return value decides whether this item is enqueued at all,
-              # so it is the fan-out's own work — a runaway filter must not silently skip every record.
-              filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}", standard_errors_only: true) do
+              # Swallow-all, for the same reason as the post-fan-out callback above: this runs mid-loop,
+              # so an escape fails the orchestrator job with jobs already enqueued and the retry
+              # duplicates them. The documented behavior for a raising filter is "swallow, skip item",
+              # and it must not vary by which error class the filter happened to raise.
+              filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}") do
                 config.filter_block.call(item)
               end
               next unless filter_result

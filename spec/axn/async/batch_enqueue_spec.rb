@@ -849,6 +849,25 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         # raising item (2) is the one it actually swallows.
         expect(Axn::Extensions).to have_received(:best_effort).with("filter block for :number", any_args).at_least(:once)
       end
+
+      # Mid-loop, so an escape would fail the orchestrator job with jobs already enqueued — and the
+      # queue's retry would enqueue them a second time. Must not vary by error class.
+      it "swallows and skips identically when the filter raises a non-StandardError" do
+        klass = build_axn do
+          expects :number
+          enqueues_each :number, from: -> { [1, 2, 3] } do |n|
+            raise SystemStackError if n == 2
+
+            true
+          end
+        end
+        enable_async_on(klass)
+        enqueued = []
+        allow(klass).to receive(:call_async) { |**args| enqueued << args }
+
+        expect { klass.enqueue_all }.not_to raise_error
+        expect(enqueued).to contain_exactly({ number: 1 }, { number: 3 })
+      end
     end
 
     describe "via extraction exceptions" do
@@ -1102,6 +1121,25 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       # Must not propagate: a raise here would fail the orchestrator and retry/duplicate the batch.
       expect { action_class.enqueue_all }.not_to raise_error
       expect(enqueued.length).to eq(3) # all jobs still enqueued
+    end
+
+    # Fires after every job is enqueued, and the orchestrator is itself an Axn run as a background job
+    # whose adapter re-raises an exception outcome — so an escape here fails the job and the queue
+    # retries it, enqueueing the whole batch a second time. Holds for every error class.
+    it "swallows a non-StandardError from the callback rather than risking a duplicated batch" do
+      cc = company_class
+      action_class = build_axn do
+        expects :company, type: cc
+        define_method(:call) { company.name }
+        enqueues_each :company, from: -> { cc.all }
+      end.tap { |klass| enable_async_on(klass) }
+      action_class.on_enqueue_all { |count:| raise SystemStackError, "count was #{count}" }
+
+      enqueued = []
+      allow(action_class).to receive(:call_async) { |**args| enqueued << args }
+
+      expect { action_class.enqueue_all }.not_to raise_error
+      expect(enqueued.length).to eq(3)
     end
 
     it "does not fire on the no-expects single-job path" do
