@@ -154,11 +154,14 @@ RSpec.describe Axn::Reflection::Values do
       [out.strip, $CHILD_STATUS.success?]
     end
 
+    # Compared INSIDE the subprocess: Hash#inspect formatting is Ruby-version-dependent (3.4 renders
+    # `{"a" => [1]}`, 3.3 `{"a"=>[1]}`), so asserting on its text would pass on one matrix ruby and fail
+    # on another. What matters here is that the call works at all without the top-level entrypoint.
     it "serializes ordinary structured output without loading all of axn" do
-      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] })')
+      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
 
       expect(ok).to be(true), "subprocess failed: #{out}"
-      expect(out).to eq('{"a"=>[1]}')
+      expect(out).to eq("true")
     end
 
     it "can still raise its own UnserializableValue" do
