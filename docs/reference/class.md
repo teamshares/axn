@@ -751,9 +751,9 @@ end
 Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:` or `unless:`):
 
 ::: tip Exceptions outside `StandardError`
-An exception from outside `StandardError` — a `SystemStackError` from runaway recursion, a `NotImplementedError` from an unfinished method — **aborts** the run. It settles as an `exception` outcome (so `on_error` and `on_exception` fire and the global handler is notified), and is then re-raised: `.call` raises rather than returning a result, because the run never produced one. `fails_on` deliberately does not apply, so a broad matcher can't turn an abort into a returned failure.
+An exception from outside `StandardError` — a `SystemStackError` from runaway recursion, a `NotImplementedError` from an unfinished method — is still a bug, and is treated as one: it settles as an `exception` outcome that `call` returns like any other, with `on_error` and `on_exception` firing and the global handler notified. `call!` raises it, as always. `fails_on` deliberately does not apply to these, so a matcher broad enough to catch one can't relabel a bug as a `failure` and suppress its report.
 
-Exceptions that say nothing about your action are passed through completely untouched — no callbacks, no report, no log line: `Interrupt`/`SystemExit` and anything else under `SignalException` (which covers `Sidekiq::Shutdown`) mean the process is going away, and `Timeout::ExitException` is `Timeout`'s own signal, which must reach the enclosing `Timeout.timeout` intact for the timeout to fire.
+Exceptions that say nothing about your action are the exception to that, and pass straight through untouched — no outcome, no callbacks, no report, no log line, raised from `call` as well as `call!`. Those are `SystemExit` and anything under `SignalException` (`Interrupt`, and `Sidekiq::Shutdown`), which mean the process is going away, plus `Timeout::ExitException`, which must reach the enclosing `Timeout.timeout` intact for the timeout to fire at all.
 :::
 
 ```ruby

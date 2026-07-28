@@ -2,10 +2,11 @@
 
 require "timeout"
 
-# An exception from outside StandardError aborts a run. Nothing rescues those, so the run used to settle
-# as nothing at all: `outcome` read `success`, the completion line said so, and the global report never
-# fired — a user's own runaway recursion was invisible to error tracking even though the exception did
-# escape to the caller.
+# An exception from outside StandardError is still a bug in the run, reachable from anywhere user code runs
+# (the body, any hook, a preprocess:/coerce:/default:/validate: callable). Nothing rescued those, so the run
+# used to settle as nothing at all: `outcome` read `success`, the completion line said so, the global report
+# never fired, and it escaped `.call` — breaking the consistent-return guarantee that only `call!` opts
+# out of (docs/usage/using.md).
 RSpec.describe "a run aborted by a non-StandardError" do
   let(:reported) { [] }
   let(:log_lines) { [] }
@@ -39,23 +40,34 @@ RSpec.describe "a run aborted by a non-StandardError" do
   end
 
   describe "an exception that indicates a fault in the action (SystemStackError, ScriptError, …)" do
-    it "still escapes to the caller, unwrapped" do
+    # The whole point of `.call`: a bug becomes a result, and only `call!` opts out of that.
+    it "settles into an exception-outcome result that .call returns rather than raising" do
       klass, = action_raising(SystemStackError)
 
-      expect { klass.call }.to raise_error(SystemStackError)
+      result = klass.call
+
+      expect(result).not_to be_ok
+      expect(result.outcome).to eq("exception")
+      expect(result.exception).to be_a(SystemStackError)
+    end
+
+    it "still raises through call!, as the original object" do
+      klass, = action_raising(SystemStackError)
+
+      expect { klass.call! }.to raise_error(SystemStackError)
     end
 
     it "reports it once, so a runaway recursion is no longer invisible to error tracking" do
       klass, = action_raising(SystemStackError)
+      klass.call
 
-      expect { klass.call }.to raise_error(SystemStackError)
       expect(reported.map(&:first).map(&:class)).to eq([SystemStackError])
     end
 
     it "fires on_error alongside on_exception (the documented superset), and neither on_failure nor the success path" do
       klass, events = action_raising(NotImplementedError)
+      klass.call
 
-      expect { klass.call }.to raise_error(NotImplementedError)
       expect(events).to eq([[:on_error, NotImplementedError], [:on_exception, NotImplementedError]])
     end
 
@@ -63,36 +75,73 @@ RSpec.describe "a run aborted by a non-StandardError" do
       klass, = action_raising(SystemStackError)
       captured = nil
       klass.on_error { captured = result.outcome.to_s }
+      klass.call
 
-      expect { klass.call }.to raise_error(SystemStackError)
       expect(captured).to eq("exception")
     end
 
     it "logs the completion line at the exception outcome, not as a success" do
       klass, = action_raising(SystemStackError)
+      klass.call
 
-      expect { klass.call }.to raise_error(SystemStackError)
       expect(log_lines.last).to include("outcome: exception")
     end
 
-    # `fails_on` is deliberately not consulted: a matcher broad enough to catch a non-StandardError would
-    # otherwise turn an abort into a returned failure result, swallowing it.
-    context "when the action declares a fails_on matcher broad enough to catch it" do
-      it "still re-raises instead of returning a failure result" do
-        klass, = action_raising(SystemStackError)
-        klass.fails_on Exception
+    # Reachable from every place user code runs, not just the body.
+    {
+      "a before hook" => ->(k) { k.before { raise SystemStackError } },
+      "an around hook" => ->(k) { k.around { |_hooked| raise SystemStackError } },
+      "a preprocess: callable" => ->(k) { k.expects :thing, preprocess: ->(_v) { raise SystemStackError } },
+      "an exposes default: callable" => ->(k) { k.exposes :other, default: -> { raise SystemStackError } },
+    }.each do |label, declare|
+      it "settles the same way when raised from #{label}" do
+        klass = build_axn { exposes :v }
+        klass.define_method(:call) { expose(v: 1) }
+        declare.call(klass)
+        allow(klass).to receive(:info)
+        allow(klass).to receive(:warn)
 
-        expect { klass.call }.to raise_error(SystemStackError)
+        result = klass.call(thing: 1)
+
+        expect(result.outcome).to eq("exception")
+        expect(result.exception).to be_a(SystemStackError)
       end
+    end
 
-      it "labels the outcome `exception`, agreeing with the callbacks that fired" do
+    # `fails_on` is deliberately not consulted. A matcher broad enough to catch a non-StandardError would
+    # otherwise relabel this a `failure` — firing on_failure and suppressing the report — for what is
+    # unambiguously a bug.
+    context "when the action declares a fails_on matcher broad enough to catch it" do
+      it "stays an exception outcome, agreeing with the callbacks that fired, and is still reported" do
         klass, events = action_raising(SystemStackError)
         klass.fails_on Exception
 
-        expect { klass.call }.to raise_error(SystemStackError)
+        result = klass.call
+
+        expect(result.outcome).to eq("exception")
         expect(log_lines.last).to include("outcome: exception")
         expect(events.map(&:first)).to eq(%i[on_error on_exception])
+        expect(reported.length).to eq(1)
       end
+    end
+
+    it "still applies outbound defaults, so the returned result reads like any other failed one" do
+      klass = build_axn { exposes :v, default: -> { 9 } }
+      klass.define_method(:call) { raise SystemStackError }
+      allow(klass).to receive(:info)
+      allow(klass).to receive(:warn)
+
+      expect(klass.call.v).to eq(9)
+    end
+
+    # Settling must not itself break the guarantee it exists to uphold.
+    it "does not escape .call when a default: callable blows the stack while settling" do
+      klass = build_axn { exposes :v, default: -> { raise SystemStackError } }
+      klass.define_method(:call) { raise "ordinary failure" }
+      allow(klass).to receive(:info)
+      allow(klass).to receive(:warn)
+
+      expect(klass.call.outcome).to eq("exception")
     end
 
     context "when nested" do
@@ -103,7 +152,9 @@ RSpec.describe "a run aborted by a non-StandardError" do
         allow(outer).to receive(:info)
         allow(outer).to receive(:warn)
 
-        expect { outer.call }.to raise_error(SystemStackError)
+        result = outer.call
+
+        expect(result.outcome).to eq("exception")
         expect(reported.length).to eq(1)
         expect(reported.first.last[:axn_stack].length).to eq(2)
       end
@@ -156,8 +207,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
 
   it "drains the nesting stack either way" do
     klass, = action_raising(SystemStackError)
+    klass.call
 
-    expect { klass.call }.to raise_error(SystemStackError)
     expect(Axn::Core::NestingTracking._current_axn_stack).to be_empty
   end
 end

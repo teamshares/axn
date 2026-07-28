@@ -302,40 +302,35 @@ module Axn
       rescue StandardError => e
         _settle_exception(e)
       rescue Exception => e # rubocop:disable Lint/RescueException
-        # An exception from OUTSIDE StandardError aborted the run (a SystemStackError from runaway
-        # recursion in the body, a NotImplementedError from an unfinished method). Nothing rescues those,
-        # so until now the run settled as nothing at all: `outcome` read `success`, the completion line
-        # said so, and the global report never fired — a user's own runaway recursion was invisible to
-        # error tracking even though the exception escaped to the caller.
+        # An exception from OUTSIDE StandardError is still a bug in the run — a SystemStackError from
+        # runaway recursion, a NotImplementedError from an unfinished method — reachable from anywhere
+        # user code runs (the body, any hook, a `preprocess:`/`coerce:`/`default:`/`validate:` callable).
+        # Nothing rescued those, so the run settled as nothing at all: `outcome` read `success`, the
+        # completion line said so, the global report never fired, and it escaped `.call` — breaking the
+        # consistent-return guarantee that only `call!` opts out of.
         #
-        # So settle it as the exception outcome it is (honest `outcome`/`ok?`, on_error + on_exception per
-        # the documented superset contract, one global report) and then re-raise. Deviations from the
-        # StandardError path are in _settle_exception under `aborted:`.
+        # So settle it exactly like a StandardError bug: an `exception` outcome `.call` RETURNS, with
+        # on_error + on_exception fired and one global report. `call!` still raises it, from its own
+        # `raise result.exception` — the original object, so an enclosing Timeout.timeout can still
+        # recognize its own signal by identity (though pass_through? keeps that class out of here anyway).
         #
-        # Two things this must NOT do. It must not consult `fails_on`: a matcher broad enough to catch a
-        # non-StandardError (`fails_on Exception`) would otherwise turn an abort into a returned failure
-        # result, swallowing it. And it must re-raise THIS object, never a wrapper — an enclosing
-        # Timeout.timeout identifies its own ExitException by identity, and pass_through? keeps that class
-        # out of here entirely.
+        # The one deviation is in _settle_exception under `aborted:`: `fails_on` must not be consulted,
+        # or a matcher broad enough to catch a non-StandardError (`fails_on Exception`) would relabel this
+        # a `failure` — firing on_failure and suppressing the report for what is unambiguously a bug.
         raise if Internal::ExceptionClassification.pass_through?(e)
 
         _settle_exception(e, aborted: true)
-        raise
       end
 
       # The one path by which an exception settles onto the result. `aborted:` marks an exception from
-      # outside StandardError, which the caller re-raises rather than returning a result for.
+      # outside StandardError, which is never eligible for `fails_on` reclassification.
       def _settle_exception(e, aborted: false)
-        # Outbound defaults let an on_error handler read sensible exposures off a failed result. Skipped
-        # when aborted: nothing consumes that result (we re-raise), and running user `default:` procs
-        # while unwinding from — say — a stack overflow risks raising over the exception in flight.
-        #
-        # standard_errors_only: this MUTATES the settling result (a default's value becomes an
-        # exposure the caller reads), so it is the call's own work, not an observation of it.
-        unless aborted
-          Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action, standard_errors_only: true) do
-            apply_defaults!(:outbound)
-          end
+        # Outbound defaults let the caller (and an on_error handler) read sensible exposures off a failed
+        # result. Swallow-all deliberately: the block's failure only costs a default value on an
+        # already-failed result, so it must never change control flow — letting a user `default:` proc
+        # that blows the stack escape from here would break the same `.call` guarantee.
+        Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action) do
+          apply_defaults!(:outbound)
         end
 
         @context.__record_exception(e)
