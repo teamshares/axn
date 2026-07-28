@@ -146,6 +146,11 @@ module Axn
         # if the handler requests it. A raise — from the handler OR from resolving sources — is
         # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
         def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
+          # Swallow-all, including a SystemStackError from a runaway handler: this fires AFTER every job
+          # is enqueued, and the orchestrator is itself an Axn run as a background job whose adapter
+          # re-raises an exception outcome — so letting anything escape fails the job, the queue retries
+          # it, and the whole batch is enqueued a SECOND time. A duplicated fan-out is far worse than a
+          # warning, and "a raising callback can't abort the fan-out" is the documented guarantee.
           Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}") do
             if handler.is_a?(Symbol)
               unless target.respond_to?(handler, true)
@@ -336,12 +341,22 @@ module Axn
           iterator = source.respond_to?(:find_each) ? :find_each : :each
 
           source.public_send(iterator) do |item|
-            # Track current item being processed
-            item_id = item.try(:id) || item.to_s.truncate(100)
+            # Track which item is being processed. Purely observational (it feeds on_progress, i.e. the
+            # report's execution context), but it calls `id`/`to_s` on a caller-supplied record — so it
+            # is guarded like every other per-item step here. Unguarded, a record with a raising `id`
+            # aborted the whole fan-out from a progress read, and mid-loop in a background job the
+            # retry re-enqueues everything already sent.
+            item_id = Axn::Extensions.best_effort("resolving progress id for :#{config.field}") do
+              item.try(:id) || item.to_s.truncate(100)
+            end
             on_progress&.call(stage: :iterating, field: config.field, current_item_id: item_id)
 
             # Apply filter block if present - swallow errors, skip item
             if config.filter_block
+              # Swallow-all, for the same reason as the post-fan-out callback above: this runs mid-loop,
+              # so an escape fails the orchestrator job with jobs already enqueued and the retry
+              # duplicates them. The documented behavior for a raising filter is "swallow, skip item",
+              # and it must not vary by which error class the filter happened to raise.
               filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}") do
                 config.filter_block.call(item)
               end
@@ -352,7 +367,9 @@ module Axn
             value = if config.via
                       begin
                         item.public_send(config.via)
-                      rescue StandardError => e
+                      # Same reason as the filter block above: this runs mid-loop, so an escape fails the
+                      # orchestrator job with jobs already enqueued and the retry duplicates them.
+                      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
                         Axn::Extensions.best_effort("via extraction (:#{config.via}) for :#{config.field}") { raise e }
                         next
                       end

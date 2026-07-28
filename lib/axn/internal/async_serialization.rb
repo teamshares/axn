@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/cycle_guard"
+require "axn/exceptions"
 require "axn/internal/global_id_serialization"
 
 module Axn
@@ -101,14 +103,19 @@ module Axn
           _json_native?(value) || value.respond_to?(:to_global_id)
         end
 
-        def _json_native?(value)
+        # `seen` makes a self-referential container answer FALSE rather than recursing until the stack
+        # blows: a cycle has no JSON representation, so "not JSON-native" is the exactly-right answer and
+        # the caller raises UnserializableArgument through its normal path.
+        def _json_native?(value, seen = nil)
           case value
           when nil, true, false, Integer, Float, String then true
-          when Array then value.all? { |v| _json_native?(v) }
+          when Array
+            CycleGuard.guard(value, seen, on_cycle: false) { |nested| value.all? { |v| _json_native?(v, nested) } }
           # Hash keys must be Strings specifically: the JSON round-trip stringifies every key,
           # so a non-String key (Integer/Symbol/etc.) would silently come back as a String —
           # the very corruption this guard exists to prevent. Values still need only be JSON-native.
-          when Hash then value.all? { |k, v| k.is_a?(String) && _json_native?(v) }
+          when Hash
+            CycleGuard.guard(value, seen, on_cycle: false) { |nested| value.all? { |k, v| k.is_a?(String) && _json_native?(v, nested) } }
           else false
           end
         end
@@ -120,7 +127,34 @@ module Axn
             hash[key.to_s] = ::ActiveJob::Arguments.serialize([value]).first
           rescue ::ActiveJob::SerializationError
             raise Axn::Async::UnserializableArgument.new(field: key, value:)
+          rescue SystemStackError
+            # ActiveJob::Arguments walks the structure with no cycle guard, so a self-referential value
+            # blows its stack instead of reporting unserializable — that IS bad input (a cycle has no JSON
+            # representation), so it takes the field-naming error.
+            #
+            # But serialization also invokes CALLER code (a GlobalID object's #to_global_id, a registered
+            # custom serializer), and a stack overflow in there is a bug in that code, not malformed
+            # input. Converting it would misdiagnose whose fault it is and discard the original class and
+            # backtrace, so only a CONFIRMED cycle is reclassified; anything else keeps its own exception.
+            raise unless _contains_cycle?(value)
+
+            raise Axn::Async::UnserializableArgument.new(field: key, value:)
           end
+        end
+
+        # Whether `value` holds a self-referential Array/Hash — the one shape that is genuinely
+        # unserializable input rather than a fault in caller code. Detection only: it never copies, and
+        # it invokes no user code (only Array/Hash traversal), so it cannot itself trigger the recursion
+        # it is diagnosing. If the check nonetheless can't complete, it answers false — leaving the
+        # original exception intact, which is the conservative direction for a "whose fault is it?" call.
+        def _contains_cycle?(value, seen = nil)
+          case value
+          when Array then CycleGuard.guard(value, seen, on_cycle: true) { |nested| value.any? { |v| _contains_cycle?(v, nested) } }
+          when Hash then CycleGuard.guard(value, seen, on_cycle: true) { |nested| value.any? { |_k, v| _contains_cycle?(v, nested) } }
+          else false
+          end
+        rescue SystemStackError
+          false
         end
 
         def _deserialize_via_active_job(params)

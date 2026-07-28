@@ -156,6 +156,29 @@ module Axn
     end
   end
 
+  module Reflection
+    # Raised when an exposed value cannot be rendered to JSON. Currently only a self-referential
+    # container, which has no JSON representation at all — so a serializing adapter (axn-openapi,
+    # axn-mcp, axn-ruby_llm) fails the call rather than emitting a placeholder where data belongs.
+    #
+    # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
+    # with no adapter-side change; previously this surfaced as a SystemStackError, which is outside
+    # StandardError and so escaped the adapter entirely. Names the path to the offending value.
+    class UnserializableValue < ArgumentError
+      def initialize(path:, value:)
+        @path = path
+        @value = value
+        super()
+      end
+
+      def message
+        "Cannot serialize exposed value at `#{@path}` (#{@value.class}): it is self-referential " \
+          "(a #{@value.class} cycle), which has no JSON representation. Expose a finite projection " \
+          "of it instead (e.g. ids rather than the objects that point back)."
+      end
+    end
+  end
+
   module Async
     # Raised at enqueue when an async argument cannot be serialized for background execution.
     # Field-aware: names the offending field, its class, and how to fix it. The fix hint is

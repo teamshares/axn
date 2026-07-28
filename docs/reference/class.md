@@ -750,6 +750,12 @@ end
 
 Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:` or `unless:`):
 
+::: tip Exceptions outside `StandardError`
+Two families outside `StandardError` are still bugs, and are treated as such: **`SystemStackError`** (runaway recursion) and **`ScriptError`** (`NotImplementedError`, `LoadError`, `SyntaxError`). Either settles as an `exception` outcome that `call` returns like any other, with `on_error` and `on_exception` firing and the global handler notified; `call!` raises it, as always.
+
+Every *other* exception outside `StandardError` passes straight through untouched — no outcome, no callbacks, no report, and no *completion* log line (the "About to execute" line is already out before your `call` runs, so `auto_log` still emits that one) — raised from `call` as well as `call!`. Signals and `exit` mean the process is going away, `Timeout::ExitException` must reach the enclosing `Timeout.timeout` intact for the timeout to fire, and any library may define its own control-flow signal as a direct `Exception` subclass. Since that set is open-ended, axn names what it swallows rather than what it lets through. See [what `call` can still raise](/usage/using#common-case).
+:::
+
 ```ruby
 class Foo
   include Axn
@@ -795,6 +801,8 @@ class SubmitOrder
   def call = order.save!
 end
 ```
+
+Reclassification only means anything for an exception axn settles onto a result. A signal, an `exit`, `NoMemoryError`, and a library's own control-flow signal are [raised straight through `.call`](/usage/using#common-case) and never reach classification, so naming one here would be inert — it **raises `ArgumentError` at class definition** instead of silently doing nothing. (`fails_on Exception` is still accepted.)
 
 Signature: `fails_on(exceptions, message = nil, standalone: nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). `standalone:` is forwarded to that wired `error`: omitted (the default) the message attaches as a reason under any declared base `error`; `standalone: true` makes it replace the base headline instead — the same knob [`error`](#message-matching-order) itself exposes. Because it only configures the wired message, passing `standalone:` (`true` or `false`) without a message/block raises at declaration rather than silently doing nothing. See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation.
 

@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "shellwords"
+require "English"
+
 require "spec_helper"
 require "bigdecimal"
 
@@ -137,6 +140,103 @@ RSpec.describe Axn::Reflection::Values do
       end
       result = klass.call
       expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
+    end
+  end
+
+  # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
+  # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
+  # UnserializableValue — both of which live outside that entrypoint, so values.rb requires them itself.
+  # Asserted in a subprocess: the suite has all of axn loaded, so it cannot observe this in-process.
+  describe "the axn/reflection entrypoint on its own" do
+    def ruby(snippet)
+      lib = File.expand_path("../../../lib", __dir__)
+      out = `ruby -I#{lib} -e #{Shellwords.escape(snippet)} 2>&1`
+      [out.strip, $CHILD_STATUS.success?]
+    end
+
+    # Compared INSIDE the subprocess: Hash#inspect formatting is Ruby-version-dependent (3.4 renders
+    # `{"a" => [1]}`, 3.3 `{"a"=>[1]}`), so asserting on its text would pass on one matrix ruby and fail
+    # on another. What matters here is that the call works at all without the top-level entrypoint.
+    it "serializes ordinary structured output without loading all of axn" do
+      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
+
+      expect(ok).to be(true), "subprocess failed: #{out}"
+      expect(out).to eq("true")
+    end
+
+    it "can still raise its own UnserializableValue" do
+      out, ok = ruby(<<~RUBY)
+        require "axn/reflection"
+        cyclic = [1]
+        cyclic << cyclic
+        begin
+          Axn::Reflection::Values.serialize_value(cyclic)
+        rescue Axn::Reflection::UnserializableValue => e
+          print e.class
+        end
+      RUBY
+
+      expect(ok).to be(true), "subprocess failed: #{out}"
+      expect(out).to eq("Axn::Reflection::UnserializableValue")
+    end
+  end
+
+  # A cycle has no JSON representation, so this is a serialization FAILURE rather than something to
+  # paper over: serialize_exposed renders a response body, and a caller can't tell an elided-cycle
+  # marker from a real value. Raising as a StandardError also lets an adapter's existing rescue map it
+  # to an error response — which a SystemStackError, being outside StandardError, could not do.
+  describe "self-referential values" do
+    it "raises, naming the path to the offending value" do
+      cyclic = [{ sku: "A" }]
+      cyclic << cyclic
+
+      expect { described_class.serialize_value(cyclic, path: "items") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`.*self-referential.*no JSON representation/m)
+    end
+
+    it "names the offending exposure when reached through serialize_exposed" do
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes :items
+
+        def call = expose(items: [1].tap { |a| a << a })
+      end
+
+      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`/)
+    end
+
+    it "is a StandardError, so an adapter's existing rescue catches it" do
+      cyclic = {}
+      cyclic[:self] = cyclic
+
+      expect(Axn::Reflection::UnserializableValue.ancestors).to include(StandardError)
+      expect { described_class.serialize_value(cyclic) }.to raise_error(StandardError)
+    end
+
+    # Guards on the SOURCE object, since #as_json/#to_h build a fresh Hash per call — keying on the
+    # produced Hash would never see the repeat.
+    it "catches an object whose own projection points back at it" do
+      node = Class.new do
+        def initialize = @me = self
+        def to_h = { child: @me }
+      end.new
+
+      expect { described_class.serialize_value(node, path: "node") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`node.child`/)
+    end
+
+    # Ancestry, not every-container-ever-seen: a container referenced twice as siblings is legitimate.
+    it "does not false-positive on a diamond (same object referenced twice, acyclic)" do
+      shared = { x: 1 }
+
+      expect(described_class.serialize_value({ p: shared, q: shared }))
+        .to eq("p" => { "x" => 1 }, "q" => { "x" => 1 })
+    end
+
+    it "leaves acyclic nesting untouched" do
+      expect(described_class.serialize_value({ a: [1, { b: 2 }] })).to eq("a" => [1, { "b" => 2 }])
     end
   end
 end

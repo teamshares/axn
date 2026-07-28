@@ -88,5 +88,31 @@ RSpec.describe Axn::Internal::ExceptionContext do
       expect(result[:inputs][:wrapper][:form]).to eq({ name: "Nested" })
       expect(result[:inputs][:wrapper][:user]).to match(%r{\Agid://})
     end
+
+    # Parameters#to_unsafe_h recursively rebuilds every nested container, so it blows the stack on a
+    # cycle BEFORE any guard of ours can see the repeated container. Left unhandled it took the whole
+    # report with it, since building this context runs inside the guard that reports the exception.
+    #
+    # A cycle gets inside Parameters only by in-place mutation of an already-nested Array: `new` and
+    # `[]=` both convert eagerly, so they raise at assignment rather than storing one.
+    it "falls back to a placeholder for Parameters holding a self-referential value, keeping the report" do
+      params = ActionController::Parameters.new(list: [1], other: "kept")
+      nested = params[:list]
+      nested << nested
+
+      action_class = build_axn do
+        expects :payload
+
+        def call
+          # no-op
+        end
+      end
+      stub_const("TestAction", action_class)
+
+      instance = TestAction.send(:new, payload: params)
+
+      expect { described_class.build(action: instance) }.not_to raise_error
+      expect(described_class.build(action: instance)[:inputs][:payload]).to eq("{...}")
+    end
   end
 end

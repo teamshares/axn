@@ -195,11 +195,17 @@ module Axn
       # LOGGING (Outside zone - result is settled)
       # =========================================================================
 
+      # Both hooks are guarded HERE, not only inside CallLogger#log_at_level: everything used to build a
+      # line — the duration, the facet maps, the separator, the context slices — is an ARGUMENT to that
+      # inner guard, so it is evaluated outside it. A raise from any of them escapes, and from this
+      # `ensure` it would REPLACE the exception already in flight: an enclosing Timeout's ExitException
+      # (which then never reaches the handler that converts it to Timeout::Error, so the timeout silently
+      # does not fire), or a Ctrl-C, reported instead as an unrelated error from the log formatter.
       def with_logging
-        log_before if @action_class._auto_log_before_level
+        Axn::Extensions.best_effort("logging before hook", action: @action_class) { log_before } if @action_class._auto_log_before_level
         yield
       ensure
-        log_after
+        Axn::Extensions.best_effort("logging after hook", action: @action_class) { log_after }
       end
 
       def log_before
@@ -216,6 +222,15 @@ module Axn
       end
 
       def log_after
+        # Only a run that SETTLED has a completion to report. `finalized?` is that exact signal — every
+        # settling path sets it (success, `fail!`, `done!`, a recorded exception) — and it is false in the
+        # two cases that reach this ensure without one: a pass-through abort (an Interrupt or Timeout
+        # signal, which axn deliberately leaves untouched) and a body that never started, when a
+        # non-StandardError escaped `log_before`. Reporting either would state an outcome that never
+        # happened — the unsettled result reads `success` — and formatting a nil duration would raise out
+        # of this ensure, replacing the exception in flight.
+        return unless @action.result.finalized?
+
         level = @action_class._auto_log_level_for(@action.result.outcome)
         return unless level
 
@@ -267,8 +282,13 @@ module Axn
         timing_start = Internal::Timing.now
         yield
       ensure
-        elapsed_mils = Internal::Timing.elapsed_ms(timing_start)
-        @context.send(:elapsed_time=, elapsed_mils)
+        # No start means the clock read itself was interrupted, so there is no duration to record —
+        # measuring against nil would raise out of this ensure and replace the exception in flight.
+        # `log_after` treats a nil elapsed_time as "the body never ran" and stays quiet.
+        if timing_start
+          elapsed_mils = Internal::Timing.elapsed_ms(timing_start)
+          @context.send(:elapsed_time=, elapsed_mils)
+        end
       end
 
       # =========================================================================
@@ -280,6 +300,50 @@ module Axn
       rescue Internal::EarlyCompletion
         raise
       rescue StandardError => e
+        _settle_exception(e)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        # An exception from OUTSIDE StandardError is still a bug in the run — a SystemStackError from
+        # runaway recursion, a NotImplementedError from an unfinished method — reachable from anywhere
+        # user code runs (the body, any hook, a `preprocess:`/`coerce:`/`default:` callable — but not a
+        # `validate:` one, whose own guard turns any raise into that field's validation message).
+        # Nothing rescued those, so the run settled as nothing at all: `outcome` read `success`, the
+        # completion line said so, the global report never fired, and it escaped `.call` — breaking the
+        # consistent-return guarantee that only `call!` opts out of.
+        #
+        # So settle it exactly like a StandardError bug — an `exception` outcome `.call` RETURNS, with
+        # on_error + on_exception fired, one global report, and `fails_on` honored the same way (see
+        # Flow::FailsOn, which rejects at declaration any class this gate would never let through).
+        # `call!` still raises it from its own `raise result.exception`, the original object.
+        #
+        # Gated on an ALLOWLIST (see Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR), so anything axn does
+        # not positively recognize as a bug passes through untouched: a signal, an `exit`, or another
+        # library's private control-flow signal, which absorbing into a result would silently break.
+        raise unless Axn::Extensions.swallowable?(e)
+
+        _settle_exception(e)
+      end
+
+      # The one path by which an exception settles onto the result.
+      #
+      # Guarded because it runs USER code — an on_error/on_failure callback, a matcher, error-message
+      # resolution — from inside a rescue clause, where a raise does NOT reach the sibling
+      # `rescue Exception` above: it would escape `.call` AND replace the very exception being settled,
+      # so the caller would see a stack overflow from someone's callback instead of the real failure.
+      # A swallowable one is therefore warned and dropped; `__record_exception` has already run by then,
+      # so the result still settles on the original exception. Anything not swallowable still propagates.
+      def _settle_exception(settling)
+        _settle_exception!(settling)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        raise unless Axn::Extensions.swallowable?(e)
+
+        Axn::Extensions.best_effort("settling #{settling.class} onto the result", action: @action) { raise e }
+      end
+
+      def _settle_exception!(e)
+        # Outbound defaults let the caller (and an on_error handler) read sensible exposures off a failed
+        # result. Swallow-all deliberately: the block's failure only costs a default value on an
+        # already-failed result, so it must never change control flow — letting a user `default:` proc
+        # that blows the stack escape from here would break the same `.call` guarantee.
         Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action) do
           apply_defaults!(:outbound)
         end

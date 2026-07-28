@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: the guard is
+# needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
+# any load path that does not go through it.
+require "axn/internal/cycle_guard"
+require "axn/exceptions"
+require "axn/form_object"
+require "axn/core/nesting_tracking"
+
 module Axn
   module Internal
     # Builds context data for exception reporting to error tracking services
@@ -64,24 +72,29 @@ module Axn
         # Format hash values for error tracking systems (recursive).
         # Converts complex objects (ActiveRecord models, ActionController::Parameters, FormObjects)
         # into serializable formats suitable for logging and error tracking.
-        def format_hash_values(hash)
-          hash.transform_values { |v| format_value(v) }
+        def format_hash_values(hash, seen = nil)
+          hash.transform_values { |v| format_value(v, seen) }
         end
 
-        # Recursively format a single value (Hash, Array, or scalar/complex object).
-        def format_value(value)
+        # Recursively format a single value (Hash, Array, or scalar/complex object). `seen` carries
+        # the containers open on the current path (see CycleGuard): a self-referential value renders
+        # as Ruby's #inspect placeholder rather than recursing until the stack blows, since building
+        # a report must never be what kills the call whose exception it is reporting.
+        def format_value(value, seen = nil)
           case value
           when Hash
-            format_hash_values(value)
+            CycleGuard.guard(value, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) { |nested| format_hash_values(value, nested) }
           when Array
-            value.map { |item| format_value(item) }
+            CycleGuard.guard(value, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) { |nested| value.map { |item| format_value(item, nested) } }
           else
-            format_single_value(value)
+            format_single_value(value, seen)
           end
         end
 
-        # Format a single non-container value for error tracking.
-        def format_single_value(value)
+        # Format a single non-container value for error tracking. The Parameters/FormObject branches
+        # descend into a FRESHLY BUILT Hash (#to_unsafe_h / #to_h), whose identity differs on every
+        # call — so the cycle guard keys on the SOURCE object, which is what actually recurs.
+        def format_single_value(value, seen = nil)
           if value.respond_to?(:to_global_id)
             begin
               value.to_global_id.to_s
@@ -89,12 +102,24 @@ module Axn
               "#<#{value.class.name} (unpersisted)>"
             end
           elsif defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters)
-            format_hash_values(value.to_unsafe_h)
+            convert_and_format(value, seen) { value.to_unsafe_h }
           elsif value.is_a?(Axn::FormObject)
-            format_hash_values(value.to_h)
+            convert_and_format(value, seen) { value.to_h }
           else
             value
           end
+        end
+
+        # The conversion has to be attempted OUTSIDE the guard, because it walks the structure itself:
+        # Parameters#to_unsafe_h recursively rebuilds every nested container, so a cycle in there raises
+        # before the guard could see the repeated container. Losing this one value to a placeholder costs
+        # a field in the report; letting it raise costs the ENTIRE report, since building context runs
+        # inside the best-effort guard that reports the exception in the first place.
+        def convert_and_format(value, seen, &)
+          converted = CycleGuard.converted_or_placeholder(&)
+          return converted if converted.equal?(CycleGuard::HASH_PLACEHOLDER)
+
+          CycleGuard.guard(value, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) { |nested| format_hash_values(converted, nested) }
         end
       end
     end

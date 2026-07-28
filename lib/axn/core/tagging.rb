@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: the guard is
+# needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
+# any load path that does not go through it.
+require "axn/internal/cycle_guard"
+require "axn/extensions"
+
 module Axn
   module Core
     # Declarative per-action observability facets. `tag` (high-cardinality) and
@@ -94,12 +100,14 @@ module Axn
       #   - Array → each element coerced, then kept if the elements are uniformly
       #     one legal category (String, numeric, or boolean), else all stringified
       #     (see #coerce_array).
-      def self.coerce(value)
+      # `seen` carries the arrays open on the current path (see CycleGuard) so a self-referential
+      # array coerces to Ruby's `[...]` placeholder rather than recursing until the stack blows.
+      def self.coerce(value, seen = nil)
         case value
         when String, true, false then value
         when Integer then INT64_RANGE.cover?(value) ? value : value.to_s
         when Float then value.finite? ? value : value.to_s
-        when Array then coerce_array(value)
+        when Array then coerce_array(value, seen)
         else value.to_s
         end
       end
@@ -109,11 +117,16 @@ module Axn
       # its elements are uniformly String, numeric (Integer/Float, mixable), or
       # boolean (true/false, mixable); keep those as-is, otherwise stringify every
       # element so the array stays homogeneous and legal.
-      def self.coerce_array(array)
-        coerced = array.map { |element| coerce(element) }
-        return coerced if coerced.all?(String) || coerced.all?(Numeric) || coerced.all? { |element| [true, false].include?(element) }
+      # A revisited array becomes the `[...]` placeholder String, which is a legal OTel attribute
+      # value and simply participates in the homogeneity check below like any other stringified
+      # element (so `[1, <self>]` stringifies whole, staying homogeneous and legal).
+      def self.coerce_array(array, seen = nil)
+        Internal::CycleGuard.guard(array, seen, on_cycle: Internal::CycleGuard::ARRAY_PLACEHOLDER) do |nested|
+          coerced = array.map { |element| coerce(element, nested) }
+          next coerced if coerced.all?(String) || coerced.all?(Numeric) || coerced.all? { |element| [true, false].include?(element) }
 
-        coerced.map(&:to_s)
+          coerced.map(&:to_s)
+        end
       end
 
       module ClassMethods

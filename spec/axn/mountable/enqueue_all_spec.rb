@@ -730,7 +730,9 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       mounted_action.enqueues_each :item_id, from: -> { items }, via: :id
 
       allow(mounted_action).to receive(:call_async)
-      expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args)
+      # Other per-item guards (the progress-id read) also call best_effort; assert only on this one.
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
+      expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args).and_call_original
 
       mounted_action.enqueue_all
     end

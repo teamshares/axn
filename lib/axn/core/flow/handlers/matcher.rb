@@ -13,6 +13,13 @@ module Axn
           end
 
           def call(exception:, action:)
+            # A matcher's error policy is set ONE layer down, by Handlers::Invoker, which warns and
+            # yields nil (so the rule reads as "no match") for anything axn absorbs. Deliberately NOT
+            # `standard_errors_only:` on top of that: a second, stricter layer here would make a matcher
+            # raising SystemStackError behave differently from one raising ArgumentError, and worse —
+            # since on_success/error matchers are evaluated inside the executor's boundary, letting one
+            # through would settle a SUCCESSFUL action as an exception carrying the matcher's own bug.
+            # A broken matcher is loud in the log and inert in its effect; it never rewrites the outcome.
             Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
               result = matches?(exception:, action:)
               @invert ? !result : result
@@ -79,6 +86,7 @@ module Axn
           end
 
           def call(exception:, action:)
+            # See SingleRuleMatcher#call: matcher error policy is Invoker's, single-layered.
             Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
               matches?(exception:, action:)
             end

@@ -30,7 +30,12 @@ module Axn
           return nil if id_value.blank?
 
           finder_name = finder.is_a?(Method) ? finder.name : finder
-          Axn::Extensions.best_effort("finding #{field} with #{finder_name}") do
+          # The one place in the library where letting a swallowable exception through beats swallowing
+          # it, because both conditions hold (see Extensions.best_effort): nothing is committed here, and
+          # this runs inside the action's own validation, so the executor settles the escape into a
+          # reported exception result naming the real stack — instead of the misleading
+          # "#{field} can't be blank" a swallow would produce from the resulting nil.
+          Axn::Extensions.best_effort("finding #{field} with #{finder_name}", standard_errors_only: true) do
             if finder.is_a?(Method)
               # Method object - call it directly
               finder.call(id_value)

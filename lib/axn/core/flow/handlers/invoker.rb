@@ -26,6 +26,16 @@ module Axn
             Axn::Extensions.best_effort(operation, action:) { raise $ERROR_INFO }
           rescue StandardError => e
             Axn::Extensions.best_effort(operation, action:) { raise e }
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            # A handler that blows the stack (or hits an unfinished method) is a bug in the HANDLER, and
+            # must not become the action's outcome. This matters most on the settle path: a callback
+            # dispatched from the executor's rescue clause raises past the sibling `rescue Exception`
+            # there, so without this the callback's exception would escape `.call` and replace the real
+            # failure the callback was invoked to observe. Anything axn doesn't absorb (a signal, an
+            # `exit`, a library's own control-flow signal) still propagates untouched.
+            raise unless Axn::Extensions.swallowable?(e)
+
+            Axn::Extensions.best_effort(operation, action:) { raise e }
           end
 
           # Public so the contract DSL can validate a declared handler against the same notion of

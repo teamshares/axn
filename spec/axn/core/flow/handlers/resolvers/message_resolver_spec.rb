@@ -159,6 +159,26 @@ RSpec.describe "join: Proc raise-safety" do
     expect(action.call.error).to eq("Outer: inner")
   end
 
+  # This runs from `result.error` DURING settlement, so an exception slipping past the fallback aborts
+  # settling after the exception is recorded but before on_error/on_failure/on_exception and the global
+  # report — and raises again on every later `result.error` read.
+  it "falls back, and keeps settlement intact, when the Proc raises a non-StandardError" do
+    events = []
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise SystemStackError }
+      on_error { events << :on_error }
+      on_failure { events << :on_failure }
+      def call = fail!("inner")
+    end
+    allow(action).to receive(:warn)
+
+    result = action.call
+
+    expect(result.error).to eq("Outer: inner")
+    expect(result.error).to eq("Outer: inner") # a second read must not retry the joiner and raise
+    expect(events).to eq(%i[on_error on_failure])
+  end
+
   it "falls back to the default join when the Proc has the wrong arity (lambda)" do
     action = build_axn do
       error "Outer", join: ->(only_one) { only_one }

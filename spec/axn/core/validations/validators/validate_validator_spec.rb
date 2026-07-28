@@ -144,5 +144,18 @@ RSpec.describe Axn::Validators::ValidateValidator do
       expect(result.exception).to be_a(Axn::InboundValidationError)
       expect_best_effort_called(message_substring: "applying custom validation")
     end
+
+    # The fallback message names the real error, so failing the field stays accurate — and a validator
+    # that blows the stack takes the same path as one raising ArgumentError.
+    context "when the validator raises a non-StandardError" do
+      let(:validator) { ->(_v) { raise SystemStackError } }
+
+      it "still fails the field rather than settling as an exception outcome" do
+        result = action.call(foo: 1)
+
+        expect(result.exception).to be_a(Axn::InboundValidationError)
+        expect(result.exception.message).to include("failed validation: SystemStackError")
+      end
+    end
   end
 end

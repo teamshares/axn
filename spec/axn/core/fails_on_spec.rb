@@ -187,5 +187,43 @@ RSpec.describe "fails_on" do
         build_axn { fails_on String }
       end.to raise_error(ArgumentError, /requires one or more Exception classes/)
     end
+
+    # An exception axn never absorbs into a result is raised straight through `.call` and never reaches
+    # failure classification, so the declaration would be inert. Silence is the worst outcome here: the
+    # entire point of `fails_on` is to reclassify, so a caller would reasonably believe it had.
+    describe "a class axn never converts into a result" do
+      {
+        "a signal" => Interrupt,
+        "an exit" => SystemExit,
+        "resource exhaustion" => NoMemoryError,
+      }.each do |label, klass|
+        it "rejects #{label} (#{klass}) at declaration, naming it and the reason" do
+          expect do
+            build_axn { fails_on klass }
+          end.to raise_error(ArgumentError, /fails_on cannot reclassify #{klass}.*never converts it into a result/m)
+        end
+      end
+
+      it "rejects a library's own control-flow signal" do
+        gem_signal = Class.new(Exception) # rubocop:disable Lint/InheritException
+
+        expect do
+          build_axn { fails_on gem_signal }
+        end.to raise_error(ArgumentError, /cannot reclassify/)
+      end
+
+      it "names every offender when several are listed at once" do
+        expect do
+          build_axn { fails_on [ArgumentError, Interrupt, SystemExit] }
+        end.to raise_error(ArgumentError, /reclassify Interrupt, SystemExit/)
+      end
+    end
+
+    # Reachable classes stay accepted — including `Exception`, which still catches everything axn absorbs.
+    [StandardError, ArgumentError, Exception, SystemStackError, ScriptError, NotImplementedError].each do |klass|
+      it "accepts #{klass}" do
+        expect { build_axn { fails_on klass } }.not_to raise_error
+      end
+    end
   end
 end
