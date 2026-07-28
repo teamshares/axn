@@ -87,6 +87,14 @@ RSpec.describe "a run aborted by a non-StandardError" do
       expect(log_lines.last).to include("outcome: exception")
     end
 
+    it "covers the whole ScriptError family, not just SystemStackError" do
+      [NotImplementedError, LoadError, SyntaxError].each do |klass|
+        action, = action_raising(klass)
+
+        expect(action.call.exception).to be_a(klass)
+      end
+    end
+
     # Reachable from every place user code runs, not just the body.
     {
       "a before hook" => ->(k) { k.before { raise SystemStackError } },
@@ -161,10 +169,12 @@ RSpec.describe "a run aborted by a non-StandardError" do
     end
   end
 
-  # Process lifecycle and another library's control flow say nothing about the action, so axn passes them
-  # through untouched — no recorded outcome, no callbacks, no report, no log line.
+  # Gated on an ALLOWLIST (Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR), so anything axn does not
+  # positively recognize as a fault in the code passes through untouched — no recorded outcome, no
+  # callbacks, no report, no log line. A denylist would instead absorb the open-ended tail of this set:
+  # process signals, another library's private control flow, and classes that do not exist yet.
   describe "an exception that axn must not interfere with" do
-    [Interrupt, SystemExit, Timeout::ExitException].each do |klass|
+    [Interrupt, SystemExit, Timeout::ExitException, NoMemoryError].each do |klass|
       context klass.name do
         it "escapes with no report and no callbacks" do
           action, events = action_raising(klass)
@@ -183,11 +193,31 @@ RSpec.describe "a run aborted by a non-StandardError" do
       end
     end
 
-    it "covers Sidekiq's shutdown signal by way of SignalException" do
+    it "covers Sidekiq's shutdown signal, which subclasses Interrupt" do
       shutdown = Class.new(Interrupt) # Sidekiq::Shutdown < Interrupt < SignalException
       action, events = action_raising(shutdown)
 
       expect { action.call }.to raise_error(shutdown)
+      expect(reported).to be_empty
+      expect(events).to be_empty
+    end
+
+    # The case a denylist cannot cover: axn has never heard of this class, and absorbing it into a
+    # result would silently break whatever the library uses it to signal.
+    it "covers a library's own private control-flow signal" do
+      gem_signal = Class.new(Exception) # rubocop:disable Lint/InheritException
+      action, events = action_raising(gem_signal)
+
+      expect { action.call }.to raise_error(gem_signal)
+      expect(reported).to be_empty
+      expect(events).to be_empty
+    end
+
+    # Raised outside StandardError precisely so that nothing swallows it.
+    it "covers ActiveSupport::ErrorReporter::UnexpectedError" do
+      action, events = action_raising(ActiveSupport::ErrorReporter::UnexpectedError)
+
+      expect { action.call }.to raise_error(ActiveSupport::ErrorReporter::UnexpectedError)
       expect(reported).to be_empty
       expect(events).to be_empty
     end

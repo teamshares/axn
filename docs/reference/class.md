@@ -751,9 +751,9 @@ end
 Note that by default the `on_exception` block will be applied to _any_ `StandardError` that is raised, but you can specify a matcher using the same logic as for conditional messages (`if:` or `unless:`):
 
 ::: tip Exceptions outside `StandardError`
-An exception from outside `StandardError` — a `SystemStackError` from runaway recursion, a `NotImplementedError` from an unfinished method — is still a bug, and is treated as one: it settles as an `exception` outcome that `call` returns like any other, with `on_error` and `on_exception` firing and the global handler notified. `call!` raises it, as always. `fails_on` deliberately does not apply to these, so a matcher broad enough to catch one can't relabel a bug as a `failure` and suppress its report.
+Two families outside `StandardError` are still bugs, and are treated as such: **`SystemStackError`** (runaway recursion) and **`ScriptError`** (`NotImplementedError`, `LoadError`, `SyntaxError`). Either settles as an `exception` outcome that `call` returns like any other, with `on_error` and `on_exception` firing and the global handler notified; `call!` raises it, as always. `fails_on` deliberately does not apply to them, so a matcher broad enough to catch one can't relabel a bug as a `failure` and suppress its report.
 
-Exceptions that say nothing about your action are the exception to that, and pass straight through untouched — no outcome, no callbacks, no report, no log line, raised from `call` as well as `call!`. Those are `SystemExit` and anything under `SignalException` (`Interrupt`, and `Sidekiq::Shutdown`), which mean the process is going away, plus `Timeout::ExitException`, which must reach the enclosing `Timeout.timeout` intact for the timeout to fire at all.
+Every *other* exception outside `StandardError` passes straight through untouched — no outcome, no callbacks, no report, no log line, raised from `call` as well as `call!`. Signals and `exit` mean the process is going away, `Timeout::ExitException` must reach the enclosing `Timeout.timeout` intact for the timeout to fire, and any library may define its own control-flow signal as a direct `Exception` subclass. Since that set is open-ended, axn names what it swallows rather than what it lets through. See [what `call` can still raise](/usage/using#common-case).
 :::
 
 ```ruby

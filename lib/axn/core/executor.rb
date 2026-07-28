@@ -317,7 +317,11 @@ module Axn
         # The one deviation is in _settle_exception under `aborted:`: `fails_on` must not be consulted,
         # or a matcher broad enough to catch a non-StandardError (`fails_on Exception`) would relabel this
         # a `failure` — firing on_failure and suppressing the report for what is unambiguously a bug.
-        raise if Internal::ExceptionClassification.pass_through?(e)
+        #
+        # Gated on an ALLOWLIST (see Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR), so anything axn does
+        # not positively recognize as a bug passes through untouched: a signal, an `exit`, or another
+        # library's private control-flow signal, which absorbing into a result would silently break.
+        raise unless Axn::Extensions.swallowable?(e)
 
         _settle_exception(e, aborted: true)
       end

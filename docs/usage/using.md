@@ -12,14 +12,15 @@ An action executed via `#call` _always_ returns an instance of the `Axn::Result`
 This means the result _always_ implements a consistent interface, including `ok?` and `error` (see [full details](/reference/axn-result)) as well as any variables that the action `exposes`.
 
 ::: warning What `call` can still raise
-Swallowing covers anything that is a bug in your action, including exceptions outside `StandardError` — a `SystemStackError` from runaway recursion, a `NotImplementedError` from an unfinished method — which come back as an `exception` outcome like any other.
+`call` swallows **`StandardError`, plus `SystemStackError` and `ScriptError`** — the two families outside `StandardError` that are unambiguously faults in the code being run (runaway recursion; a `NotImplementedError` from an unfinished method, a `LoadError`, a `SyntaxError`). Those come back as an `exception` outcome like any other.
 
-Three kinds of exception are *not* about your action, so `call` raises them instead of capturing them into a result:
+Anything else outside `StandardError` is raised instead of being captured into a result, and fires none of your callbacks or `on_exception` handlers. That includes:
 
-* `SystemExit` (an `exit` call) and anything under `SignalException` — `Interrupt` (Ctrl-C) and `Sidekiq::Shutdown`. The process is going away; returning `ok? == false` would invite the caller to carry on through a shutdown.
-* `Timeout::ExitException`, `Timeout`'s own internal signal. It has to reach the enclosing `Timeout.timeout` for the timeout to fire at all, so axn passes it through untouched.
+* `SystemExit` (an `exit` call) and anything under `SignalException` — `Interrupt` (Ctrl-C), `Sidekiq::Shutdown`. The process is going away; returning `ok? == false` would invite the caller to carry on through a shutdown.
+* `Timeout::ExitException`, `Timeout`'s own internal signal. It must reach the enclosing `Timeout.timeout` for the timeout to fire at all.
+* `NoMemoryError`, and any private control-flow signal a library defines as a direct `Exception` subclass.
 
-None of these fire your callbacks or reach your `on_exception` handler either. If a caller needs to survive them, rescue at the call site rather than checking `ok?`.
+That last one is why this is stated as what axn *does* swallow rather than a list of what it doesn't: any library can introduce such a signal, so the set axn passes through is open-ended and cannot be enumerated. Absorbing one would silently break whatever it signals. If a caller needs to survive these, rescue at the call site rather than checking `ok?`.
 :::
 
 As a consumer, you usually want a conditional that surfaces `error` unless the result is `ok?` (remember that any exceptions have been swallowed), and otherwise takes whatever success action is relevant.

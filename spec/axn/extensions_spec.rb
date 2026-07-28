@@ -74,7 +74,9 @@ RSpec.describe Axn::Extensions do
 
     # A side channel (a log line, a span update, an error report) must never be what takes down the
     # call it is describing, and SystemStackError — raised by a self-referential value reaching a
-    # recursive formatter — is not a StandardError, so nothing else catches it.
+    # recursive formatter — is not a StandardError, so nothing else catches it. The same allowlist
+    # decides what Core::Executor may settle onto a result, so this is the one answer to "what will
+    # axn ever swallow".
     describe "the non-StandardError allowlist" do
       before do
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
@@ -88,13 +90,25 @@ RSpec.describe Axn::Extensions do
         end
       end
 
-      # The allowlist is deliberately tiny: the non-StandardError set in a live process is OPEN (gems
-      # and stdlib add their own direct Exception subclasses) and several exist precisely so nothing
-      # can swallow them. Eating Timeout::ExitException makes an enclosing Timeout.timeout silently
-      # not fire; eating Interrupt/SystemExit strands a process mid-shutdown.
-      it "propagates non-StandardErrors that are not on the allowlist" do
-        [Interrupt, SystemExit, NoMemoryError, NotImplementedError, Timeout::ExitException].each do |klass|
+      # An allowlist, never a denylist: the non-StandardError set in a live process is OPEN (gems and
+      # stdlib add their own direct Exception subclasses) and several exist precisely so nothing can
+      # swallow them. Eating Timeout::ExitException makes an enclosing Timeout.timeout silently not
+      # fire; eating Interrupt/SystemExit strands a process mid-shutdown; and a gem is free to invent
+      # its own such signal tomorrow, which must pass through without axn knowing anything about it.
+      it "propagates every non-StandardError that is not on the allowlist" do
+        # Inheriting Exception directly is the point: that is what a library's own control-flow signal
+        # looks like, and axn must pass one through without recognizing it.
+        gem_signal = Class.new(Exception) # rubocop:disable Lint/InheritException
+
+        [Interrupt, SystemExit, NoMemoryError, Timeout::ExitException, gem_signal].each do |klass|
           expect { described_class.best_effort("foo") { raise klass } }.to raise_error(klass)
+        end
+      end
+
+      it "swallows the whole ScriptError family, which are faults in the code being run" do
+        [NotImplementedError, LoadError, SyntaxError].each do |klass|
+          allow(logger).to receive(:warn)
+          expect(described_class.best_effort("foo") { raise klass }).to be_nil
         end
       end
 

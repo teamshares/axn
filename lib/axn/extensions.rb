@@ -5,20 +5,38 @@ module Axn
   # Axn::Internal (private) and the user-facing DSL. Not Ruby core-ext/refinements —
   # this is the API sibling gems (Axn::Webhooks, Axn::MCP, ...) may rely on.
   module Extensions
-    # The non-StandardError classes a side-channel guard may swallow. Deliberately a tiny
-    # allowlist rather than "everything that isn't a signal": the set of non-StandardError
-    # exceptions present in a real process is OPEN — gems and stdlib define their own direct
-    # Exception subclasses (Timeout::ExitException, ActiveSupport::ErrorReporter::UnexpectedError,
-    # CGI::InvalidEncoding) — and several exist precisely so nothing can swallow them. Eating
-    # Timeout::ExitException would make an enclosing Timeout.timeout silently not fire; eating
-    # Interrupt/SystemExit/fatal would strand a process mid-shutdown.
+    # The ONLY non-StandardError classes axn will ever swallow — both in a side-channel guard
+    # (best_effort) and when settling an exception onto a result (Core::Executor). One list, because
+    # both answer the same question: may axn absorb this instead of letting it through?
     #
-    # SystemStackError qualifies because a runaway recursion in a side channel (a self-referential
-    # value reaching a log formatter, a reporter, or a metrics block) says nothing about whether
-    # the action's own work succeeded, and being outside StandardError nothing else catches it.
-    SWALLOWABLE_BEYOND_STANDARD_ERROR = [SystemStackError].freeze
+    # An ALLOWLIST, deliberately, and never a denylist of "everything that isn't a signal". The set of
+    # non-StandardError exceptions in a live process is OPEN — Ruby defines a stable handful, but gems
+    # and stdlib add their own direct Exception subclasses (Timeout::ExitException,
+    # ActiveSupport::ErrorReporter::UnexpectedError, CGI::InvalidEncoding), and a library is free to
+    # invent one tomorrow. Several exist PRECISELY so that nothing swallows them: absorbing
+    # Timeout::ExitException makes an enclosing Timeout.timeout silently not fire, and
+    # ErrorReporter::UnexpectedError is raised outside StandardError for exactly that reason.
+    #
+    # The two ways of being wrong are not symmetric. Swallow something we shouldn't and we silently
+    # break another library's control flow — the hardest class of bug to trace. Fail to swallow
+    # something we could have, and an unrecognized non-StandardError escapes `.call` unreported, which
+    # is merely the status quo for anything not yet listed, and is fixed by adding a line here.
+    #
+    # Both members are unambiguously faults in the code being run, never a signal to anyone:
+    #   * SystemStackError — runaway recursion.
+    #   * ScriptError — and so NotImplementedError (an unfinished method), LoadError, SyntaxError.
+    #
+    # Ruby's `fatal` needs no entry: it is unrescuable, so `rescue Exception` never sees it.
+    SWALLOWABLE_BEYOND_STANDARD_ERROR = [SystemStackError, ScriptError].freeze
 
     class << self
+      # True when `exception` is one axn may absorb: any StandardError, plus the allowlist above.
+      # Anything else — a signal, an `exit`, another library's private control-flow signal — must pass
+      # through untouched.
+      def swallowable?(exception)
+        exception.is_a?(StandardError) || SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| exception.is_a?(klass) }
+      end
+
       def config
         @config ||= Config.new
       end
