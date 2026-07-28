@@ -95,16 +95,8 @@ RSpec.describe Axn::Reflection::Values do
       end
       expect(described_class.serialize_value(to_h_obj)).to eq("x" => 1)
 
-      # Test to_s path: override respond_to? to hide as_json and to_h, implement to_s
-      to_s_obj = Object.new.tap do |o|
-        def o.respond_to?(name, *args)
-          return false if %i[as_json to_h].include?(name)
-
-          super
-        end
-
-        def o.to_s = "S"
-      end
+      # Test to_s path: the shared helper already hides as_json/to_h, so only #to_s is left to reach
+      to_s_obj = opaque_object.tap { |o| def o.to_s = "S" }
       expect(described_class.serialize_value(to_s_obj)).to eq("S")
     end
 
@@ -208,6 +200,23 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value({ id: 1, "name" => "x", 2 => :b }))
         .to eq("id" => 1, "name" => "x", "2" => "b")
     end
+
+    it "reports the collapse without naming a pair when the re-walk can't reproduce it" do
+      # A key whose #to_s returns a different String on each call collides during rendering ("k1", which
+      # the literal String key also produces) but groups distinctly on the error path's second walk. The
+      # size comparison still proves a value was dropped, so the raise stands and says only what it knows.
+      unstable = Object.new
+      def unstable.to_s
+        @calls = (@calls || 0) + 1
+        "k#{@calls}"
+      end
+
+      expect { described_class.serialize_value({ unstable => 1, "k1" => 2 }, path: "rec") }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /`rec` \(Hash\).*collapsed two of them into a single JSON property.*pair cannot be named/m,
+        )
+    end
   end
 
   # serialize_value's last resort is `value.to_s`. When that #to_s is the one inherited from Object,
@@ -252,6 +261,31 @@ RSpec.describe Axn::Reflection::Values do
 
       expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`/)
+    end
+
+    it "checks a value reached through a custom as_json, the other recursion route" do
+      # The as_json branch recurses just like the to_h one, so the check has to be threaded through both;
+      # a value nested in an as_json result is the shape a missed thread would render silently.
+      wrapper = Object.new
+      wrapper.instance_variable_set(:@inner, opaque)
+      def wrapper.as_json(*) = { inner: @inner }
+
+      expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`.*only via the default Object#to_s/m)
+    end
+
+    it "renders a value whose #to_s is served by method_missing instead of rejecting it" do
+      # `method(:to_s)` can't resolve an undef'd #to_s that no respond_to_missing? advertises, so the
+      # predicate has no owner to compare. The value renders through method_missing fine, and reject_opaque
+      # must not invent a failure for it.
+      dynamic = opaque_object
+      dynamic.singleton_class.class_eval do
+        undef_method :to_s
+        def method_missing(name, ...) = name == :to_s ? "dynamic" : super
+        def respond_to_missing?(_name, _include_private = false) = false
+      end
+
+      expect(described_class.serialize_value(dynamic, reject_opaque: true)).to eq("dynamic")
     end
 
     it "leaves every ordinary value untouched under reject_opaque:" do

@@ -47,6 +47,12 @@ module Axn
                               "`type: String` and format it, or give the value its own `as_json`/`to_h`."
       private_constant :OPAQUE_AS_JSON_REASON
 
+      COLLAPSED_KEYS_REASON = "stringifying its keys collapsed two of them into a single JSON property, " \
+                              "dropping a value. The pair cannot be named: at least one key's #to_s does not " \
+                              "return the same String on every call, or the Hash changed while it was being " \
+                              "serialized. Give the keys stable, distinct #to_s values."
+      private_constant :COLLAPSED_KEYS_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -147,6 +153,12 @@ module Axn
       # reported pair deterministic.
       def raise_colliding_keys!(hash, path)
         wire_key, colliding = hash.each_key.group_by(&:to_s).find { |_, group| group.size > 1 }
+
+        # The re-walk can come up empty even though the size comparison proved a collapse: a key whose #to_s
+        # returns a different String each call, or a Hash mutated while a nested value was being serialized,
+        # groups differently the second time. Report the collapse without naming a pair it cannot identify.
+        raise Axn::Reflection::UnserializableValue.new(path:, value: hash, reason: COLLAPSED_KEYS_REASON) if colliding.nil?
+
         first, second = colliding
 
         raise Axn::Reflection::UnserializableValue.new(
@@ -160,6 +172,11 @@ module Axn
       # Names the key in the path (`data (hash key #<K:0x…>)`) rather than the Hash alone, so the
       # message points at which of several keys is at fault.
       def check_opaque_key!(key, path)
+        # Symbol#to_s and String#to_s are defined on those classes, so neither a Symbol nor a String (nor a
+        # String subclass, which either inherits String's or defines its own) can ever own the inherited
+        # Object#to_s — exact, not a heuristic. Skipping them skips a Method allocation per key on the
+        # shape almost every Hash has.
+        return if key.is_a?(Symbol) || key.is_a?(String)
         return unless default_to_s?(key)
 
         raise Axn::Reflection::UnserializableValue.new(
@@ -192,6 +209,11 @@ module Axn
       # that stringifies meaningfully.
       def default_to_s?(value)
         DEFAULT_TO_S_OWNERS.include?(value.method(:to_s).owner)
+      rescue NameError
+        # `method(:to_s)` can't resolve a #to_s that was undef'd and is served by method_missing without a
+        # matching respond_to_missing?. That #to_s is emphatically not the inherited default, and the value
+        # renders through it fine, so fall through to normal rendering rather than inventing a third defect.
+        false
       end
     end
   end
