@@ -1,0 +1,126 @@
+# Strict outbound value serialization
+
+**Goal:** Make `Axn::Reflection::Values` the sole owner of "this exposed value has no honest JSON representation," so an adapter never re-implements core's walk in order to pre-check it. Adds a `strict:` mode covering two dishonest-but-lossless renderings, and closes one silent data-loss bug unconditionally.
+
+## Motivation
+
+PR #203 made core the owner of the cycle case: `serialize_value` raises `Axn::Reflection::UnserializableValue` on a self-referential value, and `docs/recipes/authoring-tool-adapters.md:130` now tells adapters "You don't need your own cycle detection." That claim is true for cycles and false for everything else — core still silently renders three other shapes that no JSON consumer should receive:
+
+| Input | Core renders today |
+| --- | --- |
+| `User.new` (no own `as_json`, no `to_h`, inherited `to_s`) | `"#<User:0x00000001232124a0>"` |
+| `{ KeyObj.new => 1 }` | `{"#<KeyObj:0x0000000123210ab0>"=>1}` |
+| `{ id: 1, "id" => 2 }` | `{"id"=>2}` — the `1` is gone, no error |
+
+`axn-openapi` compensates with `Axn::OpenAPI::Serializer.assert_serializable!`, a full second walk over the value graph whose only job is to add these three rejections. To do that it has to mirror `serialize_value`'s branch decisions — the leaf-type list, `as_json`-before-`to_h` ordering, key stringification — and it has **already drifted**: it calls its cycle guard only in the `Hash`/`Array` branch, never on the `as_json`/`to_h` source object. Because each `to_h` call returns a fresh Hash with a new identity, `class Selfy; def to_h = { child: self }; end` recurses unboundedly in the adapter's pre-pass while core handles it correctly. A strictness check is only sound colocated with the rendering it predicts; that is the core argument of this change.
+
+Collapsing the two walks also removes a double-invocation of every user `as_json`/`to_h`, which the adapter's own comment apologizes for.
+
+## Scope: the four defects
+
+Core will diagnose four shapes. Two gates, drawn on whether the rendered body would be *wrong* or merely *ugly*:
+
+**Unconditional — the rendering lies about the data.**
+
+1. *Self-referential value.* Already shipped in #203. No JSON representation exists at all.
+2. *Colliding Hash keys.* `transform_keys(&:to_s)` maps `{id: 1, "id" => 2}` to one property, dropping a value with no signal. This is the only defect where the caller cannot tell from the output that anything went missing, so gating it behind an opt-in would leave a correctness bug unfixed for the two adapters shipping today. Neither `axn-mcp` nor `axn-ruby_llm` would rationally set `strict: true` — an ugly `#<User:0x…>` in an LLM tool result still beats a hard tool failure — so a gated collision check would only ever fire for the adapter that already has its own guard. **This is the deliberate resolution of the open question raised in the proposal, against the proposal's own default.**
+
+**Under `strict:` — the rendering is honest but unpresentable.** Every exposed datum is present; it just reads as garbage.
+
+3. *Default-`to_s` leaf.* `serialize_value`'s final fallback is `value.to_s`, reached only when the value has no own `as_json` and no `to_h`. If that `to_s` is the inherited `Object#to_s`, an object address ships in the response body. The check is simpler here than downstream because the earlier `when` branches and the `as_json`/`to_h` arms have already routed away everything that stringifies meaningfully.
+4. *Default-`to_s` Hash key.* Keys render via `transform_keys(&:to_s)` and never touch the `as_json`/`to_h` chain, so the same garbage becomes a JSON *property name*.
+
+### Explicit non-goals
+
+- **Non-finite floats and non-real Numerics.** `Float::INFINITY` and `Complex(1,2)` (rendered as `"1+2i"`) are encode-time or type-mismatch concerns, not presentation ones. `spec/axn/reflection/schema_spec.rb:710-722` already records the deliberate decision that `Complex` reflects untyped on output *because* `serialize_value` emits its string form, and `axn-openapi` scopes these to its own `Dispatcher.ensure_encodable`. Adding them here would relitigate a settled call.
+- **Comparing colliding values.** A middle option — raise only when the two colliding keys hold *different* values — was rejected. It requires `==` or `equal?` on arbitrary user objects inside the serializer: user code that can raise or be slow, and `equal?` false-positives on two equal-but-distinct strings. A Hash carrying both `:id` and `"id"` is essentially always a bug; the refinement buys tolerance for a shape nobody wants.
+- **Exporting `Axn::Internal::CycleGuard` to `Axn::Extensions`.** This was under consideration so `axn-openapi` could guard its own walk. This change deletes that walk, so no adapter needs a cycle primitive and the namespace stays private.
+
+## API
+
+```ruby
+serialize_exposed(result, field_configs, strict: false)
+serialize_value(value, path: "(exposed value)", seen: nil, strict: false)
+```
+
+`strict` threads through the recursion alongside `seen`. Defaulting to `false` keeps `axn-mcp` and `axn-ruby_llm` byte-identical with no adapter edit, and — load-bearing, not just compatibility — keeps `Reflection::Schema` correct: `schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, where a strict rejection would turn a reflection call into a raise.
+
+`axn-openapi` becomes a one-line pass-through:
+
+```ruby
+Axn::Reflection::Values.serialize_exposed(result, configs, strict: Axn::OpenAPI.config.strict_serialization)
+```
+
+## Implementation
+
+### `lib/axn/reflection/values.rb`
+
+The `Hash` branch fuses key checking into the existing single pass rather than adding one. Today's `transform_keys(&:to_s)` allocates an intermediate Hash and calls `to_s` once per key; building the rendered Hash directly from the original does the same work and makes the collision check an O(1) size comparison, so the unconditional check costs nothing in the common case:
+
+```ruby
+when Hash
+  within_container(value, path, seen) do |nested|
+    rendered = value.each_with_object({}) do |(key, element), acc|
+      check_opaque_key!(key, path) if strict
+      wire_key = key.to_s
+      acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, strict:)
+    end
+    raise_colliding_keys!(value, path) if rendered.size != value.size
+    rendered
+  end
+```
+
+The offending pair is located by re-scanning `value` only on the error path (`group_by(&:to_s)`), so the message can name both original keys without a per-key registry in the hot path. Insertion order makes the reported pair deterministic.
+
+The leaf check sits in the existing `else` arm's final fallback, the only place `value.to_s` is reached:
+
+```ruby
+else
+  raise UnserializableValue.new(path:, value:, reason: OPAQUE_LEAF_REASON) if strict && default_to_s?(value)
+
+  value.to_s
+end
+```
+
+`default_to_s?(obj)` is `DEFAULT_TO_S_OWNERS.include?(obj.method(:to_s).owner)` with `DEFAULT_TO_S_OWNERS = [::Object, ::Kernel]` — both, defensively; in practice the owner is `Object`. Checking `owner` rather than `respond_to?` is what lets a meaningful `def to_s = "$#{cents / 100.0}"` through.
+
+Because the checks live inside the recursion, they fire at depth for free: `[{ a: User.new }]` raises at path `rows[0].a`, and a value reached through a custom `to_h` is checked exactly like a directly-exposed one.
+
+### `lib/axn/exceptions.rb`
+
+`UnserializableValue` gains `reason:`, defaulting to the current cycle text so every existing message stays byte-identical and the existing `new(path:, value:)` call form keeps working (it is public API, and `values.rb:97` is currently its only construction site):
+
+```ruby
+"Cannot serialize exposed value at `#{@path}` (#{@value.class}): #{@reason || cycle_reason}"
+```
+
+Each reason string carries its own terminal punctuation so the format string adds none. The three new reasons live in `values.rb` next to the checks that raise them; the cycle reason stays in the exception as the no-reason-given fallback. Draft wording:
+
+- leaf — `"it serializes only via the default Object#to_s (it would render as garbage like \"#<User:0x…>\") — declare it `type: String` and format it, or give the value an `as_json`/`to_h`."`
+- key — `"a Hash key is rendered via #to_s and this one has only the default Object#to_s (it would stringify to garbage like \"#<…>\")."`
+- collision — `"two keys stringify to the same JSON property #{wire_key.inspect} (#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value."` (the only reason of the three that interpolates; the other two are fixed hint text)
+
+For both key cases the `path` names the offending key — `data (hash key #<KeyObj:0x…>)` — and `value:` is the key itself, so `(#{@value.class})` reports the key's class. The class's doc comment ("Currently only a self-referential container") is updated: the family is now four.
+
+No adapter-specific escape hatch appears in any core message. `axn-openapi`'s current wording ends with "Disable with `Axn::OpenAPI.config.strict_serialization = false`" — core must not know that knob, so it moves to the adapter's dispatcher log line.
+
+## Testing
+
+`spec/axn/reflection/values_spec.rb` carries the new cases; the cycle cases stay in `spec/axn/self_referential_values_spec.rb`.
+
+- Each of defects 3 and 4 both ways: raises under `strict: true`, renders as today under the default.
+- Defect 2 raises under both settings, and the message names both original keys and the collapsed property.
+- Nested occurrences: inside a Hash, inside an Array, and behind a custom `to_h`, asserting the reported `path`.
+- Negative cases under `strict: true`: a value with a meaningful custom `to_s`, a Symbol/String/Integer-keyed Hash, `Time`/`BigDecimal`/`Symbol` leaves, and an object with its own `as_json`.
+- A `Reflection::Schema` case proving a literal `default:` that is an opaque object still reflects rather than raising (the `schema.rb:880` path is never strict).
+- Never assert `Hash#inspect` text: Ruby 3.4 changed its spacing and CI runs 3.2–3.4. Object addresses in messages need regex or substring matching.
+
+## Also update
+
+- `docs/recipes/authoring-tool-adapters.md` (~L121-130) — document `strict:` beside the existing `serialize_exposed` guidance, and widen "you don't need your own cycle detection" to cover all four defects.
+- `AGENTS-tool-adapters.md:82` — note the `strict:` kwarg on the one-line `serialize_exposed` reference.
+- `CHANGELOG.md` under `## Unreleased` — `[BREAKING]` for the unconditional colliding-key raise, `[FEAT]` for `strict:`.
+
+## Downstream follow-up (not this PR)
+
+Once this lands, `axn-openapi` deletes `assert_serializable!`, `validate_hash!`, `within_container`, `SAFE_LEAVES`, `DEFAULT_TO_S_OWNERS`, and `UnserializableExposureError` (~90 lines; `errors.rb` loses its only subclass), replacing the pre-pass with the `strict:` kwarg and moving its disable hint into the dispatcher log line.
