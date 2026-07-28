@@ -94,12 +94,24 @@ module Axn
               "#<#{value.class.name} (unpersisted)>"
             end
           elsif defined?(ActionController::Parameters) && value.is_a?(ActionController::Parameters)
-            CycleGuard.guard(value, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) { |nested| format_hash_values(value.to_unsafe_h, nested) }
+            convert_and_format(value, seen) { value.to_unsafe_h }
           elsif value.is_a?(Axn::FormObject)
-            CycleGuard.guard(value, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) { |nested| format_hash_values(value.to_h, nested) }
+            convert_and_format(value, seen) { value.to_h }
           else
             value
           end
+        end
+
+        # The conversion has to be attempted OUTSIDE the guard, because it walks the structure itself:
+        # Parameters#to_unsafe_h recursively rebuilds every nested container, so a cycle in there raises
+        # before the guard could see the repeated container. Losing this one value to a placeholder costs
+        # a field in the report; letting it raise costs the ENTIRE report, since building context runs
+        # inside the best-effort guard that reports the exception in the first place.
+        def convert_and_format(value, seen, &)
+          converted = CycleGuard.converted_or_placeholder(&)
+          return converted if converted.equal?(CycleGuard::HASH_PLACEHOLDER)
+
+          CycleGuard.guard(value, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) { |nested| format_hash_values(converted, nested) }
         end
       end
     end

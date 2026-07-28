@@ -24,6 +24,19 @@ module Axn
       HASH_PLACEHOLDER = Placeholder.new("{...}").freeze
       ARRAY_PLACEHOLDER = Placeholder.new("[...]").freeze
 
+      # For a conversion that walks and rebuilds the structure ITSELF — `ActionController::Parameters#
+      # to_unsafe_h`, which recursively converts every nested container — a cycle inside raises before any
+      # guard of ours can observe the repeated container, so the conversion can only be attempted and
+      # caught. Yields the converted value, or the placeholder if it could not complete.
+      #
+      # (A cycle can get inside Parameters only by in-place mutation of an already-nested Array: every
+      # constructing path — `new`, `[]=` — converts eagerly and so blows the stack at assignment.)
+      def self.converted_or_placeholder(placeholder = HASH_PLACEHOLDER)
+        yield
+      rescue SystemStackError
+        placeholder
+      end
+
       # A structurally-equal copy of `value` with every self-referential container replaced by its
       # placeholder, so the result can be handed to code that has no cycle guard of its own — namely
       # ActiveSupport::ParameterFilter, which axn cannot fix in place. For that fallback only: a walker

@@ -123,7 +123,10 @@ module Axn
             data.map { |v| format_object(v, nested) }
           end
         else
-          return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
+          # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
+          # before the guard above could see the repeated container — attempt it and fall back.
+          is_params = defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
+          return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
           return "<#{data.class.name}##{data.to_param.presence || 'unpersisted'}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
 
           data.inspect
