@@ -63,17 +63,40 @@ RSpec.describe "self-referential values" do
     end
 
     # ActiveSupport::ParameterFilter has no cycle guard of its own and runs on every slice once any
-    # field is sensitive, so it blows the stack before the formatter is ever reached. That one is
-    # caught by best_effort's side-channel net rather than a guard of ours: the line degrades, the
-    # call survives.
-    it "survives a cyclic value on an action declaring a sensitive field" do
+    # field is sensitive, so it blows the stack before our formatter is reached. axn can't guard inside
+    # it, so the slice is retried on a decycled copy — which costs acyclic data nothing and keeps the
+    # rest of the line, rather than losing every field because one of them was cyclic.
+    it "renders a cyclic value, and the fields beside it, on an action declaring a sensitive field" do
       action = build_axn do
         expects :secret, sensitive: true, allow_blank: true
-        exposes :items
-        def call = expose(items: [1].tap { |a| a << a })
+        expects :items
+        exposes :v
+        def call = expose(v: 1)
       end
+      capture(action)
 
-      expect(action.call(secret: "hunter2")).to be_ok
+      expect(action.call(secret: "hunter2", items: cyclic_array)).to be_ok
+      expect(log_messages.first).to include("[...]").and include("[FILTERED]")
+    end
+
+    # A cycle passing through a nested shaped member reaches the same filter.
+    it "renders a cycle that runs through a nested shaped member" do
+      action = build_axn do
+        expects :items, type: Array do
+          field :children, type: Array do
+            field :ssn, type: String, sensitive: true, allow_blank: true
+          end
+        end
+        exposes :v
+        def call = expose(v: 1)
+      end
+      capture(action)
+
+      items = []
+      items << { children: items }
+
+      expect(action.call(items:)).to be_ok
+      expect(log_messages.first).to include("[...]")
     end
 
     # Ruby renders `x = [1]; [x, x].inspect` as "[[1], [1]]": only ancestry is a cycle.

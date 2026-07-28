@@ -13,11 +13,31 @@ module Axn
     # `==`/`hash`: a cycle is about the same OBJECT reappearing, and a large or custom-`==`
     # container must not be compared by value here.
     module CycleGuard
-      # Placeholders matching Ruby's inspect output for a recursive container. Walkers that build
-      # strings can emit these directly; walkers that build data structures substitute their own
-      # (e.g. a redaction mask) so they never hand a placeholder string back as real data.
-      HASH_PLACEHOLDER = "{...}"
-      ARRAY_PLACEHOLDER = "[...]"
+      # Renders as Ruby's inspect output for a recursive container, WITHOUT the surrounding quotes a
+      # plain String would gain when a formatter inspects it — so a decycled copy reads the same as a
+      # guarded walk (`[...]`, not `"\"[...]\""`). Still a String subclass, so ParameterFilter, JSON
+      # serializers, and an error tracker's own formatting all treat it as the ordinary string it is.
+      class Placeholder < String
+        def inspect = self
+      end
+
+      HASH_PLACEHOLDER = Placeholder.new("{...}").freeze
+      ARRAY_PLACEHOLDER = Placeholder.new("[...]").freeze
+
+      # A structurally-equal copy of `value` with every self-referential container replaced by its
+      # placeholder, so the result can be handed to code that has no cycle guard of its own — namely
+      # ActiveSupport::ParameterFilter, which axn cannot fix in place. For that fallback only: a walker
+      # axn owns should guard its own recursion with .guard instead, which needs no copy.
+      def self.decycle(value, seen = nil)
+        case value
+        when Hash
+          guard(value, seen, on_cycle: HASH_PLACEHOLDER) { |nested| value.transform_values { |element| decycle(element, nested) } }
+        when Array
+          guard(value, seen, on_cycle: ARRAY_PLACEHOLDER) { |nested| value.map { |element| decycle(element, nested) } }
+        else
+          value
+        end
+      end
 
       # Yields the visited-set to use for the next level down, having marked `container` as open.
       # Returns `on_cycle` instead — without yielding — when `container` is already open on the

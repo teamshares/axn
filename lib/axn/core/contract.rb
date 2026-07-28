@@ -346,7 +346,21 @@ module Axn
                      inspection_filter
                    end
           sliced = _mask_unfilterable_shapes(data.slice(*_declared_fields(direction)), _sensitive_shape_paths(action_instance), action_instance)
-          filter.filter(sliced)
+          _filter_tolerating_cycles(filter, sliced)
+        end
+
+        # ActiveSupport::ParameterFilter has no cycle guard of its own, so a self-referential value blows
+        # its stack — and since a filter is active for any action declaring `sensitive:`, that cost the
+        # WHOLE slice: both auto_log lines dropped to warnings and the exception report degraded to empty
+        # inputs/outputs, losing the fields that had nothing to do with the cycle.
+        #
+        # Retried on a decycled copy rather than decycling up front, so acyclic data (all of it, in
+        # practice) pays nothing: no extra walk, no copy. The retry can only be reached by data that
+        # already failed, where one wasted filter pass is irrelevant.
+        def _filter_tolerating_cycles(filter, data)
+          filter.filter(data)
+        rescue SystemStackError
+          filter.filter(Axn::Internal::CycleGuard.decycle(data))
         end
 
         # Per-element `sensitive:` redaction works by adding the member's key name to an
@@ -1237,7 +1251,7 @@ module Axn
           ambient = _safe_execution_context_slice do
             ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
             masked = self.class._mask_unfilterable_shapes(ambient_context, self.class._sensitive_ambient_shape_paths(self), self)
-            ambient_filter.filter(masked)
+            self.class.send(:_filter_tolerating_cycles, ambient_filter, masked)
           end
           ctx[:ambient_context] = ambient if ambient.present?
           ctx
