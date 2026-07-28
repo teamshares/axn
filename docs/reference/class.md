@@ -753,7 +753,7 @@ Note that by default the `on_exception` block will be applied to _any_ `Standard
 ::: tip Exceptions outside `StandardError`
 Two families outside `StandardError` are still bugs, and are treated as such: **`SystemStackError`** (runaway recursion) and **`ScriptError`** (`NotImplementedError`, `LoadError`, `SyntaxError`). Either settles as an `exception` outcome that `call` returns like any other, with `on_error` and `on_exception` firing and the global handler notified; `call!` raises it, as always.
 
-Every *other* exception outside `StandardError` passes straight through untouched — no outcome, no callbacks, no report, no log line, raised from `call` as well as `call!`. Signals and `exit` mean the process is going away, `Timeout::ExitException` must reach the enclosing `Timeout.timeout` intact for the timeout to fire, and any library may define its own control-flow signal as a direct `Exception` subclass. Since that set is open-ended, axn names what it swallows rather than what it lets through. See [what `call` can still raise](/usage/using#common-case).
+Every *other* exception outside `StandardError` passes straight through untouched — no outcome, no callbacks, no report, and no *completion* log line (the "About to execute" line is already out before your `call` runs, so `auto_log` still emits that one) — raised from `call` as well as `call!`. Signals and `exit` mean the process is going away, `Timeout::ExitException` must reach the enclosing `Timeout.timeout` intact for the timeout to fire, and any library may define its own control-flow signal as a direct `Exception` subclass. Since that set is open-ended, axn names what it swallows rather than what it lets through. See [what `call` can still raise](/usage/using#common-case).
 :::
 
 ```ruby

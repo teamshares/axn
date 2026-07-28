@@ -261,7 +261,7 @@ RSpec.describe "a run aborted by a non-StandardError" do
 
   # Gated on an ALLOWLIST (Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR), so anything axn does not
   # positively recognize as a fault in the code passes through untouched — no recorded outcome, no
-  # callbacks, no report, no log line. A denylist would instead absorb the open-ended tail of this set:
+  # callbacks, no report, no completion log line. A denylist would instead absorb the open-ended tail:
   # process signals, another library's private control flow, and classes that do not exist yet.
   describe "an exception that axn must not interfere with" do
     [Interrupt, SystemExit, Timeout::ExitException, NoMemoryError].each do |klass|
@@ -274,10 +274,14 @@ RSpec.describe "a run aborted by a non-StandardError" do
           expect(events).to be_empty
         end
 
-        it "logs no completion line for a run that never settled" do
+        # Only the COMPLETION line is suppressed: `log_before` has already emitted by the time the body
+        # runs, so auto_log still reports that the action started — which is what an operator diagnosing
+        # an interrupt or timeout signal actually sees.
+        it "logs that it started but never that it completed" do
           action, = action_raising(klass)
 
           expect { action.call }.to raise_error(klass)
+          expect(log_lines.grep(/About to execute/).length).to eq(1)
           expect(log_lines.grep(/Execution completed/)).to be_empty
         end
       end
