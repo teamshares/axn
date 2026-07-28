@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "shellwords"
+require "English"
+
 require "spec_helper"
 require "bigdecimal"
 
@@ -137,6 +140,41 @@ RSpec.describe Axn::Reflection::Values do
       end
       result = klass.call
       expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
+    end
+  end
+
+  # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
+  # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
+  # UnserializableValue — both of which live outside that entrypoint, so values.rb requires them itself.
+  # Asserted in a subprocess: the suite has all of axn loaded, so it cannot observe this in-process.
+  describe "the axn/reflection entrypoint on its own" do
+    def ruby(snippet)
+      lib = File.expand_path("../../../lib", __dir__)
+      out = `ruby -I#{lib} -e #{Shellwords.escape(snippet)} 2>&1`
+      [out.strip, $CHILD_STATUS.success?]
+    end
+
+    it "serializes ordinary structured output without loading all of axn" do
+      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] })')
+
+      expect(ok).to be(true), "subprocess failed: #{out}"
+      expect(out).to eq('{"a"=>[1]}')
+    end
+
+    it "can still raise its own UnserializableValue" do
+      out, ok = ruby(<<~RUBY)
+        require "axn/reflection"
+        cyclic = [1]
+        cyclic << cyclic
+        begin
+          Axn::Reflection::Values.serialize_value(cyclic)
+        rescue Axn::Reflection::UnserializableValue => e
+          print e.class
+        end
+      RUBY
+
+      expect(ok).to be(true), "subprocess failed: #{out}"
+      expect(out).to eq("Axn::Reflection::UnserializableValue")
     end
   end
 

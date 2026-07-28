@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: the guard is
+# needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
+# any load path that does not go through it.
+require "axn/internal/cycle_guard"
+require "axn/exceptions"
+require "axn/form_object"
+require "axn/core/nesting_tracking"
+
 module Axn
   module Internal
     # Builds context data for exception reporting to error tracking services

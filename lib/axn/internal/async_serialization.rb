@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/cycle_guard"
+require "axn/exceptions"
 require "axn/internal/global_id_serialization"
 
 module Axn

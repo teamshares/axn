@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: the guard is
+# needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
+# any load path that does not go through it.
+require "axn/internal/cycle_guard"
+require "axn/extensions"
+
 module Axn
   module Core
     # Declarative per-action observability facets. `tag` (high-cardinality) and

@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# activemodel is a hard gem dependency; declared here so this file does not rely on the top-level
+# `axn` entrypoint having loaded it first.
+require "active_model"
+
 # This is a base class for all form objects that are used with Axn actions.
 #
 # It provides a number of conveniences for working with form objects, including:

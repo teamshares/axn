@@ -3,6 +3,13 @@
 require "date"
 require "time"
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: `axn/reflection`
+# is loadable on its own (it composes only its own reflection files) and adapters are pointed at it,
+# while serializing ANY Hash/Array reaches CycleGuard and raising needs UnserializableValue. Both are
+# runtime references, so without these a standalone load NameErrors on ordinary output.
+require "axn/internal/cycle_guard"
+require "axn/exceptions"
+
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
 # — which adds a generic Object#as_json (an instance-variable dump). To avoid that bypassing a value
 # object's declared `to_h` shape, `serialize_value` only follows `as_json` when the object defines its

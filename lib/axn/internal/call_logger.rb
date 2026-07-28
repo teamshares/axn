@@ -1,5 +1,12 @@
 # frozen_string_literal: true
 
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: the guard is
+# needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
+# any load path that does not go through it.
+require "axn/internal/cycle_guard"
+require "axn/extensions"
+require "axn/core/tagging"
+
 module Axn
   module Internal
     # Logs action execution - handles building and emitting structured log
