@@ -162,7 +162,7 @@ module Axn
     # where data belongs. Four shapes, in two categories. The rendering would be WRONG: a
     # self-referential container (no JSON representation at all), or two Hash keys that stringify to
     # one JSON property (a value silently dropped). The rendering would be UGLY, rejected only under
-    # `serialize_value(strict: true)`: a value or a Hash key whose only `to_s` is the inherited
+    # `serialize_value(reject_opaque: true)`: a value or a Hash key whose only `to_s` is the inherited
     # Object#to_s, which renders an object address into a response body.
     #
     # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response

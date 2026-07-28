@@ -5155,7 +5155,7 @@ RSpec.describe Axn::Reflection::Schema do
   # Schema reflection renders a literal `default:` through Values.serialize_value (see
   # Schema.describe_default). Reflection must never raise on user data, so that call site stays
   # non-strict even for a value that has no presentable JSON form.
-  it "reflects an opaque literal default rather than raising, since reflection is never strict" do
+  it "reflects an opaque literal default rather than raising, since reflection never passes the kwarg" do
     klass = Class.new do
       include Axn
       expects :owner, default: Object.new

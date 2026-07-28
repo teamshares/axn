@@ -157,7 +157,7 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
     end
 
-    it "threads strict: to the values it serializes" do
+    it "threads reject_opaque: to the values it serializes" do
       owner = opaque_object
       klass = Class.new do
         include Axn
@@ -170,7 +170,7 @@ RSpec.describe Axn::Reflection::Values do
 
       expect(described_class.serialize_exposed(result, klass.external_field_configs)["owner"])
         .to match(/\A#<Object:0x[0-9a-f]+>\z/)
-      expect { described_class.serialize_exposed(result, klass.external_field_configs, strict: true) }
+      expect { described_class.serialize_exposed(result, klass.external_field_configs, reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`owner`/)
     end
   end
@@ -212,36 +212,36 @@ RSpec.describe Axn::Reflection::Values do
 
   # serialize_value's last resort is `value.to_s`. When that #to_s is the one inherited from Object,
   # the result is an object address — complete, but useless in a response body or an LLM's tool
-  # result. Strict callers reject it; the default keeps rendering it, since a lossless-but-ugly value
-  # is not worth failing an MCP call over.
-  describe "default-to_s values under strict:" do
+  # result. Callers can set reject_opaque: true to reject it; the default keeps rendering it, since a
+  # lossless-but-ugly value is not worth failing an MCP call over.
+  describe "default-to_s values under reject_opaque:" do
     let(:opaque) { opaque_object }
 
     it "renders the object address by default" do
       expect(described_class.serialize_value(opaque, path: "owner")).to match(/\A#<Object:0x[0-9a-f]+>\z/)
     end
 
-    it "raises under strict:, naming the path and how to fix it" do
-      expect { described_class.serialize_value(opaque, path: "owner", strict: true) }
+    it "raises under reject_opaque:, naming the path and how to fix it" do
+      expect { described_class.serialize_value(opaque, path: "owner", reject_opaque: true) }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
           /`owner` \(Object\).*only via the default Object#to_s.*declare it `type: String`/m,
         )
     end
 
-    it "allows a value with a meaningful custom to_s under strict:" do
+    it "allows a value with a meaningful custom to_s under reject_opaque:" do
       money = opaque_object.tap { |o| def o.to_s = "$5.00" }
 
-      expect(described_class.serialize_value(money, strict: true)).to eq("$5.00")
+      expect(described_class.serialize_value(money, reject_opaque: true)).to eq("$5.00")
     end
 
     it "checks inside an Array, naming the indexed path" do
-      expect { described_class.serialize_value([1, opaque], path: "rows", strict: true) }
+      expect { described_class.serialize_value([1, opaque], path: "rows", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[1\]`/)
     end
 
     it "checks inside a Hash, naming the keyed path" do
-      expect { described_class.serialize_value({ owner: opaque }, path: "rec", strict: true) }
+      expect { described_class.serialize_value({ owner: opaque }, path: "rec", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`rec\.owner`/)
     end
 
@@ -250,31 +250,31 @@ RSpec.describe Axn::Reflection::Values do
       wrapper.instance_variable_set(:@inner, opaque)
       def wrapper.to_h = { inner: @inner }
 
-      expect { described_class.serialize_value(wrapper, path: "w", strict: true) }
+      expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`/)
     end
 
-    it "leaves every ordinary value untouched under strict:" do
+    it "leaves every ordinary value untouched under reject_opaque:" do
       as_json_obj = Object.new.tap { |o| def o.as_json(*) = { "k" => "v" } }
 
-      expect(described_class.serialize_value(:ok, strict: true)).to eq("ok")
-      expect(described_class.serialize_value(BigDecimal("3.14"), strict: true)).to eq(3.14)
-      expect(described_class.serialize_value(Date.new(2026, 7, 3), strict: true)).to eq("2026-07-03")
-      expect(described_class.serialize_value({ a: [1, nil, true] }, strict: true)).to eq("a" => [1, nil, true])
-      expect(described_class.serialize_value(as_json_obj, strict: true)).to eq("k" => "v")
+      expect(described_class.serialize_value(:ok, reject_opaque: true)).to eq("ok")
+      expect(described_class.serialize_value(BigDecimal("3.14"), reject_opaque: true)).to eq(3.14)
+      expect(described_class.serialize_value(Date.new(2026, 7, 3), reject_opaque: true)).to eq("2026-07-03")
+      expect(described_class.serialize_value({ a: [1, nil, true] }, reject_opaque: true)).to eq("a" => [1, nil, true])
+      expect(described_class.serialize_value(as_json_obj, reject_opaque: true)).to eq("k" => "v")
     end
 
-    it "still raises on a cycle under strict:, with the cycle reason rather than a to_s reason" do
+    it "still raises on a cycle under reject_opaque:, with the cycle reason rather than a to_s reason" do
       cyclic = [1]
       cyclic << cyclic
 
-      expect { described_class.serialize_value(cyclic, path: "items", strict: true) }
+      expect { described_class.serialize_value(cyclic, path: "items", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /self-referential/)
     end
 
     it "raises on colliding keys under either setting, since a dropped value is wrong output" do
-      [false, true].each do |strict|
-        expect { described_class.serialize_value({ id: 1, "id" => 2 }, strict:) }
+      [false, true].each do |reject_opaque|
+        expect { described_class.serialize_value({ id: 1, "id" => 2 }, reject_opaque:) }
           .to raise_error(Axn::Reflection::UnserializableValue, /silently collapse/)
       end
     end
