@@ -98,9 +98,30 @@ module Axn
                     "#{'⌵' * 30}\n\n#{msg}\n\n#{'^' * 30}"
                   end
 
-        (action || Axn.config.logger).send(:warn, message)
+        _emit_warning(action, message)
 
         nil
+      end
+
+      # Emitting the warning must not raise either. This guard is frequently invoked from an `ensure`,
+      # so a logging backend that cannot write (a closed or failing IO, a broken custom logger) would
+      # otherwise replace the exception already in flight — the exact failure the guard exists to
+      # prevent, just moved one line later.
+      #
+      # When the primary target was an action, the configured logger gets one independent attempt: it is
+      # a different object, and the usual cause is an action-level override rather than the backend. If
+      # both fail there is nothing left to warn WITH, so the warning is dropped — a lost diagnostic is
+      # strictly better than a lost exception.
+      def _emit_warning(action, message)
+        (action || Axn.config.logger).send(:warn, message)
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        return if action.nil?
+
+        begin
+          Axn.config.logger.send(:warn, message)
+        rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+          nil
+        end
       end
 
       # Just the filename/line number the exception came from. An EMPTY backtrace has to be tolerated:

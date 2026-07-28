@@ -119,10 +119,43 @@ RSpec.describe Axn::Extensions do
       end
     end
 
-    # This guard often runs from inside an `ensure`, where raising would replace the exception already
-    # in flight — so the warn path itself must not be able to raise. `raise` repopulates a nil
-    # backtrace, but an exception reconstructed with `set_backtrace([])` (what a death handler
-    # rebuilding one from job data hands us) keeps it empty.
+    # This guard runs from inside an `ensure`, so the WARNING must not raise either — a logging backend
+    # that can't write would otherwise replace the exception in flight, the exact failure the guard
+    # exists to prevent, moved one line later.
+    describe "when emitting the warning itself fails" do
+      let(:broken) { double(:broken_logger) }
+
+      before do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
+        allow(broken).to receive(:warn).and_raise(IOError, "closed stream")
+      end
+
+      it "swallows rather than escaping when the configured logger cannot write" do
+        allow(Axn).to receive_message_chain(:config, :logger).and_return(broken)
+
+        expect { described_class.best_effort("foo", &boom) }.not_to raise_error
+      end
+
+      it "gives the configured logger an independent attempt when an action's warn is the broken one" do
+        action = double(:action)
+        allow(action).to receive(:warn).and_raise(SystemStackError)
+        expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
+
+        expect { described_class.best_effort("foo", action:, &boom) }.not_to raise_error
+      end
+
+      it "still swallows when both targets are broken" do
+        action = double(:action)
+        allow(action).to receive(:warn).and_raise(SystemStackError)
+        allow(Axn).to receive_message_chain(:config, :logger).and_return(broken)
+
+        expect { described_class.best_effort("foo", action:, &boom) }.not_to raise_error
+      end
+    end
+
+    # Same reason: the warn path must not raise. `raise` repopulates a nil backtrace, but an exception
+    # reconstructed with `set_backtrace([])` — what a death handler rebuilding one from job data hands
+    # us — keeps it empty.
     describe "an exception carrying no usable backtrace" do
       before do
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)

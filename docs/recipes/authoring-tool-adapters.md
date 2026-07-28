@@ -127,6 +127,8 @@ exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_f
 
 Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
 
+It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value is self-referential, naming the path to it — a cycle has no JSON representation, so there is nothing honest to render. You don't need your own cycle detection; let it reach whatever `rescue` already maps a failed serialization to your transport's error response.
+
 ## Per-adapter configuration
 
 Declare adapter settings with `Axn::Configurable` (the same machinery Axn uses internally — full detail in [Configuration for Axn-based Gems](/recipes/gem-configuration)):
