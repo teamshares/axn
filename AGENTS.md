@@ -78,6 +78,10 @@ axn-core reserves the top-level public constants (`Result`, `Failure`, `Factory`
 Reuse the hierarchy in `lib/axn/exceptions.rb`; don't invent ad-hoc classes. Every `message`
 explains the problem **and** the fix (see `UnknownExposure`). New messages meet that bar.
 
+`Axn::Extensions.best_effort` guards a **side channel** — a log line, a span update, a metrics block, an error report — and swallows `StandardError` plus `SWALLOWABLE_BEYOND_STANDARD_ERROR`, so nothing in it can take down the call it observes. Pass `standard_errors_only: true` instead when the block's return value or side effect is part of the call's real work (resolving a `model:` record, deciding whether a handler applies, filtering which records enqueue): swallowing a `SystemStackError` there would report a runaway user callable as a benign absence instead of the stack that names it. Widen the allowlist only for a class that is genuinely recoverable and says nothing about the action's own outcome — the non-`StandardError` set is open-ended, and members like `Timeout::ExitException` exist precisely so nothing swallows them.
+
+Any code that recurses through caller-supplied Hash/Array values must cycle-guard with `Axn::Internal::CycleGuard` (a self-referential value is a `SystemStackError`, which is outside `StandardError` and so escapes the whole result path).
+
 ## Testing
 
 - Cover happy path, guard/raise paths, and awkward edges (blank vs nil vs absent, aliasing, nesting,

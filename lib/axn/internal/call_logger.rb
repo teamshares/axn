@@ -107,14 +107,21 @@ module Axn
         formatted[0, MAX_CONTEXT_LENGTH - TRUNCATION_SUFFIX.length] + TRUNCATION_SUFFIX
       end
 
-      # Formats an object for logging, handling special cases for ActiveRecord and ActionController::Parameters
-      def format_object(data)
+      # Formats an object for logging, handling special cases for ActiveRecord and ActionController::Parameters.
+      # `seen` carries the containers open on the current path (see CycleGuard) so a self-referential
+      # Hash/Array renders the way Ruby's own #inspect renders one instead of recursing until the
+      # stack blows — a log line must never be able to take down the call it is describing.
+      def format_object(data, seen = nil)
         case data
         when Hash
-          # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
-          "{#{data.map { |k, v| "#{k}: #{format_object(v)}" }.join(', ')}}"
+          CycleGuard.guard(data, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) do |nested|
+            # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
+            "{#{data.map { |k, v| "#{k}: #{format_object(v, nested)}" }.join(', ')}}"
+          end
         when Array
-          data.map { |v| format_object(v) }
+          CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
+            data.map { |v| format_object(v, nested) }
+          end
         else
           return data.to_unsafe_h if defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
           return "<#{data.class.name}##{data.to_param.presence || 'unpersisted'}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)

@@ -195,11 +195,17 @@ module Axn
       # LOGGING (Outside zone - result is settled)
       # =========================================================================
 
+      # Both hooks are guarded HERE, not only inside CallLogger#log_at_level: everything used to build a
+      # line — the duration, the facet maps, the separator, the context slices — is an ARGUMENT to that
+      # inner guard, so it is evaluated outside it. A raise from any of them escapes, and from this
+      # `ensure` it would REPLACE the exception already in flight: an enclosing Timeout's ExitException
+      # (which then never reaches the handler that converts it to Timeout::Error, so the timeout silently
+      # does not fire), or a Ctrl-C, reported instead as an unrelated error from the log formatter.
       def with_logging
-        log_before if @action_class._auto_log_before_level
+        Axn::Extensions.best_effort("logging before hook", action: @action_class) { log_before } if @action_class._auto_log_before_level
         yield
       ensure
-        log_after
+        Axn::Extensions.best_effort("logging after hook", action: @action_class) { log_after }
       end
 
       def log_before
@@ -216,6 +222,15 @@ module Axn
       end
 
       def log_after
+        # `with_timing` is nested INSIDE `with_logging`, so reaching this ensure with no elapsed_time
+        # means the body never started — the only way in is a non-StandardError escaping `log_before`
+        # (an Interrupt or Timeout::ExitException landing on the inbound line). There is no completion
+        # to report: emitting anyway both LIES ("Execution completed (with outcome: success)" for an
+        # action that never ran) and raises out of this ensure while formatting a nil duration,
+        # replacing the in-flight exception — which silently destroys an enclosing Timeout.timeout,
+        # since its ExitException never reaches the handler that converts it to Timeout::Error.
+        return if @action.result.elapsed_time.nil?
+
         level = @action_class._auto_log_level_for(@action.result.outcome)
         return unless level
 
@@ -267,8 +282,13 @@ module Axn
         timing_start = Internal::Timing.now
         yield
       ensure
-        elapsed_mils = Internal::Timing.elapsed_ms(timing_start)
-        @context.send(:elapsed_time=, elapsed_mils)
+        # No start means the clock read itself was interrupted, so there is no duration to record —
+        # measuring against nil would raise out of this ensure and replace the exception in flight.
+        # `log_after` treats a nil elapsed_time as "the body never ran" and stays quiet.
+        if timing_start
+          elapsed_mils = Internal::Timing.elapsed_ms(timing_start)
+          @context.send(:elapsed_time=, elapsed_mils)
+        end
       end
 
       # =========================================================================
@@ -280,7 +300,9 @@ module Axn
       rescue Internal::EarlyCompletion
         raise
       rescue StandardError => e
-        Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action) do
+        # standard_errors_only: this MUTATES the settling result (a default's value becomes an
+        # exposure the caller reads), so it is the call's own work, not an observation of it.
+        Axn::Extensions.best_effort("applying outbound defaults on failure", action: @action, standard_errors_only: true) do
           apply_defaults!(:outbound)
         end
 

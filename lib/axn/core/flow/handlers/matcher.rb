@@ -13,7 +13,9 @@ module Axn
           end
 
           def call(exception:, action:)
-            Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
+            # standard_errors_only: the return value decides which error handler applies, so it is
+            # control flow, not observability — a runaway matcher must not silently read as "no match".
+            Axn::Extensions.best_effort("determining if handler applies to exception", action:, standard_errors_only: true) do
               result = matches?(exception:, action:)
               @invert ? !result : result
             end
@@ -79,7 +81,8 @@ module Axn
           end
 
           def call(exception:, action:)
-            Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
+            # standard_errors_only: see SingleRuleMatcher#call — this return value is control flow.
+            Axn::Extensions.best_effort("determining if handler applies to exception", action:, standard_errors_only: true) do
               matches?(exception:, action:)
             end
           end

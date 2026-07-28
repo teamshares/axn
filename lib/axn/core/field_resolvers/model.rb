@@ -30,7 +30,10 @@ module Axn
           return nil if id_value.blank?
 
           finder_name = finder.is_a?(Method) ? finder.name : finder
-          Axn::Extensions.best_effort("finding #{field} with #{finder_name}") do
+          # standard_errors_only: the finder's RETURN VALUE is the field. Swallowing a
+          # SystemStackError from a runaway finder would report it as "#{field} can't be blank"
+          # rather than the stack that names the recursion.
+          Axn::Extensions.best_effort("finding #{field} with #{finder_name}", standard_errors_only: true) do
             if finder.is_a?(Method)
               # Method object - call it directly
               finder.call(id_value)

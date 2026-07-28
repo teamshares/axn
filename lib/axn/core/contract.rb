@@ -412,13 +412,23 @@ module Axn
         # subfield reads the sensitive shape off it) that ParameterFilter can't descend into — mask it
         # wholesale rather than leak the sensitive member nested inside; a nil/scalar intermediate is
         # preserved (nothing to reach or leak).
-        def _mask_value_at_path(value, wire_path, shape, action_instance)
+        # The Hash branch consumes a path segment per level so it always terminates; the Array branch
+        # maps with the path UNCHANGED, so a self-referential array would recurse until the stack
+        # blows. A revisited array masks wholesale (not the `[...]` placeholder, which would be a
+        # placeholder String masquerading as data) — the same over-redact-rather-than-leak call as
+        # `_mask_opaque_or_preserve`, since we cannot descend to redact the sensitive member inside.
+        def _mask_value_at_path(value, wire_path, shape, action_instance, seen = nil)
           return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
-          return value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance) } if value.is_a?(Array)
+
+          if value.is_a?(Array)
+            return Axn::Internal::CycleGuard.guard(value, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |nested|
+              value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance, nested) }
+            end
+          end
           return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
 
           _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
-            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance))
+            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance, seen))
           end
         end
 
@@ -1239,9 +1249,16 @@ module Axn
         # through sensitive-predicate evaluation while building any of these slices, since resolving
         # inputs_for_logging/outputs_for_logging may evaluate a dynamic `sensitive:` predicate that
         # reads ambient_context). Degrade to {} rather than let it escape.
+        #
+        # Rescues the same set as Axn::Extensions.best_effort's side-channel default (see
+        # SWALLOWABLE_BEYOND_STANDARD_ERROR): building a report is the archetypal side channel, and
+        # ActiveSupport::ParameterFilter — which sensitive-field filtering runs every slice through —
+        # has no cycle guard of its own, so a self-referential value reaches here as a
+        # SystemStackError. This is the only net between that and the real exception never being
+        # reported at all.
         def _safe_execution_context_slice
           yield
-        rescue StandardError
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
           {}
         end
 

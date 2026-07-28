@@ -484,6 +484,29 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
   end
 
+  # The walk down a subfield's wire path consumes a segment per Hash level (so it terminates), but maps
+  # across an Array with the path UNCHANGED — which recursed until the stack blew on a self-referential
+  # array in an intermediate position.
+  describe "a self-referential value on the path to a sensitive member" do
+    it "masks the cycle wholesale and still redacts the member it could reach" do
+      action = build_axn do
+        expects :orders
+        expects :person, on: :orders, type: Hash do
+          field :ssn, type: String, sensitive: true
+        end
+      end
+
+      cyclic = [{ person: { ssn: "111-11-1111" } }]
+      cyclic << cyclic
+
+      # The revisited array masks rather than rendering a `[...]` placeholder: this walk returns DATA,
+      # and we cannot descend to redact whatever sensitive member is nested inside — the same
+      # over-redact-rather-than-leak call the opaque-value branch makes.
+      expect(action.send(:new, orders: cyclic).send(:inputs_for_logging)[:orders])
+        .to eq([{ person: { ssn: "[FILTERED]" } }, "[FILTERED]"])
+    end
+  end
+
   describe "model: on a shape member" do
     it "is rejected (reader-less members cannot resolve an id or expose an _id companion)" do
       expect do

@@ -146,7 +146,9 @@ module Axn
         # if the handler requests it. A raise — from the handler OR from resolving sources — is
         # swallowed (mirrors on_success / filter_block) so the fan-out is never aborted.
         def invoke_enqueue_all_callback(target:, handler:, resolve_sources:, count:)
-          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}") do
+          # standard_errors_only: the callback runs the user's own side effects (not an observation
+          # of the fan-out), so a runaway one surfaces its stack rather than repeating per target.
+          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}", standard_errors_only: true) do
             if handler.is_a?(Symbol)
               unless target.respond_to?(handler, true)
                 target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")
@@ -342,7 +344,9 @@ module Axn
 
             # Apply filter block if present - swallow errors, skip item
             if config.filter_block
-              filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}") do
+              # standard_errors_only: the return value decides whether this item is enqueued at all,
+              # so it is the fan-out's own work — a runaway filter must not silently skip every record.
+              filter_result = Axn::Extensions.best_effort("filter block for :#{config.field}", standard_errors_only: true) do
                 config.filter_block.call(item)
               end
               next unless filter_result

@@ -167,8 +167,10 @@ RSpec.describe Axn::Validators::ModelValidator do
       result = action.call(user_id: 123)
       expect(result).not_to be_ok
       expect(result.exception).to be_a(Axn::InboundValidationError)
+      # standard_errors_only: the finder's return value IS the field, so a non-StandardError
+      # (e.g. a runaway finder's SystemStackError) must stay loud rather than read as "blank".
       expect(Axn::Extensions).to have_received(:best_effort).with(
-        "finding user with find_by_id",
+        "finding user with find_by_id", standard_errors_only: true
       ).at_least(:once)
     end
   end
@@ -238,7 +240,7 @@ RSpec.describe Axn::Validators::ModelValidator do
       result = action.call(user_id: 1)
       expect(result.exception).to be_a(Axn::InboundValidationError)
       expect(Axn::Extensions).to have_received(:best_effort).with(
-        "finding user with find",
+        "finding user with find", standard_errors_only: true
       ).at_least(:once)
     end
   end
