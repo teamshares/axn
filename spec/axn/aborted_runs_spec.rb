@@ -116,20 +116,56 @@ RSpec.describe "a run aborted by a non-StandardError" do
       end
     end
 
-    # `fails_on` is deliberately not consulted. A matcher broad enough to catch a non-StandardError would
-    # otherwise relabel this a `failure` — firing on_failure and suppressing the report — for what is
-    # unambiguously a bug.
-    context "when the action declares a fails_on matcher broad enough to catch it" do
-      it "stays an exception outcome, agreeing with the callbacks that fired, and is still reported" do
+    # `fails_on` means "treat this as a failure", so it does exactly that for anything axn absorbs —
+    # silently ignoring the declaration would be the worst outcome. Only classes axn never absorbs are
+    # unreachable, and those are rejected at declaration instead (see fails_on_spec).
+    context "when the action declares fails_on for it" do
+      it "reclassifies to a failure outcome, firing on_failure and skipping the report" do
         klass, events = action_raising(SystemStackError)
-        klass.fails_on Exception
+        klass.fails_on SystemStackError
 
         result = klass.call
 
-        expect(result.outcome).to eq("exception")
-        expect(log_lines.last).to include("outcome: exception")
-        expect(events.map(&:first)).to eq(%i[on_error on_exception])
-        expect(reported.length).to eq(1)
+        expect(result.outcome).to eq("failure")
+        expect(result.exception).to be_a(SystemStackError)
+        expect(events.map(&:first)).to eq(%i[on_error on_failure])
+        expect(reported).to be_empty
+      end
+
+      it "honors a broad `fails_on Exception` for the classes axn absorbs" do
+        klass, = action_raising(SystemStackError)
+        klass.fails_on Exception
+
+        expect(klass.call.outcome).to eq("failure")
+      end
+    end
+
+    # A callback is dispatched from the executor's rescue clause, so a raise there does not reach the
+    # sibling `rescue Exception` and would escape `.call` while REPLACING the failure it was invoked to
+    # observe.
+    context "when a callback itself raises a non-StandardError" do
+      it "keeps the action's own exception and still returns a result" do
+        klass = build_axn { exposes :v }
+        klass.on_error { raise SystemStackError }
+        klass.define_method(:call) { raise "the real failure" }
+        allow(klass).to receive(:info)
+        allow(klass).to receive(:warn)
+
+        result = klass.call
+
+        expect(result.exception).to be_a(RuntimeError)
+        expect(result.exception.message).to eq("the real failure")
+        expect(reported.map(&:first).map(&:class)).to eq([RuntimeError])
+      end
+
+      it "still propagates one axn never absorbs" do
+        klass = build_axn { exposes :v }
+        klass.on_error { raise Interrupt }
+        klass.define_method(:call) { raise "the real failure" }
+        allow(klass).to receive(:info)
+        allow(klass).to receive(:warn)
+
+        expect { klass.call }.to raise_error(Interrupt)
       end
     end
 

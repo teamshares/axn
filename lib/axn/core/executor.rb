@@ -309,26 +309,36 @@ module Axn
         # completion line said so, the global report never fired, and it escaped `.call` — breaking the
         # consistent-return guarantee that only `call!` opts out of.
         #
-        # So settle it exactly like a StandardError bug: an `exception` outcome `.call` RETURNS, with
-        # on_error + on_exception fired and one global report. `call!` still raises it, from its own
-        # `raise result.exception` — the original object, so an enclosing Timeout.timeout can still
-        # recognize its own signal by identity (though pass_through? keeps that class out of here anyway).
-        #
-        # The one deviation is in _settle_exception under `aborted:`: `fails_on` must not be consulted,
-        # or a matcher broad enough to catch a non-StandardError (`fails_on Exception`) would relabel this
-        # a `failure` — firing on_failure and suppressing the report for what is unambiguously a bug.
+        # So settle it exactly like a StandardError bug — an `exception` outcome `.call` RETURNS, with
+        # on_error + on_exception fired, one global report, and `fails_on` honored the same way (see
+        # Flow::FailsOn, which rejects at declaration any class this gate would never let through).
+        # `call!` still raises it from its own `raise result.exception`, the original object.
         #
         # Gated on an ALLOWLIST (see Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR), so anything axn does
         # not positively recognize as a bug passes through untouched: a signal, an `exit`, or another
         # library's private control-flow signal, which absorbing into a result would silently break.
         raise unless Axn::Extensions.swallowable?(e)
 
-        _settle_exception(e, aborted: true)
+        _settle_exception(e)
       end
 
-      # The one path by which an exception settles onto the result. `aborted:` marks an exception from
-      # outside StandardError, which is never eligible for `fails_on` reclassification.
-      def _settle_exception(e, aborted: false)
+      # The one path by which an exception settles onto the result.
+      #
+      # Guarded because it runs USER code — an on_error/on_failure callback, a matcher, error-message
+      # resolution — from inside a rescue clause, where a raise does NOT reach the sibling
+      # `rescue Exception` above: it would escape `.call` AND replace the very exception being settled,
+      # so the caller would see a stack overflow from someone's callback instead of the real failure.
+      # A swallowable one is therefore warned and dropped; `__record_exception` has already run by then,
+      # so the result still settles on the original exception. Anything not swallowable still propagates.
+      def _settle_exception(settling)
+        _settle_exception!(settling)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        raise unless Axn::Extensions.swallowable?(e)
+
+        Axn::Extensions.best_effort("settling #{settling.class} onto the result", action: @action) { raise e }
+      end
+
+      def _settle_exception!(e)
         # Outbound defaults let the caller (and an on_error handler) read sensible exposures off a failed
         # result. Swallow-all deliberately: the block's failure only costs a default value on an
         # already-failed result, so it must never change control flow — letting a user `default:` proc
@@ -338,9 +348,6 @@ module Axn
         end
 
         @context.__record_exception(e)
-        # Before any callback dispatch, so a handler reading result.outcome sees `exception` rather than
-        # whatever a broad `fails_on` matcher would recompute (see Result#outcome).
-        @context.__classify_as_aborted! if aborted
 
         # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
         # filter or body that reads exception.message observes the same resolved string as result.error
@@ -350,8 +357,8 @@ module Axn
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-        if !aborted && (e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
-           Axn::ValidationError.user_facing?(e))
+        if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
+           Axn::ValidationError.user_facing?(e)
           # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
           # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
           # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.

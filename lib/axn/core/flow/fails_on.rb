@@ -30,6 +30,8 @@ module Axn
               raise ArgumentError, "fails_on requires one or more Exception classes (got #{exceptions.inspect})"
             end
 
+            _reject_unreachable_fails_on!(classes)
+
             # standalone: only configures the wired `error`, so it's inert without a message/block —
             # raise rather than silently drop it (true and false alike), matching the message DSL.
             raise ArgumentError, "fails_on standalone: has no effect without a message or block" if !standalone.nil? && !(message || block)
@@ -46,6 +48,36 @@ module Axn
 
           def _fails_on?(exception)
             _fails_on_matchers.any? { |klass| exception.is_a?(klass) }
+          end
+
+          private
+
+          # An exception axn never absorbs into a result (a signal, an `exit`, another library's private
+          # control-flow signal — see Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR) is raised straight
+          # through `.call` and never reaches failure classification. Declaring `fails_on` on one is
+          # therefore inert, and silence would be the worst outcome: the whole point of the declaration is
+          # to reclassify, so a caller would reasonably believe they had. Reject it at declaration.
+          #
+          # Rejects only a class that could NEVER match — one with no swallowable class anywhere in its
+          # hierarchy, in either direction. `fails_on Exception` is fine (it still catches every exception
+          # axn absorbs); `fails_on Interrupt` is not.
+          def _reject_unreachable_fails_on!(classes)
+            unreachable = classes.reject { |klass| _fails_on_reachable?(klass) }
+            return if unreachable.empty?
+
+            raise ArgumentError,
+                  "fails_on cannot reclassify #{unreachable.map { |klass| klass.name || klass.inspect }.join(', ')} — axn never converts " \
+                  "#{unreachable.one? ? 'it' : 'them'} into a result (a signal, an `exit`, or a library's own " \
+                  "control-flow signal is raised straight through `.call`), so the declaration would have no " \
+                  "effect. Remove it, and rescue at the call site if the caller needs to handle it."
+          end
+
+          def _fails_on_reachable?(klass)
+            return true if klass <= StandardError
+
+            Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR.any? do |swallowable|
+              klass <= swallowable || swallowable <= klass
+            end
           end
         end
       end

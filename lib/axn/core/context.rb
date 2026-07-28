@@ -51,14 +51,6 @@ module Axn
       def __classify_as_failure! = @classified_as_failure = true
       def __classified_as_failure? = @classified_as_failure || false
 
-      # Recorded when the run was ABORTED by an exception from outside StandardError, which the executor
-      # settles and then re-raises. Such an exception is never a failure: `fails_on` is deliberately not
-      # consulted (a matcher broad enough to catch one would otherwise swallow it), so result.outcome must
-      # not reach its own defensive `_fails_on?` recompute and label this `failure` while the executor
-      # dispatches the exception-outcome callbacks.
-      def __classify_as_aborted! = @classified_as_aborted = true
-      def __classified_as_aborted? = @classified_as_aborted || false
-
       def __record_early_completion(message, standalone: false)
         # Only store a real (non-sentinel) message, but always record the standalone opt-out so a bare
         # `done!(standalone: true)` isn't silently dropped (it's moot when no message resolves, but the
