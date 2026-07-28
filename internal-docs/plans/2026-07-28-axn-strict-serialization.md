@@ -32,7 +32,7 @@
 | `spec/axn/reflection/values_spec.rb` | Unit coverage for all four defects | Modify: add `describe` blocks |
 | `docs/recipes/authoring-tool-adapters.md` | Adapter-author guidance | Modify L119-130 |
 | `AGENTS-tool-adapters.md` | Terse adapter cheat-sheet | Modify L79-83 |
-| `CHANGELOG.md` | Release notes | Modify: open a new `## Unreleased` section (see Task 5 — `0.1.0-alpha.5` was just cut, so there is none) |
+| `CHANGELOG.md` | Release notes | Modify `### Tools & adapters` under `## 0.1.0-alpha.5` — that version is not released yet and is waiting on this work, so it is the section to edit; do NOT open an `## Unreleased` |
 
 Cycle-case specs stay in `spec/axn/self_referential_values_spec.rb` — do not move them, and do not add the new defects there (that file is about `SystemStackError` escaping `.call`, a different concern).
 
@@ -605,7 +605,7 @@ The recipe currently tells adapter authors "You don't need your own cycle detect
 **Files:**
 - Modify: `docs/recipes/authoring-tool-adapters.md:119-130`
 - Modify: `AGENTS-tool-adapters.md:79-83`
-- Modify: `CHANGELOG.md` — a new `## Unreleased` section above `## 0.1.0-alpha.5`
+- Modify: `CHANGELOG.md` — `### Tools & adapters` under `## 0.1.0-alpha.5`
 
 **Interfaces:**
 - Consumes: the final `serialize_exposed(result, field_configs, strict: false)` signature from Task 3.
@@ -650,17 +650,9 @@ In `AGENTS-tool-adapters.md`, replace the `## Value serialization` bullet (L79-8
 
 - [ ] **Step 3: Update the changelog**
 
-`0.1.0-alpha.5` was cut immediately before this work, so the top section is `## 0.1.0-alpha.5` and there is no `## Unreleased` to append to — do not add these entries to the released section. Insert a new section between the `# Changelog` heading and `## 0.1.0-alpha.5`:
+The top section is `## 0.1.0-alpha.5`, and despite the version heading it is **not released yet** — the release is waiting on this work to land. So these entries belong in it: do NOT open an `## Unreleased` section above it.
 
-```markdown
-## Unreleased
-
-### Tools & adapters
-
-<the two entries below>
-```
-
-The two entries, in this order:
+Append both entries to the end of that version's `### Tools & adapters` list (after the `tool_version`/`::Vn` entries, immediately before `### Other`), in this order:
 
 ```markdown
 * [BREAKING] `Axn::Reflection::Values.serialize_exposed`/`serialize_value` now raise `Axn::Reflection::UnserializableValue` when two of a Hash's keys stringify to the same JSON property (`{id: 1, "id" => 2}`). Keys are rendered with `#to_s`, so such a pair collapsed into one property and silently dropped a value — a response body that was wrong rather than merely ugly, which no caller could detect from the output. The message names both original keys and the property they collapse to.
