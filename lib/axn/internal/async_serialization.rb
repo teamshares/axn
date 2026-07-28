@@ -124,13 +124,36 @@ module Axn
         def _serialize_via_active_job(params)
           params.each_with_object({}) do |(key, value), hash|
             hash[key.to_s] = ::ActiveJob::Arguments.serialize([value]).first
-          # SystemStackError alongside it: ActiveJob::Arguments walks the structure and has no cycle
-          # guard, so a self-referential value blows its stack instead of reporting unserializable. It IS
-          # unserializable (a cycle has no JSON representation), so it takes the same clean, field-naming
-          # error rather than escaping the enqueue as a stack overflow.
-          rescue ::ActiveJob::SerializationError, SystemStackError
+          rescue ::ActiveJob::SerializationError
+            raise Axn::Async::UnserializableArgument.new(field: key, value:)
+          rescue SystemStackError
+            # ActiveJob::Arguments walks the structure with no cycle guard, so a self-referential value
+            # blows its stack instead of reporting unserializable — that IS bad input (a cycle has no JSON
+            # representation), so it takes the field-naming error.
+            #
+            # But serialization also invokes CALLER code (a GlobalID object's #to_global_id, a registered
+            # custom serializer), and a stack overflow in there is a bug in that code, not malformed
+            # input. Converting it would misdiagnose whose fault it is and discard the original class and
+            # backtrace, so only a CONFIRMED cycle is reclassified; anything else keeps its own exception.
+            raise unless _contains_cycle?(value)
+
             raise Axn::Async::UnserializableArgument.new(field: key, value:)
           end
+        end
+
+        # Whether `value` holds a self-referential Array/Hash — the one shape that is genuinely
+        # unserializable input rather than a fault in caller code. Detection only: it never copies, and
+        # it invokes no user code (only Array/Hash traversal), so it cannot itself trigger the recursion
+        # it is diagnosing. If the check nonetheless can't complete, it answers false — leaving the
+        # original exception intact, which is the conservative direction for a "whose fault is it?" call.
+        def _contains_cycle?(value, seen = nil)
+          case value
+          when Array then CycleGuard.guard(value, seen, on_cycle: true) { |nested| value.any? { |v| _contains_cycle?(v, nested) } }
+          when Hash then CycleGuard.guard(value, seen, on_cycle: true) { |nested| value.any? { |_k, v| _contains_cycle?(v, nested) } }
+          else false
+          end
+        rescue SystemStackError
+          false
         end
 
         def _deserialize_via_active_job(params)
