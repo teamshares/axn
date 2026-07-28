@@ -143,6 +143,41 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  # Stringifying a Hash's keys collapses two keys with the same #to_s into ONE JSON property, dropping
+  # a value. Unlike an ugly rendering, the caller cannot tell from the output that anything went
+  # missing — so this raises regardless of strictness.
+  describe "colliding Hash keys" do
+    it "raises rather than silently dropping a value" do
+      expect { described_class.serialize_value({ id: 1, "id" => 2 }, path: "rec") }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /`rec \(hash key "id"\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value/m,
+        )
+    end
+
+    it "names both original keys, so the caller can see which pair to fix" do
+      expect { described_class.serialize_value({ id: 1, "id" => 2 }) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /\(:id and "id"\)/)
+    end
+
+    it "names the first colliding pair in insertion order when more than two keys collide" do
+      third = Object.new.tap { |o| def o.to_s = "id" }
+
+      expect { described_class.serialize_value({ "id" => 1, id: 2, third => 3 }) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /\("id" and :id\)/)
+    end
+
+    it "names the nested path of the offending Hash" do
+      expect { described_class.serialize_value({ rows: [{ a: 1, "a" => 2 }] }, path: "out") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key "a"\)`/)
+    end
+
+    it "leaves a Hash whose keys stringify distinctly unchanged" do
+      expect(described_class.serialize_value({ id: 1, "name" => "x", 2 => :b }))
+        .to eq("id" => 1, "name" => "x", "2" => "b")
+    end
+  end
+
   # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
   # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
   # UnserializableValue — both of which live outside that entrypoint, so values.rb requires them itself.

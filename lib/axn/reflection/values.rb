@@ -57,9 +57,18 @@ module Axn
           end
         when Hash
           within_container(value, path, seen) do |nested|
-            value.transform_keys(&:to_s).each_with_object({}) do |(key, v), acc|
-              acc[key] = serialize_value(v, path: "#{path}.#{key}", seen: nested)
+            rendered = value.each_with_object({}) do |(key, element), acc|
+              wire_key = key.to_s
+              acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested)
             end
+
+            # Built from the SOURCE keys rather than via transform_keys so a collapse is observable:
+            # two keys with the same #to_s (`:id` and `"id"`) render as one JSON property, dropping a
+            # value. Same allocations and the same one #to_s per key either way, and the size
+            # comparison is O(1) — so the check costs nothing when there is nothing wrong.
+            raise_colliding_keys!(value, path) unless rendered.size == value.size
+
+            rendered
           end
         when Array
           within_container(value, path, seen) do |nested|
@@ -97,6 +106,21 @@ module Axn
         raise Axn::Reflection::UnserializableValue.new(path:, value: container) if result.equal?(CYCLE_DETECTED)
 
         result
+      end
+
+      # A collapse is detected by size, which doesn't say WHICH keys collided — so re-walk the source
+      # here, on the error path only, and name the first colliding pair. Insertion order makes the
+      # reported pair deterministic.
+      def raise_colliding_keys!(hash, path)
+        wire_key, colliding = hash.each_key.group_by(&:to_s).find { |_, group| group.size > 1 }
+        first, second = colliding
+
+        raise Axn::Reflection::UnserializableValue.new(
+          path: "#{path} (hash key #{second.inspect})",
+          value: second,
+          reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
+                  "(#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value.",
+        )
       end
 
       # Whether to serialize via `as_json` rather than `to_h`. Follow `as_json` when the object defines
