@@ -169,6 +169,41 @@ RSpec.describe "a run aborted by a non-StandardError" do
       end
     end
 
+    # A matcher's error policy is set one layer down, in Handlers::Invoker, and must not be re-guarded
+    # on top of: a matcher raising a non-StandardError has to behave like one raising an ordinary error,
+    # or a broken matcher rewrites the action's outcome instead of merely not matching.
+    context "when an if:/unless: matcher callable raises" do
+      def action_with_matcher(raised)
+        klass = build_axn { exposes :v }
+        klass.on_exception(if: ->(_e) { raise raised }) { nil }
+        klass.define_method(:call) { raise "the real failure" }
+        allow(klass).to receive(:info)
+        allow(klass).to receive(:warn)
+        klass
+      end
+
+      it "treats a non-StandardError exactly like an ordinary one: warned, and simply not matching" do
+        ordinary = action_with_matcher(ArgumentError).call
+        swallowable = action_with_matcher(SystemStackError).call
+
+        expect(swallowable.outcome).to eq(ordinary.outcome)
+        expect(swallowable.exception).to be_a(RuntimeError)
+        expect(swallowable.exception.message).to eq("the real failure")
+      end
+
+      # on_success/error matchers are evaluated inside the executor's exception boundary, so letting a
+      # matcher's own bug through would settle an otherwise-SUCCESSFUL action as an exception.
+      it "never turns a successful action into a failed one" do
+        klass = build_axn { exposes :v }
+        klass.on_success(if: -> { raise SystemStackError }) { nil }
+        klass.define_method(:call) { expose(v: 1) }
+        allow(klass).to receive(:info)
+        allow(klass).to receive(:warn)
+
+        expect(klass.call).to be_ok
+      end
+    end
+
     it "still applies outbound defaults, so the returned result reads like any other failed one" do
       klass = build_axn { exposes :v, default: -> { 9 } }
       klass.define_method(:call) { raise SystemStackError }
