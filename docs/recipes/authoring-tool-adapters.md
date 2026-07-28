@@ -123,11 +123,18 @@ To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use
 ```ruby
 # axn-mcp/lib/axn/mcp/serializer.rb
 exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
+
+# An HTTP adapter, which must not ship an object address in a response body
+exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
 ```
 
 Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
 
-It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value is self-referential, naming the path to it — a cycle has no JSON representation, so there is nothing honest to render. You don't need your own cycle detection; let it reach whatever `rescue` already maps a failed serialization to your transport's error response.
+It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it. Two cases raise always, because the body would be *wrong*: a self-referential value (a cycle has no JSON representation at all), and two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value).
+
+Pass `reject_opaque: true` to also reject a value — or a Hash key — whose only `to_s` is the inherited `Object#to_s`, which would render an object address like `"#<User:0x000055…>"`. That output is complete but unpresentable, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
+
+You don't need your own detection for any of the four — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
 
 ## Per-adapter configuration
 
