@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/cycle_guard"
 require "axn/internal/global_id_serialization"
 
 module Axn
@@ -101,14 +102,19 @@ module Axn
           _json_native?(value) || value.respond_to?(:to_global_id)
         end
 
-        def _json_native?(value)
+        # `seen` makes a self-referential container answer FALSE rather than recursing until the stack
+        # blows: a cycle has no JSON representation, so "not JSON-native" is the exactly-right answer and
+        # the caller raises UnserializableArgument through its normal path.
+        def _json_native?(value, seen = nil)
           case value
           when nil, true, false, Integer, Float, String then true
-          when Array then value.all? { |v| _json_native?(v) }
+          when Array
+            CycleGuard.guard(value, seen, on_cycle: false) { |nested| value.all? { |v| _json_native?(v, nested) } }
           # Hash keys must be Strings specifically: the JSON round-trip stringifies every key,
           # so a non-String key (Integer/Symbol/etc.) would silently come back as a String —
           # the very corruption this guard exists to prevent. Values still need only be JSON-native.
-          when Hash then value.all? { |k, v| k.is_a?(String) && _json_native?(v) }
+          when Hash
+            CycleGuard.guard(value, seen, on_cycle: false) { |nested| value.all? { |k, v| k.is_a?(String) && _json_native?(v, nested) } }
           else false
           end
         end
@@ -118,7 +124,11 @@ module Axn
         def _serialize_via_active_job(params)
           params.each_with_object({}) do |(key, value), hash|
             hash[key.to_s] = ::ActiveJob::Arguments.serialize([value]).first
-          rescue ::ActiveJob::SerializationError
+          # SystemStackError alongside it: ActiveJob::Arguments walks the structure and has no cycle
+          # guard, so a self-referential value blows its stack instead of reporting unserializable. It IS
+          # unserializable (a cycle has no JSON representation), so it takes the same clean, field-naming
+          # error rather than escaping the enqueue as a stack overflow.
+          rescue ::ActiveJob::SerializationError, SystemStackError
             raise Axn::Async::UnserializableArgument.new(field: key, value:)
           end
         end

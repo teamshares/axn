@@ -3,7 +3,7 @@
 require "timeout"
 
 # An exception from outside StandardError is still a bug in the run, reachable from anywhere user code runs
-# (the body, any hook, a preprocess:/coerce:/default:/validate: callable). Nothing rescued those, so the run
+# (the body, any hook, a preprocess:/coerce:/default: callable). Nothing rescued those, so the run
 # used to settle as nothing at all: `outcome` read `success`, the completion line said so, the global report
 # never fired, and it escaped `.call` — breaking the consistent-return guarantee that only `call!` opts
 # out of (docs/usage/using.md).

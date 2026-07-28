@@ -34,6 +34,17 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       expect(result).to eq("user_as_global_id" => "gid://app/User/1")
     end
 
+    # A cycle has no JSON representation, so "not serializable" is the exactly-right answer — and it must
+    # arrive as the same clean, field-naming error rather than a SystemStackError escaping the enqueue
+    # (both ActiveJob::Arguments and axn's own JSON-native check walk the structure).
+    it "raises the normal unserializable error for a self-referential value" do
+      cyclic = [1]
+      cyclic << cyclic
+
+      expect { described_class.serialize(payload: cyclic) }
+        .to raise_error(Axn::Async::UnserializableArgument, /`payload`.*Array/m)
+    end
+
     it "raises a field-aware error for a Symbol (lossy stringification footgun)" do
       expect { described_class.serialize(status: :active) }
         .to raise_error(Axn::Async::UnserializableArgument, /`status`.*Symbol/m)

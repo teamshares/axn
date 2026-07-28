@@ -304,7 +304,8 @@ module Axn
       rescue Exception => e # rubocop:disable Lint/RescueException
         # An exception from OUTSIDE StandardError is still a bug in the run — a SystemStackError from
         # runaway recursion, a NotImplementedError from an unfinished method — reachable from anywhere
-        # user code runs (the body, any hook, a `preprocess:`/`coerce:`/`default:`/`validate:` callable).
+        # user code runs (the body, any hook, a `preprocess:`/`coerce:`/`default:` callable — but not a
+        # `validate:` one, whose own guard turns any raise into that field's validation message).
         # Nothing rescued those, so the run settled as nothing at all: `outcome` read `success`, the
         # completion line said so, the global report never fired, and it escaped `.call` — breaking the
         # consistent-return guarantee that only `call!` opts out of.
