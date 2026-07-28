@@ -9,7 +9,7 @@
 **Tech Stack:** Ruby, RSpec, RuboCop. No new dependencies.
 
 **Ticket:** [PRO-2988](https://linear.app/teamshares/issue/PRO-2988/axn-strict-mode-for-outbound-value-serialization-opaque-leaves-opaque)
-**Spec:** `internal-docs/specs/2026-07-28-axn-reject_opaque-serialization-design.md`
+**Spec:** `internal-docs/specs/2026-07-28-axn-strict-serialization-design.md` (the filename predates the `strict:` → `reject_opaque:` rename; both files keep their original names so existing references resolve)
 
 ## Global Constraints
 
