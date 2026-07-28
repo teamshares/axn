@@ -45,7 +45,7 @@ serialize_exposed(result, field_configs, reject_opaque: false)
 serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
 ```
 
-`reject_opaque` threads through the recursion alongside `seen`. Defaulting to `false` keeps `axn-mcp` and `axn-ruby_llm` byte-identical with no adapter edit, and — load-bearing, not just compatibility — keeps `Reflection::Schema` correct: `schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, where such a rejection would turn a reflection call into a raise.
+`reject_opaque` threads through the recursion alongside `seen`. Defaulting to `false` keeps `axn-mcp` and `axn-ruby_llm` byte-identical with no adapter edit; that is the whole of what the default buys. Schema reflection is unaffected either way: `Schema.normalize_schema_literal` traverses a literal `default:`'s Hashes and Arrays itself and routes only `Symbol`/`Time`/`Date`/`Numeric` leaves to `serialize_value`, returning any other object untouched, so none of the four checks is reachable from a reflection call site.
 
 `axn-openapi` becomes a one-line pass-through:
 
@@ -114,7 +114,7 @@ No adapter-specific escape hatch appears in any core message. `axn-openapi`'s cu
 - Defect 2 raises under both settings, and the message names both original keys and the collapsed property.
 - Nested occurrences: inside a Hash, inside an Array, and behind a custom `to_h`, asserting the reported `path`.
 - Negative cases under `reject_opaque: true`: a value with a meaningful custom `to_s`, a Symbol/String/Integer-keyed Hash, `Time`/`BigDecimal`/`Symbol` leaves, and an object with its own `as_json`.
-- A `Reflection::Schema` case proving a literal `default:` that is an opaque object still reflects rather than raising (the `schema.rb:880` path never passes the kwarg).
+- A `Reflection::Schema` case proving a literal `default:` whose Hash keys stringify to one property still reflects rather than raising. The colliding-key check is the one that raises unconditionally, so it is the only one that could surface in `input_schema` if `normalize_schema_literal` ever handed a container to `serialize_value`.
 - Never assert `Hash#inspect` text: Ruby 3.4 changed its spacing and CI runs 3.2–3.4. Object addresses in messages need regex or substring matching.
 
 ## Also update

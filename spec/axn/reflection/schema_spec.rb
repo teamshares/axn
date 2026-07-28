@@ -5152,15 +5152,18 @@ RSpec.describe Axn::Reflection::Schema do
     end
   end
 
-  # Schema reflection renders a literal `default:` through Values.serialize_value (see
-  # Schema.describe_default). Reflection must never raise on user data, so that call site stays
-  # non-strict even for a value that has no presentable JSON form.
-  it "reflects an opaque literal default rather than raising, since reflection never passes the kwarg" do
+  # Reflection must never raise on user data. Schema.normalize_schema_literal walks a literal `default:`
+  # itself and routes only scalar leaves to Values.serialize_value, so the serializer's checks are out of
+  # reach here — but the colliding-key one raises unconditionally, making it the single check that would
+  # surface in input_schema if that traversal ever handed a Hash to the serializer. This pins that it
+  # doesn't.
+  it "reflects a literal default whose Hash keys stringify to one property rather than raising" do
     klass = Class.new do
       include Axn
-      expects :owner, default: Object.new
+      expects :rec, default: { id: 1, "id" => 2 }
     end
 
     expect { klass.input_schema }.not_to raise_error
+    expect(klass.input_schema[:properties][:rec][:default]).to eq({ id: 1, "id" => 2 })
   end
 end

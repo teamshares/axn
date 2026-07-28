@@ -14,7 +14,7 @@
 ## Global Constraints
 
 - Two gates, and they are not interchangeable. **Colliding keys raise unconditionally** (the body would be *wrong* — a value silently vanishes). **Default-`to_s` value and key raise only under `reject_opaque: true`** (the body is complete, just ugly). Do not "simplify" by moving the collision check behind the flag; that reversal is the spec's central decision.
-- `reject_opaque:` defaults to `false` everywhere. This is load-bearing beyond back-compat: `lib/axn/reflection/schema.rb:880` calls `serialize_value` to render a literal `default:` into a schema, and schema reflection must never raise on user data.
+- `reject_opaque:` defaults to `false` everywhere, which keeps the two shipped adapters (`axn-mcp`, `axn-ruby_llm`) byte-identical with no edit. It is not what protects schema reflection: `Schema.normalize_schema_literal` walks a literal `default:`'s Hashes and Arrays itself and routes only scalar leaves (`Symbol`/`Time`/`Date`/`Numeric`) to `serialize_value`, so no check here is reachable from a reflection call site under either setting.
 - Existing `UnserializableValue` messages stay **byte-identical**, and the existing `UnserializableValue.new(path:, value:)` call form keeps working (it is public API).
 - Never assert `Hash#inspect` text in a spec — Ruby 3.4 changed its spacing and CI runs 3.2/3.3/3.4. Object addresses in messages need regex or substring matching, never equality.
 - Comments describe current behavior and intrinsic why. No "used to X / now Y", no ticket numbers, no review references.
@@ -451,26 +451,24 @@ In `lib/axn/reflection/values.rb`:
 Run: `bundle exec rspec spec/axn/reflection/values_spec.rb`
 Expected: PASS, all examples.
 
-- [ ] **Step 5: Verify the schema-reflection path never passes the kwarg**
+- [ ] **Step 5: Verify schema reflection still can't raise on a literal `default:`**
 
-Add to `spec/axn/reflection/schema_spec.rb`, at the end of the file inside the outer describe:
+Add to `spec/axn/reflection/schema_spec.rb`, at the end of the file inside the outer describe. The literal is a colliding-key Hash rather than an opaque object: `normalize_schema_literal` routes only scalar leaves to `serialize_value`, so an opaque object never reaches a check at all, while the colliding-key raise is unconditional and is therefore the one check that would surface in `input_schema` if that traversal ever handed a container to the serializer.
 
 ```ruby
-  # Schema reflection renders a literal `default:` through Values.serialize_value (see
-  # Schema.describe_default). Reflection must never raise on user data, so that call site stays
-  # non-reject_opaque even for a value that has no presentable JSON form.
-  it "reflects an opaque literal default rather than raising, since reflection never passes the kwarg" do
+  it "reflects a literal default whose Hash keys stringify to one property rather than raising" do
     klass = Class.new do
       include Axn
-      expects :owner, default: Object.new
+      expects :rec, default: { id: 1, "id" => 2 }
     end
 
     expect { klass.input_schema }.not_to raise_error
+    expect(klass.input_schema[:properties][:rec][:default]).to eq({ id: 1, "id" => 2 })
   end
 ```
 
 Run: `bundle exec rspec spec/axn/reflection/schema_spec.rb`
-Expected: PASS. If it fails, `reject_opaque` leaked into a default argument somewhere — do not "fix" it by rescuing in `Schema`.
+Expected: PASS. If it fails, reflection has started routing containers through the serializer — do not "fix" it by rescuing in `Schema`.
 
 - [ ] **Step 6: Run the full suite**
 
