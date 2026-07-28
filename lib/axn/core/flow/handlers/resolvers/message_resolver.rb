@@ -112,7 +112,12 @@ module Axn
               detail = result.is_a?(String) ? "a blank String" : result.class.to_s
               action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
-            rescue StandardError => e
+            # Whatever the joiner raised, the fallback applies — this path "must never raise" (above), and
+            # it is reached from `result.error` DURING settlement. A class slipping past here would abort
+            # `_settle_exception!` after the exception was recorded but before on_error/on_failure/
+            # on_exception and the global report, and would raise again on every later `result.error`
+            # read. Only what axn absorbs is caught, so a signal still propagates.
+            rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
               action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
             end

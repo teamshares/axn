@@ -177,7 +177,9 @@ module Axn
 
         begin
           @__ambient_context = _resolve_ambient_context
-        rescue StandardError => e
+        # Memoizes whatever axn absorbs, not just StandardError, or "the provider still runs at most
+        # once" (above) breaks for a provider that blows the stack: it would re-run on every read.
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
           @__ambient_context_error = e
           raise
         end

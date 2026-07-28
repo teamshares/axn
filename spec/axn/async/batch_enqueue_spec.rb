@@ -885,6 +885,42 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
         end.tap { |klass| enable_async_on(klass) }
       end
 
+      # Mid-loop like the filter block: an escape would fail the orchestrator job with jobs already
+      # enqueued, and the retry would send them again.
+      it "swallows and skips identically when via extraction raises a non-StandardError" do
+        holder = Struct.new(:value)
+        exploding = Class.new(holder) { def value = raise(SystemStackError) }.new(nil)
+        items = [holder.new(1), exploding, holder.new(3)]
+        klass = build_axn do
+          expects :item_id
+          enqueues_each :item_id, from: -> { items }, via: :value
+        end
+        enable_async_on(klass)
+        enqueued = []
+        allow(klass).to receive(:call_async) { |**args| enqueued << args }
+
+        expect { klass.enqueue_all }.not_to raise_error
+        expect(enqueued).to contain_exactly({ item_id: 1 }, { item_id: 3 })
+      end
+
+      # The per-item progress read calls `id`/`to_s` on a caller-supplied record. Unguarded, a raising
+      # `id` aborted the entire fan-out from what is purely an observability read.
+      it "does not abort the fan-out when a record's own id raises" do
+        holder = Struct.new(:value)
+        exploding = Class.new(holder) { def id = raise("id exploded") }.new(2)
+        items = [holder.new(1), exploding, holder.new(3)]
+        klass = build_axn do
+          expects :item_id
+          enqueues_each :item_id, from: -> { items }, via: :value
+        end
+        enable_async_on(klass)
+        enqueued = []
+        allow(klass).to receive(:call_async) { |**args| enqueued << args }
+
+        expect { klass.enqueue_all }.not_to raise_error
+        expect(enqueued).to contain_exactly({ item_id: 1 }, { item_id: 2 }, { item_id: 3 })
+      end
+
       it "swallows via extraction errors and skips the item" do
         enqueued = []
         allow(action_class).to receive(:call_async) { |**args| enqueued << args }
@@ -900,7 +936,9 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       it "logs the swallowed error via best_effort" do
         allow(action_class).to receive(:call_async)
-        expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args)
+        # Other per-item guards (the progress-id read) also call best_effort; assert only on this one.
+        allow(Axn::Extensions).to receive(:best_effort).and_call_original
+        expect(Axn::Extensions).to receive(:best_effort).with("via extraction (:id) for :item_id", any_args).and_call_original
 
         action_class.enqueue_all
       end
@@ -1116,7 +1154,8 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
       enqueued = []
       allow(action_class).to receive(:call_async) { |**args| enqueued << args }
-      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args)
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
+      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args).and_call_original
 
       # Must not propagate: a raise here would fail the orchestrator and retry/duplicate the batch.
       expect { action_class.enqueue_all }.not_to raise_error
@@ -1312,7 +1351,8 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       action_class.on_enqueue_all { raise "summary exploded" }
       allow(action_class).to receive(:call_async)
 
-      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args)
+      allow(Axn::Extensions).to receive(:best_effort).and_call_original
+      expect(Axn::Extensions).to receive(:best_effort).with(a_string_including("on_enqueue_all callback"), any_args).and_call_original
 
       action_class.enqueue_all
     end

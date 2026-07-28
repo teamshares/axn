@@ -341,8 +341,14 @@ module Axn
           iterator = source.respond_to?(:find_each) ? :find_each : :each
 
           source.public_send(iterator) do |item|
-            # Track current item being processed
-            item_id = item.try(:id) || item.to_s.truncate(100)
+            # Track which item is being processed. Purely observational (it feeds on_progress, i.e. the
+            # report's execution context), but it calls `id`/`to_s` on a caller-supplied record — so it
+            # is guarded like every other per-item step here. Unguarded, a record with a raising `id`
+            # aborted the whole fan-out from a progress read, and mid-loop in a background job the
+            # retry re-enqueues everything already sent.
+            item_id = Axn::Extensions.best_effort("resolving progress id for :#{config.field}") do
+              item.try(:id) || item.to_s.truncate(100)
+            end
             on_progress&.call(stage: :iterating, field: config.field, current_item_id: item_id)
 
             # Apply filter block if present - swallow errors, skip item
@@ -361,7 +367,9 @@ module Axn
             value = if config.via
                       begin
                         item.public_send(config.via)
-                      rescue StandardError => e
+                      # Same reason as the filter block above: this runs mid-loop, so an escape fails the
+                      # orchestrator job with jobs already enqueued and the retry duplicates them.
+                      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
                         Axn::Extensions.best_effort("via extraction (:#{config.via}) for :#{config.field}") { raise e }
                         next
                       end

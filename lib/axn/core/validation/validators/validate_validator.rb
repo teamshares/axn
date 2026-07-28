@@ -41,7 +41,10 @@ module Axn
       def validate_each(record, attribute, value)
         msg = begin
           options[:with].call(value)
-        rescue StandardError => e
+        # Catches what axn absorbs, not just StandardError: the fallback message names the real error
+        # ("failed validation: stack level too deep"), so failing the field stays both accurate and
+        # uniform — a validator that blows the stack takes the same path as one raising ArgumentError.
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
           # Log the raised error best-effort, then surface it as this field's validation message — a
           # crashing custom validator fails the field rather than silently passing.
           Axn::Extensions.best_effort("applying custom validation on field '#{attribute}'") { raise e }
