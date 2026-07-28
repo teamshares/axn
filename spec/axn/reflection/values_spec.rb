@@ -181,6 +181,24 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  describe Axn::Reflection::UnserializableValue do
+    it "renders a supplied reason verbatim after the path and the value's class" do
+      error = described_class.new(path: "data (hash key :x)", value: :x, reason: "it is bad.")
+
+      expect(error.message).to eq("Cannot serialize exposed value at `data (hash key :x)` (Symbol): it is bad.")
+    end
+
+    it "falls back to the cycle reason when none is supplied, so the two-kwarg call form keeps working" do
+      error = described_class.new(path: "items[1]", value: [])
+
+      expect(error.message).to eq(
+        "Cannot serialize exposed value at `items[1]` (Array): it is self-referential (a Array cycle), " \
+        "which has no JSON representation. Expose a finite projection of it instead " \
+        "(e.g. ids rather than the objects that point back).",
+      )
+    end
+  end
+
   # A cycle has no JSON representation, so this is a serialization FAILURE rather than something to
   # paper over: serialize_exposed renders a response body, and a caller can't tell an elided-cycle
   # marker from a real value. Raising as a StandardError also lets an adapter's existing rescue map it
