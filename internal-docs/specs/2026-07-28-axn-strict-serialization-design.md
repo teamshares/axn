@@ -1,5 +1,7 @@
 # Strict outbound value serialization
 
+**Ticket:** [PRO-2988](https://linear.app/teamshares/issue/PRO-2988/axn-strict-mode-for-outbound-value-serialization-opaque-leaves-opaque)
+
 **Goal:** Make `Axn::Reflection::Values` the sole owner of "this exposed value has no honest JSON representation," so an adapter never re-implements core's walk in order to pre-check it. Adds a `strict:` mode covering two dishonest-but-lossless renderings, and closes one silent data-loss bug unconditionally.
 
 ## Motivation
