@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require_relative "../../lib/axn/version"
 
 # Dev-only scaffolder for downstream axn-consuming gems (PRO-2949). Shells out to `bundle gem NAME`
 # for the generic baseline, then lays axn core's canonical delta on top so a fresh gem starts
@@ -12,9 +13,12 @@ class GemGenerator
   TEMPLATES_DIR = File.expand_path("../templates", __dir__)
   CORE_ROOT = File.expand_path("../..", __dir__)
 
-  # Lower bound for the axn runtime dependency. First version to ship the DSL surface (Configurable,
-  # tool registry) downstream gems build on; the temporary Gemfile main pin tracks ahead of it.
-  AXN_LOWER_BOUND = ">= 0.1.0-alpha.4.3"
+  # Lower bound for the axn runtime dependency: core's own version, which is the newest release
+  # carrying the DSL surface (Configurable, tool registry) a generated gem builds on. Derived rather
+  # than pinned to a literal so it can't drift behind a release — a stale bound generates a gem that
+  # resolves to an axn without the constants its own scaffolding calls. The temporary Gemfile main pin
+  # tracks ahead of it.
+  AXN_LOWER_BOUND = ">= #{Axn::VERSION}".freeze
 
   # Rails testing topology:
   #   :dual — non-Rails spec/ + a spec_rails/dummy_app Rails suite (default; mirrors axn core)
