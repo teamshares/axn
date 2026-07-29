@@ -66,6 +66,27 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value(dto, path: "dto", reject_opaque: true)).to eq("label" => "public")
     end
 
+    it "raises for a value with no to_hash, whose generic as_json therefore dumps instance variables" do
+      expect(undeclared).not_to respond_to(:to_hash)
+      expect { described_class.serialize_value(undeclared, path: "owner", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /declares no JSON projection of its own/)
+    end
+
+    # ActiveSupport's generic Object#as_json delegates to `to_hash` when the value has one and only dumps
+    # `instance_values` when it doesn't — so a `to_hash` IS a declared projection, and the generic route
+    # renders it faithfully. Rejecting it would be a false positive against a value that serializes fine.
+    it "serializes a value declaring only to_hash, whose generic as_json delegates to it, under reject_opaque:" do
+      dto = Class.new do
+        def initialize = @internal_secret = "leak"
+        def to_hash = { label: "public" }
+      end.new
+
+      expect(dto).not_to respond_to(:to_h)
+      expect(dto.method(:as_json).owner).to eq(Object)
+      expect(described_class.serialize_value(dto, path: "dto")).to eq("label" => "public")
+      expect(described_class.serialize_value(dto, path: "dto", reject_opaque: true)).to eq("label" => "public")
+    end
+
     it "checks the same shape at depth, naming the nested path" do
       expect { described_class.serialize_value({ rows: [undeclared] }, path: "out", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\]`/)

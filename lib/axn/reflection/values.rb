@@ -11,11 +11,12 @@ require "axn/internal/cycle_guard"
 require "axn/exceptions"
 
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
-# — which adds a generic Object#as_json (an instance-variable dump). To avoid that bypassing a value
-# object's declared `to_h` shape, `serialize_value` prefers `to_h` whenever the only `as_json` in reach
-# is that generic one (see projection_for), so a plain object with a meaningful `to_h`
-# serializes via `to_h` in Rails and non-Rails alike. A value with neither declares no shape at all, so
-# `reject_opaque` rejects it there just as it rejects the object address it renders as outside Rails.
+# — which adds a generic Object#as_json (`to_hash.as_json` when the value has a `to_hash`, an
+# instance-variable dump otherwise). To avoid that bypassing a value object's declared `to_h` shape,
+# `serialize_value` prefers `to_h` whenever the only `as_json` in reach is that generic one (see
+# projection_for), so a plain object with a meaningful `to_h` serializes via `to_h` in Rails and non-Rails
+# alike. A value with none of the three declares no shape at all, so `reject_opaque` rejects it there just
+# as it rejects the object address it renders as outside Rails.
 
 module Axn
   module Reflection
@@ -30,6 +31,11 @@ module Axn
       # it in their ancestry — so dropping Kernel would silently break the check.
       DEFAULT_TO_S_OWNERS = [::Object, ::Kernel].freeze
       private_constant :DEFAULT_TO_S_OWNERS
+
+      # The projections `projection_for` names that serialize_value renders through `as_json`. Shared by the
+      # `as_json` case arm and follow_as_json? so the branch taken and the answer reported cannot disagree.
+      AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
+      private_constant :AS_JSON_PROJECTIONS
 
       OPAQUE_VALUE_REASON = "it serializes only via the default Object#to_s (it would render as garbage " \
                             'like "#<User:0x…>") — declare it `type: String` and format it, or give the ' \
@@ -123,9 +129,11 @@ module Axn
           # every call, so an object whose projection points back at it (`to_h => { child: self }`)
           # would recurse forever with a different Hash identity each time.
           case projection
-          when :own_as_json, :generic_as_json
-            # A :generic_as_json route means the value declares neither an `as_json` nor a `to_h` of its
-            # own, so what would render is ActiveSupport's instance-variable dump.
+          when *AS_JSON_PROJECTIONS
+            # A :generic_as_json route means the value declares no projection at all — no `as_json`, no
+            # `to_h`, and no `to_hash` for ActiveSupport's generic Object#as_json to delegate to — so what
+            # would render is its instance-variable dump. A :delegated_as_json value does declare one (its
+            # `to_hash`), which that same generic `as_json` renders faithfully, so it is not opaque.
             raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON) if reject_opaque && projection == :generic_as_json
 
             within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
@@ -209,14 +217,21 @@ module Axn
 
       # The projection serialize_value follows for a non-leaf object: its own `as_json` (defined on its
       # class or an included module, e.g. an ActiveRecord model), ActiveSupport's generic Object#as_json
-      # (the instance_values dump a Rails app adds to every object, followed only when there is no `to_h`
-      # to prefer), `to_h`, or the `to_s` fallback. One method, so the route and the "is the only as_json
-      # in reach the generic one" verdict — which is what `reject_opaque` rejects — are the same
-      # computation rather than two that could disagree, and `as_json`'s owner is looked up once.
+      # (which a Rails app adds to every object, followed only when there is no `to_h` to prefer), `to_h`,
+      # or the `to_s` fallback. One method, so the route and the "does this value declare a JSON projection
+      # of its own" verdict — which is what `reject_opaque` rejects — are the same computation rather than
+      # two that could disagree, and `as_json`'s owner is looked up once.
+      #
+      # The generic route splits in two because ActiveSupport's Object#as_json does: it delegates to
+      # `to_hash` when the value has one and dumps `instance_values` only when it doesn't. A `to_hash` is
+      # therefore the author's own projection rendered faithfully (:delegated_as_json), while its absence
+      # means what renders is a peek at internals (:generic_as_json). Both go through `as_json` — only the
+      # opaqueness verdict differs.
       def projection_for(value)
         if value.respond_to?(:as_json)
           generic = value.method(:as_json).owner == ::Object
-          return generic ? :generic_as_json : :own_as_json unless generic && value.respond_to?(:to_h)
+          return :own_as_json unless generic
+          return value.respond_to?(:to_hash) ? :delegated_as_json : :generic_as_json unless value.respond_to?(:to_h)
         end
 
         value.respond_to?(:to_h) ? :to_h : :to_s
@@ -225,7 +240,7 @@ module Axn
       # Whether serialize_value renders `value` via `as_json` rather than `to_h`/`to_s`. Retained for
       # adapters that route on the same question (axn-openapi); the answer comes from projection_for so
       # there is one source of truth.
-      def follow_as_json?(value) = %i[own_as_json generic_as_json].include?(projection_for(value))
+      def follow_as_json?(value) = AS_JSON_PROJECTIONS.include?(projection_for(value))
 
       # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
       # value inherits #to_s instead of defining one. Keying on the OWNER rather than respond_to? is

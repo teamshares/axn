@@ -277,6 +277,18 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value(money, reject_opaque: true)).to eq("$5.00")
     end
 
+    # A `to_hash` is a projection only where ActiveSupport's generic Object#as_json exists to delegate to it
+    # (a Rails app — see spec_rails). With no `as_json` in reach the routing chain is `to_h` then `to_s`,
+    # which never consults `to_hash`, so such a value renders as an address and is opaque here. Pinned
+    # because the same value serializes its `to_hash` under Rails.
+    it "treats a value declaring only to_hash as opaque, since nothing here routes through to_hash" do
+      only_to_hash = opaque_object.tap { |o| def o.to_hash = { label: "public" } }
+
+      expect(described_class.serialize_value(only_to_hash)).to match(/\A#<Object:0x[0-9a-f]+>\z/)
+      expect { described_class.serialize_value(only_to_hash, path: "dto", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`dto`.*only via the default Object#to_s/m)
+    end
+
     it "checks inside an Array, naming the indexed path" do
       expect { described_class.serialize_value([1, opaque], path: "rows", reject_opaque: true) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[1\]`/)
