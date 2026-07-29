@@ -160,6 +160,107 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  describe "shape member names" do
+    it "rejects two members that collapse onto one property" do
+      first = utf8_name
+      second = latin1_name
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field first, type: String
+            field second, type: Integer
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    end
+
+    it "rejects a duplicate member name, which today keeps only the last in the schema" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :a, type: String
+            field :a, type: Integer
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :a\b/)
+    end
+
+    it "treats a symbol and a string spelling of one member name as one property" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :a, type: String
+            field "a", type: Integer
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "a"/)
+    end
+
+    it "rejects a member name with no UTF-8 rendering" do
+      name = unrenderable_name
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field name, type: String
+          end
+        end
+      end.to raise_error(ArgumentError, /a shape member name becomes a JSON property name/)
+    end
+
+    it "reaches members nested inside a member's own block" do
+      first = utf8_name
+      second = latin1_name
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field first, type: String
+              field second, type: Integer
+            end
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    end
+
+    it "reaches members supplied as a raw shape: kwarg, which never route through the builder" do
+      members = [
+        Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+        Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}),
+      ]
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: } } }
+        .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    end
+
+    it "rejects them on an exposes shape too" do
+      first = utf8_name
+      second = latin1_name
+
+      expect do
+        build_axn do
+          exposes :payload, type: Hash do
+            field first, type: String
+            field second, type: Integer
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    end
+
+    it "leaves distinct member names alone" do
+      klass = build_axn do
+        expects :payload, type: Hash do
+          field :a, type: String
+          field :b, type: Integer
+        end
+      end
+
+      expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq(%i[a b])
+    end
+  end
+
   # The runtime defense this does NOT replace has its own coverage: a declaration check cannot see the keys
   # of a Hash the action builds during a call, so the serializer stays the last line for that case. See
   # `spec/axn/reflection/values_spec.rb` "colliding Hash keys" — do not duplicate it here. That coverage

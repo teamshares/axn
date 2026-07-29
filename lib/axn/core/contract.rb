@@ -185,6 +185,7 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
+          _reject_colliding_shape_member_names!(validations[:shape])
 
           if on.present?
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
@@ -235,6 +236,7 @@ module Axn
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
           # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
           _reject_outbound_shape_user_facing!(validations[:shape])
+          _reject_colliding_shape_member_names!(validations[:shape])
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
@@ -509,6 +511,49 @@ module Axn
             end
             _reject_outbound_shape_user_facing!(_member_shape(member))
           end
+        end
+
+        # A shape member's name is an object property in the reflected schema on exactly the same terms as a
+        # field's, so it carries the same promise. Walks RESOLVED members rather than checking inside
+        # ShapeBuilder because the `do…end` form routes through `_build_shape_member` but a raw `shape:`
+        # kwarg supplies pre-built members that never do — the same reason
+        # `_reject_outbound_shape_user_facing!` walks. Recursion covers a member's own nested block.
+        #
+        # A member not implementing `#field` is a minimal duck-typed object with no name to collide; skip it
+        # rather than dispatching something it may not define.
+        def _reject_colliding_shape_member_names!(shape)
+          return unless shape.is_a?(Hash)
+
+          members = (shape[:members] || []).select { |member| member.respond_to?(:field) }
+          names = members.map(&:field)
+          _reject_unrenderable_field_names!(names, kind: "a shape member name")
+
+          claimed = {}
+          names.each do |name|
+            property = Axn::Reflection::Values.canonical_wire_key(name)
+            _raise_colliding_members!(claimed[property], name, property) if claimed.key?(property)
+
+            claimed[property] = name
+          end
+
+          members.each { |member| _reject_colliding_shape_member_names!(_member_shape(member)) }
+        end
+
+        # Two spellings of one member name are reported as a plain duplicate; two different names that
+        # collapse are reported as the collision they are. A Symbol and a String spelling of one name are
+        # not `==`, so they take the collapsed branch and the message names the shared property — which is
+        # the useful thing to say about them.
+        def _raise_colliding_members!(claimed, offending, property)
+          if claimed == offending
+            raise Axn::DuplicateFieldError,
+                  "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
+                  "validate the same key, and the reflected schema keeps only the last. Declare each member once."
+          end
+
+          raise Axn::DuplicateFieldError,
+                "Duplicate shape member declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
+                "both render as the JSON property #{property.inspect}, so the reflected schema would emit it twice. " \
+                "Declare them under names that stay distinct once converted to UTF-8."
         end
 
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
