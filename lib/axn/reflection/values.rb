@@ -104,7 +104,12 @@ module Axn
       # in the output either way, so it carries the same UTF-8 promise. Declaration accepts any symbol, so a
       # name whose bytes have no UTF-8 rendering is reachable here and would otherwise reach an encoder as a
       # property nothing had checked.
+      # Canonicalizing a field name means two names that differ as Symbols can converge on one property, so
+      # the same collapse a Hash's keys can suffer is reachable here — and an assignment into the accumulator
+      # would silently overwrite. Claimed names are tracked for the same reason the Hash branch tracks them.
       def serialize_exposed(result, field_configs, reject_opaque: false)
+        claimed = {}
+
         field_configs.each_with_object({}) do |config, hash|
           # The error path is the field's `inspect`, not its `to_s`: a name with no UTF-8 rendering is exactly
           # what fails here, and interpolating those bytes into the message would raise
@@ -115,6 +120,9 @@ module Axn
                      raise(Axn::Reflection::UnserializableValue.new(
                              path: config.field.inspect, value: config.field, reason: UNRENDERABLE_FIELD_BYTES_REASON,
                            ))
+          raise_colliding_fields!(wire_key, claimed.fetch(wire_key), config.field) if claimed.key?(wire_key)
+
+          claimed[wire_key] = config.field
           hash[wire_key] = serialize_value(result.public_send(config.field), path: wire_key, reject_opaque:)
         end
       end
@@ -393,6 +401,18 @@ module Axn
       def own_wire_key(key, path)
         canonical_wire_key(key) ||
           raise(Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON))
+      end
+
+      # Two field names that converged on one property. Both names are safe to interpolate — Symbol#inspect
+      # escapes any bytes and cannot be overridden — so unlike a Hash key's, the message can name each.
+      def raise_colliding_fields!(wire_key, first, second)
+        raise Axn::Reflection::UnserializableValue.new(
+          path: second.inspect,
+          value: second,
+          reason: "two exposed fields render as the same JSON property #{wire_key.inspect} " \
+                  "(#{first.inspect} and #{second.inspect}), so one would silently overwrite the other. " \
+                  "Declare them under names that stay distinct once converted to UTF-8.",
+        )
       end
 
       # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.

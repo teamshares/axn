@@ -193,6 +193,24 @@ RSpec.describe Axn::Reflection::Values do
       expect(message).to include('\xFF')
     end
 
+    # Canonicalizing field names to UTF-8 means two distinct Symbols can converge on one property, which
+    # would silently overwrite — the same collapse the Hash branch raises on, reachable one level up.
+    it "raises when two field names render as the same JSON property" do
+      iso = "\xE9".dup.force_encoding(Encoding::ISO_8859_1).to_sym
+      utf = :é
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes iso
+        exposes utf
+
+        define_method(:call) { expose(iso => "FIRST", utf => "second") }
+      end
+
+      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /two exposed fields render as the same JSON property/)
+    end
+
     it "renders an ordinary field name as a frozen UTF-8 property" do
       klass = Class.new do
         include Axn

@@ -81,8 +81,10 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
 - Render a success result's exposures with
   `Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)` → JSON-safe Hash.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
-- What it returns is **encodable JSON** — `JSON.generate` won't refuse it. You still own the encode step
-  (core returns a Ruby Hash), but it needs no pre-check of its own.
+- No **value** in the result is one `JSON.generate` refuses (no non-finite number, no non-UTF-8 bytes, no
+  cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
+  deeper than `max_nesting` (100 default) still raises `JSON::NestingError`. Drop your pre-*pass* over the
+  value graph; **keep** your encode `rescue`.
 - Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`), naming the path, on four unconditional
   defects: a cycle; two Hash keys that render as one JSON property (compared as the PROPERTY each produces,
   not as the Ruby String its `to_s` returned — keys are transcoded to UTF-8 first, so one property name in
