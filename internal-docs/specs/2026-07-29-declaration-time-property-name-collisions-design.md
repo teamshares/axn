@@ -90,6 +90,8 @@ Fixtures are the ones verified above: `:café` alongside `"caf\xE9".dup.force_en
 
 Coverage per surface: a collision and an unrenderable name on `expects` and on `exposes`; a collision on two subfield leaf names under one route, and its counterpart proving two leaves under *different* routes still declare cleanly; a collision and a duplicate at two nesting levels of a shape, through both the block and raw `shape:` forms. Plus the message assertions — the existing duplicate wording unchanged, the collision naming both spellings and the property — and the regression test that `serialize_exposed` still raises on runtime colliding Hash keys.
 
+One spec asserts that `Values.canonical_wire_key` is publicly callable. Two plan documents agreeing that it stays public is a weak guarantee while PRO-2992 is in flight on another branch; a test makes the constraint CI-enforced from both sides, so privatizing it fails loudly with a `NoMethodError` instead of silently disarming a declaration guard.
+
 Never assert `Hash#inspect` text: Ruby 3.4 changed its spacing and CI runs 3.2/3.3/3.4.
 
 ## Breaking change
