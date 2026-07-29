@@ -279,7 +279,15 @@ module Axn
         # String subclass, which either inherits String's or defines its own) can ever own the inherited
         # Object#to_s — exact, not a heuristic. Skipping them skips a Method allocation per key on the
         # shape almost every Hash has.
-        return if key.is_a?(Symbol) || key.is_a?(String)
+        #
+        # `case`/`when` rather than `is_a?`, for the reason own_wire_key gives: Module#=== is a C-level
+        # check, while `is_a?` is overridable — a key claiming to be a Symbol would otherwise route around
+        # this gate and render as the object address the gate exists to reject. A skipped Method allocation
+        # is not worth a dispatch the work does not require.
+        case key
+        when Symbol, String then return
+        end
+
         return unless default_to_s?(key)
 
         raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: OPAQUE_KEY_REASON)

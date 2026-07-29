@@ -536,6 +536,26 @@ RSpec.describe Axn::Reflection::Values do
   describe "default-to_s Hash keys under reject_opaque:" do
     let(:opaque_key) { Object.new }
 
+    # The fast path that skips Symbol/String keys must not ask the key what it is: a key answering that
+    # question itself could route around the gate, or replace the serialization failure with its own error.
+    it "does not let a key claiming to be a Symbol route around the gate" do
+      liar = Object.new.tap do |o|
+        def o.is_a?(klass) = klass == Symbol ? true : super
+      end
+
+      expect { described_class.serialize_value({ liar => 1 }, path: "data", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /a Hash key is rendered via #to_s/)
+    end
+
+    it "never dispatches a key's own is_a?, so one that raises cannot escape" do
+      hostile = Object.new.tap do |o|
+        def o.is_a?(_klass) = raise(SystemStackError, "boom")
+        def o.to_s = "k"
+      end
+
+      expect(described_class.serialize_value({ hostile => 1 }, reject_opaque: true)).to eq("k" => 1)
+    end
+
     it "renders the object address as a property name by default" do
       expect(described_class.serialize_value({ opaque_key => 1 }).keys.first)
         .to match(/\A#<Object:0x[0-9a-f]+>\z/)
