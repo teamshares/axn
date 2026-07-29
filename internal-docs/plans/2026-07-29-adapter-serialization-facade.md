@@ -4,7 +4,7 @@
 
 **Goal:** Give adapter gems one declared entry point for rendering a result — `Axn::Extensions::Serialization.render(result, reject_opaque: false)` — and close `Axn::Reflection::Values` behind it, so a downstream gem can no longer constrain a refactor of core's own routing by depending on an internal predicate.
 
-**Architecture:** A new `Axn::Extensions::Serialization` module derives the action's declared `exposes` configs from the result itself and hands them to the existing renderer. `Axn::Reflection::Values` keeps every line of its rendering logic and loses its surface: `follow_as_json?` is deleted (zero callers), `serialize_exposed` and all eighteen helpers become `private_class_method`, and `serialize_value` stays public solely because `Reflection::Schema` calls it cross-module.
+**Architecture:** A new `Axn::Extensions::Serialization` module derives the action's declared `exposes` configs from the result itself and hands them to the existing renderer. `Axn::Reflection::Values` keeps every line of its rendering logic and loses its *adapter-facing* surface: `follow_as_json?` is deleted (zero callers), `serialize_exposed` and seventeen helpers become `private_class_method`, and two methods stay public for named cross-module core callers — `serialize_value` for `Reflection::Schema`, and `canonical_wire_key` for `Core::Contract`'s declaration-time property-name checks (PRO-2995).
 
 **Tech Stack:** Ruby, RSpec, RuboCop. No new dependencies, no new files in `lib/` beyond one.
 
@@ -302,7 +302,7 @@ The narrowing itself. Nothing here changes behavior — it changes what is reach
 
 **Interfaces:**
 - Consumes: `Axn::Extensions::Serialization.render` from Task 1.
-- Produces: `Axn::Reflection::Values` with exactly one public singleton method, `serialize_value(value, path:, seen:, reject_opaque:)`. `serialize_exposed` and eighteen helpers are private; `follow_as_json?` no longer exists.
+- Produces: `Axn::Reflection::Values` with no adapter-facing surface — two public singleton methods, each with a named in-core caller: `serialize_value(value, path:, seen:, reject_opaque:)` for `Reflection::Schema` and `canonical_wire_key(key)` for `Core::Contract`. `serialize_exposed` and seventeen helpers are private; `follow_as_json?` no longer exists.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -310,13 +310,14 @@ Add to `spec/axn/reflection/values_spec.rb`, as the first `describe` block insid
 
 ```ruby
   # The surface is the deliverable, not an implementation detail: an adapter renders through
-  # Axn::Extensions::Serialization.render, and serialize_value stays public for exactly one caller —
-  # Reflection::Schema, which renders a literal `default:` through it so the schema's wire form and
-  # the serializer's cannot disagree. Anything else appearing here is a new public promise about the
-  # renderer's own decisions, which is what constrains core's routing later.
+  # Axn::Extensions::Serialization.render, and what stays public does so for a named cross-module core
+  # caller — serialize_value for Reflection::Schema, which renders a literal `default:` through it so the
+  # schema's wire form and the serializer's cannot disagree; canonical_wire_key for Core::Contract, which
+  # rejects two declared names that would collapse onto one JSON property. Anything else appearing here is
+  # a new public promise about the renderer's own decisions, which is what constrains core's routing later.
   describe "public surface" do
-    it "exposes serialize_value and nothing else" do
-      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq([:serialize_value])
+    it "exposes only the two methods core calls cross-module" do
+      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[canonical_wire_key serialize_value])
     end
 
     it "no longer answers the as_json-routing question that projection_for owns" do
@@ -328,7 +329,7 @@ Add to `spec/axn/reflection/values_spec.rb`, as the first `describe` block insid
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec rspec spec/axn/reflection/values_spec.rb -e "public surface"`
-Expected: two failures — the first listing all twenty-one public methods, the second reporting that `Values` does respond to `follow_as_json?`.
+Expected: two failures — the first listing all twenty-one public methods, the second reporting that `Values` does respond to `follow_as_json?`. If PRO-2995 has not landed yet, `canonical_wire_key` has no in-core caller outside this file; keep it public regardless and leave the expectation as written, since removing it later is a one-line change while re-privatizing it forces the `send` workaround into `Core::Contract` too.
 
 - [ ] **Step 3: Delete `follow_as_json?` and its stale references**
 
@@ -358,10 +359,13 @@ Add this immediately before the `end` that closes `module Values` — i.e. after
       # Every rendering decision below serialize_value is core's own. Kept private so a downstream
       # gem cannot pin one of them: an adapter renders a whole result through
       # Axn::Extensions::Serialization.render, which is the only caller of serialize_exposed.
+      # canonical_wire_key is absent deliberately — Core::Contract calls it to reject two declared names
+      # that would collapse onto one JSON property, so the declaration check and the rendering it predicts
+      # share one definition of a property name.
       private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering, :transcode_to_utf8,
                            :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                            :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
-                           :canonical_wire_key, :capture_elements, :raise_colliding_keys!,
+                           :capture_elements, :raise_colliding_keys!,
                            :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?
 ```
 
