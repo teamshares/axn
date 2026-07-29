@@ -123,11 +123,35 @@ To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use
 ```ruby
 # axn-mcp/lib/axn/mcp/serializer.rb
 exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
+
+# An HTTP adapter, which must not ship an undeclared rendering in a response body
+exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
 ```
 
 Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
 
-It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value is self-referential, naming the path to it — a cycle has no JSON representation, so there is nothing honest to render. You don't need your own cycle detection; let it reach whatever `rescue` already maps a failed serialization to your transport's error response.
+There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
+
+**Always, whatever you pass:** nothing was silently dropped along the way, and no *value* in the result is one `JSON.generate` refuses — no non-finite number, no bytes without a UTF-8 rendering, no cycle, no two keys collapsing into one property.
+
+That guarantee is about the values, not about your encoder's configuration, and the difference is load-bearing: a structure nested deeper than `max_nesting` (100 by default) is made of perfectly encodable values and still raises `JSON::NestingError`. Core can't own that — `max_nesting` is your option to set, and a deeply-nested structure is real data rather than a defect. **So keep your encode step's error handling.** What it no longer needs is a *pre-pass over the value graph*; catching what your encoder raises is still yours.
+
+**Additionally under `reject_opaque: true`:** every value was rendered through a projection *its author declared*, rather than one the serializer guessed at. That is a separate promise about meaningfulness, not about encodability — which is why the flag is named for what it rejects rather than called something like `strict:`. Reading `reject_opaque: false` should not suggest the output might not be JSON; it always is.
+
+It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Four cases raise always, because the body would be *wrong* — or not JSON at all:
+
+- a self-referential value (a cycle has no JSON representation at all);
+- two Hash keys that render as the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value). What's compared is the *property* each key produces, not the Ruby String its `to_s` returned — keys are transcoded to UTF-8 first, so one property name in two encodings (an ISO-8859-1 `"\xE9"` beside a UTF-8 `"é"`) is caught as the single property it is;
+- a non-finite Float — `Float::INFINITY`, `-Float::INFINITY`, `Float::NAN`, or a `BigDecimal`/`Rational` that coerces to one. JSON has no literal for these, and an encoder's `allow_nan:` would emit a bare `Infinity` that consumers reject;
+- a String — or a Hash key's String form — whose bytes have no UTF-8 rendering. JSON is a UTF-8 format. Note that this is stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and still unencodable. A String that is merely in some other encoding is fine, as long as it transcodes: a valid ISO-8859-1 or Shift_JIS *value* passes untouched, while a *key* comes back transcoded to UTF-8, since a property name is the text an encoder emits. One case is deliberately stricter than json 2.x: a `BINARY` String carrying valid UTF-8 bytes is refused here, while that encoder accepts it with a deprecation warning and json 3.0 will refuse it outright — so this rejects a hair early rather than emitting something that stops encoding on a dependency bump.
+
+The last two are why your encode step needs no pre-*pass* of its own. Without them an adapter surfaces a bare `JSON::GeneratorError` — or catches it at encode time, by which point the path to the offending value is gone and all you can report is a generic failure. Nesting depth is the one refusal that still reaches your encoder, so keep the `rescue` even though the walk can go.
+
+Pass `reject_opaque: true` to also reject a value — or a Hash key — that declares no rendering of its own. The rule is about where the method it would render through is *defined*, not what that method produces: a value is opaque when its `to_s` is the one inherited from `Object`, or (in a Rails app, where ActiveSupport defines a generic `Object#as_json` that dumps instance variables) when that generic method is its only `as_json` and it has neither a `to_h` nor a `to_hash`. A `to_hash` counts because that generic `as_json` delegates to it rather than dumping, so the value renders the shape its author declared. So it catches the value that ships `"#<User:0x000055…>"` outside Rails and the instance-variable dump the same value ships inside Rails — but not, for instance, a `Proc`, a class doing `alias_method :to_s, :inspect`, or a delegator forwarding `to_s` to a wrapped object: each of those renders through a method defined somewhere other than `Object`, so the flag lets it through. It is not a promise that no object address reaches the wire.
+
+Such a rendering is honest — every exposed datum is there — just not one the value's author declared, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
+
+You don't need your own detection for any of these — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
 
 ## Per-adapter configuration
 

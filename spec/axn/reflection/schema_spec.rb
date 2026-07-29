@@ -5151,4 +5151,32 @@ RSpec.describe Axn::Reflection::Schema do
       end
     end
   end
+
+  # Reflection must never raise on user data. Schema.normalize_schema_literal walks a literal `default:`
+  # itself and routes only scalar leaves to Values.serialize_value, so the serializer's checks are out of
+  # reach here — but the colliding-key one raises unconditionally, making it the single check that would
+  # surface in input_schema if that traversal ever handed a Hash to the serializer. This pins that it
+  # doesn't.
+  it "reflects a literal default whose Hash keys stringify to one property rather than raising" do
+    klass = Class.new do
+      include Axn
+      expects :rec, default: { id: 1, "id" => 2 }
+    end
+
+    expect { klass.input_schema }.not_to raise_error
+    expect(klass.input_schema[:properties][:rec][:default]).to eq({ id: 1, "id" => 2 })
+  end
+
+  # Scalar leaves DO route to Values.serialize_value, which refuses a non-finite Float outright because
+  # JSON has no literal for one. Reflection reports the declaration anyway: a reflected literal promises
+  # nothing about encodability, while serialize_exposed's output does, which is where that refusal belongs.
+  it "reflects a non-finite Float default as declared rather than raising" do
+    klass = Class.new do
+      include Axn
+      expects :limit, type: Numeric, default: Float::INFINITY
+    end
+
+    expect { klass.input_schema }.not_to raise_error
+    expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
+  end
 end
