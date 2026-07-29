@@ -151,6 +151,61 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
     end
 
+    # A field name is a property name in the output on the same terms as a nested Hash key, so it carries the
+    # same UTF-8 promise. Declaration accepts any symbol, so a name with no UTF-8 rendering is reachable.
+    it "holds a field name to the same encodability rule as a nested Hash key" do
+      unencodable = "\xFF".b.to_sym
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes unencodable
+
+        define_method(:call) { expose(unencodable => 1) }
+      end
+
+      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering|UTF-8/)
+    end
+
+    it "names the offending field without interpolating its bytes, so reporting cannot itself raise" do
+      unencodable = "\xFF".b.to_sym
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes unencodable
+
+        define_method(:call) { expose(unencodable => 1) }
+      end
+
+      # Symbol#inspect escapes the bytes to ASCII; interpolating the raw ones would raise
+      # Encoding::CompatibilityError from building the message rather than reporting the defect.
+      message = begin
+        described_class.serialize_exposed(klass.call, klass.external_field_configs)
+      rescue Axn::Reflection::UnserializableValue => e
+        e.message
+      end
+
+      # The message itself is UTF-8 prose (it contains em dashes), so the property is that building it
+      # succeeded and produced valid UTF-8 — not that it is ASCII-only.
+      expect(message).to be_a(String)
+      expect(message.encoding).to eq(Encoding::UTF_8)
+      expect(message).to satisfy(&:valid_encoding?)
+      expect(message).to include('\xFF')
+    end
+
+    it "renders an ordinary field name as a frozen UTF-8 property" do
+      klass = Class.new do
+        include Axn
+        exposes :count, type: Integer
+        def call = expose(count: 3)
+      end
+
+      key = described_class.serialize_exposed(klass.call, klass.external_field_configs).keys.first
+      expect(key).to eq("count")
+      expect(key.encoding).to eq(Encoding::UTF_8)
+      expect(key).to be_frozen
+    end
+
     it "threads reject_opaque: to the values it serializes" do
       owner = opaque_object
       klass = Class.new do

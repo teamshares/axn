@@ -85,9 +85,20 @@ module Axn
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
+      #
+      # A field name goes through own_wire_key on the same terms as a nested Hash key: it is a property name
+      # in the output either way, so it carries the same UTF-8 promise. Declaration accepts any symbol, so a
+      # name whose bytes have no UTF-8 rendering is reachable here and would otherwise reach an encoder as a
+      # property nothing had checked.
       def serialize_exposed(result, field_configs, reject_opaque: false)
         field_configs.each_with_object({}) do |config, hash|
-          hash[config.field.to_s] = serialize_value(result.public_send(config.field), path: config.field.to_s, reject_opaque:)
+          # The error path is the field's `inspect`, not its `to_s`: a name with no UTF-8 rendering is exactly
+          # what fails here, and interpolating those bytes into the message would raise
+          # Encoding::CompatibilityError from the reporting itself. Symbol#inspect escapes them to ASCII and
+          # cannot be overridden (Symbol takes neither a subclass nor a singleton). On success the path is the
+          # canonical wire key, so nested paths read `owner.name` as before.
+          wire_key = own_wire_key(config.field, config.field.inspect)
+          hash[wire_key] = serialize_value(result.public_send(config.field), path: wire_key, reject_opaque:)
         end
       end
 
