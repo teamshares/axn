@@ -632,12 +632,20 @@ module Axn
         #
         # An identical duplicate is reported first when a batch contains both, so the error is deterministic
         # and names the simpler defect — the one whose fix is unambiguous.
+        #
+        # The identical branch names each offender by its canonical property rather than by the Symbol: every
+        # name reaching here is renderable by construction, and joining a non-UTF-8 name to a UTF-8 one would
+        # raise Encoding::CompatibilityError from the reporting itself — surfacing the wrong exception class
+        # for the defect. Canonicalizing keeps the message valid UTF-8 and leaves an ASCII name byte-identical.
         def _reject_duplicate_fields!(existing, new_configs)
           collisions = _duplicate_fields(existing, new_configs)
           return if collisions.empty?
 
           identical, collapsed = collisions.partition { |claimed, offending| claimed == offending }
-          raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{identical.map(&:last).join(', ')}" if identical.any?
+          if identical.any?
+            names = identical.map { |_claimed, offending| Axn::Reflection::Values.canonical_wire_key(offending) }
+            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
+          end
 
           claimed, offending = collapsed.first
           raise Axn::DuplicateFieldError,

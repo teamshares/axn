@@ -125,6 +125,39 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
     end
+
+    it "names every offending occurrence, not just the first" do
+      expect { build_axn { expects :foo, :foo, :foo } }
+        .to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo, foo")
+    end
+
+    # The message names each offender by its canonical property. Naming it by the Symbol would concatenate a
+    # non-UTF-8 name into UTF-8 prose, and the Encoding::CompatibilityError from building the message would
+    # reach the caller in place of the duplicate error it was trying to report.
+    it "reports a non-UTF-8-encoded name as a duplicate rather than an encoding failure" do
+      name = latin1_name
+
+      expect do
+        build_axn do
+          expects name
+          expects name
+        end
+      end.to raise_error(Axn::DuplicateFieldError) { |error|
+        expect(error.message.encoding).to eq(Encoding::UTF_8)
+        expect(error.message).to satisfy(&:valid_encoding?)
+        expect(error.message).to include("café")
+      }
+    end
+
+    it "reports a batch mixing encodings without the join failing" do
+      names = [latin1_name, latin1_name, :naïve, :naïve]
+
+      expect { build_axn { expects(*names) } }.to raise_error(Axn::DuplicateFieldError) { |error|
+        expect(error.message.encoding).to eq(Encoding::UTF_8)
+        expect(error.message).to satisfy(&:valid_encoding?)
+        expect(error.message).to eq("Duplicate field(s) declared: café, naïve")
+      }
+    end
   end
 
   # The runtime defense this does NOT replace has its own coverage: a declaration check cannot see the keys
