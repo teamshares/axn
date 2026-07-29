@@ -877,10 +877,20 @@ module Axn
         elsif value.instance_of?(String)
           value.dup
         elsif value.is_a?(Symbol) || value.is_a?(Time) || value.is_a?(Date) || value.is_a?(Numeric)
-          Values.serialize_value(value)
+          normalize_scalar_literal(value)
         else
           value
         end
+      end
+
+      # A literal the serializer refuses outright — a non-finite `default: Float::INFINITY`, which no JSON
+      # `default` could carry — is reported exactly as declared. Reflection describes a declaration and must
+      # never raise on user data, and a reflected literal makes no encodability promise; `serialize_exposed`'s
+      # output, which does make one, is where that refusal belongs.
+      def normalize_scalar_literal(value)
+        Values.serialize_value(value)
+      rescue Axn::Reflection::UnserializableValue
+        value
       end
 
       # The `enum:` member list for an inclusion set. `nullable` (nil_allowed?) is the runtime truth: when

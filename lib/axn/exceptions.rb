@@ -175,11 +175,12 @@ module Axn
   module Reflection
     # Raised when an exposed value has no honest JSON representation, so a serializing adapter
     # (axn-openapi, axn-mcp, axn-ruby_llm) fails the call rather than emitting garbage or a placeholder
-    # where data belongs. Four shapes, in two categories. The rendering would be WRONG: a
-    # self-referential container (no JSON representation at all), or two Hash keys that stringify to
-    # one JSON property (a value silently dropped). The rendering would be UGLY, rejected only under
-    # `serialize_value(reject_opaque: true)`: a value or a Hash key whose only `to_s` is the inherited
-    # Object#to_s, which renders an object address into a response body.
+    # where data belongs. Six shapes, in two categories. The rendering would be WRONG, or not JSON at
+    # all: a self-referential container (no JSON representation at all), two Hash keys that stringify
+    # to one JSON property (a value silently dropped), a non-finite Float (no JSON literal exists), or
+    # a String whose bytes have no UTF-8 rendering (JSON is a UTF-8 format). The rendering would be
+    # UGLY, rejected only under `serialize_value(reject_opaque: true)`: a value or a Hash key whose
+    # only `to_s` is the inherited Object#to_s, which renders an object address into a response body.
     #
     # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
     # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the

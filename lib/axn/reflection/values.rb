@@ -42,6 +42,17 @@ module Axn
       AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
       private_constant :AS_JSON_PROJECTIONS
 
+      # Bound rather than called, for the reason own_wire_key gives about `-@`/`initialize_copy`: a String
+      # SUBCLASS can override `encoding`/`valid_encoding?`/`ascii_only?`/`encode`, and one whose
+      # `valid_encoding?` returns true over bytes that aren't valid would defeat this guard on precisely the
+      # value it exists to catch (verified: a lying override is believed, and JSON::GeneratorError follows).
+      # Reached only from a `when ::String` match, so String's own methods are the right ones to bind.
+      STRING_ENCODING = ::String.instance_method(:encoding)
+      STRING_VALID_ENCODING = ::String.instance_method(:valid_encoding?)
+      STRING_ASCII_ONLY = ::String.instance_method(:ascii_only?)
+      STRING_ENCODE = ::String.instance_method(:encode)
+      private_constant :STRING_ENCODING, :STRING_VALID_ENCODING, :STRING_ASCII_ONLY, :STRING_ENCODE
+
       OPAQUE_VALUE_REASON = "it serializes only via the default Object#to_s (it would render as garbage " \
                             'like "#<User:0x…>") — declare it `type: String` and format it, or give the ' \
                             "value an `as_json`/`to_h`."
@@ -59,6 +70,18 @@ module Axn
                               "`type: String` and format it, or give the value its own `as_json`/`to_h`."
       private_constant :OPAQUE_AS_JSON_REASON
 
+      UNRENDERABLE_BYTES_REASON = "it renders as a String holding bytes that have no UTF-8 rendering, and " \
+                                  "JSON is a UTF-8 format — `JSON.generate` refuses it outright. Scrub the " \
+                                  "bytes (`String#scrub`) or re-encode them (`encode`/`force_encoding`) " \
+                                  "before exposing the value."
+      private_constant :UNRENDERABLE_BYTES_REASON
+
+      UNRENDERABLE_KEY_BYTES_REASON = "a Hash key is rendered via #to_s and this one's String form holds " \
+                                      "bytes that have no UTF-8 rendering, and JSON is a UTF-8 format — " \
+                                      "`JSON.generate` refuses such a property name outright. Scrub or " \
+                                      "re-encode the key's bytes, or key the Hash by a UTF-8 String or Symbol."
+      private_constant :UNRENDERABLE_KEY_BYTES_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -74,25 +97,35 @@ module Axn
       # no rendering of its own — one whose `to_s` is the inherited Object#to_s, or whose only `as_json` is
       # the generic one a Rails app adds: honest output, but not presentable output, so it is the caller's
       # call rather than a universal one.
+      #
+      # Two leaves are rejected unconditionally, alongside a cycle and a key collision, because what they
+      # render is not JSON at all: a String whose bytes have no UTF-8 rendering, and a non-finite Float. No
+      # adapter can want a body `JSON.generate` refuses, and core is the only layer that still knows the
+      # value was at `records[3].price` — by the time an encoder refuses it, that is gone.
       def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
         case value
-        when nil, String, Integer, Float, TrueClass, FalseClass
+        when nil, Integer, TrueClass, FalseClass
           value
+        when String
+          encodable_string!(value, source: value, path:)
+        when Float
+          finite_number!(value, source: value, path:)
         when Symbol
           # JSON has no symbol type — render deterministically as its String form, matching
           # the schema's `type: Symbol` => "string" mapping (Axn::Reflection::Schema::TYPE_MAP),
           # rather than relying on the generic `to_s` fallback below (which happens to agree).
-          value.to_s
+          encodable_string!(value.to_s, source: value, path:)
         when Numeric
           # BigDecimal / Rational etc. — emit a JSON number so output matches the schema's "number" type.
           # JSON has no decimal type (any JSON number is a double), so a Float representation is the correct
           # wire form; a caller needing exact decimals should expose type: String. Integer/Float are already
           # handled above. A non-real Numeric (Complex) can't become a Float — fall back to its string form.
-          begin
-            Float(value)
-          rescue ArgumentError, TypeError, RangeError
-            value.to_s
-          end
+          #
+          # The finiteness check sits OUTSIDE the coercion's rescue: BigDecimal("Infinity") and a Rational
+          # too large for a double both coerce to a non-finite Float, and UnserializableValue is an
+          # ArgumentError, so raising inside that rescue would be swallowed into the string fallback.
+          coerced = coerce_to_float(value)
+          coerced.nil? ? encodable_string!(value.to_s, source: value, path:) : finite_number!(coerced, source: value, path:)
         when Hash
           within_container(value, path, seen) do |nested|
             # Every key check and every key's #to_s already happened in the capture, so this loop only
@@ -111,7 +144,7 @@ module Axn
           # Rendered as RFC3339/ISO-8601 regardless of Rails, matching the schema's
           # `date`/`date-time` `format:` (see Reflection::Schema::FORMAT_MAP) — both inside and
           # outside Rails, so `serialize_exposed` output validates against the reflected schema.
-          value.iso8601
+          encodable_string!(value.iso8601, source: value, path:)
         else
           projection = projection_for(value)
 
@@ -132,9 +165,86 @@ module Axn
           else
             raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
 
-            value.to_s
+            encodable_string!(value.to_s, source: value, path:)
           end
         end
+      end
+
+      # EVERY String serialize_value hands back passes through here, so "what serialize_exposed returns is
+      # something JSON.generate accepts" holds by construction rather than one branch at a time: the bytes
+      # can arrive from an exposed String, from a Symbol, or from any `#to_s`/`#iso8601` a caller wrote.
+      # `source` is what the error names, so a Symbol is reported as the Symbol it was rather than as the
+      # String its `#to_s` built, and the message never inspects the offending bytes.
+      #
+      # A `#to_s` that breaks its contract and returns a non-String has no bytes to check and passes through
+      # as it always has — the type test is `case`/`when` rather than `is_a?` for the reason own_wire_key
+      # gives, and String's unbound methods would be meaningless bound to a non-String regardless.
+      def encodable_string!(rendered, source:, path:)
+        case rendered
+        when ::String
+          return rendered if utf8_renderable?(rendered)
+
+          raise Axn::Reflection::UnserializableValue.new(path:, value: source, reason: UNRENDERABLE_BYTES_REASON)
+        else
+          rendered
+        end
+      end
+
+      # Whether an encoder can render these bytes as JSON text at all. JSON is UTF-8, so the question is
+      # whether the bytes have a UTF-8 rendering — NOT `valid_encoding?`, which asks whether they are valid
+      # in their OWN encoding and answers true for "\xFF" in BINARY, which JSON::GeneratorError refuses. It
+      # is equally not "are the bytes literally valid UTF-8": a valid ISO-8859-1 or Shift_JIS String
+      # transcodes cleanly and encodes fine, so demanding UTF-8 bytes would reject real data.
+      #
+      # ASCII-only bytes are already UTF-8 in any ASCII-compatible encoding, and that covers most of what a
+      # response body holds (identifiers, enum values, keys), so it is the single-check fast path — and it is
+      # cheap twice over, since Ruby caches a String's coderange. Non-ASCII UTF-8 needs one more check and
+      # still no allocation. Only bytes outside both pay for the transcode an encoder would attempt, which is
+      # the sole exact answer for them. `US-ASCII` needs no arm of its own: a US-ASCII String is either
+      # ASCII-only (already returned) or holds a byte no transcode accepts.
+      def utf8_renderable?(string)
+        return true if STRING_ASCII_ONLY.bind_call(string)
+
+        case STRING_ENCODING.bind_call(string)
+        when ::Encoding::UTF_8 then STRING_VALID_ENCODING.bind_call(string)
+        else transcodable_to_utf8?(string)
+        end
+      end
+
+      # EncodingError is exactly the three refusals a transcode can raise (no converter for the pair, an
+      # undefined mapping, an invalid byte sequence) and nothing else.
+      def transcodable_to_utf8?(string)
+        STRING_ENCODE.bind_call(string, ::Encoding::UTF_8)
+        true
+      rescue ::EncodingError
+        false
+      end
+
+      # A non-finite Float has no JSON literal, so a body containing one is not JSON — the same category as
+      # a cycle, and unconditional for the same reason. An encoder's `allow_nan:` would emit a bare
+      # `Infinity`, which is not standard JSON and consumers reject, so it is no honest rendering either.
+      #
+      # `finite?` and the interpolated `to_s` dispatch directly: this is reached with a genuine Float — from
+      # a `when Float` match (a Float subclass has no allocator, so no instance of one can exist) or from
+      # `Kernel#Float`, which returns a Float or raises — so neither call can reach caller code. `source` is
+      # what the error names, so a `BigDecimal("Infinity")` is reported as the BigDecimal it was exposed as.
+      def finite_number!(float, source:, path:)
+        return float if float.finite?
+
+        raise Axn::Reflection::UnserializableValue.new(
+          path:,
+          value: source,
+          reason: "it renders as #{float}, and JSON has no literal for a non-finite number — `JSON.generate` " \
+                  "refuses it outright. Expose a finite number instead, or a String if the sentinel itself carries meaning.",
+        )
+      end
+
+      # nil means "no Float representation exists" (a non-real Numeric such as Complex), which the caller
+      # renders as a string form instead.
+      def coerce_to_float(value)
+        Float(value)
+      rescue ArgumentError, TypeError, RangeError
+        nil
       end
 
       # A self-referential container has no JSON representation at all, so this is a serialization
@@ -196,6 +306,7 @@ module Axn
           check_opaque_key!(key, path) if reject_opaque
 
           wire_key = own_wire_key(key)
+          check_key_bytes!(wire_key, key, path)
 
           claimed = positions[wire_key]
           raise_colliding_keys!(path:, wire_key:, first_key: entries[claimed].fetch(1), second_key: key) if claimed
@@ -231,6 +342,16 @@ module Axn
         when ::String then ::String.new(rendered).freeze
         else DEFAULT_TO_S.bind_call(key).freeze
         end
+      end
+
+      # A property name is a String in the output just as a leaf is, so the same bytes that make a value
+      # unencodable make a KEY unencodable, and unconditionally for the same reason. Checked on the wire key
+      # this module already owns rather than on the caller's key, so nothing is projected twice; `value: key`
+      # is what the message names the class of, so no key's `inspect` runs while the error is built.
+      def check_key_bytes!(wire_key, key, path)
+        return if utf8_renderable?(wire_key)
+
+        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON)
       end
 
       # An Array's elements, captured before the first one is projected — same guarantee, same refusal to

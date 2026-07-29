@@ -5,6 +5,7 @@ require "English"
 
 require "spec_helper"
 require "bigdecimal"
+require "json"
 require "singleton"
 
 RSpec.describe Axn::Reflection::Values do
@@ -722,6 +723,187 @@ RSpec.describe Axn::Reflection::Values do
 
     it "leaves acyclic nesting untouched" do
       expect(described_class.serialize_value({ a: [1, { b: 2 }] })).to eq("a" => [1, { "b" => 2 }])
+    end
+  end
+
+  # A body an encoder refuses is not JSON, so this is the same category as a cycle: unconditional, at both
+  # `reject_opaque:` settings, since no adapter can want output `JSON.generate` won't accept. Core is also
+  # the only layer that still knows the value was at `records[3].price` — an encoder refusing it downstream
+  # reports no path at all.
+  describe "values JSON.generate refuses" do
+    def binary(bytes) = bytes.dup.force_encoding(Encoding::BINARY)
+
+    describe "a non-finite Float" do
+      [Float::INFINITY, -Float::INFINITY, Float::NAN].each do |value|
+        it "raises for #{value}, naming the path" do
+          expect { described_class.serialize_value(value, path: "price") }
+            .to raise_error(Axn::Reflection::UnserializableValue, /`price` \(Float\).*non-finite number.*Expose a finite number/m)
+        end
+
+        it "raises for #{value} at both reject_opaque: settings" do
+          [false, true].each do |reject_opaque|
+            expect { described_class.serialize_value(value, path: "price", reject_opaque:) }
+              .to raise_error(Axn::Reflection::UnserializableValue)
+          end
+        end
+      end
+
+      it "names the nested path inside an Array" do
+        expect { described_class.serialize_value([{ price: Float::INFINITY }], path: "records") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`records\[0\]\.price`/)
+      end
+
+      it "names the nested path behind a custom to_h" do
+        wrapper = Class.new { def to_h = { ratio: Float::NAN } }.new
+
+        expect { described_class.serialize_value(wrapper, path: "stats") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`stats\.ratio`/)
+      end
+
+      it "names the offending exposure when reached through serialize_exposed" do
+        klass = Class.new do
+          include Axn
+          auto_log false
+          exposes :ratio
+
+          def call = expose(ratio: Float::INFINITY)
+        end
+
+        expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`ratio`/)
+      end
+
+      # The Numeric arm coerces with Float(), which is where a BigDecimal/Rational becomes non-finite —
+      # so the check belongs on that path too, and the error names the class actually exposed.
+      it "raises for a BigDecimal that coerces to a non-finite Float" do
+        [BigDecimal("Infinity"), BigDecimal("-Infinity"), BigDecimal("NaN"), BigDecimal("1e400")].each do |value|
+          expect { described_class.serialize_value(value, path: "total") }
+            .to raise_error(Axn::Reflection::UnserializableValue, /`total` \(BigDecimal\).*non-finite number/m)
+        end
+      end
+
+      it "raises for a Rational too large for a double" do
+        expect { described_class.serialize_value(Rational(10**400, 1), path: "total") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`total` \(Rational\).*non-finite number/m)
+      end
+
+      it "still serializes finite Floats and coercible Numerics" do
+        expect(described_class.serialize_value([0.0, -1.5, 1e308])).to eq([0.0, -1.5, 1e308])
+        expect(described_class.serialize_value(BigDecimal("3.14"))).to eq(3.14)
+      end
+
+      # Complex has no Float form at all, so it renders as its string form ("1+2i") — an encodable
+      # String, and a schema TYPE question rather than an encode failure (see schema_spec).
+      it "leaves a Complex rendering as its string form" do
+        expect(described_class.serialize_value(Complex(1, 2))).to eq("1+2i")
+      end
+    end
+
+    describe "a String with no UTF-8 rendering" do
+      it "raises for invalid UTF-8 bytes, naming the path" do
+        expect { described_class.serialize_value("bad: \xFF".dup, path: "note") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`note` \(String\).*no UTF-8 rendering.*String#scrub/m)
+      end
+
+      # valid_encoding? is NOT the predicate: these bytes are perfectly valid BINARY, and
+      # JSON.generate still refuses them.
+      it "raises for a BINARY String holding a high byte, which valid_encoding? calls valid" do
+        value = binary("\xFF")
+        expect(value.valid_encoding?).to be true
+
+        expect { described_class.serialize_value(value, path: "blob") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`blob` \(String\).*no UTF-8 rendering/m)
+      end
+
+      it "raises at both reject_opaque: settings" do
+        [false, true].each do |reject_opaque|
+          expect { described_class.serialize_value(binary("\xFF"), path: "blob", reject_opaque:) }
+            .to raise_error(Axn::Reflection::UnserializableValue)
+        end
+      end
+
+      it "names the nested path inside an Array, inside a Hash, and behind a custom to_h" do
+        expect { described_class.serialize_value([binary("\xFF")], path: "rows") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[0\]`/)
+
+        expect { described_class.serialize_value({ rows: [{ note: binary("\xFF") }] }, path: "out") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\]\.note`/)
+
+        wrapper = Class.new { def to_h = { note: "bad: \xFF".dup } }.new
+        expect { described_class.serialize_value(wrapper, path: "doc") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`doc\.note`/)
+      end
+
+      it "does not over-reject: a BINARY String that is pure ASCII still serializes" do
+        expect(described_class.serialize_value(binary("abc"))).to eq("abc")
+      end
+
+      it "does not over-reject: ordinary UTF-8, multibyte included" do
+        expect(described_class.serialize_value("héllo")).to eq("héllo")
+        expect(described_class.serialize_value("party 🎉")).to eq("party 🎉")
+      end
+
+      # The question is whether the bytes have a UTF-8 RENDERING, not whether they are literally UTF-8:
+      # a valid ISO-8859-1 or Shift_JIS String transcodes cleanly and encodes fine.
+      it "does not over-reject a String valid in a non-UTF-8 encoding that transcodes cleanly" do
+        expect { JSON.generate({ "k" => "h\xE9llo".dup.force_encoding(Encoding::ISO_8859_1) }) }.not_to raise_error
+
+        expect(described_class.serialize_value("h\xE9llo".dup.force_encoding(Encoding::ISO_8859_1))).to eq("h\xE9llo".dup.force_encoding(Encoding::ISO_8859_1))
+        expect(described_class.serialize_value("\x82\xA0".dup.force_encoding(Encoding::Shift_JIS))).to eq("\x82\xA0".dup.force_encoding(Encoding::Shift_JIS))
+      end
+
+      # A String SUBCLASS can override the predicates; String's own unbound methods are what answer, so a
+      # value claiming valid UTF-8 over bytes that have none is still caught.
+      it "is not fooled by a String subclass whose valid_encoding? lies" do
+        liar = Class.new(String) do
+          def valid_encoding? = true
+          def encoding = Encoding::UTF_8
+          def ascii_only? = true
+        end.new("bad: \xFF".dup)
+
+        expect { described_class.serialize_value(liar, path: "note") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering/)
+      end
+
+      it "raises for a Symbol whose bytes have no UTF-8 rendering, naming the Symbol" do
+        expect { described_class.serialize_value(binary("\xFF").to_sym, path: "code") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`code` \(Symbol\).*no UTF-8 rendering/m)
+      end
+
+      it "raises for a to_s fallback that returns bytes with no UTF-8 rendering, naming the value's class" do
+        value = opaque_object
+        def value.to_s = "bad: \xFF".dup
+
+        expect { described_class.serialize_value(value, path: "label") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`label`.*no UTF-8 rendering/m)
+      end
+
+      # A property name is a String in the output just as a leaf is, so the same bytes break it.
+      it "raises for a Hash key whose String form has no UTF-8 rendering, naming the key position" do
+        expect { described_class.serialize_value({ binary("\xFF") => 1 }, path: "rec") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
+      end
+    end
+
+    # The contract this whole family exists for: what serialize_value returns is something an encoder
+    # accepts. Asserted over the representative shapes rather than described in a comment.
+    it "returns JSON that JSON.generate accepts, for every value it serializes" do
+      values = [
+        nil, 1, 10**40, -2.5, 1e308, true, false, :sym, "plain", "héllo 🎉", binary("abc"),
+        "h\xE9llo".dup.force_encoding(Encoding::ISO_8859_1), "\x82\xA0".dup.force_encoding(Encoding::Shift_JIS),
+        BigDecimal("3.14"), Rational(1, 3), Complex(1, 2),
+        Time.at(0).utc, Date.new(2026, 7, 3), DateTime.new(2026, 7, 3),
+        { id: 1, nested: [1, "two", :three, { deep: BigDecimal("1.5") }] }, [[1], { a: { b: [2.5] } }],
+        { 1 => "a", nil => "b", binary("ascii-key") => "c" }, opaque_object,
+        Class.new { def to_h = { note: "héllo", ratio: 0.5 } }.new
+      ]
+
+      values.each do |value|
+        serialized = described_class.serialize_value(value, path: "v")
+
+        expect { JSON.generate({ "v" => serialized }) }
+          .not_to raise_error, "JSON.generate refused the serialization of a #{value.class}"
+      end
     end
   end
 end

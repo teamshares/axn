@@ -81,11 +81,17 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
 - Render a success result's exposures with
   `Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)` → JSON-safe Hash.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
-- Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) on a cycle or on two Hash keys that
-  stringify to one JSON property. Add `reject_opaque: true` to also reject a value or key that declares no
-  rendering of its own — `to_s` inherited from `Object`, or (in Rails) ActiveSupport's generic
-  `Object#as_json` ivar dump as its only projection. A meaningful `to_s`/`as_json`/`to_h` defined anywhere
-  else passes, address-looking or not. Never write your own pre-pass — it drifts from the renderer.
+- What it returns is **encodable JSON** — `JSON.generate` won't refuse it. You still own the encode step
+  (core returns a Ruby Hash), but it needs no pre-check of its own.
+- Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`), naming the path, on four unconditional
+  defects: a cycle; two Hash keys that stringify to one JSON property; a non-finite Float (incl. a
+  `BigDecimal`/`Rational` coercing to one); and a String — or a key's String form — whose bytes have no
+  UTF-8 rendering (stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and unencodable;
+  a valid ISO-8859-1/Shift_JIS value transcodes and passes). Add `reject_opaque: true` to also reject a
+  value or key that declares no rendering of its own — `to_s` inherited from `Object`, or (in Rails)
+  ActiveSupport's generic `Object#as_json` ivar dump as its only projection. A meaningful
+  `to_s`/`as_json`/`to_h` defined anywhere else passes, address-looking or not. Never write your own
+  pre-pass — it drifts from the renderer.
 
 Source: `lib/axn/reflection/values.rb`.
 

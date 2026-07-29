@@ -5166,4 +5166,17 @@ RSpec.describe Axn::Reflection::Schema do
     expect { klass.input_schema }.not_to raise_error
     expect(klass.input_schema[:properties][:rec][:default]).to eq({ id: 1, "id" => 2 })
   end
+
+  # Scalar leaves DO route to Values.serialize_value, which refuses a non-finite Float outright because
+  # JSON has no literal for one. Reflection reports the declaration anyway: a reflected literal promises
+  # nothing about encodability, while serialize_exposed's output does, which is where that refusal belongs.
+  it "reflects a non-finite Float default as declared rather than raising" do
+    klass = Class.new do
+      include Axn
+      expects :limit, type: Numeric, default: Float::INFINITY
+    end
+
+    expect { klass.input_schema }.not_to raise_error
+    expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
+  end
 end

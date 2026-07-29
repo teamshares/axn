@@ -130,13 +130,22 @@ exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaq
 
 Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
 
-It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it. Two cases raise always, because the body would be *wrong*: a self-referential value (a cycle has no JSON representation at all), and two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value).
+What it returns is **encodable JSON**: `JSON.generate` will not refuse it. You still need your own encode step (core hands back a Ruby Hash, and the encoder options are yours), but it no longer has to defend against a value the encoder rejects.
+
+It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Four cases raise always, because the body would be *wrong* — or not JSON at all:
+
+- a self-referential value (a cycle has no JSON representation at all);
+- two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value);
+- a non-finite Float — `Float::INFINITY`, `-Float::INFINITY`, `Float::NAN`, or a `BigDecimal`/`Rational` that coerces to one. JSON has no literal for these, and an encoder's `allow_nan:` would emit a bare `Infinity` that consumers reject;
+- a String — or a Hash key's String form — whose bytes have no UTF-8 rendering. JSON is a UTF-8 format. Note that this is stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and still unencodable. A String that is merely in some other encoding is fine, as long as it transcodes (a valid ISO-8859-1 or Shift_JIS value passes untouched).
+
+The last two are why your encode step needs no pre-check of its own. Without them an adapter surfaces a bare `JSON::GeneratorError` — or catches it at encode time, by which point the path to the offending value is gone and all you can report is a generic failure.
 
 Pass `reject_opaque: true` to also reject a value — or a Hash key — that declares no rendering of its own. The rule is about where the method it would render through is *defined*, not what that method produces: a value is opaque when its `to_s` is the one inherited from `Object`, or (in a Rails app, where ActiveSupport defines a generic `Object#as_json` that dumps instance variables) when that generic method is its only `as_json` and it has neither a `to_h` nor a `to_hash`. A `to_hash` counts because that generic `as_json` delegates to it rather than dumping, so the value renders the shape its author declared. So it catches the value that ships `"#<User:0x000055…>"` outside Rails and the instance-variable dump the same value ships inside Rails — but not, for instance, a `Proc`, a class doing `alias_method :to_s, :inspect`, or a delegator forwarding `to_s` to a wrapped object: each of those renders through a method defined somewhere other than `Object`, so the flag lets it through. It is not a promise that no object address reaches the wire.
 
 Such a rendering is honest — every exposed datum is there — just not one the value's author declared, so whether it's a failure is the adapter's call: an HTTP contract shouldn't ship it in a response body, while an LLM tool result is arguably better off with an ugly string than a failed call. The default is `false`.
 
-You don't need your own detection for any of the four — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
+You don't need your own detection for any of these — and shouldn't write one. A strictness check only stays correct while it's colocated with the rendering it predicts; a parallel walk has to mirror the leaf-type list, the `as_json`-before-`to_h` ordering, and key stringification, and will drift. Let the error reach whatever `rescue` already maps a failed serialization to your transport's error response, and keep any "how to turn this off" hint in your own config's voice — core's messages never mention an adapter's settings.
 
 ## Per-adapter configuration
 
