@@ -118,29 +118,32 @@ Three rules keep adapters interoperable:
 
 ## Value serialization
 
-To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use `Axn::Reflection::Values.serialize_exposed` — don't hand-roll it (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` edge cases so the output validates against the reflected `output_schema`):
+To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use `Axn::Extensions::Serialization.render` — don't hand-roll it (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` edge cases so the output validates against the reflected `output_schema`):
 
 ```ruby
-# axn-mcp/lib/axn/mcp/serializer.rb
-exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
+# An MCP or LLM tool adapter
+exposed = Axn::Extensions::Serialization.render(result)
 
 # An HTTP adapter, which must not ship an undeclared rendering in a response body
-exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
+exposed = Axn::Extensions::Serialization.render(result, reject_opaque: config.reject_opaque)
 ```
 
-Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
+You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
+
+Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
 
 There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
 
-**Always, whatever you pass:** nothing was silently dropped along the way, and no *value* in the result is one `JSON.generate` refuses — no non-finite number, no bytes without a UTF-8 rendering, no cycle, no two keys collapsing into one property.
+**Always:** nothing was silently dropped along the way, and no *value* in the result is one `JSON.generate` refuses — no non-finite number, no bytes without a UTF-8 rendering, no cycle, no two keys collapsing into one property.
 
 That guarantee is about the values, not about your encoder's configuration, and the difference is load-bearing: a structure nested deeper than `max_nesting` (100 by default) is made of perfectly encodable values and still raises `JSON::NestingError`. Core can't own that — `max_nesting` is your option to set, and a deeply-nested structure is real data rather than a defect. **So keep your encode step's error handling.** What it no longer needs is a *pre-pass over the value graph*; catching what your encoder raises is still yours.
 
 **Additionally under `reject_opaque: true`:** every value was rendered through a projection *its author declared*, rather than one the serializer guessed at. That is a separate promise about meaningfulness, not about encodability — which is why the flag is named for what it rejects rather than called something like `strict:`. Reading `reject_opaque: false` should not suggest the output might not be JSON; it always is.
 
-It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Four cases raise always, because the body would be *wrong* — or not JSON at all:
+It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Five cases raise always, because the body would be *wrong* — or not JSON at all:
 
 - a self-referential value (a cycle has no JSON representation at all);
+- two exposed field *names* that render as the same JSON property — the same collapse as the Hash-key case, one level up: a declared field name is canonicalized to UTF-8 exactly the way a Hash key is, so two distinct Symbols (an ISO-8859-1-encoded one beside its UTF-8 counterpart) can converge on one property and silently overwrite;
 - two Hash keys that render as the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value). What's compared is the *property* each key produces, not the Ruby String its `to_s` returned — keys are transcoded to UTF-8 first, so one property name in two encodings (an ISO-8859-1 `"\xE9"` beside a UTF-8 `"é"`) is caught as the single property it is;
 - a non-finite Float — `Float::INFINITY`, `-Float::INFINITY`, `Float::NAN`, or a `BigDecimal`/`Rational` that coerces to one. JSON has no literal for these, and an encoder's `allow_nan:` would emit a bare `Infinity` that consumers reject;
 - a String — or a Hash key's String form — whose bytes have no UTF-8 rendering. JSON is a UTF-8 format. Note that this is stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and still unencodable. A String that is merely in some other encoding is fine, as long as it transcodes: a valid ISO-8859-1 or Shift_JIS *value* passes untouched, while a *key* comes back transcoded to UTF-8, since a property name is the text an encoder emits. One case is deliberately stricter than json 2.x: a `BINARY` String carrying valid UTF-8 bytes is refused here, while that encoder accepts it with a deprecation warning and json 3.0 will refuse it outright — so this rejects a hair early rather than emitting something that stops encoding on a dependency bump.
@@ -217,7 +220,7 @@ Map the `Result` to your transport response from these members:
 ```ruby
 result = invoker.call(axn_class, model_args, ambient_context: server_context || {})
 if result.ok?
-  present_as == :message ? result.message : serialize_exposed(result, ...)
+  present_as == :message ? result.message : Axn::Extensions::Serialization.render(result)
 else
   { error: result.error }        # surface result.error, never result.exception
 end

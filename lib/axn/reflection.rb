@@ -6,8 +6,16 @@ require "axn/reflection/resolved_subfields"
 require "axn/reflection/values"
 
 module Axn
-  # Read-only reflection of an Axn's contract (Schema) and a Result's values (Values) into
-  # transport-agnostic Hashes. Off the execution path; used by adapters (MCP/RubyLLM/REST) and docs.
+  # Core-internal machinery for describing, checking, and rendering a contract: the JSON Schema behind
+  # `input_schema`/`output_schema` (Schema), the JSON-safe rendering behind
+  # Axn::Extensions::Serialization.render (Values), the inbound wire decoding a `coerce:` field runs during
+  # validation (Coercion), and the subfield resolution a declaration is checked against (SubfieldTree,
+  # SubfieldContradictions, ResolvedSubfields).
+  #
+  # Not an adapter surface: a gem building on axn reads a schema through `axn_class.input_schema` and renders
+  # a result through Axn::Extensions::Serialization.render, reaching for nothing here. Members also differ in
+  # when they run — Schema and Values are off the execution path, while Coercion runs inside validation — so
+  # the name describes the family loosely rather than a guarantee they share.
   module Reflection
   end
 end

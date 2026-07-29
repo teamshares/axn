@@ -78,17 +78,22 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
 
 ## Value serialization
 
-- Render a success result's exposures with
-  `Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)` → JSON-safe Hash.
+- Render a success result's exposures with `Axn::Extensions::Serialization.render(result)` → JSON-safe Hash.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
+- **You pass no config list** — `render` derives the declared `exposes` from the result itself. Rendering a
+  subset is deliberately unsupported: it would emit a body contradicting `output_schema`.
+- **Don't reach into `Axn::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
+  what stays public is there for core's own cross-module callers, not for you.
 - No **value** in the result is one `JSON.generate` refuses (no non-finite number, no non-UTF-8 bytes, no
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
   deeper than `max_nesting` (100 default) still raises `JSON::NestingError`. Drop your pre-*pass* over the
   value graph; **keep** your encode `rescue`.
-- Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`), naming the path, on four unconditional
-  defects: a cycle; two Hash keys that render as one JSON property (compared as the PROPERTY each produces,
-  not as the Ruby String its `to_s` returned — keys are transcoded to UTF-8 first, so one property name in
-  two encodings collides); a non-finite Float (incl. a `BigDecimal`/`Rational` coercing to one); and a
+- Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`), naming the path, on five unconditional
+  defects: a cycle; two exposed field NAMES that render as the same JSON property (compared the same
+  canonicalized way as a Hash key, since a declared field is itself a property name); two Hash keys that
+  render as one JSON property (compared as the PROPERTY each produces, not as the Ruby String its `to_s`
+  returned — keys are transcoded to UTF-8 first, so one property name in two encodings collides); a
+  non-finite Float (incl. a `BigDecimal`/`Rational` coercing to one); and a
   String — or a key's String form — whose bytes have no UTF-8 rendering (stricter than `valid_encoding?`:
   `"\xFF"` in `BINARY` is valid BINARY and unencodable; a valid ISO-8859-1/Shift_JIS value transcodes and
   passes untouched, a key comes back as UTF-8). Add `reject_opaque: true` to also reject a
@@ -99,7 +104,7 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
 - Keep the two guarantees apart: encodability is unconditional, declared-shape is what the flag buys.
   `reject_opaque: false` never means "might not be JSON" — that is why it isn't named `strict:`.
 
-Source: `lib/axn/reflection/values.rb`.
+Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/reflection/values.rb`, core-internal).
 
 ## Per-adapter configuration
 
