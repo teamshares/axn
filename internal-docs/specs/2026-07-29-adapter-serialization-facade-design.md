@@ -59,6 +59,10 @@ Rendering semantics are unchanged — same output, same `Axn::Reflection::Unseri
 
 New `spec/axn/extensions/serialization_spec.rb` takes the six examples from `values_spec.rb`'s `describe ".serialize_exposed"` block, which already build a real action class and pass `klass.external_field_configs` — so they migrate by dropping the argument. Two examples are added: that only declared `exposes` fields render (the derivation is correct, not merely present), and that `reject_opaque:` threads through to values. The block leaves `values_spec.rb`; its `serialize_value` coverage stays as-is, as does `spec_rails/dummy_app/spec/axn/reflection/values_spec.rb`, which only touches `serialize_value`.
 
+`spec/axn/reflection/schema_spec.rb` renders real results at L84, L740 and L1393 to prove a reflected schema agrees with what the serializer emits. Those are the only other callers in the repo and they move to the facade — a cross-check between the public schema and the public rendering should go through the public entry point, for the same reason an adapter does.
+
+`values_spec.rb` also gains a `describe "public surface"` block asserting that `Values`' singleton exposes `serialize_value` and nothing else. The closed surface is the deliverable, so it is worth a test that fails when a future change reopens it.
+
 ## Scope boundary
 
 Core only. The three adapter gems pin axn by git *revision* in their lockfiles, so nothing breaks until each bumps deliberately; each then migrates in its own repo, and `axn-openapi` folds the switch into the PR already rewriting `serializer.rb`. `axn-webhooks` has nothing to migrate and gets the facade by default when it grows a serialization path.
