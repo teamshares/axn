@@ -23,7 +23,7 @@
 - No manual line breaks in Markdown prose — one line per paragraph.
 - Never assert `Hash#inspect` text in a spec: Ruby 3.4 changed its spacing and CI runs 3.2/3.3/3.4.
 - Run `bundle exec rubocop` before each commit. Relevant maxima: `Layout/LineLength` 160, `Metrics/MethodLength` 70, `Metrics/AbcSize` 60. Multiline argument lists require a trailing comma; `Style/HashSyntax` requires shorthand for symbol keys.
-- Full suite: `bundle exec rspec`. The Rails dummy app is a separate bundle: `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`. Run both in Task 3.
+- Full suite: `bundle exec rspec`. The Rails dummy app is a separate bundle and must be run from inside it: `cd spec_rails/dummy_app && BUNDLE_GEMFILE=Gemfile bundle exec rspec ../` (verified: 321 examples). Running it from the repo root fails with `NameError: uninitialized constant Actions`. Run both in Task 3.
 - **Encoding fixtures:** a non-UTF-8 symbol fixture must be `ASCII-8BIT`. Ruby refuses `to_sym` on bytes invalid *in UTF-8*, raising `EncodingError` before a declaration is reached, so a `force_encoding("UTF-8")` fixture tests nothing. Files are `# frozen_string_literal: true`, so `.dup` before `force_encoding`.
 - **`build_axn` runs its block through `class_eval`,** so `let`-defined values are NOT visible inside it (`self` is the new class). Capture fixtures into local variables in the example body first; blocks close over locals lexically.
 
@@ -645,7 +645,7 @@ Each member of a shape must have a distinct name, and two members may not carry 
 
 - [ ] **Step 5: Verify the docs build and the suites pass**
 
-Run: `bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails && bundle exec rubocop`
+Run: `bundle exec rspec && bundle exec rubocop`, then, separately, from inside the dummy app: `cd spec_rails/dummy_app && BUNDLE_GEMFILE=Gemfile bundle exec rspec ../`
 Expected: no failures, no offenses. The Rails dummy app is a separate bundle and exercises the same declaration paths through a real Rails boot, so a failure there that the root suite missed is a real difference, not flake.
 
 - [ ] **Step 6: Commit**
