@@ -499,8 +499,7 @@ module Axn
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
-            duplicated = _duplicate_fields(subfield_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(subfield_configs, configs)
 
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —

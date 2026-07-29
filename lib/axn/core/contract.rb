@@ -156,6 +156,8 @@ module Axn
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
           fields = fields.map(&:to_sym)
 
+          _reject_unrenderable_field_names!(fields)
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
@@ -191,8 +193,7 @@ module Axn
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, user_facing:, **validations).tap do |configs|
-            duplicated = _duplicate_fields(internal_field_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(internal_field_configs, configs)
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -217,6 +218,8 @@ module Axn
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
           fields = fields.map(&:to_sym)
 
+          _reject_unrenderable_field_names!(fields)
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
@@ -238,8 +241,7 @@ module Axn
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
 
-            duplicated = _duplicate_fields(external_field_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(external_field_configs, configs)
 
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
@@ -550,28 +552,99 @@ module Axn
 
         # A true duplicate is the SAME wire key declared under the SAME parent route — keyed on the
         # `[on, field]` pair, against `existing` configs AND within `new_configs` itself (`expects :foo,
-        # "foo"` is a single batch, so its collision is intra-batch). Keys are symbol-canonical at
-        # declaration (PRO-2790), so `:note` and `"note"` are already the same field. For a top-level
-        # field `on:` is nil, so this reduces to wire-key identity. Two SUBFIELDS that share a leaf wire
-        # key but differ by `on:` are NOT duplicates: they are either two routes to one wire path (a
-        # merged node) or two distinct nested fields sharing a leaf key — both legitimate, and both
-        # gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved with
-        # `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
+        # "foo"` is a single batch, so its collision is intra-batch).
+        #
+        # Identity is the JSON PROPERTY a name renders as, not the Symbol itself: keys are symbol-canonical
+        # at declaration, so `:note` and `"note"` are already one field, and canonicalizing to UTF-8 closes
+        # the remaining gap — two Symbols whose bytes differ but whose property does not.
+        #
+        # For a top-level field `on:` is nil, so this reduces to property identity. Two SUBFIELDS that
+        # share a leaf wire key but differ by `on:` are NOT duplicates: they are either two routes to one
+        # wire path (a merged node) or two distinct nested fields sharing a leaf key — both legitimate, and
+        # both gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved
+        # with `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
         # field, the generated reader would be clobbered, and per-field config would collapse
-        # ambiguously. Returns the offending wire-key names.
+        # ambiguously.
+        #
+        # Returns `[claimed_field, offending_field]` pairs; equal entries are an identical-name duplicate.
         def _duplicate_fields(existing, new_configs)
           # `on:` is normalized with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling
           # of the same dotted path) name the same route — matching how the SubfieldTree splits `on:` —
-          # rather than slipping two configs onto one wire slot on a spelling difference.
-          key_for = ->(c) { [c.on.to_s, c.field] }
-          taken = existing.map(&key_for)
-          seen = []
-          new_configs.select do |c|
-            key = key_for.call(c)
-            collides = taken.include?(key) || seen.include?(key)
-            seen << key
-            collides
-          end.map(&:field)
+          # rather than slipping two configs onto one wire slot on a spelling difference. It is not
+          # canonicalized further: a route must name an already-declared reader, so two spellings of one
+          # route cannot both be declared to begin with.
+          #
+          # Every name reaching here is renderable — `_reject_unrenderable_field_names!` runs first in both
+          # `expects` and `exposes` — so a nil property never enters the comparison.
+          key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
+
+          claimed = existing.to_h { |c| [key_for.call(c), c.field] }
+          new_configs.each_with_object([]) do |config, collisions|
+            key = key_for.call(config)
+            next collisions << [claimed[key], config.field] if claimed.key?(key)
+
+            claimed[key] = config.field
+          end
+        end
+
+        # A declared name is interpolated into a message only through this: a name whose bytes have no UTF-8
+        # rendering is exactly what these errors report, and interpolating those bytes into a UTF-8 message
+        # would raise Encoding::CompatibilityError from the reporting itself. `inspect` escapes them to
+        # ASCII, bound rather than dispatched for the same reason the renderer binds `to_s`: a Symbol's
+        # cannot be overridden, but a shape member's name may be a caller-supplied String whose could be.
+        # The `case`/`when` type test consults the real class, which a singleton `is_a?` cannot lie about.
+        # An exotic name (neither String nor Symbol) has no bytes to mangle, so plain dispatch is safe.
+        SYMBOL_NAME_INSPECT = ::Symbol.instance_method(:inspect)
+        STRING_NAME_INSPECT = ::String.instance_method(:inspect)
+        private_constant :SYMBOL_NAME_INSPECT, :STRING_NAME_INSPECT
+
+        def _inspect_field_name(name)
+          case name
+          when ::Symbol then SYMBOL_NAME_INSPECT.bind_call(name)
+          when ::String then STRING_NAME_INSPECT.bind_call(name)
+          else name.inspect
+          end
+        end
+
+        # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
+        # serialized output for an outbound one — so it carries the same UTF-8 promise the serializer
+        # enforces on a Hash key. Canonicalization belongs to the layer that renders the property, so the
+        # check and the rendering it predicts cannot disagree.
+        #
+        # Runs before any collision comparison: two unrenderable names both canonicalize to nil, so a
+        # collision check reached first would compare nil to nil and report a shared property for two names
+        # that share none.
+        def _reject_unrenderable_field_names!(names, kind: "a field name")
+          names.each do |name|
+            next if Axn::Reflection::Values.canonical_wire_key(name)
+
+            raise ArgumentError,
+                  "#{kind} becomes a JSON property name, and #{_inspect_field_name(name)} holds bytes that have no " \
+                  "UTF-8 rendering — JSON is a UTF-8 format, so `JSON.generate` refuses such a property name outright. " \
+                  "Declare it under a UTF-8 name."
+          end
+        end
+
+        # The three declaration paths (top-level expects, exposes, subfields) report through here rather
+        # than each partitioning the result of `_duplicate_fields` themselves. An identical-name duplicate
+        # and two names collapsing onto one property are the same defect under one identity rule, but they
+        # need different messages, and the identical case keeps the wording it has always had.
+        #
+        # An identical duplicate is reported first when a batch contains both, so the error is deterministic
+        # and names the simpler defect — the one whose fix is unambiguous.
+        def _reject_duplicate_fields!(existing, new_configs)
+          collisions = _duplicate_fields(existing, new_configs)
+          return if collisions.empty?
+
+          identical, collapsed = collisions.partition { |claimed, offending| claimed == offending }
+          raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{identical.map(&:last).join(', ')}" if identical.any?
+
+          claimed, offending = collapsed.first
+          raise Axn::DuplicateFieldError,
+                "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
+                "both render as the JSON property #{Axn::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
+                "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
+                "collapse onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
