@@ -29,7 +29,7 @@
 
 * [FEAT] Shape-block members accept `sensitive:` (redacted from logs, exception context, and `inspect` — precisely by member name for Hash values, wholesale for non-Hash values the filter can't descend into), `method_call:`, `if:`/`unless:`, and `user_facing:`, all with the same semantics as a top-level field.
 * [BREAKING] `model:` on a shape member now raises at declaration — a member is reader-less and never resolves a record. Use `type: Klass` for a plain instance check.
-* [BREAKING] Two members at the same nesting level of one shape may no longer share a name, or two names that render as the same JSON property — a member nested inside a member block is a property of a different JSON object, so it doesn't collide with one of the same name at another level. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
+* [BREAKING] Two members under the same parent — or two top-level members of one shape — may no longer share a name, or carry two names that render as the same JSON property. Members of different parent blocks never collide even at the same depth: a `zip` declared inside both a `from` block and a `to` block are properties of different objects. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
 
 ### `model:` fields
 
