@@ -376,7 +376,8 @@ Add a module doc immediately above `module Values` (L23), inside `module Reflect
 ```ruby
     # The value renderer: a Result's exposures, or any single value, rendered into a JSON-safe form
     # that matches what Reflection::Schema reflects. Core-internal — an adapter renders through
-    # Axn::Extensions::Serialization.render — and everything but serialize_value is private.
+    # Axn::Extensions::Serialization.render — and everything but serialize_value and canonical_wire_key
+    # is private.
 ```
 
 Extend `serialize_value`'s existing doc comment (the block starting at L135) with one paragraph at its end, before the `def`:
@@ -519,7 +520,7 @@ Replace L131 (`Pass axn_class.external_field_configs …`) with:
 ```markdown
 You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
 
-Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and its one remaining public method exists for core's own schema reflection.
+Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
 ```
 
 Update the result-handling sketch at L220:
@@ -549,7 +550,7 @@ and `Axn::Extensions::Serialization.render(result)` renders a `Result` to a JSON
 Then add one entry at the end of `### Namespaces & extension API`:
 
 ```markdown
-* [BREAKING] Adapter gems render a result through one declared entry point: `Axn::Extensions::Serialization.render(result, reject_opaque: false)`, which derives the declared `exposes` configs from the result itself — there is no config list to pass, and no supported way to render a subset (a partial body would contradict the `output_schema` the same adapter published). `Axn::Reflection::Values` is core-internal behind it: `serialize_exposed` and every rendering helper are now private, `follow_as_json?` is removed (`projection_for` was already the single source of truth for the same question), and the one remaining public method, `serialize_value`, exists for `Reflection::Schema`'s literal-`default:` rendering rather than for adapters. Rendering behavior, error messages, and `Axn::Reflection::UnserializableValue` (which adapters rescue by name) are unchanged.
+* [BREAKING] Adapter gems render a result through one declared entry point: `Axn::Extensions::Serialization.render(result, reject_opaque: false)`, which derives the declared `exposes` configs from the result itself — there is no config list to pass, and no supported way to render a subset (a partial body would contradict the `output_schema` the same adapter published). `Axn::Reflection::Values` is core-internal behind it: `serialize_exposed` and every rendering helper are now private, `follow_as_json?` is removed (`projection_for` was already the single source of truth for the same question), and what stays public is there for a named cross-module core caller rather than for an adapter — `serialize_value` for `Reflection::Schema`'s literal-`default:` rendering, and `canonical_wire_key` for `Core::Contract`'s declaration-time check that two exposed names cannot collapse onto one JSON property. Rendering behavior, error messages, and `Axn::Reflection::UnserializableValue` (which adapters rescue by name) are unchanged.
 ```
 
 Leave the three PR #206 entries under `### Tools & adapters` (L110-112) alone: they accurately describe what the renderer raises, and this entry supersedes the naming.

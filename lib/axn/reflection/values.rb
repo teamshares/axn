@@ -23,7 +23,8 @@ module Axn
   module Reflection
     # The value renderer: a Result's exposures, or any single value, rendered into a JSON-safe form
     # that matches what Reflection::Schema reflects. Core-internal — an adapter renders through
-    # Axn::Extensions::Serialization.render — and everything but serialize_value is private.
+    # Axn::Extensions::Serialization.render — and everything but serialize_value and canonical_wire_key
+    # is private.
     module Values
       # Sentinel for "this container was already open on the path" — a private object rather than a
       # string, so it can never collide with a value a caller actually exposed.
