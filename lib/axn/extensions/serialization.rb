@@ -32,7 +32,9 @@ module Axn
       def render(result, reject_opaque: false)
         configs = result.__action__.class.external_field_configs
 
-        Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque:)
+        # `send` because serialize_exposed is private: this facade is its only caller, and that is
+        # what makes `render` the rendering path rather than one of two.
+        Axn::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
       end
     end
   end

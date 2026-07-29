@@ -81,7 +81,7 @@ RSpec.describe Axn::Reflection::Schema do
         exposes :b, type: String, allow_nil: true
         def call = expose(a: "hi")
       end
-      serialized = Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)
+      serialized = Axn::Extensions::Serialization.render(klass.call)
       expect(serialized.keys).to contain_exactly("a", "b")
       expect(serialized["b"]).to be_nil
     end
@@ -737,7 +737,7 @@ RSpec.describe Axn::Reflection::Schema do
     expect(out[:properties][:z]).not_to have_key(:type)
     expect(inp[:properties][:w]).to include(type: "number")
 
-    serialized = Axn::Reflection::Values.serialize_exposed(klass.call(w: 1), klass.external_field_configs)
+    serialized = Axn::Extensions::Serialization.render(klass.call(w: 1))
     expect(serialized["z"]).to be_a(String) # "1+2i" — would fail a { type: "number" } schema
   end
 
@@ -1390,7 +1390,7 @@ RSpec.describe Axn::Reflection::Schema do
       out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
       expect(out[:type]).to eq("object")
       expect(out[:properties]).to have_key(:name)
-      expect(Axn::Reflection::Values.serialize_exposed(klass.call, klass.external_field_configs)["cfg"]).to eq({ "name" => "x" })
+      expect(Axn::Extensions::Serialization.render(klass.call)["cfg"]).to eq({ "name" => "x" })
     end
 
     it "does not advertise object OUTPUT for a shaped class with a custom to_h/as_json (statically unknowable)" do

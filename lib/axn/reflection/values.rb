@@ -4,9 +4,10 @@ require "date"
 require "time"
 
 # Declared rather than inherited from the top-level `axn` entrypoint's require order: `axn/reflection`
-# is loadable on its own (it composes only its own reflection files) and adapters are pointed at it,
-# while serializing ANY Hash/Array reaches CycleGuard and raising needs UnserializableValue. Both are
-# runtime references, so without these a standalone load NameErrors on ordinary output.
+# is loadable on its own (it composes only its own reflection files), and Axn::Extensions::Serialization
+# requires this file directly, while serializing ANY Hash/Array reaches CycleGuard and raising needs
+# UnserializableValue. Both are runtime references, so without these a standalone load NameErrors on
+# ordinary output.
 require "axn/internal/cycle_guard"
 require "axn/exceptions"
 
@@ -20,6 +21,9 @@ require "axn/exceptions"
 
 module Axn
   module Reflection
+    # The value renderer: a Result's exposures, or any single value, rendered into a JSON-safe form
+    # that matches what Reflection::Schema reflects. Core-internal — an adapter renders through
+    # Axn::Extensions::Serialization.render — and everything but serialize_value is private.
     module Values
       # Sentinel for "this container was already open on the path" — a private object rather than a
       # string, so it can never collide with a value a caller actually exposed.
@@ -37,8 +41,9 @@ module Axn
       DEFAULT_TO_S = ::Kernel.instance_method(:to_s)
       private_constant :DEFAULT_TO_S
 
-      # The projections `projection_for` names that serialize_value renders through `as_json`. Shared by the
-      # `as_json` case arm and follow_as_json? so the branch taken and the answer reported cannot disagree.
+      # The projections `projection_for` names that serialize_value renders through `as_json`. Named as
+      # a set rather than spelled into the `case` arm, so the route taken and the opaqueness verdict
+      # below read from one list and cannot disagree.
       AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
       private_constant :AS_JSON_PROJECTIONS
 
@@ -143,6 +148,10 @@ module Axn
       # render is not JSON at all: a String whose bytes have no UTF-8 rendering, and a non-finite Float. No
       # adapter can want a body `JSON.generate` refuses, and core is the only layer that still knows the
       # value was at `records[3].price` — by the time an encoder refuses it, that is gone.
+      #
+      # Public for one caller outside this module: Reflection::Schema renders a literal `default:`
+      # through it, so a schema's wire form and the serializer's agree by construction. Not part of
+      # the adapter surface — a whole result renders through Axn::Extensions::Serialization.render.
       def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
         case value
         when nil, Integer, TrueClass, FalseClass
@@ -583,11 +592,6 @@ module Axn
         value.respond_to?(:to_h) ? :to_h : :to_s
       end
 
-      # Whether serialize_value renders `value` via `as_json` rather than `to_h`/`to_s`. Retained for
-      # adapters that route on the same question (axn-openapi); the answer comes from projection_for so
-      # there is one source of truth.
-      def follow_as_json?(value) = AS_JSON_PROJECTIONS.include?(projection_for(value))
-
       # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
       # value inherits #to_s instead of defining one. Keying on the OWNER rather than respond_to? is
       # what lets a real `def to_s = "$#{cents / 100.0}"` through. Reached only from the `to_s`
@@ -601,6 +605,15 @@ module Axn
         # renders through it fine, so fall through to normal rendering rather than inventing a third defect.
         false
       end
+
+      # Every rendering decision below serialize_value is core's own. Kept private so a downstream
+      # gem cannot pin one of them: an adapter renders a whole result through
+      # Axn::Extensions::Serialization.render, which is the only caller of serialize_exposed.
+      private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering, :transcode_to_utf8,
+                           :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
+                           :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
+                           :canonical_wire_key, :capture_elements, :raise_colliding_keys!,
+                           :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?
     end
   end
 end

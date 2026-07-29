@@ -24,6 +24,21 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  # The surface is the deliverable, not an implementation detail: an adapter renders through
+  # Axn::Extensions::Serialization.render, and serialize_value stays public for exactly one caller —
+  # Reflection::Schema, which renders a literal `default:` through it so the schema's wire form and
+  # the serializer's cannot disagree. Anything else appearing here is a new public promise about the
+  # renderer's own decisions, which is what constrains core's routing later.
+  describe "public surface" do
+    it "exposes serialize_value and nothing else" do
+      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq([:serialize_value])
+    end
+
+    it "no longer answers the as_json-routing question that projection_for owns" do
+      expect(described_class).not_to respond_to(:follow_as_json?)
+    end
+  end
+
   describe ".serialize_value" do
     it "passes through JSON scalars" do
       expect(described_class.serialize_value(1)).to eq(1)
@@ -137,108 +152,6 @@ RSpec.describe Axn::Reflection::Values do
       expect(described_class.serialize_value(ar_like_obj)).to eq(
         "id" => 1, "name" => "widget", "active" => true, "note" => nil,
       )
-    end
-  end
-
-  describe ".serialize_exposed" do
-    it "serializes each declared field by wire key (string)" do
-      klass = Class.new do
-        include Axn
-        exposes :count, type: Integer
-        def call = expose(count: 3)
-      end
-      result = klass.call
-      expect(described_class.serialize_exposed(result, klass.external_field_configs)).to eq("count" => 3)
-    end
-
-    # A field name is a property name in the output on the same terms as a nested Hash key, so it carries the
-    # same UTF-8 promise. Declaration accepts any symbol, so a name with no UTF-8 rendering is reachable.
-    it "holds a field name to the same encodability rule as a nested Hash key" do
-      unencodable = "\xFF".b.to_sym
-      klass = Class.new do
-        include Axn
-        auto_log false
-        exposes unencodable
-
-        define_method(:call) { expose(unencodable => 1) }
-      end
-
-      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering|UTF-8/)
-    end
-
-    it "names the offending field without interpolating its bytes, so reporting cannot itself raise" do
-      unencodable = "\xFF".b.to_sym
-      klass = Class.new do
-        include Axn
-        auto_log false
-        exposes unencodable
-
-        define_method(:call) { expose(unencodable => 1) }
-      end
-
-      # Symbol#inspect escapes the bytes to ASCII; interpolating the raw ones would raise
-      # Encoding::CompatibilityError from building the message rather than reporting the defect.
-      message = begin
-        described_class.serialize_exposed(klass.call, klass.external_field_configs)
-      rescue Axn::Reflection::UnserializableValue => e
-        e.message
-      end
-
-      # The message itself is UTF-8 prose (it contains em dashes), so the property is that building it
-      # succeeded and produced valid UTF-8 — not that it is ASCII-only.
-      expect(message).to be_a(String)
-      expect(message.encoding).to eq(Encoding::UTF_8)
-      expect(message).to satisfy(&:valid_encoding?)
-      expect(message).to include('\xFF')
-    end
-
-    # Canonicalizing field names to UTF-8 means two distinct Symbols can converge on one property, which
-    # would silently overwrite — the same collapse the Hash branch raises on, reachable one level up.
-    it "raises when two field names render as the same JSON property" do
-      iso = "\xE9".dup.force_encoding(Encoding::ISO_8859_1).to_sym
-      utf = :é
-      klass = Class.new do
-        include Axn
-        auto_log false
-        exposes iso
-        exposes utf
-
-        define_method(:call) { expose(iso => "FIRST", utf => "second") }
-      end
-
-      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /two exposed fields render as the same JSON property/)
-    end
-
-    it "renders an ordinary field name as a frozen UTF-8 property" do
-      klass = Class.new do
-        include Axn
-        exposes :count, type: Integer
-        def call = expose(count: 3)
-      end
-
-      key = described_class.serialize_exposed(klass.call, klass.external_field_configs).keys.first
-      expect(key).to eq("count")
-      expect(key.encoding).to eq(Encoding::UTF_8)
-      expect(key).to be_frozen
-    end
-
-    it "threads reject_opaque: to the values it serializes" do
-      owner = opaque_object
-      klass = Class.new do
-        include Axn
-        auto_log false
-        exposes :owner
-
-        define_method(:call) { expose(owner:) }
-      end
-      result = klass.call
-
-      expect(described_class.serialize_exposed(result, klass.external_field_configs)["owner"])
-        .to match(/\A#<Object:0x[0-9a-f]+>\z/)
-      expect { described_class.serialize_exposed(result, klass.external_field_configs, reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`owner`/)
     end
   end
 
@@ -962,7 +875,7 @@ RSpec.describe Axn::Reflection::Values do
         def call = expose(items: [1].tap { |a| a << a })
       end
 
-      expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+      expect { described_class.send(:serialize_exposed, klass.call, klass.external_field_configs) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`/)
     end
 
@@ -1042,7 +955,7 @@ RSpec.describe Axn::Reflection::Values do
           def call = expose(ratio: Float::INFINITY)
         end
 
-        expect { described_class.serialize_exposed(klass.call, klass.external_field_configs) }
+        expect { described_class.send(:serialize_exposed, klass.call, klass.external_field_configs) }
           .to raise_error(Axn::Reflection::UnserializableValue, /`ratio`/)
       end
 
