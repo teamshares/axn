@@ -251,6 +251,41 @@ RSpec.describe Axn::Reflection::Values do
   # short a value. That makes it unreachable through the public API by construction, which is why these
   # examples drive the helper directly and stub the capture to prove it is wired in; there is no honest input
   # that reaches it.
+  # JSON.generate dispatches #to_json on a String subclass, and on a plain String carrying a singleton
+  # #to_json — so returning the caller's own String would leave the encoder taking its rendering from caller
+  # code, however carefully the bytes were checked.
+  describe "String values the encoder would ask for a rendering" do
+    it "returns a plain String rather than a subclass whose to_json would be dispatched" do
+      subclass = Class.new(String) { def to_json(*) = "NOT JSON" }
+
+      rendered = described_class.serialize_value({ k: subclass.new("real") })
+      expect(rendered["k"].class).to eq(String)
+      expect(JSON.generate(rendered)).to eq('{"k":"real"}')
+    end
+
+    it "strips a singleton to_json, which instance_of? cannot screen for" do
+      value = "plain".dup
+      def value.to_json(*) = "NOT JSON"
+
+      expect(JSON.generate(described_class.serialize_value({ k: value }))).to eq('{"k":"plain"}')
+    end
+
+    it "keeps a subclass whose to_json raises outside StandardError from escaping the encoder" do
+      hostile = Class.new(String) { def to_json(*) = raise(SystemStackError, "boom") }
+
+      expect { JSON.generate(described_class.serialize_value({ k: hostile.new("x") })) }.not_to raise_error
+    end
+
+    it "preserves encoding and multibyte content, and leaves the caller's object alone" do
+      caller_owned = "café".dup
+
+      expect(described_class.serialize_value(caller_owned)).to eq("café")
+      expect(described_class.serialize_value(caller_owned).encoding).to eq(Encoding::UTF_8)
+      expect(described_class.serialize_value("hi 🎉")).to eq("hi 🎉")
+      expect(caller_owned).not_to be_frozen
+    end
+  end
+
   describe "the dropped-entry backstop" do
     it "raises when rendering produced fewer entries than were captured" do
       expect { described_class.send(:no_entries_lost!, 1, 2, "rec") }

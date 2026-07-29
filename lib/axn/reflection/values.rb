@@ -234,10 +234,18 @@ module Axn
       # A value keeps the encoding it was exposed in: its rendering is only CHECKED here, never substituted,
       # since bytes an encoder transcodes losslessly are no integrity risk. A Hash key is different and is
       # rendered through the transcode — see own_wire_key.
+      # Returns a PLAIN String this module owns, never the caller's own object, for the same reason the key
+      # path does. `JSON.generate` dispatches `to_json` on a String subclass — and on a plain String carrying
+      # a singleton `to_json` — so validating the bytes and handing the object back leaves the encoder taking
+      # its rendering from caller code: an override returning `"NOT JSON"` emits a malformed body, and one
+      # that raises outside StandardError escapes the adapter. `instance_of?` cannot screen for this (it is
+      # true of a singleton-bearing plain String), so the copy is unconditional. `String.new` strips both the
+      # subclass and any singleton while preserving the encoding, and is left unfrozen so a consumer can still
+      # treat the returned Hash as its own.
       def encodable_string!(rendered, source:, path:)
         case rendered
         when ::String
-          return rendered if utf8_rendering(rendered)
+          return ::String.new(rendered) if utf8_rendering(rendered)
 
           raise Axn::Reflection::UnserializableValue.new(path:, value: source, reason: UNRENDERABLE_BYTES_REASON)
         else
