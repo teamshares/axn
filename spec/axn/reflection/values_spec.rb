@@ -875,7 +875,7 @@ RSpec.describe Axn::Reflection::Values do
         def call = expose(items: [1].tap { |a| a << a })
       end
 
-      expect { described_class.send(:serialize_exposed, klass.call, klass.external_field_configs) }
+      expect { Axn::Extensions::Serialization.render(klass.call) }
         .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`/)
     end
 
@@ -955,7 +955,7 @@ RSpec.describe Axn::Reflection::Values do
           def call = expose(ratio: Float::INFINITY)
         end
 
-        expect { described_class.send(:serialize_exposed, klass.call, klass.external_field_configs) }
+        expect { Axn::Extensions::Serialization.render(klass.call) }
           .to raise_error(Axn::Reflection::UnserializableValue, /`ratio`/)
       end
 
