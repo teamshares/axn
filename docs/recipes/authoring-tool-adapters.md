@@ -130,14 +130,18 @@ exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaq
 
 Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
 
-What it returns is **encodable JSON**: `JSON.generate` will not refuse it. You still need your own encode step (core hands back a Ruby Hash, and the encoder options are yours), but it no longer has to defend against a value the encoder rejects.
+There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
+
+**Always, whatever you pass:** what you get back is **encodable JSON** — `JSON.generate` will not refuse it — and nothing was silently dropped along the way. You still need your own encode step (core hands back a Ruby Hash, and the encoder options are yours), but it no longer has to defend against a value the encoder rejects.
+
+**Additionally under `reject_opaque: true`:** every value was rendered through a projection *its author declared*, rather than one the serializer guessed at. That is a separate promise about meaningfulness, not about encodability — which is why the flag is named for what it rejects rather than called something like `strict:`. Reading `reject_opaque: false` should not suggest the output might not be JSON; it always is.
 
 It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Four cases raise always, because the body would be *wrong* — or not JSON at all:
 
 - a self-referential value (a cycle has no JSON representation at all);
 - two Hash keys that stringify to the same JSON property (`{id: 1, "id" => 2}` renders one property, silently dropping a value);
 - a non-finite Float — `Float::INFINITY`, `-Float::INFINITY`, `Float::NAN`, or a `BigDecimal`/`Rational` that coerces to one. JSON has no literal for these, and an encoder's `allow_nan:` would emit a bare `Infinity` that consumers reject;
-- a String — or a Hash key's String form — whose bytes have no UTF-8 rendering. JSON is a UTF-8 format. Note that this is stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and still unencodable. A String that is merely in some other encoding is fine, as long as it transcodes (a valid ISO-8859-1 or Shift_JIS value passes untouched).
+- a String — or a Hash key's String form — whose bytes have no UTF-8 rendering. JSON is a UTF-8 format. Note that this is stricter than `valid_encoding?`: `"\xFF"` in `BINARY` is valid BINARY and still unencodable. A String that is merely in some other encoding is fine, as long as it transcodes (a valid ISO-8859-1 or Shift_JIS value passes untouched). One case is deliberately stricter than json 2.x: a `BINARY` String carrying valid UTF-8 bytes is refused here, while that encoder accepts it with a deprecation warning and json 3.0 will refuse it outright — so this rejects a hair early rather than emitting something that stops encoding on a dependency bump.
 
 The last two are why your encode step needs no pre-check of its own. Without them an adapter surfaces a bare `JSON::GeneratorError` — or catches it at encode time, by which point the path to the offending value is gone and all you can report is a generic failure.
 
