@@ -470,6 +470,79 @@ RSpec.describe Axn::Reflection::Values do
 
       expect(described_class.serialize_value(source, path: "rows")).to eq([{ "x" => 1 }, "SHOULD APPEAR"])
     end
+
+    # A KEY's #to_s is caller code on the same terms as an element's projection, and it is dispatched a pass
+    # LATER than the walk that captures entries — because a deletion during the walk itself makes Ruby skip
+    # the following entry, which then never reaches the capture and so cannot be missed by any check.
+    it "renders every Hash entry present when a key's #to_s deletes a later one" do
+      source = {}
+      deleter = Object.new
+      deleter.instance_variable_set(:@source, source)
+      def deleter.to_s
+        @source.delete(:later)
+        "first"
+      end
+      source[deleter] = "A"
+      source[:later] = "SHOULD APPEAR"
+
+      expect(described_class.serialize_value(source, path: "rec")).to eq("first" => "A", "later" => "SHOULD APPEAR")
+    end
+
+    it "renders the entries a Hash held at the start when a key's #to_s adds one, and does not raise" do
+      # Adding during a live iteration is what Ruby answers with `RuntimeError: can't add a new key into hash
+      # during iteration`, so a key projected mid-walk could replace the serialization with that error. The
+      # guarantee covers entries present when serialization began; one appearing afterwards is simply not part
+      # of the snapshot, so it lands in the source Hash and not in the output.
+      source = {}
+      adder = Object.new
+      adder.instance_variable_set(:@source, source)
+      def adder.to_s
+        @source[:added] = "AFTERWARDS"
+        "first"
+      end
+      source[adder] = "A"
+
+      expect(described_class.serialize_value(source, path: "rec")).to eq("first" => "A")
+      expect(source[:added]).to eq("AFTERWARDS")
+    end
+  end
+
+  # Walking a container inherently dispatches its `each`, and nothing else: every Enumerable convenience over
+  # `each` is separately overridable, so a subclass defining one — while `each` itself walks the real entries
+  # — could substitute contents or refuse outright on a container that is perfectly traversable.
+  describe "a container subclass overriding iteration helpers other than #each" do
+    it "renders a Hash subclass's real entries, not what its each_with_object/map/to_a return" do
+      decoy = Class.new(Hash) do
+        def each_with_object(memo) = memo
+        def map(*) = [%w[decoy 99]]
+        def to_a = [[:decoy, 99]]
+        def transform_keys(*) = { decoy: 99 }
+        def each_key = [:decoy].each
+      end.new
+      decoy[:real] = "data"
+
+      expect(described_class.serialize_value(decoy, path: "rec")).to eq("real" => "data")
+    end
+
+    it "renders an Array subclass's real elements, not what its each_with_object/map/to_a return" do
+      decoy = Class.new(Array) do
+        def each_with_object(memo) = memo.tap { |m| m << "DECOY" }
+        def map(*) = ["DECOY"]
+        def to_a = ["DECOY"]
+        def each_with_index(*) = [["DECOY", 0]].each
+        def size = 99
+      end.new
+      decoy << "data" << "more"
+
+      expect(described_class.serialize_value(decoy, path: "rows")).to eq(%w[data more])
+    end
+
+    it "serializes an Array subclass whose each_with_object raises" do
+      exploding = Class.new(Array) { def each_with_object(*) = raise(TypeError, "no folding over me") }.new
+      exploding << "data"
+
+      expect(described_class.serialize_value(exploding, path: "rows")).to eq(["data"])
+    end
   end
 
   # A Hash/Array SUBCLASS can override the copying methods (`dup`/`initialize_copy`) to return something

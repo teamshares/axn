@@ -104,9 +104,14 @@ module Axn
       # in the output either way, so it carries the same UTF-8 promise. Declaration accepts any symbol, so a
       # name whose bytes have no UTF-8 rendering is reachable here and would otherwise reach an encoder as a
       # property nothing had checked.
+      #
       # Canonicalizing a field name means two names that differ as Symbols can converge on one property, so
       # the same collapse a Hash's keys can suffer is reachable here — and an assignment into the accumulator
       # would silently overwrite. Claimed names are tracked for the same reason the Hash branch tracks them.
+      #
+      # `field_configs` is the action's own declared config list rather than caller-supplied data, so the
+      # each-only rule the container walks below follow does not bind here: this list cannot be a subclass
+      # whose `each_with_object` substitutes configs.
       def serialize_exposed(result, field_configs, reject_opaque: false)
         claimed = {}
 
@@ -165,13 +170,15 @@ module Axn
         when Hash
           within_container(value, path, seen) do |nested|
             # Every key check and every key's #to_s already happened in the capture, so this loop only
-            # renders elements under wire keys it is handed — it never touches `value` or a key again.
+            # renders elements under wire keys it is handed — it never touches `value` or a key again. The
+            # list it walks is the capture's own, so `each_with_object` here is Array's own.
             capture_hash_entries(value, path, reject_opaque:).each_with_object({}) do |(wire_key, _key, element), acc|
               acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
           end
         when Array
           within_container(value, path, seen) do |nested|
+            # As in the Hash branch, the list being indexed is the capture's own Array, not `value`.
             capture_elements(value).each_with_index.map do |element, index|
               serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:)
             end
@@ -327,6 +334,13 @@ module Axn
       # `each`, so a subclass overriding THAT still decides what the capture sees — inherent to walking a
       # container at all, not something a copy could avoid.
       #
+      # `each` is therefore the ONLY method a caller's container gets to influence: every Enumerable
+      # convenience over it — `each_with_object`, `each_with_index`, `map`, `to_a`, `transform_keys`,
+      # `each_key`, `size` — is separately overridable, so reaching for one hands a subclass a second say in
+      # what gets captured that the walk never needed. The captured list and its triples are this module's
+      # own objects, so iterating THOSE with anything convenient is fine, and the distinction is what each
+      # loop's comment records.
+      #
       # A Hash entry is captured as the triple (wire key, original key, element), and the wire key is
       # computed here and nowhere else, so every key's #to_s runs exactly ONCE per serialization. That is
       # what makes a collapse — two keys rendering as one JSON property (`:id` and `"id"`), dropping a value —
@@ -335,6 +349,15 @@ module Axn
       # disagree with the first or raise something that isn't even a StandardError, replacing the diagnosis
       # with the very escape this module exists to prevent.
       #
+      # A key's #to_s is caller code on exactly the same terms as an element's projection, so deriving wire
+      # keys is a SECOND pass rather than part of the walk: a key whose #to_s deletes a later entry while the
+      # source is still being iterated makes Ruby skip that entry, so it never reaches the capture at all and
+      # no check here can see the value go missing. Pass one therefore dispatches nothing but the source's
+      # `each` — the one method walking a container inherently requires — and leaves each triple's wire-key
+      # slot empty; pass two walks the module's OWN list, with the source no longer under iteration, and fills
+      # that slot in. The opaque-key check belongs to pass two for the same reason (`Object#method` can reach
+      # a `respond_to_missing?`). The slot is why the two passes cost one list rather than two.
+      #
       # The capture is a LIST rather than a Hash keyed by the caller's keys: a Hash would re-run each key's
       # `hash`/`eql?` and merge two entries the source holds separately — two mutable keys mutated to agree
       # after insertion (Ruby does not rehash on mutation), or the `==`-equal-but-distinct keys a
@@ -342,22 +365,26 @@ module Axn
       # collapse check could ever see the pair.
       #
       # It is not free, and it is not meant to be optimized away: one extra object per container, plus a
-      # per-entry triple and index for a Hash. Serializing 5k deeply-nested container-dense rows measured
+      # per-entry triple for a Hash. Serializing 5k deeply-nested container-dense rows measured
       # ~25% slower than iterating those containers live. That 25% IS the guarantee.
       def capture_hash_entries(hash, path, reject_opaque:)
         entries = []
-        positions = {}
+        hash.each { |key, element| entries << [nil, key, element] } # rubocop:disable Style/MapIntoArray -- `map` is overridable; `each` only
 
-        hash.each do |key, element|
+        claimed = {}
+
+        # `entries` and its triples are this module's own objects, so every method reached from here on down
+        # is Array's/Hash's own — the source Hash is not touched again.
+        entries.each do |entry|
+          key = entry.fetch(1)
           check_opaque_key!(key, path) if reject_opaque
 
           wire_key = own_wire_key(key, path)
+          first = claimed[wire_key]
+          raise_colliding_keys!(path:, wire_key:, first_key: first.fetch(1), second_key: key) if first
 
-          claimed = positions[wire_key]
-          raise_colliding_keys!(path:, wire_key:, first_key: entries[claimed].fetch(1), second_key: key) if claimed
-
-          positions[wire_key] = entries.size
-          entries << [wire_key, key, element]
+          claimed[wire_key] = entry
+          entry[0] = wire_key
         end
 
         entries
@@ -432,11 +459,16 @@ module Axn
         ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze if utf8
       end
 
-      # An Array's elements, captured before the first one is projected — same guarantee, same refusal to
-      # dispatch `dup`. Indices are positions rather than projections of caller objects, so unlike Hash keys
-      # they cannot collide and there is nothing to check.
+      # An Array's elements, captured before the first one is projected — same guarantee, and the same refusal
+      # to dispatch anything the walk does not require. `each` is that one method; `each_with_object`, `map`,
+      # `to_a` and `dup` are each separately overridable, so a subclass defining one of them (and an ordinary
+      # `each`) could substitute contents or refuse outright on a container that walks perfectly well.
+      # Indices are positions rather than projections of caller objects, so unlike Hash keys they cannot
+      # collide and there is nothing to check.
       def capture_elements(array)
-        array.each_with_object([]) { |element, captured| captured << element }
+        captured = []
+        array.each { |element| captured << element } # rubocop:disable Style/MapIntoArray -- `map` is overridable; `each` only
+        captured
       end
 
       # Always raises, at every strictness: a collapsed property drops a value, and unlike an ugly rendering
