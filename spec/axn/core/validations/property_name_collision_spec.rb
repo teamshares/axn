@@ -175,7 +175,7 @@ RSpec.describe "declaration-time property name collisions" do
       end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
-    it "rejects a duplicate member name, which today keeps only the last in the schema" do
+    it "rejects a duplicate member name, which previously kept only the last in the schema" do
       expect do
         build_axn do
           expects :payload, type: Hash do
@@ -207,6 +207,99 @@ RSpec.describe "declaration-time property name collisions" do
           end
         end
       end.to raise_error(ArgumentError, /a shape member name becomes a JSON property name/)
+    end
+
+    it "reports a collision in valid UTF-8 even when one spelling is not" do
+      first = utf8_name
+      second = latin1_name
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field first, type: String
+            field second, type: Integer
+          end
+        end
+      end.to raise_error(Axn::DuplicateFieldError) { |error|
+        expect(error.message.encoding).to eq(Encoding::UTF_8)
+        expect(error.message).to satisfy(&:valid_encoding?)
+      }
+    end
+
+    # A member's own options are rejected inside the builder, which runs BEFORE the name guard can see the
+    # resolved members — so every message that names a member has to survive a name with no UTF-8 rendering,
+    # or the option check reports an Encoding::CompatibilityError from building its own message and the
+    # naming defect never surfaces. Each combination below reaches a different one of those messages.
+    describe "a member name with no UTF-8 rendering, combined with a member option" do
+      it "still raises the declaration error when the member declares model:" do
+        name = unrenderable_name
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field name, model: true
+            end
+          end
+        end.to raise_error(ArgumentError) { |error|
+          expect(error.message.encoding).to eq(Encoding::UTF_8)
+          expect(error.message).to satisfy(&:valid_encoding?)
+        }
+      end
+
+      it "still raises the declaration error when an exposes member declares user_facing:" do
+        name = unrenderable_name
+
+        expect do
+          build_axn do
+            exposes :payload, type: Hash do
+              field name, type: String, user_facing: true
+            end
+          end
+        end.to raise_error(ArgumentError) { |error|
+          expect(error.message.encoding).to eq(Encoding::UTF_8)
+          expect(error.message).to satisfy(&:valid_encoding?)
+        }
+      end
+
+      it "still raises the declaration error when the member declares as:" do
+        name = unrenderable_name
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field name, type: String, as: :renamed
+            end
+          end
+        end.to raise_error(ArgumentError) { |error|
+          expect(error.message.encoding).to eq(Encoding::UTF_8)
+          expect(error.message).to satisfy(&:valid_encoding?)
+        }
+      end
+
+      # A raw `shape:` kwarg supplies members the builder never sees, so both guards judge them from the
+      # resolved list — and the naming guard runs first, reporting the unusable name rather than the option
+      # that could only ever have been the second problem with that member.
+      it "reports the name, not the option, for a raw shape: member that also declares user_facing:" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: unrenderable_name, validations: {}, user_facing: true)
+
+        expect { build_axn { exposes :payload, type: Hash, shape: { members: [member] } } }
+          .to raise_error(ArgumentError, /a shape member name becomes a JSON property name/)
+      end
+
+      it "still raises the declaration error when the member carries no options at all" do
+        name = unrenderable_name
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash do
+              field name
+            end
+          end
+        end.to raise_error(ArgumentError) { |error|
+          expect(error.message.encoding).to eq(Encoding::UTF_8)
+          expect(error.message).to satisfy(&:valid_encoding?)
+        }
+      end
     end
 
     it "reaches members nested inside a member's own block" do
@@ -261,10 +354,26 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # Every check runs before the class is mutated, so a rescued declaration error leaves nothing behind: no
+  # half-committed config for a name that was rejected, and no reader for it. A class that survived the raise
+  # carrying either would validate or expose a field the author was told they had not declared.
+  describe "the class a rescued declaration error leaves behind" do
+    it "carries no config and no reader for the rejected declaration" do
+      names = [utf8_name, latin1_name]
+      klass = build_axn
+      methods_before = klass.instance_methods(false) + klass.private_instance_methods(false)
+
+      expect { klass.expects(*names) }.to raise_error(Axn::DuplicateFieldError)
+
+      expect(klass.internal_field_configs).to be_empty
+      expect(klass.external_field_configs).to be_empty
+      expect(klass.instance_methods(false) + klass.private_instance_methods(false)).to eq(methods_before)
+    end
+  end
+
   # The runtime defense this does NOT replace has its own coverage: a declaration check cannot see the keys
-  # of a Hash the action builds during a call, so the serializer stays the last line for that case. See
-  # `spec/axn/reflection/values_spec.rb` "colliding Hash keys" — do not duplicate it here. That coverage
-  # reaches the renderer directly, and PRO-2992 is in flight to make it reachable only through
-  # `Axn::Extensions::Serialization`; a second copy of the same assertion in this file would become a second
-  # thing to migrate for no added protection.
+  # of a Hash the action builds during a call, so the serializer stays the last line for that case. It is
+  # covered by the "colliding Hash keys" describe block in `spec/axn/reflection/values_spec.rb`, which owns
+  # every assertion about the serializer's own behavior — do not duplicate it here; a second copy would add
+  # a second place to maintain the serialization surface from, for no added protection.
 end

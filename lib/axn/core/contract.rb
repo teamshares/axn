@@ -232,11 +232,15 @@ module Axn
 
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
+          # Names are judged before options: a member name is a JSON property on the same terms as a
+          # field's, so an unusable name is reported as the naming defect it is rather than as whichever
+          # option check happens to trip on the same member first.
+          _reject_colliding_shape_member_names!(validations[:shape])
+
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
           # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
           _reject_outbound_shape_user_facing!(validations[:shape])
-          _reject_colliding_shape_member_names!(validations[:shape])
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
@@ -504,7 +508,7 @@ module Axn
 
           (shape[:members] || []).each do |member|
             if member.respond_to?(:user_facing) && member.user_facing
-              field = member.respond_to?(:field) ? member.field : member.inspect
+              field = member.respond_to?(:field) ? _shape_member_label(member.field) : member.inspect
               raise ArgumentError,
                     "shape member `#{field}` does not support user_facing: on exposes — an outbound failure is a " \
                     "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
@@ -547,7 +551,7 @@ module Axn
           if claimed == offending
             raise Axn::DuplicateFieldError,
                   "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
-                  "validate the same key, and the reflected schema keeps only the last. Declare each member once."
+                  "validate the same key, and the reflected schema would keep only the last. Declare each member once."
           end
 
           raise Axn::DuplicateFieldError,
@@ -649,6 +653,17 @@ module Axn
           when ::String then STRING_NAME_INSPECT.bind_call(name)
           else name.inspect
           end
+        end
+
+        # How a shape member's name is written into any message naming that member: the JSON property it
+        # renders as, falling back to the escaped `inspect` when its bytes have no UTF-8 rendering. Every
+        # such message is a UTF-8 String, and joining raw non-UTF-8 bytes to one raises
+        # Encoding::CompatibilityError from the reporting itself — so the caller sees an encoding failure
+        # instead of the declaration error that was being reported. The canonical property is
+        # byte-identical to the raw spelling for every renderable name, so ordinary messages are unchanged;
+        # `inspect` is reserved for the name that has no property to print.
+        def _shape_member_label(name)
+          Axn::Reflection::Values.canonical_wire_key(name) || _inspect_field_name(name)
         end
 
         # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
@@ -868,14 +883,14 @@ module Axn
           unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
           if unsupported.any?
             raise ArgumentError,
-                  "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
+                  "shape member `#{_shape_member_label(name)}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
                   "(shape blocks declare validation/schema only)"
           end
 
           reader_opts = opts.keys & SHAPE_MEMBER_READER_OPTIONS
           if reader_opts.any?
             raise ArgumentError,
-                  "shape member `#{name}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
+                  "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
                   "(they rename a field's generated reader, but a shape member is reader-less; " \
                   "use them on a top-level `expects` field or an `on:` subfield)."
           end
@@ -888,7 +903,7 @@ module Axn
           # as an unknown key regardless of value.
           if outbound && opts.key?(:user_facing)
             raise ArgumentError,
-                  "shape member `#{name}` does not support user_facing: on exposes — an outbound failure is a " \
+                  "shape member `#{_shape_member_label(name)}` does not support user_facing: on exposes — an outbound failure is a " \
                   "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
           end
 
@@ -898,9 +913,12 @@ module Axn
           # resolution/companion behavior that never happens. Reject it loudly rather than accept the
           # degenerate form, pointing at the plain-type-check alternative.
           if opts.key?(:model)
+            # The companion reader is named off the message-safe label too, so the `_id` name it reports is
+            # derived from the same rendering of the member name the sentence already used.
+            label = _shape_member_label(name)
             raise ArgumentError,
-                  "shape member `#{name}` does not support model: — a model field resolves a record from an id " \
-                  "and exposes a `#{Internal::FieldConfig.model_id_key(name)}` reader, but a shape member is " \
+                  "shape member `#{label}` does not support model: — a model field resolves a record from an id " \
+                  "and exposes a `#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is " \
                   "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
           end
 
