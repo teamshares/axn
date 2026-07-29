@@ -82,6 +82,12 @@ module Axn
                                       "re-encode the key's bytes, or key the Hash by a UTF-8 String or Symbol."
       private_constant :UNRENDERABLE_KEY_BYTES_REASON
 
+      UNRENDERABLE_FIELD_BYTES_REASON = "an exposed field's name becomes a JSON property name, and this one " \
+                                        "holds bytes that have no UTF-8 rendering, and JSON is a UTF-8 " \
+                                        "format — `JSON.generate` refuses such a property name outright. " \
+                                        "Declare the field under a UTF-8 name."
+      private_constant :UNRENDERABLE_FIELD_BYTES_REASON
+
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -97,7 +103,10 @@ module Axn
           # Encoding::CompatibilityError from the reporting itself. Symbol#inspect escapes them to ASCII and
           # cannot be overridden (Symbol takes neither a subclass nor a singleton). On success the path is the
           # canonical wire key, so nested paths read `owner.name` as before.
-          wire_key = own_wire_key(config.field, config.field.inspect)
+          wire_key = canonical_wire_key(config.field) ||
+                     raise(Axn::Reflection::UnserializableValue.new(
+                             path: config.field.inspect, value: config.field, reason: UNRENDERABLE_FIELD_BYTES_REASON,
+                           ))
           hash[wire_key] = serialize_value(result.public_send(config.field), path: wire_key, reject_opaque:)
         end
       end
@@ -374,15 +383,21 @@ module Axn
       # a String in the output just as a leaf is, and `JSON.generate` refuses such a name outright. The key
       # itself is what the message names the class of, so no key's `inspect` runs while the error is built.
       def own_wire_key(key, path)
+        canonical_wire_key(key) ||
+          raise(Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON))
+      end
+
+      # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.
+      # Separate from the raise so a field name and a Hash key can share one canonicalization while each
+      # reports the defect in its own terms — the two are the same mechanism but not the same fix.
+      def canonical_wire_key(key)
         rendered = case (candidate = key.to_s)
                    when ::String then candidate
                    else DEFAULT_TO_S.bind_call(key)
                    end
 
         utf8 = utf8_rendering(rendered)
-        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON) unless utf8
-
-        ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze
+        ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze if utf8
       end
 
       # An Array's elements, captured before the first one is projected — same guarantee, same refusal to
