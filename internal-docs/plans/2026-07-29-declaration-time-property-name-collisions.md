@@ -624,7 +624,7 @@ In `CHANGELOG.md`, under `### Field contract & subfields`, immediately after the
 Under `### Shape blocks`, after the existing `model:` bullet, add:
 
 ```markdown
-* [BREAKING] Two members under the same parent — or two top-level members of one shape — may no longer share a name, or carry two names that render as the same JSON property. Members of different parent blocks never collide even at the same depth: a `zip` declared inside both a `from` block and a `to` block are properties of different objects. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
+* [BREAKING] Two members under the same parent — or two top-level members of one shape — may no longer share a name, or carry two names that render as the same JSON property. Members of different parent blocks never collide even at the same depth: a `zip` declared inside a `from` block and a `zip` declared inside a `to` block are properties of different objects. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
 ```
 
 - [ ] **Step 3: Document the field-name rule**
