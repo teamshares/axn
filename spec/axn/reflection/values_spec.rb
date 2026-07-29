@@ -398,10 +398,23 @@ RSpec.describe Axn::Reflection::Values do
       error = described_class.new(path: "items[1]", value: [])
 
       expect(error.message).to eq(
-        "Cannot serialize exposed value at `items[1]` (Array): it is self-referential (a Array cycle), " \
+        "Cannot serialize exposed value at `items[1]` (Array): it is self-referential (an Array cycle), " \
         "which has no JSON representation. Expose a finite projection of it instead " \
         "(e.g. ids rather than the objects that point back).",
       )
+    end
+
+    it "agrees the article with the class name, both ways" do
+      expect(described_class.new(path: "items", value: []).message).to include("(an Array cycle)")
+      expect(described_class.new(path: "data", value: {}).message).to include("(a Hash cycle)")
+    end
+
+    # `class.name` is nil for an anonymous class, so the article is keyed off `class.to_s`, which is a
+    # String either way.
+    it "takes 'a' for an anonymous class, whose to_s renders as #<Class:0x…>" do
+      anonymous = Class.new.new
+
+      expect(described_class.new(path: "items", value: anonymous).message).to match(/\(a #<Class:0x[0-9a-f]+> cycle\)/)
     end
   end
 

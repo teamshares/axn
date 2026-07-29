@@ -186,7 +186,12 @@ module Axn
       private
 
       def cycle_reason
-        "it is self-referential (a #{@value.class} cycle), which has no JSON representation. " \
+        # `class.to_s` rather than `class.name`, which is nil for an anonymous class; to_s always
+        # returns a String ("#<Class:0x…>" for that anonymous class, which correctly takes "a").
+        klass = @value.class.to_s
+        article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
+
+        "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
           "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."
       end
     end
