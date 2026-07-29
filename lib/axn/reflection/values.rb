@@ -32,6 +32,11 @@ module Axn
       DEFAULT_TO_S_OWNERS = [::Object, ::Kernel].freeze
       private_constant :DEFAULT_TO_S_OWNERS
 
+      # The inherited #to_s, bound rather than called, so a wire key can always be rendered as SOME String
+      # even when a key's own #to_s breaks its contract and returns something else.
+      DEFAULT_TO_S = ::Kernel.instance_method(:to_s)
+      private_constant :DEFAULT_TO_S
+
       # The projections `projection_for` names that serialize_value renders through `as_json`. Shared by the
       # `as_json` case arm and follow_as_json? so the branch taken and the answer reported cannot disagree.
       AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
@@ -140,9 +145,14 @@ module Axn
       #
       # Tracks the ancestor chain (CycleGuard pushes before descending and pops after), so a container
       # merely referenced twice as SIBLINGS — a diamond — is not a false positive.
+      #
+      # The sentinel is the RECEIVER of `equal?`: `result` is whatever the block rendered, which can be a
+      # caller-supplied object (a `to_s` fallback returning a String subclass), and asking IT would dispatch
+      # an `equal?` that could raise or claim a cycle that never happened. Nothing can redefine `equal?` on
+      # this module's own frozen sentinel.
       def within_container(container, path, seen, &)
         result = Axn::Internal::CycleGuard.guard(container, seen, on_cycle: CYCLE_DETECTED, &)
-        raise Axn::Reflection::UnserializableValue.new(path:, value: container) if result.equal?(CYCLE_DETECTED)
+        raise Axn::Reflection::UnserializableValue.new(path:, value: container) if CYCLE_DETECTED.equal?(result)
 
         result
       end
@@ -185,11 +195,7 @@ module Axn
         hash.each do |key, element|
           check_opaque_key!(key, path) if reject_opaque
 
-          wire_key = key.to_s
-          # Frozen, because a #to_s may hand out the same mutable String on every call: a LATER key mutating
-          # a wire key already captured would collapse two captured entries back into one at render time.
-          # `-@` also dedups, exactly as inserting a String key into a Hash already does.
-          wire_key = -wire_key if wire_key.is_a?(::String)
+          wire_key = own_wire_key(key)
 
           claimed = positions[wire_key]
           raise_colliding_keys!(path:, wire_key:, first_key: entries[claimed].fetch(1), second_key: key) if claimed
@@ -199,6 +205,32 @@ module Axn
         end
 
         entries
+      end
+
+      # The JSON property `key` renders as: a frozen, plain String this module owns, holding the bytes
+      # whatever `key.to_s` returned. Owning it is what makes every later read of it safe — the property is
+      # a Hash key in the output, part of a nested `path`, and quoted in a collision message, and a String a
+      # caller still holds could change or dispatch under all three. Ruby only half-covers this on its own:
+      # it freezes a copy of a String key inserted into a Hash, but not of a String SUBCLASS, and `entries`
+      # holds the wire key by reference either way. So a #to_s handing out the same mutable String on every
+      # call, or a later key mutating one already captured, would collapse two captured entries into one
+      # property at render time — the silent dropped value this module exists to prevent.
+      #
+      # `String.new` rather than `-@`/`dup`, because the copy must not dispatch the returned String's own
+      # code: `-@` and `initialize_copy` are both overridable on a String subclass, and one that raises
+      # (a SystemStackError escapes `rescue StandardError`) or returns different bytes would hijack a
+      # serialization the key had no say in. The type test is `case`/`when` rather than `is_a?` for the same
+      # reason: `Module#===` is a C-level check, while `is_a?` is overridable, and a value lying about being
+      # a String would send `String.new` off to dispatch its `to_str`.
+      #
+      # A #to_s that breaks its contract by returning a non-String leaves no property name to copy, so the
+      # inherited #to_s renders one: the same object address an opaque key renders as, and a String, which
+      # a JSON property name has to be.
+      def own_wire_key(key)
+        case (rendered = key.to_s)
+        when ::String then ::String.new(rendered).freeze
+        else DEFAULT_TO_S.bind_call(key).freeze
+        end
       end
 
       # An Array's elements, captured before the first one is projected — same guarantee, same refusal to
@@ -214,16 +246,34 @@ module Axn
       # reported is the first collapse in insertion order, which makes it deterministic.
       def raise_colliding_keys!(path:, wire_key:, first_key:, second_key:)
         raise Axn::Reflection::UnserializableValue.new(
-          path: "#{path} (hash key #{second_key.inspect})",
+          path: "#{path} (hash key)",
           value: second_key,
           reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
-                  "(#{first_key.inspect} and #{second_key.inspect}), which would silently collapse and drop a value. " \
+                  "(#{describe_key_classes(first_key, second_key)}), which would silently collapse and drop a value. " \
                   "Key the Hash by one of them, not both, or give the keys distinct #to_s values.",
         )
       end
 
-      # Names the key in the path (`data (hash key #<K:0x…>)`) rather than the Hash alone, so the
-      # message points at which of several keys is at fault.
+      # Identifies the colliding pair by CLASS rather than by `inspect`. `inspect` is the key's own code, and
+      # running it to build this message hands the key the chance to raise in place of the failure being
+      # reported — a SystemStackError there is outside StandardError and escapes the `rescue StandardError`
+      # an adapter maps this error with, which is precisely what raising a StandardError here is for.
+      #
+      # A class name still identifies both keys, because the property they collapsed to is already in the
+      # message and every pair that can actually collide differs in class: `:id`/`"id"`, `1`/`"1"`,
+      # `nil`/`""`, `false`/`"false"`. When both keys DO share a class — two instances rendering a shared
+      # label — saying so is itself the fact the caller needs.
+      def describe_key_classes(first_key, second_key)
+        first = Axn::Internal::ClassName.of(first_key)
+        second = Axn::Internal::ClassName.of(second_key)
+        return "both of class #{first}" if first == second
+
+        "one of class #{first}, one of class #{second}"
+      end
+
+      # Names a key in the path (`data (hash key)`) rather than the Hash alone, so the message points at a
+      # key rather than the container; WHICH key comes from the class the message already reports for the
+      # `value:` it is given, so no key's `inspect` runs while the error is built.
       def check_opaque_key!(key, path)
         # Symbol#to_s and String#to_s are defined on those classes, so neither a Symbol nor a String (nor a
         # String subclass, which either inherits String's or defines its own) can ever own the inherited
@@ -232,9 +282,7 @@ module Axn
         return if key.is_a?(Symbol) || key.is_a?(String)
         return unless default_to_s?(key)
 
-        raise Axn::Reflection::UnserializableValue.new(
-          path: "#{path} (hash key #{key.inspect})", value: key, reason: OPAQUE_KEY_REASON,
-        )
+        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: OPAQUE_KEY_REASON)
       end
 
       # The projection serialize_value follows for a non-leaf object: its own `as_json` (defined on its

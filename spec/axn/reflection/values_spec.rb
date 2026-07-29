@@ -177,25 +177,25 @@ RSpec.describe Axn::Reflection::Values do
         .to raise_error(
           Axn::Reflection::UnserializableValue,
           # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
-          /`rec \(hash key "id"\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value.*Key the Hash by one of them/m,
+          /`rec \(hash key\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value.*Key the Hash by one of them/m,
         )
     end
 
-    it "names both original keys, so the caller can see which pair to fix" do
+    it "names both original keys by class, so the caller can see which pair to fix" do
       expect { described_class.serialize_value({ id: 1, "id" => 2 }) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /\(:id and "id"\)/)
+        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class Symbol, one of class String\)/)
     end
 
     it "names the first colliding pair in insertion order when more than two keys collide" do
       third = Object.new.tap { |o| def o.to_s = "id" }
 
       expect { described_class.serialize_value({ "id" => 1, id: 2, third => 3 }) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /\("id" and :id\)/)
+        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class String, one of class Symbol\)/)
     end
 
     it "names the nested path of the offending Hash" do
       expect { described_class.serialize_value({ rows: [{ a: 1, "a" => 2 }] }, path: "out") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key "a"\)`/)
+        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key\)`/)
     end
 
     it "leaves a Hash whose keys stringify distinctly unchanged" do
@@ -255,6 +255,79 @@ RSpec.describe Axn::Reflection::Values do
           Axn::Reflection::UnserializableValue,
           /two keys stringify to the same JSON property "k".*silently collapse and drop a value/m,
         )
+    end
+  end
+
+  # Every method a caller can override is a way to replace the failure being reported with an exception of
+  # the caller's own — and one outside StandardError sails through the `rescue StandardError` an adapter maps
+  # serialization failures with, reinstating exactly the escape this module exists to close. So nothing
+  # between "this Hash cannot be serialized" and "the error is constructed" may dispatch a key's code.
+  describe "keys whose own methods raise while the failure is being reported" do
+    it "reports the collision as its own StandardError when a colliding key's #inspect raises" do
+      key = Object.new
+      def key.to_s = "dup"
+      def key.inspect = raise(SystemStackError, "stack level too deep")
+
+      expect { described_class.serialize_value({ "dup" => 1, key => 2 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue) do |error|
+          expect(error).to be_a(StandardError)
+          expect(error.message).to match(/two keys stringify to the same JSON property "dup"/)
+        end
+    end
+
+    it "reports the collision when a colliding key's #class raises" do
+      key = Object.new
+      def key.to_s = "k"
+      def key.class = raise(SystemStackError, "stack level too deep")
+
+      expect { described_class.serialize_value({ key => 1, "k" => 2 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class Object, one of class String\)/)
+    end
+
+    it "reports an opaque key whose #class raises, under reject_opaque:" do
+      key = Object.new
+      def key.class = raise(SystemStackError, "stack level too deep")
+
+      expect { described_class.serialize_value({ key => 1 }, path: "data", reject_opaque: true) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /`data \(hash key\)` \(Object\).*a Hash key is rendered via #to_s/m)
+    end
+
+    it "serializes a key whose #to_s returns a String subclass with a hostile #-@, under a property it owns" do
+      # The wire key is copied out of whatever #to_s returned, and the copy must not be made by any
+      # operation the returned String can intercept — `-@` and `initialize_copy` are both overridable.
+      hostile = Class.new(String) { def -@ = raise(SystemStackError, "stack level too deep") }
+      key = Object.new
+      key.define_singleton_method(:to_s) { hostile.new("k") }
+
+      serialized = described_class.serialize_value({ key => 1 }, path: "rec")
+
+      expect(serialized).to eq("k" => 1)
+      expect(serialized.keys.first.instance_of?(String)).to be(true)
+    end
+
+    it "reports a collision on a key whose #to_s returns a String subclass with a hostile #-@" do
+      hostile = Class.new(String) { def -@ = raise(SystemStackError, "stack level too deep") }
+      key = Object.new
+      key.define_singleton_method(:to_s) { hostile.new("k") }
+
+      expect { described_class.serialize_value({ key => 1, "k" => 2 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /same JSON property "k".*silently collapse/m)
+    end
+
+    it "disambiguates a colliding pair by class, so a shared rendering still identifies both keys" do
+      expect { described_class.serialize_value({ nil => 1, "" => 2 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /property "" \(one of class NilClass, one of class String\)/)
+
+      expect { described_class.serialize_value({ 1 => "a", "1" => "b" }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /property "1" \(one of class Integer, one of class String\)/)
+    end
+
+    it "says both keys share a class when they do, which is itself the actionable fact" do
+      first = Object.new.tap { |o| def o.to_s = "shared" }
+      second = Object.new.tap { |o| def o.to_s = "shared" }
+
+      expect { described_class.serialize_value({ first => 1, second => 2 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /property "shared" \(both of class Object\)/)
     end
   end
 
@@ -473,7 +546,7 @@ RSpec.describe Axn::Reflection::Values do
         .to raise_error(
           Axn::Reflection::UnserializableValue,
           # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
-          /`data \(hash key #<Object:0x[0-9a-f]+>\)` \(Object\).*a Hash key is rendered via #to_s.*key the Hash by a Symbol, String, or Integer/m,
+          /`data \(hash key\)` \(Object\).*a Hash key is rendered via #to_s.*key the Hash by a Symbol, String, or Integer/m,
         )
     end
 
@@ -490,7 +563,7 @@ RSpec.describe Axn::Reflection::Values do
 
     it "checks keys of a nested Hash, naming the nested path" do
       expect { described_class.serialize_value({ rows: [{ opaque_key => 1 }] }, path: "out", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key #<Object:0x/)
+        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key\)` \(Object\)/)
     end
   end
 
@@ -552,6 +625,16 @@ RSpec.describe Axn::Reflection::Values do
     it "agrees the article with the class name, both ways" do
       expect(described_class.new(path: "items", value: []).message).to include("(an Array cycle)")
       expect(described_class.new(path: "data", value: {}).message).to include("(a Hash cycle)")
+    end
+
+    # `class` is itself overridable, so a value that overrides it could otherwise replace this error with
+    # its own exception at the moment the message is rendered.
+    it "reports the real class of a value whose #class raises, without running the override" do
+      value = Object.new
+      def value.class = raise(SystemStackError, "stack level too deep")
+
+      expect(described_class.new(path: "items", value:).message)
+        .to include("`items` (Object): it is self-referential (an Object cycle)")
     end
 
     # `class.name` is nil for an anonymous class, so the article is keyed off `class.to_s`, which is a

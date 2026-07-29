@@ -2,6 +2,22 @@
 
 module Axn
   module Internal
+    # The name of a value's class, derived WITHOUT dispatching anything the value can override.
+    # An error message that names the offending value's class by calling `value.class` (or `inspect`)
+    # runs the value's own code at the moment the error is being built, so the value can replace the
+    # failure being reported with an exception of its own — and one outside StandardError then escapes
+    # the `rescue StandardError` callers map these failures with, which is the escape naming the class
+    # is meant to describe. A bound base implementation cannot be intercepted.
+    module ClassName
+      OBJECT_CLASS = ::Object.instance_method(:class)
+      MODULE_TO_S = ::Module.instance_method(:to_s)
+      private_constant :OBJECT_CLASS, :MODULE_TO_S
+
+      # `Module#to_s` rather than `#name`, which is nil for an anonymous class; to_s always returns a
+      # String ("#<Class:0x…>" there).
+      def self.of(value) = MODULE_TO_S.bind_call(OBJECT_CLASS.bind_call(value))
+    end
+
     # Internal only -- rescued before Axn::Result is returned
     class EarlyCompletion < StandardError
       attr_reader :standalone
@@ -179,16 +195,17 @@ module Axn
         super()
       end
 
+      # The offending value's class is named via Axn::Internal::ClassName, not `@value.class`: the value
+      # is caller-supplied and may override `class`, and running that override here would replace this
+      # failure with the value's own exception.
       def message
-        "Cannot serialize exposed value at `#{@path}` (#{@value.class}): #{@reason || cycle_reason}"
+        "Cannot serialize exposed value at `#{@path}` (#{Axn::Internal::ClassName.of(@value)}): #{@reason || cycle_reason}"
       end
 
       private
 
       def cycle_reason
-        # `class.to_s` rather than `class.name`, which is nil for an anonymous class; to_s always
-        # returns a String ("#<Class:0x…>" for that anonymous class, which correctly takes "a").
-        klass = @value.class.to_s
+        klass = Axn::Internal::ClassName.of(@value)
         article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
 
         "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
