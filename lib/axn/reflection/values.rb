@@ -495,6 +495,9 @@ module Axn
       # `#method`. Raises NameError when nothing defines it, exactly as `#method` would.
       def owner_of(value, name) = UNBOUND_METHOD.bind_call(value, name).owner
 
+      # Public for one caller outside this module: Core::Contract calls it at declaration time to reject
+      # two declared names that would collapse onto one JSON property, so the declaration check and the
+      # rendering it predicts share one definition of a property name.
       def canonical_wire_key(key)
         rendered = case (candidate = key.to_s)
                    when ::String then candidate
@@ -609,10 +612,13 @@ module Axn
       # Every rendering decision below serialize_value is core's own. Kept private so a downstream
       # gem cannot pin one of them: an adapter renders a whole result through
       # Axn::Extensions::Serialization.render, which is the only caller of serialize_exposed.
+      # canonical_wire_key is absent deliberately — Core::Contract calls it to reject two declared names
+      # that would collapse onto one JSON property, so the declaration check and the rendering it predicts
+      # share one definition of a property name.
       private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering, :transcode_to_utf8,
                            :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                            :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
-                           :canonical_wire_key, :capture_elements, :raise_colliding_keys!,
+                           :capture_elements, :raise_colliding_keys!,
                            :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?
     end
   end

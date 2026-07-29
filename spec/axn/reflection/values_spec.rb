@@ -25,13 +25,14 @@ RSpec.describe Axn::Reflection::Values do
   end
 
   # The surface is the deliverable, not an implementation detail: an adapter renders through
-  # Axn::Extensions::Serialization.render, and serialize_value stays public for exactly one caller —
-  # Reflection::Schema, which renders a literal `default:` through it so the schema's wire form and
-  # the serializer's cannot disagree. Anything else appearing here is a new public promise about the
-  # renderer's own decisions, which is what constrains core's routing later.
+  # Axn::Extensions::Serialization.render, and what stays public does so for a named cross-module core
+  # caller — serialize_value for Reflection::Schema, which renders a literal `default:` through it so the
+  # schema's wire form and the serializer's cannot disagree; canonical_wire_key for Core::Contract, which
+  # rejects two declared names that would collapse onto one JSON property. Anything else appearing here is
+  # a new public promise about the renderer's own decisions, which is what constrains core's routing later.
   describe "public surface" do
-    it "exposes serialize_value and nothing else" do
-      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq([:serialize_value])
+    it "exposes only the two methods core calls cross-module" do
+      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[canonical_wire_key serialize_value])
     end
 
     it "no longer answers the as_json-routing question that projection_for owns" do
