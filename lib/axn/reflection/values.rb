@@ -54,11 +54,6 @@ module Axn
                               "`type: String` and format it, or give the value its own `as_json`/`to_h`."
       private_constant :OPAQUE_AS_JSON_REASON
 
-      COLLAPSED_KEYS_REASON = "stringifying its keys collapsed two of them into a single JSON property, " \
-                              "dropping a value. The pair cannot be named: at least one key's #to_s does not " \
-                              "return the same String on every call. Give the keys stable, distinct #to_s values."
-      private_constant :COLLAPSED_KEYS_REASON
-
       module_function
 
       # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -95,26 +90,15 @@ module Axn
           end
         when Hash
           within_container(value, path, seen) do |nested|
-            snapshot = snapshot_container(value)
-
-            rendered = snapshot.each_with_object({}) do |(key, element), acc|
-              check_opaque_key!(key, path) if reject_opaque
-              wire_key = key.to_s
+            # Every key check and every key's #to_s already happened in the capture, so this loop only
+            # renders elements under wire keys it is handed — it never touches `value` or a key again.
+            capture_hash_entries(value, path, reject_opaque:).each_with_object({}) do |(wire_key, _key, element), acc|
               acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
-
-            # Rendering key by key rather than via transform_keys is what makes a collapse observable: two
-            # keys with the same #to_s (`:id` and `"id"`) render as one JSON property, dropping a value. One
-            # #to_s per key and an O(1) size comparison, so the check itself is free when nothing is wrong.
-            # The size compared against MUST be the snapshot's — the live Hash's shrinks in step with
-            # `rendered` when a projection deletes an entry, so the check would agree and report nothing.
-            raise_colliding_keys!(snapshot, path) unless rendered.size == snapshot.size
-
-            rendered
           end
         when Array
           within_container(value, path, seen) do |nested|
-            snapshot_container(value).each_with_index.map do |element, index|
+            capture_elements(value).each_with_index.map do |element, index|
               serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:)
             end
           end
@@ -163,59 +147,77 @@ module Axn
         result
       end
 
-      # A shallow copy of the container, taken BEFORE any element is serialized. Serializing an element
-      # runs user code (`as_json`/`to_h`) that can reach back into the container being serialized, and a
-      # live iteration would then skip whatever that code removed — an output missing entries with nothing
-      # to signal it, the one failure mode this module exists to prevent. Rendering from the copy makes
+      # A container is walked ONCE, up front, and rendered from what that walk captured. Serializing an
+      # element runs user code (`as_json`/`to_h`) that can reach back into the container being serialized,
+      # and a live iteration would then skip whatever that code removed — an output missing entries with
+      # nothing to signal it, the one failure mode this module exists to prevent. Capturing first makes
       # "every entry present when serialization began appears in the output" hold unconditionally.
       #
-      # The copy is a CORE `{}`/`[]` filled from the original's entries rather than `container.dup`: `dup`
-      # dispatches caller code, and a Hash/Array SUBCLASS can override `dup`/`initialize_copy` to return
-      # different contents or to refuse outright (a Singleton-including Hash raises TypeError), which would
-      # turn a container that was perfectly traversable into wrong output or a crash. Same reasoning as
-      # Schema.normalize_schema_literal's `instance_of?` checks. Keys AND values are captured in one object,
-      # so nothing is read back out of a source that has since been mutated. Filling the copy does iterate
-      # the original, so a subclass overriding `each` still decides what the snapshot sees — inherent to
-      # walking a container at all, not something a copy could avoid.
+      # The capture reads the original's own entries rather than calling `container.dup`: `dup` dispatches
+      # caller code, and a Hash/Array SUBCLASS can override `dup`/`initialize_copy` to return different
+      # contents or to refuse outright (a Singleton-including Hash raises TypeError), which would turn a
+      # container that was perfectly traversable into wrong output or a crash. Same reasoning as
+      # Schema.normalize_schema_literal's `instance_of?` checks. The walk does dispatch the original's
+      # `each`, so a subclass overriding THAT still decides what the capture sees — inherent to walking a
+      # container at all, not something a copy could avoid.
       #
-      # `compare_by_identity` is carried over explicitly, since a plain `{}` compares by `==`: an
-      # identity-keyed Hash can legitimately hold two `==`-equal-but-distinct keys, and flattening that to
-      # one entry would lose a value here and leave the error path's collision walk unable to name the pair.
-      # `compare_by_identity?`/`compare_by_identity` are core Hash methods, so consulting them does not
-      # reintroduce the caller dispatch this avoids.
+      # A Hash entry is captured as the triple (wire key, original key, element), and the wire key is
+      # computed here and nowhere else, so every key's #to_s runs exactly ONCE per serialization. That is
+      # what makes a collapse — two keys with the same #to_s (`:id` and `"id"`) rendering as one JSON
+      # property, dropping a value — reportable: it is caught below at the moment a wire key repeats, while
+      # both original keys are still in hand. Naming the pair by projecting keys a second time would be
+      # unsound, since a second #to_s may disagree with the first or raise something that isn't even a
+      # StandardError, replacing the diagnosis with the very escape this module exists to prevent.
       #
-      # It is not free, and it is not meant to be optimized away: one extra object per container, and
-      # serializing 5k deeply-nested container-dense rows measured ~20% slower than iterating those
-      # containers live (a few points of that being the entry-by-entry fill over a wholesale `dup`). That
-      # 20% IS the guarantee.
-      def snapshot_container(container)
-        return container.each_with_object([]) { |element, copy| copy << element } unless container.is_a?(Hash)
+      # The capture is a LIST rather than a Hash keyed by the caller's keys: a Hash would re-run each key's
+      # `hash`/`eql?` and merge two entries the source holds separately — two mutable keys mutated to agree
+      # after insertion (Ruby does not rehash on mutation), or the `==`-equal-but-distinct keys a
+      # `compare_by_identity` Hash holds legitimately — and a merge here would drop a value before the
+      # collapse check could ever see the pair.
+      #
+      # It is not free, and it is not meant to be optimized away: one extra object per container, plus a
+      # per-entry triple and index for a Hash. Serializing 5k deeply-nested container-dense rows measured
+      # ~25% slower than iterating those containers live. That 25% IS the guarantee.
+      def capture_hash_entries(hash, path, reject_opaque:)
+        entries = []
+        positions = {}
 
-        copy = {}
-        copy.compare_by_identity if container.compare_by_identity?
-        container.each { |key, value| copy[key] = value }
-        copy
+        hash.each do |key, element|
+          check_opaque_key!(key, path) if reject_opaque
+
+          wire_key = key.to_s
+          # Frozen, because a #to_s may hand out the same mutable String on every call: a LATER key mutating
+          # a wire key already captured would collapse two captured entries back into one at render time.
+          # `-@` also dedups, exactly as inserting a String key into a Hash already does.
+          wire_key = -wire_key if wire_key.is_a?(::String)
+
+          claimed = positions[wire_key]
+          raise_colliding_keys!(path:, wire_key:, first_key: entries[claimed].fetch(1), second_key: key) if claimed
+
+          positions[wire_key] = entries.size
+          entries << [wire_key, key, element]
+        end
+
+        entries
       end
 
-      # A collapse is detected by size, which doesn't say WHICH keys collided — so re-walk the snapshot
-      # here, on the error path only, and name the first colliding pair. Working from the same snapshot the
-      # detection used means a source Hash mutated mid-serialization cannot change the reported pair.
-      # Insertion order makes that pair deterministic.
-      def raise_colliding_keys!(snapshot, path)
-        wire_key, colliding = snapshot.each_key.group_by(&:to_s).find { |_, group| group.size > 1 }
+      # An Array's elements, captured before the first one is projected — same guarantee, same refusal to
+      # dispatch `dup`. Indices are positions rather than projections of caller objects, so unlike Hash keys
+      # they cannot collide and there is nothing to check.
+      def capture_elements(array)
+        array.each_with_object([]) { |element, captured| captured << element }
+      end
 
-        # The re-walk can come up empty even though the size comparison proved a collapse: a key whose #to_s
-        # returns a different String each call groups differently the second time. Report the collapse
-        # without naming a pair it cannot identify.
-        raise Axn::Reflection::UnserializableValue.new(path:, value: snapshot, reason: COLLAPSED_KEYS_REASON) if colliding.nil?
-
-        first, second = colliding
-
+      # Always raises, at every strictness: a collapsed property drops a value, and unlike an ugly rendering
+      # the caller cannot tell from the output that anything went missing. Both keys are the ones the capture
+      # itself paired up, so the message names the real pair without projecting either key again. The pair
+      # reported is the first collapse in insertion order, which makes it deterministic.
+      def raise_colliding_keys!(path:, wire_key:, first_key:, second_key:)
         raise Axn::Reflection::UnserializableValue.new(
-          path: "#{path} (hash key #{second.inspect})",
-          value: second,
+          path: "#{path} (hash key #{second_key.inspect})",
+          value: second_key,
           reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
-                  "(#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value. " \
+                  "(#{first_key.inspect} and #{second_key.inspect}), which would silently collapse and drop a value. " \
                   "Key the Hash by one of them, not both, or give the keys distinct #to_s values.",
         )
       end

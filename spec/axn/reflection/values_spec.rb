@@ -203,10 +203,10 @@ RSpec.describe Axn::Reflection::Values do
         .to eq("id" => 1, "name" => "x", "2" => "b")
     end
 
-    it "reports the collapse without naming a pair when the re-walk can't reproduce it" do
-      # A key whose #to_s returns a different String on each call collides during rendering ("k1", which
-      # the literal String key also produces) but groups distinctly on the error path's second walk. The
-      # size comparison still proves a value was dropped, so the raise stands and says only what it knows.
+    it "names the pair by the #to_s each key returned, without asking a key twice" do
+      # A key whose #to_s returns a different String on each call: the collapse is the one the FIRST call
+      # produced ("k1", which the literal String key also produces), so that is the pair named. Re-deriving
+      # the wire keys on the error path would group them distinctly and lose the pair entirely.
       unstable = Object.new
       def unstable.to_s
         @calls = (@calls || 0) + 1
@@ -216,7 +216,44 @@ RSpec.describe Axn::Reflection::Values do
       expect { described_class.serialize_value({ unstable => 1, "k1" => 2 }, path: "rec") }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
-          /`rec` \(Hash\).*collapsed two of them into a single JSON property.*pair cannot be named/m,
+          /two keys stringify to the same JSON property "k1".*silently collapse and drop a value/m,
+        )
+    end
+
+    it "catches keys mutated into agreement after insertion, which the Hash itself still holds separately" do
+      # Ruby does not rehash on mutation, so both entries are really there — but both keys now stringify
+      # alike, so rendering them would collapse two entries into one property and drop a value. Capturing
+      # the entries as a list is what keeps them both visible: re-inserting them into a Hash would merge
+      # them (the mutated keys are `eql?` now), losing one with nothing left to detect.
+      first_key = [1]
+      second_key = [2]
+      source = { first_key => "first", second_key => "SECOND" }
+      second_key.replace([1])
+
+      expect(source.size).to eq(2)
+      expect { described_class.serialize_value(source, path: "rec") }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /two keys stringify to the same JSON property "\[1\]".*silently collapse and drop a value/m,
+        )
+    end
+
+    it "raises its own StandardError rather than a key's exception when a key's #to_s only fails on a later call" do
+      # Naming the collapsing pair must not project a key a second time: this key's second #to_s raises a
+      # SystemStackError, which is outside StandardError and would sail straight through the `rescue
+      # StandardError` every adapter maps serialization failures with.
+      volatile = Object.new
+      def volatile.to_s
+        @calls = (@calls || 0) + 1
+        raise SystemStackError, "stack level too deep" if @calls > 1
+
+        "k"
+      end
+
+      expect { described_class.serialize_value({ volatile => 1, "k" => 2 }, path: "rec") }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /two keys stringify to the same JSON property "k".*silently collapse and drop a value/m,
         )
     end
   end
@@ -224,7 +261,7 @@ RSpec.describe Axn::Reflection::Values do
   # Serializing an element runs user code (`to_h`/`as_json`), and that code can reach back into the very
   # container being serialized. Iterating it live would skip whatever the code removed, yielding a body
   # that is quietly missing entries with nothing in the output to say so — worse than any raise. Every
-  # container is therefore rendered from a shallow copy taken before the first element is projected.
+  # container is therefore rendered from entries captured before the first element is projected.
   describe "a container mutated by one of its own values' projections" do
     # Deletes `key`/index 1 from the container it was put in the first time its projection runs.
     def saboteur(container, key)
@@ -255,9 +292,9 @@ RSpec.describe Axn::Reflection::Values do
   end
 
   # A Hash/Array SUBCLASS can override the copying methods (`dup`/`initialize_copy`) to return something
-  # other than the receiver's entries, or to refuse to copy at all. The snapshot is therefore built into a
-  # core `{}`/`[]` from the original's own entries, so what renders is what the container actually holds and
-  # a container that was traversable stays traversable.
+  # other than the receiver's entries, or to refuse to copy at all. The capture therefore walks the
+  # original's own entries and never dispatches `dup`, so what renders is what the container actually holds
+  # and a container that was traversable stays traversable.
   describe "a container subclass whose #dup is not a faithful copy" do
     it "renders a Hash subclass's real entries rather than what its #dup returns" do
       decoy = Class.new(Hash) { def dup = { decoy: 99 } }.new
@@ -292,8 +329,8 @@ RSpec.describe Axn::Reflection::Values do
   end
 
   # An identity-keyed Hash compares keys by object identity, so it can hold two `==`-equal-but-distinct
-  # keys — entries that a snapshot comparing keys by `==` would merge, dropping a value AND leaving the
-  # collision check with a single entry and so nothing to report.
+  # keys — entries that a capture re-keyed by the caller's keys would merge, dropping a value AND leaving
+  # the collapse check with a single entry and so nothing to report. The captured list cannot merge them.
   describe "a compare_by_identity Hash" do
     it "round-trips its entries" do
       source = {}.compare_by_identity
