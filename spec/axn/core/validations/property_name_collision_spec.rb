@@ -352,6 +352,133 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq(%i[a b])
     end
+
+    # A raw `shape:` kwarg accepts arbitrary objects as the shape Hash and as its members, while this guard
+    # and the schema reflection that emits those members are two separate walks. So an object that lies —
+    # about its own type, about which readers it has, or about whether two names are equal — must not be able
+    # to make the guard skip a member the schema still emits, or to replace this error with one of its own.
+    # Every question below is therefore answered from the real class and the real method table.
+    describe "a shape supplied raw, by objects that lie about themselves" do
+      # A Hash subclass denying that it is a Hash. `is_a?` is overridable, so a type test that dispatches it
+      # skips the whole member walk — while reflection consumes the shape regardless and emits the property
+      # twice, which is the exact defect this check exists to prevent.
+      def sneaky_hash_class
+        Class.new(Hash) do
+          def is_a?(klass) = klass == Hash ? false : super
+        end
+      end
+
+      # A member denying the `field` reader it defines. Membership decided by `respond_to?` would skip it,
+      # while the schema reads `member.field` and emits the name anyway.
+      def lying_member_class
+        Class.new(Axn::Core::Contract::ShapeConfig) do
+          # Mirrors Object#respond_to?'s real signature, which takes a positional include_all.
+          def respond_to?(name, include_all = false) = name == :field ? false : super # rubocop:disable Style/OptionalBooleanParameter
+        end
+      end
+
+      it "checks a shape Hash that denies being a Hash" do
+        shape = sneaky_hash_class.new
+        shape[:members] = [
+          Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+          Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}),
+        ]
+        shape[:container] = Hash
+
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end
+
+      # The same lie against the sibling guard on the same walk: `user_facing:` on an outbound member is
+      # rejected from the resolved members, so a shape that denies being a Hash must not skip that either.
+      it "still rejects a user_facing: member inside a shape Hash that denies being a Hash" do
+        shape = sneaky_hash_class.new
+        shape[:members] = [Axn::Core::Contract::ShapeConfig.new(field: :status, validations: {}, user_facing: true)]
+        shape[:container] = Hash
+
+        expect { build_axn { exposes :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+      end
+
+      it "checks a member that denies the field reader it defines" do
+        member_class = lying_member_class
+        members = [
+          member_class.new(field: utf8_name, validations: {}),
+          member_class.new(field: latin1_name, validations: {}),
+        ]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end
+
+      # The tolerance the guard deliberately keeps: a member with genuinely no `field` has no name to
+      # collide, so it is skipped rather than raising. Only a LIE about the reader is closed off. (Such a
+      # member is still too minimal for the schema to reflect — that is the pre-existing contract for a raw
+      # member, and orthogonal to what this guard decides.)
+      it "still skips a member that genuinely defines no field reader" do
+        members = [Object.new, Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+        klass = nil
+
+        expect { klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }.not_to raise_error
+        expect(klass.internal_field_configs.map(&:field)).to eq([:payload])
+      end
+
+      # A member whose name is a String subclass with a hostile `==`. Choosing between the two duplicate
+      # messages by comparing the names dispatches that `==`, which raises in place of the declaration
+      # error being reported — here a NotImplementedError, outside StandardError, so it escapes every
+      # rescue in the framework rather than surfacing as the duplicate it is.
+      it "reports the duplicate rather than an exception raised by a name's own ==" do
+        hostile = Class.new(String) do
+          def ==(_other) = raise(NotImplementedError, "hijacked from ==")
+        end
+        members = [
+          Axn::Core::Contract::ShapeConfig.new(field: hostile.new("dup"), validations: {}),
+          Axn::Core::Contract::ShapeConfig.new(field: hostile.new("dup"), validations: {}),
+        ]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: "dup" —/)
+      end
+
+      # A shape graph reachable from inside itself has no traversal at all: the walk recurses until the
+      # stack overflows, and SystemStackError is outside StandardError, so it escapes every rescue rather
+      # than settling into a reported failure. Rejected at declaration, naming the member that closes it.
+      it "rejects a self-referential shape graph instead of overflowing the stack" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})
+        member.validations[:shape] = { members: [member], container: Hash }
+        members = [member]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError) { |error|
+            expect(error.message).to include("a `shape:` graph cannot contain itself", "shape member `a`",
+                                             "recurse until the stack overflows", "Give the nested shape its own members")
+          }
+      end
+
+      it "rejects a self-referential shape graph on exposes too" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})
+        member.validations[:shape] = { members: [member], container: Hash }
+        members = [member]
+
+        expect { build_axn { exposes :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError, /a `shape:` graph cannot contain itself/)
+      end
+
+      # A shape reached twice as SIBLINGS is a diamond, not a cycle — the same object legitimately reused as
+      # two members' nested shape. Guarding on the ancestor chain (not on "seen anywhere") is what keeps it
+      # declarable.
+      it "still allows one nested shape object reused by two sibling members" do
+        nested = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }
+        members = [
+          Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: nested }),
+          Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: nested }),
+        ]
+
+        klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } }
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq(%i[a b])
+      end
+    end
   end
 
   # Every check runs before the class is mutated, so a rescued declaration error leaves nothing behind: no

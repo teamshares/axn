@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "axn/reflection/subfield_tree"
+# The shape walk below reads a caller-supplied shape graph through ShapeGraph while a class is being
+# defined, so a load order reaching this file first would NameError rather than at some later boundary.
+require "axn/internal/shape_graph"
 
 module Axn
   module Core
@@ -104,8 +107,8 @@ module Axn
         # Reject `user_facing:` on any member of an ambient subfield's shape, recursing into nested shapes.
         # A duck-typed member without `#user_facing` (a raw `shape: { members: [...] }`) defaults to none.
         def _reject_ambient_shape_user_facing_members!(shape_config)
-          _each_shape_member(shape_config.validations[:shape]) do |member|
-            next unless member.respond_to?(:user_facing) && member.user_facing
+          _each_shape_member(Internal::ShapeGraph.shape_in(shape_config.validations)) do |member|
+            next unless Internal::ShapeGraph.read(member, :user_facing)
 
             raise ArgumentError,
                   "`user_facing:` is not supported on a shape member of an `on: :ambient_context` subfield " \
@@ -113,14 +116,14 @@ module Axn
           end
         end
 
-        # Yield every member of `shape`, recursing into each member's own nested shape.
+        # Yield every member of `shape`, recursing into each member's own nested shape. Every read goes
+        # through Internal::ShapeGraph, so a member supplied by a raw `shape:` kwarg cannot deny a reader
+        # it defines and slip past the checks this walk feeds. A cyclic graph is impossible here — it is
+        # rejected at declaration by `_reject_colliding_shape_member_names!`, ahead of this walk.
         def _each_shape_member(shape, &block)
-          return unless shape.is_a?(Hash)
-
-          (shape[:members] || []).each do |member|
+          Internal::ShapeGraph.members(shape).each do |member|
             yield member
-            nested = member.validations[:shape] if member.respond_to?(:validations) && member.validations.is_a?(Hash)
-            _each_shape_member(nested, &block) if nested
+            _each_shape_member(Internal::ShapeGraph.nested_shape(member), &block)
           end
         end
 

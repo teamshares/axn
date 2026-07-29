@@ -8,6 +8,11 @@ require "active_support/core_ext/object/blank"
 
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
+# Declared rather than inherited from the top-level entrypoint's require order: every shape walk below
+# reads a caller-supplied shape graph through ShapeGraph and guards its recursion with CycleGuard, both
+# at declaration time, so a load order that reached this file first would NameError while defining a class.
+require "axn/internal/shape_graph"
+require "axn/internal/cycle_guard"
 require "axn/result"
 require "axn/core/context/internal"
 
@@ -303,9 +308,10 @@ module Axn
         # and `shape: { members: [...] }` may be supplied raw with member objects that implement no
         # more than that. `#sensitive` is optional (absent on such a raw member), so read it defensively
         # and treat a missing reader as `false`, mirroring how the validator treats a missing
-        # #method_call as not opted in.
+        # #method_call as not opted in. Read from the real method table (see Internal::ShapeGraph), so a
+        # member that DEFINES `sensitive:` cannot opt out of redaction by denying the reader.
         def _config_sensitive(config)
-          config.respond_to?(:sensitive) ? config.sensitive : false
+          Internal::ShapeGraph.read(config, :sensitive) || false
         end
 
         # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as
@@ -402,8 +408,8 @@ module Axn
         # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
         def _sensitive_shape_paths(action_instance)
           (internal_field_configs + external_field_configs + subfield_configs).filter_map do |config|
-            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
-            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
+            shape = Internal::ShapeGraph.shape_in(config.validations)
+            next unless shape && _shape_has_sensitive_member?(shape, action_instance)
 
             wire_path = config.subfield? ? _resolved_subfields.index[config]&.wire_path : [config.field]
             next unless wire_path
@@ -421,8 +427,8 @@ module Axn
         # `:ambient_context` key.
         def _sensitive_ambient_shape_paths(action_instance)
           _ambient_subfield_tree.index.filter_map do |config, path|
-            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
-            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
+            shape = Internal::ShapeGraph.shape_in(config.validations)
+            next unless shape && _shape_has_sensitive_member?(shape, action_instance)
 
             [path.wire_path.drop(1), shape]
           end
@@ -477,7 +483,7 @@ module Axn
         # A nil action_instance (async reporting, no instance to resolve a dynamic predicate against)
         # counts only static `sensitive: true`, matching the static `inspection_filter` used there.
         def _shape_has_sensitive_member?(shape, action_instance)
-          (shape[:members] || []).any? do |member|
+          Internal::ShapeGraph.members(shape).any? do |member|
             _member_sensitive?(member, action_instance) ||
               (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance))
           end
@@ -490,12 +496,11 @@ module Axn
           _resolve_sensitive_value(sensitive, action_instance)
         end
 
-        def _member_shape(member)
-          return nil unless member.respond_to?(:validations) && member.validations.is_a?(Hash)
-
-          shape = member.validations[:shape]
-          shape.is_a?(Hash) ? shape : nil
-        end
+        # The shape a config or member carries, or nil when it carries none — read without dispatching
+        # anything a raw `shape:` kwarg's objects can define (see Internal::ShapeGraph), so a member
+        # lying about its type or its readers cannot hide a nested shape from a walk that reflection,
+        # validation and redaction all still descend into.
+        def _member_shape(member) = Internal::ShapeGraph.nested_shape(member)
 
         # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
         # catches it in `_build_shape_member` on key presence; a raw `shape:` kwarg supplies pre-built
@@ -503,19 +508,29 @@ module Axn
         # Truthy-based (not key-presence): a pre-built member exposes only its resolved `#user_facing`
         # value, whose `false` default is indistinguishable from unset — only a truthy value is a real
         # opt-in (the block form, seeing the literal opts, still rejects an explicit `user_facing: false`).
-        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in.
+        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in;
+        # a member that DOES define it cannot deny the reader to escape the check (see
+        # Internal::ShapeGraph). A cyclic graph is impossible here — every declaration path runs
+        # `_reject_colliding_shape_member_names!`, which rejects one, before reaching this walk.
         def _reject_outbound_shape_user_facing!(shape)
-          return unless shape.is_a?(Hash)
-
-          (shape[:members] || []).each do |member|
-            if member.respond_to?(:user_facing) && member.user_facing
-              field = member.respond_to?(:field) ? _shape_member_label(member.field) : member.inspect
+          Internal::ShapeGraph.members(shape).each do |member|
+            if Internal::ShapeGraph.read(member, :user_facing)
               raise ArgumentError,
-                    "shape member `#{field}` does not support user_facing: on exposes — an outbound failure is a " \
-                    "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+                    "shape member #{_describe_shape_member(member)} does not support user_facing: on exposes — an " \
+                    "outbound failure is a dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
             end
             _reject_outbound_shape_user_facing!(_member_shape(member))
           end
+        end
+
+        # How a message names a shape member: its declared name when it has one, else its class. Never
+        # its `inspect` — that is the member's own code running while the failure is being reported, and
+        # an exception from it would replace the declaration error (escaping every rescue when it is
+        # outside StandardError). A member with no `#field` has no name to print, and its class is the
+        # only thing left that identifies it.
+        def _describe_shape_member(member)
+          reader = Internal::ShapeGraph.reader(member, :field)
+          reader ? "`#{_shape_member_label(reader.call)}`" : "of class #{Axn::Internal::ClassName.of(member)}"
         end
 
         # A shape member's name is an object property in the reflected schema on exactly the same terms as a
@@ -525,12 +540,36 @@ module Axn
         # `_reject_outbound_shape_user_facing!` walks. Recursion covers a member's own nested block.
         #
         # A member not implementing `#field` is a minimal duck-typed object with no name to collide; skip it
-        # rather than dispatching something it may not define.
-        def _reject_colliding_shape_member_names!(shape)
-          return unless shape.is_a?(Hash)
+        # rather than dispatching something it may not define. Membership is decided from the real method
+        # table (see Internal::ShapeGraph), so a member that DEFINES `field` cannot skip the check by
+        # denying the reader — reflection reads that name regardless, and the two must agree. It is still
+        # recursed into either way: a member with no name of its own can carry a nested shape whose
+        # members have names that collide.
+        #
+        # This is the first shape walk on every declaration path, so it is where a self-referential graph
+        # is rejected on behalf of all of them — the walks in validation, reflection and redaction only
+        # ever see a graph that passed here. `via` names the member whose nested shape is being entered,
+        # so the cycle is reported against the member that closes it.
+        def _reject_colliding_shape_member_names!(shape, seen = nil, via: nil)
+          hash = Internal::ShapeGraph.hash_or_nil(shape)
+          return if hash.nil?
 
-          members = (shape[:members] || []).select { |member| member.respond_to?(:field) }
-          names = members.map(&:field)
+          walked = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
+            _check_shape_member_names!(hash, nested)
+          end
+          _raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(walked)
+        end
+
+        # Sentinel for "this shape was already open on the path" — a private object rather than a value a
+        # declaration could produce, so nothing a caller supplies can be mistaken for it, and identity is
+        # asked of the sentinel so no caller's `equal?` is dispatched.
+        CYCLIC_SHAPE = Object.new.freeze
+        private_constant :CYCLIC_SHAPE
+
+        def _check_shape_member_names!(hash, seen)
+          members = Internal::ShapeGraph.members(hash)
+          readers = members.filter_map { |member| Internal::ShapeGraph.reader(member, :field) }
+          names = readers.map(&:call)
           _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
           claimed = {}
@@ -541,15 +580,27 @@ module Axn
             claimed[property] = name
           end
 
-          members.each { |member| _reject_colliding_shape_member_names!(_member_shape(member)) }
+          members.each { |member| _reject_colliding_shape_member_names!(_member_shape(member), seen, via: member) }
+        end
+
+        # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
+        # runtime validator's, the schema's — recurses until the stack overflows, and SystemStackError is
+        # outside StandardError, so it escapes every rescue in the framework rather than settling into a
+        # reported failure. Rejected at declaration, where it is knowable and where the author is present.
+        def _raise_cyclic_shape!(member)
+          via = member.nil? ? "" : " reached from shape member #{_describe_shape_member(member)}"
+          raise ArgumentError,
+                "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
+                "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
+                "shape its own members rather than reusing the shape (or the member) that encloses it."
         end
 
         # Two spellings of one member name are reported as a plain duplicate; two different names that
         # collapse are reported as the collision they are. A Symbol and a String spelling of one name are
-        # not `==`, so they take the collapsed branch and the message names the shared property — which is
-        # the useful thing to say about them.
+        # different spellings, so they take the collapsed branch and the message names the shared property
+        # — which is the useful thing to say about them.
         def _raise_colliding_members!(claimed, offending, property)
-          if claimed == offending
+          if _same_field_spelling?(claimed, offending)
             raise Axn::DuplicateFieldError,
                   "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
                   "validate the same key, and the reflected schema would keep only the last. Declare each member once."
@@ -561,6 +612,34 @@ module Axn
                 "Declare them under names that stay distinct once converted to UTF-8."
         end
 
+        # Whether two colliding names are the same SPELLING — decided while a failure is already being
+        # reported, so without dispatching `==` (or anything else) on a name. A member name may be a
+        # caller-supplied String subclass, and its `==` can raise in place of the duplicate error being
+        # built, escaping every rescue when what it raises is outside StandardError.
+        #
+        # The two RENDERINGS are compared instead: `_inspect_field_name` renders a Symbol and a String
+        # (subclass included) through a bound core `inspect`, so both are plain Strings this layer owns,
+        # and `String#==` is bound for the same reason the renderings are. An exotic name (neither Symbol
+        # nor String) renders through its own `inspect`, which may return anything at all — treated as a
+        # different spelling, which is the safe direction: the collapsed message names both offenders and
+        # the property they share, so it is correct for an identical pair too.
+        STRING_NAME_EQUALS = ::String.instance_method(:==)
+        private_constant :STRING_NAME_EQUALS
+
+        def _same_field_spelling?(first, second)
+          first_label = _plain_inspect_field_name(first)
+          second_label = _plain_inspect_field_name(second)
+          return false unless first_label && second_label
+
+          STRING_NAME_EQUALS.bind_call(first_label, second_label)
+        end
+
+        def _plain_inspect_field_name(name)
+          case (label = _inspect_field_name(name))
+          when ::String then label
+          end
+        end
+
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
         # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
         # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
@@ -568,14 +647,19 @@ module Axn
         # value whose type doesn't match the container is masked wholesale rather than treated as a lone
         # valid element/Hash — only declared member keys would be filtered, leaking arbitrary siblings.
         # `nil` (valid absent data) is preserved throughout via `_mask_opaque_or_preserve`.
+        #
+        # The container is compared by IDENTITY rather than with `==`: a raw `shape:` kwarg may supply any
+        # object there, and `container == Array` dispatches that object's own `==` — one answering true for
+        # both arms, or raising, would decide which redaction path a secret takes. `Array`/`Hash` are the
+        # receivers, so only their own `equal?` runs.
         def _mask_shape_value(value, shape, action_instance)
           container = shape[:container]
-          if container == Array
+          if ::Array.equal?(container)
             return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
 
             return _mask_opaque_or_preserve(value)
           end
-          return _mask_shape_element(value, shape, action_instance) if container == Hash
+          return _mask_shape_element(value, shape, action_instance) if ::Hash.equal?(container)
 
           _mask_opaque_or_preserve(value)
         end
@@ -588,7 +672,7 @@ module Axn
         def _mask_shape_element(element, shape, action_instance)
           return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
 
-          (shape[:members] || []).each_with_object(element.dup) do |member, masked|
+          Internal::ShapeGraph.members(shape).each_with_object(element.dup) do |member, masked|
             nested = _member_shape(member)
             next unless nested && _shape_has_sensitive_member?(nested, action_instance)
 
