@@ -616,7 +616,7 @@ git commit -m "PRO-2995: shape member names carry the same property promise as f
 In `CHANGELOG.md`, under `### Field contract & subfields`, immediately after the existing bullet beginning "[BREAKING] Several unsatisfiable contracts now raise at class definition", add:
 
 ```markdown
-* [BREAKING] A declared name that has no UTF-8 rendering, or that collapses onto the same JSON property as another declared name, now raises at class definition. A field name becomes a property name in the reflected schema and in serialized output, so two names whose bytes differ but whose property does not (`:café` in UTF-8 and in ISO-8859-1) would collapse onto one — silently emitting a duplicate property in `input_schema`, or dropping an exposure on the way out. The error names both spellings and the property they collapse to.
+* [BREAKING] A declared name that has no UTF-8 rendering, or that collapses onto the same JSON property as another name declared under the same parent (or another top-level name), now raises at class definition. A field name becomes a property name in the reflected schema and in serialized output, so two names whose bytes differ but whose property does not (`:café` in UTF-8 and in ISO-8859-1) would collapse onto one — silently emitting a duplicate property in `input_schema`, or dropping an exposure on the way out. The error names both spellings and the property they collapse to.
 ```
 
 - [ ] **Step 2: Add the shape-blocks changelog bullet**
@@ -624,7 +624,7 @@ In `CHANGELOG.md`, under `### Field contract & subfields`, immediately after the
 Under `### Shape blocks`, after the existing `model:` bullet, add:
 
 ```markdown
-* [BREAKING] Two members of one shape may no longer share a name, or two names that render as the same JSON property. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
+* [BREAKING] Two members at the same level of one shape may no longer share a name, or carry two names that render as the same JSON property (a member named `a` inside a nested block does not collide with a top-level member named `a` — they are properties of different JSON objects). Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
 ```
 
 - [ ] **Step 3: Document the field-name rule**
@@ -632,7 +632,7 @@ Under `### Shape blocks`, after the existing `model:` bullet, add:
 In `docs/reference/class.md`, in the paragraph beginning "`as:` and `prefix:` cannot be combined (raises at declaration)." — after its final sentence "The `as:` value itself may not be dotted (a reader name must name a method)." — append:
 
 ```markdown
-Two fields may not share a wire key, and may not carry names that render as the same JSON property: a field name becomes a property name in the reflected schema and in serialized output, so `:café` spelled in UTF-8 and in ISO-8859-1 are one property and raise at declaration naming both spellings. A name whose bytes have no UTF-8 rendering at all is rejected the same way — JSON is a UTF-8 format, so no encoder would accept it as a property name.
+Two fields under the same parent — or two top-level fields — may not share a wire key, and may not carry names that render as the same JSON property: a field name becomes a property name in the reflected schema and in serialized output, so `:café` spelled in UTF-8 and in ISO-8859-1 are one property and raise at declaration naming both spellings. A name whose bytes have no UTF-8 rendering at all is rejected the same way — JSON is a UTF-8 format, so no encoder would accept it as a property name.
 ```
 
 - [ ] **Step 4: Document the shape-member rule**
@@ -640,7 +640,7 @@ Two fields may not share a wire key, and may not carry names that render as the 
 In `docs/reference/class.md`, at the end of the bullet beginning "* Members accept validations (`type`, `inclusion`, …)", append:
 
 ```markdown
-Each member of a shape must have a distinct name, and two members may not carry names that render as the same JSON property (member names are object properties in the schema, so the rule matches a field's) — both raise at declaration.
+Each member at a given level of a shape must have a distinct name, and two such members may not carry names that render as the same JSON property (member names are object properties in the schema, so the rule matches a field's) — both raise at declaration. Nesting scopes the rule: a member named `a` inside a nested block is a property of a different object than a top-level member named `a`, so the two never collide.
 ```
 
 - [ ] **Step 5: Verify the docs build and the suites pass**
