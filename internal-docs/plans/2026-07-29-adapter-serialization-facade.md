@@ -31,7 +31,7 @@
 | --- | --- | --- |
 | `lib/axn/extensions/serialization.rb` | The declared adapter entry point: derive configs, delegate rendering | **Create** |
 | `lib/axn.rb` | Require graph | Modify (~L14): add `require "axn/extensions/serialization"` |
-| `lib/axn/reflection/values.rb` | The renderer and every strictness check | Modify: delete `follow_as_json?` (L586-589), privatize `serialize_exposed` + 18 helpers, update the file header and `AS_JSON_PROJECTIONS` comments, add a module doc |
+| `lib/axn/reflection/values.rb` | The renderer and every strictness check | Modify: delete `follow_as_json?` (L586-589), privatize `serialize_exposed` + 17 helpers (`canonical_wire_key` stays public for `Core::Contract`), update the file header and `AS_JSON_PROJECTIONS` comments, add a module doc |
 | `spec/axn/extensions/serialization_spec.rb` | Unit coverage for the entry point | **Create** |
 | `spec/axn/reflection/values_spec.rb` | Renderer coverage | Modify: delete `describe ".serialize_exposed"` (L143-243), add a surface-closure example |
 | `spec/axn/reflection/schema_spec.rb` | Schema reflection, incl. three runtime cross-checks against real serialization | Modify L84, L740, L1393: render through the facade |
