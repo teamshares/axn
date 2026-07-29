@@ -118,17 +118,19 @@ Three rules keep adapters interoperable:
 
 ## Value serialization
 
-To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use `Axn::Reflection::Values.serialize_exposed` — don't hand-roll it (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` edge cases so the output validates against the reflected `output_schema`):
+To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use `Axn::Extensions::Serialization.render` — don't hand-roll it (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` edge cases so the output validates against the reflected `output_schema`):
 
 ```ruby
-# axn-mcp/lib/axn/mcp/serializer.rb
-exposed = Axn::Reflection::Values.serialize_exposed(result, axn_class.external_field_configs)
+# An MCP or LLM tool adapter
+exposed = Axn::Extensions::Serialization.render(result)
 
 # An HTTP adapter, which must not ship an undeclared rendering in a response body
-exposed = Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: config.reject_opaque)
+exposed = Axn::Extensions::Serialization.render(result, reject_opaque: config.reject_opaque)
 ```
 
-Pass `axn_class.external_field_configs` (the declared `exposes` configs) as the second argument.
+You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
+
+Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and its one remaining public method exists for core's own schema reflection.
 
 There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
 
@@ -217,7 +219,7 @@ Map the `Result` to your transport response from these members:
 ```ruby
 result = invoker.call(axn_class, model_args, ambient_context: server_context || {})
 if result.ok?
-  present_as == :message ? result.message : serialize_exposed(result, ...)
+  present_as == :message ? result.message : Axn::Extensions::Serialization.render(result)
 else
   { error: result.error }        # surface result.error, never result.exception
 end
