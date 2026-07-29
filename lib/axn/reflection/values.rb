@@ -13,7 +13,7 @@ require "axn/exceptions"
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
 # — which adds a generic Object#as_json (an instance-variable dump). To avoid that bypassing a value
 # object's declared `to_h` shape, `serialize_value` prefers `to_h` whenever the only `as_json` in reach
-# is that generic one (see follow_as_json?/generic_as_json?), so a plain object with a meaningful `to_h`
+# is that generic one (see projection_for), so a plain object with a meaningful `to_h`
 # serializes via `to_h` in Rails and non-Rails alike. A value with neither declares no shape at all, so
 # `reject_opaque` rejects it there just as it rejects the object address it renders as outside Rails.
 
@@ -113,17 +113,19 @@ module Axn
           # outside Rails, so `serialize_exposed` output validates against the reflected schema.
           value.iso8601
         else
+          projection = projection_for(value)
+
           # Guarded on the SOURCE object, not the Hash it yields: #as_json/#to_h build a fresh Hash on
           # every call, so an object whose projection points back at it (`to_h => { child: self }`)
           # would recurse forever with a different Hash identity each time.
-          if follow_as_json?(value)
-            # Inside this branch a generic-Object owner proves follow_as_json? admitted the value only via
-            # its no-`to_h` clause, so the value declares neither an `as_json` nor a `to_h` of its own and
-            # what would render is ActiveSupport's instance-variable dump.
-            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON) if reject_opaque && generic_as_json?(value)
+          case projection
+          when :own_as_json, :generic_as_json
+            # A :generic_as_json route means the value declares neither an `as_json` nor a `to_h` of its
+            # own, so what would render is ActiveSupport's instance-variable dump.
+            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON) if reject_opaque && projection == :generic_as_json
 
             within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
-          elsif value.respond_to?(:to_h)
+          when :to_h
             within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:) }
           else
             raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
@@ -184,23 +186,25 @@ module Axn
         )
       end
 
-      # Whether to serialize via `as_json` rather than `to_h`. Follow `as_json` when the object defines
-      # its OWN — on its class or an included module (e.g. an ActiveRecord model) — or when there's no
-      # `to_h` to prefer. ActiveSupport's generic Object#as_json (added on Object in a Rails app) just
-      # dumps instance_values, so a value object with a meaningful `to_h` should use that instead.
-      def follow_as_json?(value)
-        return false unless value.respond_to?(:as_json)
+      # The projection serialize_value follows for a non-leaf object: its own `as_json` (defined on its
+      # class or an included module, e.g. an ActiveRecord model), ActiveSupport's generic Object#as_json
+      # (the instance_values dump a Rails app adds to every object, followed only when there is no `to_h`
+      # to prefer), `to_h`, or the `to_s` fallback. One method, so the route and the "is the only as_json
+      # in reach the generic one" verdict — which is what `reject_opaque` rejects — are the same
+      # computation rather than two that could disagree, and `as_json`'s owner is looked up once.
+      def projection_for(value)
+        if value.respond_to?(:as_json)
+          generic = value.method(:as_json).owner == ::Object
+          return generic ? :generic_as_json : :own_as_json unless generic && value.respond_to?(:to_h)
+        end
 
-        !generic_as_json?(value) || !value.respond_to?(:to_h)
+        value.respond_to?(:to_h) ? :to_h : :to_s
       end
 
-      # Whether the only `as_json` in reach is ActiveSupport's generic Object#as_json — the
-      # instance-variable dump a Rails app adds to every object — rather than one the value's class or an
-      # included module defines (an ActiveRecord model's, for instance). Shared with follow_as_json? so
-      # the routing decision and the opaqueness verdict can't drift apart.
-      def generic_as_json?(value)
-        value.method(:as_json).owner == Object
-      end
+      # Whether serialize_value renders `value` via `as_json` rather than `to_h`/`to_s`. Retained for
+      # adapters that route on the same question (axn-openapi); the answer comes from projection_for so
+      # there is one source of truth.
+      def follow_as_json?(value) = %i[own_as_json generic_as_json].include?(projection_for(value))
 
       # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
       # value inherits #to_s instead of defining one. Keying on the OWNER rather than respond_to? is
