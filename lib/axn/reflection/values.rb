@@ -169,15 +169,33 @@ module Axn
       # to signal it, the one failure mode this module exists to prevent. Rendering from the copy makes
       # "every entry present when serialization began appears in the output" hold unconditionally.
       #
-      # `dup` rather than `to_a`/`entries`: it captures keys AND values in a single object (so nothing is
-      # read back out of a mutated source), and it preserves the container's own class, iteration and
-      # `compare_by_identity` semantics, which `to_a` would flatten — an identity-keyed Hash's colliding
-      # pair stays nameable on the error path.
+      # The copy is a CORE `{}`/`[]` filled from the original's entries rather than `container.dup`: `dup`
+      # dispatches caller code, and a Hash/Array SUBCLASS can override `dup`/`initialize_copy` to return
+      # different contents or to refuse outright (a Singleton-including Hash raises TypeError), which would
+      # turn a container that was perfectly traversable into wrong output or a crash. Same reasoning as
+      # Schema.normalize_schema_literal's `instance_of?` checks. Keys AND values are captured in one object,
+      # so nothing is read back out of a source that has since been mutated. Filling the copy does iterate
+      # the original, so a subclass overriding `each` still decides what the snapshot sees — inherent to
+      # walking a container at all, not something a copy could avoid.
+      #
+      # `compare_by_identity` is carried over explicitly, since a plain `{}` compares by `==`: an
+      # identity-keyed Hash can legitimately hold two `==`-equal-but-distinct keys, and flattening that to
+      # one entry would lose a value here and leave the error path's collision walk unable to name the pair.
+      # `compare_by_identity?`/`compare_by_identity` are core Hash methods, so consulting them does not
+      # reintroduce the caller dispatch this avoids.
       #
       # It is not free, and it is not meant to be optimized away: one extra object per container, and
-      # serializing 5k deeply-nested rows measured ~5% slower than iterating the containers live (about
-      # the cost of the pre-`snapshot` `transform_keys` pass this replaces). That 5% IS the guarantee.
-      def snapshot_container(container) = container.dup
+      # serializing 5k deeply-nested container-dense rows measured ~20% slower than iterating those
+      # containers live (a few points of that being the entry-by-entry fill over a wholesale `dup`). That
+      # 20% IS the guarantee.
+      def snapshot_container(container)
+        return container.each_with_object([]) { |element, copy| copy << element } unless container.is_a?(Hash)
+
+        copy = {}
+        copy.compare_by_identity if container.compare_by_identity?
+        container.each { |key, value| copy[key] = value }
+        copy
+      end
 
       # A collapse is detected by size, which doesn't say WHICH keys collided — so re-walk the snapshot
       # here, on the error path only, and name the first colliding pair. Working from the same snapshot the

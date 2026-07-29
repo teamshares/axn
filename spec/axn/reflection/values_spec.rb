@@ -5,6 +5,7 @@ require "English"
 
 require "spec_helper"
 require "bigdecimal"
+require "singleton"
 
 RSpec.describe Axn::Reflection::Values do
   # An object with no own as_json, no to_h, and #to_s owned by Object — but `respond_to?` is
@@ -250,6 +251,66 @@ RSpec.describe Axn::Reflection::Values do
       source << saboteur(source, 1) << "SHOULD APPEAR"
 
       expect(described_class.serialize_value(source, path: "rows")).to eq([{ "x" => 1 }, "SHOULD APPEAR"])
+    end
+  end
+
+  # A Hash/Array SUBCLASS can override the copying methods (`dup`/`initialize_copy`) to return something
+  # other than the receiver's entries, or to refuse to copy at all. The snapshot is therefore built into a
+  # core `{}`/`[]` from the original's own entries, so what renders is what the container actually holds and
+  # a container that was traversable stays traversable.
+  describe "a container subclass whose #dup is not a faithful copy" do
+    it "renders a Hash subclass's real entries rather than what its #dup returns" do
+      decoy = Class.new(Hash) { def dup = { decoy: 99 } }.new
+      decoy[:real] = "data"
+
+      expect(described_class.serialize_value(decoy, path: "rec")).to eq("real" => "data")
+    end
+
+    it "serializes a Hash subclass that cannot be duped at all" do
+      # A Singleton-including Hash raises TypeError on #dup ("can't dup instance of singleton"), so a
+      # snapshot taken by dispatching #dup would crash on a Hash it could otherwise walk entry by entry.
+      undupable = Class.new(Hash) { include Singleton }.instance
+      undupable[:real] = "data"
+
+      expect { undupable.dup }.to raise_error(TypeError)
+      expect(described_class.serialize_value(undupable, path: "rec")).to eq("real" => "data")
+    end
+
+    it "renders an Array subclass's real elements rather than what its #dup returns" do
+      decoy = Class.new(Array) { def dup = ["decoy"] }.new
+      decoy << "data"
+
+      expect(described_class.serialize_value(decoy, path: "rows")).to eq(["data"])
+    end
+
+    it "serializes an Array subclass whose #dup raises" do
+      exploding = Class.new(Array) { def dup = raise(TypeError, "no copies of me") }.new
+      exploding << "data"
+
+      expect(described_class.serialize_value(exploding, path: "rows")).to eq(["data"])
+    end
+  end
+
+  # An identity-keyed Hash compares keys by object identity, so it can hold two `==`-equal-but-distinct
+  # keys — entries that a snapshot comparing keys by `==` would merge, dropping a value AND leaving the
+  # collision check with a single entry and so nothing to report.
+  describe "a compare_by_identity Hash" do
+    it "round-trips its entries" do
+      source = {}.compare_by_identity
+      source[:a] = 1
+      source["b"] = 2
+
+      expect(described_class.serialize_value(source, path: "rec")).to eq("a" => 1, "b" => 2)
+    end
+
+    it "keeps two ==-equal-but-distinct keys distinct, so the collision check still names the pair" do
+      source = {}.compare_by_identity
+      source["k"] = 1
+      source["k".dup] = 2
+
+      expect(source.size).to eq(2)
+      expect { described_class.serialize_value(source, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /two keys stringify to the same JSON property "k"/)
     end
   end
 
