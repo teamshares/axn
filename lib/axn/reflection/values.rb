@@ -489,13 +489,14 @@ module Axn
         )
       end
 
-      # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.
-      # Separate from the raise so a field name and a Hash key can share one canonicalization while each
-      # reports the defect in its own terms — the two are the same mechanism but not the same fix.
       # The module that actually defines `name` on `value`, asked without dispatching the value's own
       # `#method`. Raises NameError when nothing defines it, exactly as `#method` would.
       def owner_of(value, name) = UNBOUND_METHOD.bind_call(value, name).owner
 
+      # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.
+      # Separate from the raise so a field name and a Hash key can share one canonicalization while each
+      # reports the defect in its own terms — the two are the same mechanism but not the same fix.
+      #
       # Public because the same canonicalization is core's answer to what a JSON property name is, so a
       # declaration-time check in Core::Contract can share this one definition rather than re-deriving it;
       # re-privatizing later would force a send into that module.
@@ -610,12 +611,12 @@ module Axn
         false
       end
 
-      # Every rendering decision below serialize_value is core's own. Kept private so a downstream
-      # gem cannot pin one of them: an adapter renders a whole result through
+      # Every rendering decision `serialize_value` routes through is core's own. Kept private so a
+      # downstream gem cannot pin one of them: an adapter renders a whole result through
       # Axn::Extensions::Serialization.render, which is the only caller of serialize_exposed.
-      # canonical_wire_key is absent deliberately: the same canonicalization is core's answer to what a
-      # JSON property name is, so a declaration-time check in Core::Contract can share this one definition
-      # rather than re-deriving it; re-privatizing later would force a send into that module.
+      # canonical_wire_key is deliberately not in this list: the same canonicalization is core's answer
+      # to what a JSON property name is, so a declaration-time check in Core::Contract can share this one
+      # definition rather than re-deriving it; re-privatizing later would force a send into that module.
       private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering, :transcode_to_utf8,
                            :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                            :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,

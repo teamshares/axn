@@ -33,7 +33,7 @@ RSpec.describe Axn::Reflection::Values do
   # appearing here is a new public promise about the renderer's own decisions, which is what constrains
   # core's routing later.
   describe "public surface" do
-    it "exposes only the two methods core calls cross-module" do
+    it "exposes only the two methods reserved for core's own callers" do
       expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[canonical_wire_key serialize_value])
     end
 
