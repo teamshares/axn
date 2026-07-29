@@ -92,6 +92,8 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   ActiveSupport's generic `Object#as_json` ivar dump as its only projection. A meaningful
   `to_s`/`as_json`/`to_h` defined anywhere else passes, address-looking or not. Never write your own
   pre-pass — it drifts from the renderer.
+- Keep the two guarantees apart: encodability is unconditional, declared-shape is what the flag buys.
+  `reject_opaque: false` never means "might not be JSON" — that is why it isn't named `strict:`.
 
 Source: `lib/axn/reflection/values.rb`.
 
