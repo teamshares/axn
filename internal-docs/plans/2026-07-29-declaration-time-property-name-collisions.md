@@ -624,7 +624,7 @@ In `CHANGELOG.md`, under `### Field contract & subfields`, immediately after the
 Under `### Shape blocks`, after the existing `model:` bullet, add:
 
 ```markdown
-* [BREAKING] Two members at the same level of one shape may no longer share a name, or carry two names that render as the same JSON property (a member named `a` inside a nested block does not collide with a top-level member named `a` — they are properties of different JSON objects). Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
+* [BREAKING] Two members under the same parent — or two top-level members of one shape — may no longer share a name, or carry two names that render as the same JSON property. Members of different parent blocks never collide even at the same depth: a `zip` declared inside both a `from` block and a `to` block are properties of different objects. Declaring the same member twice previously built both members and kept only the last in the reflected schema, discarding the first with no signal.
 ```
 
 - [ ] **Step 3: Document the field-name rule**
@@ -640,7 +640,7 @@ Two fields under the same parent — or two top-level fields — may not share a
 In `docs/reference/class.md`, at the end of the bullet beginning "* Members accept validations (`type`, `inclusion`, …)", append:
 
 ```markdown
-Each member at a given level of a shape must have a distinct name, and two such members may not carry names that render as the same JSON property (member names are object properties in the schema, so the rule matches a field's) — both raise at declaration. Nesting scopes the rule: a member named `a` inside a nested block is a property of a different object than a top-level member named `a`, so the two never collide.
+Two members under the same parent — or two top-level members of one shape — must have distinct names, and may not carry names that render as the same JSON property (member names are object properties in the schema, so the rule matches a field's) — both raise at declaration. Members of different parent blocks never collide even at the same depth: a `zip` inside both a `from` and a `to` block are properties of different objects, exactly like `zip` under both `billing` and `shipping` for subfields.
 ```
 
 - [ ] **Step 5: Verify the docs build and the suites pass**
