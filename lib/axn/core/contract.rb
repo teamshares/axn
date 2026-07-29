@@ -232,9 +232,10 @@ module Axn
 
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
-          # Names are judged before options: a member name is a JSON property on the same terms as a
-          # field's, so an unusable name is reported as the naming defect it is rather than as whichever
-          # option check happens to trip on the same member first.
+          # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
+          # option is reported as the naming defect it is. That ordering only governs these two walks over
+          # resolved members: in the block form the option error surfaces first, raised inside
+          # `_build_shape_member` while `_build_shape` above is still assembling the members.
           _reject_colliding_shape_member_names!(validations[:shape])
 
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
