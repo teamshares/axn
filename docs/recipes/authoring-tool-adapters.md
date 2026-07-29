@@ -130,7 +130,7 @@ exposed = Axn::Extensions::Serialization.render(result, reject_opaque: config.re
 
 You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
 
-Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and its one remaining public method exists for core's own schema reflection.
+Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
 
 There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
 

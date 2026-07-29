@@ -82,8 +82,8 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
 - **You pass no config list** — `render` derives the declared `exposes` from the result itself. Rendering a
   subset is deliberately unsupported: it would emit a body contradicting `output_schema`.
-- **Don't reach into `Axn::Reflection::Values`.** `render` is the surface; the renderer's helpers are private
-  and `serialize_value` exists for core's schema reflection, not for you.
+- **Don't reach into `Axn::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
+  what stays public is there for core's own cross-module callers, not for you.
 - No **value** in the result is one `JSON.generate` refuses (no non-finite number, no non-UTF-8 bytes, no
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
   deeper than `max_nesting` (100 default) still raises `JSON::NestingError`. Drop your pre-*pass* over the
