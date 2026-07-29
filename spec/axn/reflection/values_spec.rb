@@ -204,6 +204,40 @@ RSpec.describe Axn::Reflection::Values do
         .to eq("id" => 1, "name" => "x", "2" => "b")
     end
 
+    # A JSON property name is UTF-8 text, so two keys holding the same characters in different encodings are
+    # ONE property even though Ruby holds them as distinct, non-`eql?` Strings. Comparing the keys as the
+    # caller wrote them would pass the pair through, and `JSON.generate` would then emit the property twice —
+    # which `JSON.parse` collapses, dropping a value.
+    it "catches two keys that are the same property name in different encodings" do
+      iso = "\xE9".dup.force_encoding(Encoding::ISO_8859_1)
+      source = { iso => "FIRST", "é" => "second" }
+
+      expect(source.size).to eq(2)
+      expect(iso).not_to eql("é")
+      expect { described_class.serialize_value(source, path: "rec") }
+        .to raise_error(
+          Axn::Reflection::UnserializableValue,
+          /two keys stringify to the same JSON property "é".*silently collapse and drop a value/m,
+        )
+    end
+
+    it "renders a transcodable non-UTF-8 key as the UTF-8 property name an encoder emits" do
+      rendered = described_class.serialize_value({ "\x82\xA0".dup.force_encoding(Encoding::Shift_JIS) => 1 }, path: "rec")
+      key = rendered.keys.first
+
+      expect(rendered).to eq("あ" => 1)
+      expect(key.encoding).to eq(Encoding::UTF_8)
+      expect(key.frozen?).to be(true)
+      expect(key.instance_of?(String)).to be(true)
+    end
+
+    it "leaves an ordinary ASCII or UTF-8 payload's property names exactly as they render" do
+      rendered = described_class.serialize_value({ id: 1, "héllo" => 2, "party 🎉" => 3 })
+
+      expect(rendered).to eq("id" => 1, "héllo" => 2, "party 🎉" => 3)
+      expect(rendered.keys.map(&:encoding).uniq).to eq([Encoding::UTF_8])
+    end
+
     it "names the pair by the #to_s each key returned, without asking a key twice" do
       # A key whose #to_s returns a different String on each call: the collapse is the one the FIRST call
       # produced ("k1", which the literal String key also produces), so that is the pair named. Re-deriving
@@ -882,6 +916,12 @@ RSpec.describe Axn::Reflection::Values do
       it "raises for a Hash key whose String form has no UTF-8 rendering, naming the key position" do
         expect { described_class.serialize_value({ binary("\xFF") => 1 }, path: "rec") }
           .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
+
+        expect { described_class.serialize_value({ "bad: \xFF".dup => 1 }, path: "rec") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
+
+        expect { described_class.serialize_value({ binary("\xFF").to_sym => 1 }, path: "rec") }
+          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(Symbol\).*property name/m)
       end
     end
 
@@ -903,6 +943,36 @@ RSpec.describe Axn::Reflection::Values do
 
         expect { JSON.generate({ "v" => serialized }) }
           .not_to raise_error, "JSON.generate refused the serialization of a #{value.class}"
+      end
+    end
+
+    # An encoder ACCEPTING the output is only half the promise: a property name emitted twice is valid JSON
+    # text that `JSON.parse` collapses to one entry, dropping a value with nothing in the output to say so.
+    # Counting entries after a full round trip is what holds the other half — including for keys that are one
+    # property name in two encodings, which are distinct Ruby Strings and so collide only on the wire.
+    it "round-trips every Hash it renders through an encoder without losing an entry" do
+      hashes = [
+        { id: 1, "name" => "x", 2 => :b },
+        # One property name in two encodings: distinct Ruby Strings, so a Hash really holds both — and a
+        # single JSON property, so an encoder emits it twice and a parser keeps one.
+        { "\xE9".dup.force_encoding(Encoding::ISO_8859_1) => "FIRST", "é" => "second" },
+        { "é" => 1, "e" => 2, "\x82\xA0".dup.force_encoding(Encoding::Shift_JIS) => 3, binary("ascii-key") => 4 },
+        { "h\xE9llo".dup.force_encoding(Encoding::ISO_8859_1) => 1, "héllo!" => 2 },
+        { rows: [{ "a" => 1, "b" => nil }, { "a" => 2 }], "party 🎉" => "héllo", "" => nil },
+      ]
+
+      hashes.each do |hash|
+        rendered = begin
+          described_class.serialize_value(hash, path: "v")
+        rescue Axn::Reflection::UnserializableValue
+          # Refusing the Hash is the other way to keep the promise. What a caller must never be handed is
+          # output that encodes cleanly and parses back holding fewer entries than it was given.
+          next
+        end
+        parsed = JSON.parse(JSON.generate(rendered))
+
+        expect(parsed.size).to eq(rendered.size), "an entry was dropped: #{rendered.size} properties rendered, #{parsed.size} survived"
+        expect(parsed).to eq(rendered)
       end
     end
   end

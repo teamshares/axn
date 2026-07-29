@@ -179,10 +179,14 @@ module Axn
       # A `#to_s` that breaks its contract and returns a non-String has no bytes to check and passes through
       # as it always has — the type test is `case`/`when` rather than `is_a?` for the reason own_wire_key
       # gives, and String's unbound methods would be meaningless bound to a non-String regardless.
+      #
+      # A value keeps the encoding it was exposed in: its rendering is only CHECKED here, never substituted,
+      # since bytes an encoder transcodes losslessly are no integrity risk. A Hash key is different and is
+      # rendered through the transcode — see own_wire_key.
       def encodable_string!(rendered, source:, path:)
         case rendered
         when ::String
-          return rendered if utf8_renderable?(rendered)
+          return rendered if utf8_rendering(rendered)
 
           raise Axn::Reflection::UnserializableValue.new(path:, value: source, reason: UNRENDERABLE_BYTES_REASON)
         else
@@ -190,34 +194,40 @@ module Axn
         end
       end
 
-      # Whether an encoder can render these bytes as JSON text at all. JSON is UTF-8, so the question is
-      # whether the bytes have a UTF-8 rendering — NOT `valid_encoding?`, which asks whether they are valid
-      # in their OWN encoding and answers true for "\xFF" in BINARY, which JSON::GeneratorError refuses. It
-      # is equally not "are the bytes literally valid UTF-8": a valid ISO-8859-1 or Shift_JIS String
-      # transcodes cleanly and encodes fine, so demanding UTF-8 bytes would reject real data.
+      # The UTF-8 rendering of these bytes — the ones an encoder actually emits — or nil when they have none.
+      # "Can an encoder render this as JSON text at all" and "what will it emit" are one question, since JSON
+      # is UTF-8, so one method answers both: a value's caller discards the rendering and keeps its own bytes,
+      # while a key's caller keeps the rendering, because two encodings of one property name have to compare
+      # as one property.
       #
-      # ASCII-only bytes are already UTF-8 in any ASCII-compatible encoding, and that covers most of what a
-      # response body holds (identifiers, enum values, keys), so it is the single-check fast path — and it is
-      # cheap twice over, since Ruby caches a String's coderange. Non-ASCII UTF-8 needs one more check and
-      # still no allocation. Only bytes outside both pay for the transcode an encoder would attempt, which is
-      # the sole exact answer for them. `US-ASCII` needs no arm of its own: a US-ASCII String is either
-      # ASCII-only (already returned) or holds a byte no transcode accepts.
-      def utf8_renderable?(string)
-        return true if STRING_ASCII_ONLY.bind_call(string)
+      # The test is NOT `valid_encoding?`, which asks whether the bytes are valid in their OWN encoding and
+      # answers true for "\xFF" in BINARY, which JSON::GeneratorError refuses. It is equally not "are the
+      # bytes literally valid UTF-8": a valid ISO-8859-1 or Shift_JIS String transcodes cleanly and encodes
+      # fine, so demanding UTF-8 bytes would reject real data.
+      #
+      # ASCII-only bytes are already their own UTF-8 rendering in any ASCII-compatible encoding, and that
+      # covers most of what a response body holds (identifiers, enum values, keys), so it is the single-check
+      # fast path — and it is cheap twice over, since Ruby caches a String's coderange. Non-ASCII UTF-8 needs
+      # one more check and still no allocation. Only bytes outside both pay for the transcode an encoder would
+      # attempt, which is the sole exact answer for them. `US-ASCII` needs no arm of its own: a US-ASCII String
+      # is either ASCII-only (already returned) or holds a byte no transcode accepts.
+      def utf8_rendering(string)
+        return string if STRING_ASCII_ONLY.bind_call(string)
 
         case STRING_ENCODING.bind_call(string)
-        when ::Encoding::UTF_8 then STRING_VALID_ENCODING.bind_call(string)
-        else transcodable_to_utf8?(string)
+        when ::Encoding::UTF_8 then STRING_VALID_ENCODING.bind_call(string) ? string : nil
+        else transcode_to_utf8(string)
         end
       end
 
       # EncodingError is exactly the three refusals a transcode can raise (no converter for the pair, an
-      # undefined mapping, an invalid byte sequence) and nothing else.
-      def transcodable_to_utf8?(string)
+      # undefined mapping, an invalid byte sequence) and nothing else. The transcoded String is the answer
+      # rather than a boolean because performing the transcode IS the check — there is nothing to save by
+      # throwing the result away.
+      def transcode_to_utf8(string)
         STRING_ENCODE.bind_call(string, ::Encoding::UTF_8)
-        true
       rescue ::EncodingError
-        false
+        nil
       end
 
       # A non-finite Float has no JSON literal, so a body containing one is not JSON — the same category as
@@ -283,11 +293,11 @@ module Axn
       #
       # A Hash entry is captured as the triple (wire key, original key, element), and the wire key is
       # computed here and nowhere else, so every key's #to_s runs exactly ONCE per serialization. That is
-      # what makes a collapse — two keys with the same #to_s (`:id` and `"id"`) rendering as one JSON
-      # property, dropping a value — reportable: it is caught below at the moment a wire key repeats, while
-      # both original keys are still in hand. Naming the pair by projecting keys a second time would be
-      # unsound, since a second #to_s may disagree with the first or raise something that isn't even a
-      # StandardError, replacing the diagnosis with the very escape this module exists to prevent.
+      # what makes a collapse — two keys rendering as one JSON property (`:id` and `"id"`), dropping a value —
+      # reportable: it is caught below at the moment a wire key repeats, while both original keys are still in
+      # hand. Naming the pair by projecting keys a second time would be unsound, since a second #to_s may
+      # disagree with the first or raise something that isn't even a StandardError, replacing the diagnosis
+      # with the very escape this module exists to prevent.
       #
       # The capture is a LIST rather than a Hash keyed by the caller's keys: a Hash would re-run each key's
       # `hash`/`eql?` and merge two entries the source holds separately — two mutable keys mutated to agree
@@ -305,8 +315,7 @@ module Axn
         hash.each do |key, element|
           check_opaque_key!(key, path) if reject_opaque
 
-          wire_key = own_wire_key(key)
-          check_key_bytes!(wire_key, key, path)
+          wire_key = own_wire_key(key, path)
 
           claimed = positions[wire_key]
           raise_colliding_keys!(path:, wire_key:, first_key: entries[claimed].fetch(1), second_key: key) if claimed
@@ -318,40 +327,51 @@ module Axn
         entries
       end
 
-      # The JSON property `key` renders as: a frozen, plain String this module owns, holding the bytes
-      # whatever `key.to_s` returned. Owning it is what makes every later read of it safe — the property is
-      # a Hash key in the output, part of a nested `path`, and quoted in a collision message, and a String a
-      # caller still holds could change or dispatch under all three. Ruby only half-covers this on its own:
-      # it freezes a copy of a String key inserted into a Hash, but not of a String SUBCLASS, and `entries`
-      # holds the wire key by reference either way. So a #to_s handing out the same mutable String on every
-      # call, or a later key mutating one already captured, would collapse two captured entries into one
-      # property at render time — the silent dropped value this module exists to prevent.
+      # The JSON property `key` renders as: a frozen, plain, UTF-8 String this module owns, holding the UTF-8
+      # rendering of whatever `key.to_s` returned — the bytes an encoder emits for that property name.
       #
-      # `String.new` rather than `-@`/`dup`, because the copy must not dispatch the returned String's own
-      # code: `-@` and `initialize_copy` are both overridable on a String subclass, and one that raises
-      # (a SystemStackError escapes `rescue StandardError`) or returns different bytes would hijack a
-      # serialization the key had no say in. The type test is `case`/`when` rather than `is_a?` for the same
-      # reason: `Module#===` is a C-level check, while `is_a?` is overridable, and a value lying about being
-      # a String would send `String.new` off to dispatch its `to_str`.
+      # Rendered rather than merely checked, because a property name is UTF-8 text while a Ruby String is
+      # bytes PLUS an encoding: an ISO-8859-1 "\xE9" and a UTF-8 "é" are distinct, non-`eql?` Strings that a
+      # Hash holds as two entries, and one single JSON property. Compared as they came, the pair passes the
+      # collapse check below, an encoder emits the property twice, and a parser keeps one — the silently
+      # dropped value this module exists to prevent. Canonicalizing here is what makes the check exact, and
+      # what makes the returned Hash's keys the bytes that get emitted.
       #
-      # A #to_s that breaks its contract by returning a non-String leaves no property name to copy, so the
+      # Owning the String is what makes every later read of it safe — the property is a Hash key in the
+      # output, part of a nested `path`, and quoted in a collision message, and a String a caller still holds
+      # could change or dispatch under all three. Ruby only half-covers this on its own: it freezes a copy of
+      # a String key inserted into a Hash, but not of a String SUBCLASS, and `entries` holds the wire key by
+      # reference either way. So a #to_s handing out the same mutable String on every call, or a later key
+      # mutating one already captured, would collapse two captured entries into one property at render time.
+      #
+      # `String.new` rather than `-@`/`dup`/the transcode's own result, because the copy must be neither the
+      # returned String's code nor its CLASS: `-@` and `initialize_copy` are overridable, and `String#encode`
+      # hands back an instance of the receiver's class, so a subclass's `hash`/`eql?` would then decide what
+      # counts as one property. Code that raises (a SystemStackError escapes `rescue StandardError`) or answers
+      # differently would hijack a serialization the key had no say in. The type test is `case`/`when` rather
+      # than `is_a?` for the same reason: `Module#===` is a C-level check, while `is_a?` is overridable, and a
+      # value lying about being a String would send `String.new` off to dispatch its `to_str`. `force_encoding`
+      # then labels that copy rather than converting it — every arm of `utf8_rendering` yields bytes that are
+      # already a UTF-8 rendering (ASCII bytes, valid UTF-8, or a transcode's output), and the copy is this
+      # module's own plain String, so the label is asserted only where the bytes satisfy it.
+      #
+      # A #to_s that breaks its contract by returning a non-String leaves no property name to render, so the
       # inherited #to_s renders one: the same object address an opaque key renders as, and a String, which
       # a JSON property name has to be.
-      def own_wire_key(key)
-        case (rendered = key.to_s)
-        when ::String then ::String.new(rendered).freeze
-        else DEFAULT_TO_S.bind_call(key).freeze
-        end
-      end
+      #
+      # Bytes with no UTF-8 rendering raise here, unconditionally and at every strictness: a property name is
+      # a String in the output just as a leaf is, and `JSON.generate` refuses such a name outright. The key
+      # itself is what the message names the class of, so no key's `inspect` runs while the error is built.
+      def own_wire_key(key, path)
+        rendered = case (candidate = key.to_s)
+                   when ::String then candidate
+                   else DEFAULT_TO_S.bind_call(key)
+                   end
 
-      # A property name is a String in the output just as a leaf is, so the same bytes that make a value
-      # unencodable make a KEY unencodable, and unconditionally for the same reason. Checked on the wire key
-      # this module already owns rather than on the caller's key, so nothing is projected twice; `value: key`
-      # is what the message names the class of, so no key's `inspect` runs while the error is built.
-      def check_key_bytes!(wire_key, key, path)
-        return if utf8_renderable?(wire_key)
+        utf8 = utf8_rendering(rendered)
+        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON) unless utf8
 
-        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON)
+        ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze
       end
 
       # An Array's elements, captured before the first one is projected — same guarantee, same refusal to
