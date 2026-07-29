@@ -219,6 +219,39 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  # Serializing an element runs user code (`to_h`/`as_json`), and that code can reach back into the very
+  # container being serialized. Iterating it live would skip whatever the code removed, yielding a body
+  # that is quietly missing entries with nothing in the output to say so — worse than any raise. Every
+  # container is therefore rendered from a shallow copy taken before the first element is projected.
+  describe "a container mutated by one of its own values' projections" do
+    # Deletes `key`/index 1 from the container it was put in the first time its projection runs.
+    def saboteur(container, key)
+      Object.new.tap do |o|
+        o.instance_variable_set(:@container, container)
+        o.instance_variable_set(:@key, key)
+        def o.to_h
+          @container.is_a?(Array) ? @container.delete_at(@key) : @container.delete(@key)
+          { x: 1 }
+        end
+      end
+    end
+
+    it "renders every Hash entry present when serialization began" do
+      source = {}
+      source[:a] = saboteur(source, :b)
+      source[:b] = "SHOULD APPEAR"
+
+      expect(described_class.serialize_value(source, path: "rec")).to eq("a" => { "x" => 1 }, "b" => "SHOULD APPEAR")
+    end
+
+    it "renders every Array element present when serialization began" do
+      source = []
+      source << saboteur(source, 1) << "SHOULD APPEAR"
+
+      expect(described_class.serialize_value(source, path: "rows")).to eq([{ "x" => 1 }, "SHOULD APPEAR"])
+    end
+  end
+
   # serialize_value's last resort is `value.to_s`. When that #to_s is the one inherited from Object,
   # the result is an object address — complete, but useless in a response body or an LLM's tool
   # result. Callers can set reject_opaque: true to reject it; the default keeps rendering it, since a

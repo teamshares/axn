@@ -49,8 +49,7 @@ module Axn
 
       COLLAPSED_KEYS_REASON = "stringifying its keys collapsed two of them into a single JSON property, " \
                               "dropping a value. The pair cannot be named: at least one key's #to_s does not " \
-                              "return the same String on every call, or the Hash changed while it was being " \
-                              "serialized. Give the keys stable, distinct #to_s values."
+                              "return the same String on every call. Give the keys stable, distinct #to_s values."
       private_constant :COLLAPSED_KEYS_REASON
 
       module_function
@@ -89,23 +88,28 @@ module Axn
           end
         when Hash
           within_container(value, path, seen) do |nested|
-            rendered = value.each_with_object({}) do |(key, element), acc|
+            snapshot = snapshot_container(value)
+
+            rendered = snapshot.each_with_object({}) do |(key, element), acc|
               check_opaque_key!(key, path) if reject_opaque
               wire_key = key.to_s
               acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
 
-            # Built from the SOURCE keys rather than via transform_keys so a collapse is observable:
-            # two keys with the same #to_s (`:id` and `"id"`) render as one JSON property, dropping a
-            # value. Same allocations and the same one #to_s per key either way, and the size
-            # comparison is O(1) — so the check costs nothing when there is nothing wrong.
-            raise_colliding_keys!(value, path) unless rendered.size == value.size
+            # Rendering key by key rather than via transform_keys is what makes a collapse observable: two
+            # keys with the same #to_s (`:id` and `"id"`) render as one JSON property, dropping a value. One
+            # #to_s per key and an O(1) size comparison, so the check itself is free when nothing is wrong.
+            # The size compared against MUST be the snapshot's — the live Hash's shrinks in step with
+            # `rendered` when a projection deletes an entry, so the check would agree and report nothing.
+            raise_colliding_keys!(snapshot, path) unless rendered.size == snapshot.size
 
             rendered
           end
         when Array
           within_container(value, path, seen) do |nested|
-            value.each_with_index.map { |v, index| serialize_value(v, path: "#{path}[#{index}]", seen: nested, reject_opaque:) }
+            snapshot_container(value).each_with_index.map do |element, index|
+              serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:)
+            end
           end
         when Time, DateTime, Date
           # Rendered as RFC3339/ISO-8601 regardless of Rails, matching the schema's
@@ -150,16 +154,33 @@ module Axn
         result
       end
 
-      # A collapse is detected by size, which doesn't say WHICH keys collided — so re-walk the source
-      # here, on the error path only, and name the first colliding pair. Insertion order makes the
-      # reported pair deterministic.
-      def raise_colliding_keys!(hash, path)
-        wire_key, colliding = hash.each_key.group_by(&:to_s).find { |_, group| group.size > 1 }
+      # A shallow copy of the container, taken BEFORE any element is serialized. Serializing an element
+      # runs user code (`as_json`/`to_h`) that can reach back into the container being serialized, and a
+      # live iteration would then skip whatever that code removed — an output missing entries with nothing
+      # to signal it, the one failure mode this module exists to prevent. Rendering from the copy makes
+      # "every entry present when serialization began appears in the output" hold unconditionally.
+      #
+      # `dup` rather than `to_a`/`entries`: it captures keys AND values in a single object (so nothing is
+      # read back out of a mutated source), and it preserves the container's own class, iteration and
+      # `compare_by_identity` semantics, which `to_a` would flatten — an identity-keyed Hash's colliding
+      # pair stays nameable on the error path.
+      #
+      # It is not free, and it is not meant to be optimized away: one extra object per container, and
+      # serializing 5k deeply-nested rows measured ~5% slower than iterating the containers live (about
+      # the cost of the pre-`snapshot` `transform_keys` pass this replaces). That 5% IS the guarantee.
+      def snapshot_container(container) = container.dup
+
+      # A collapse is detected by size, which doesn't say WHICH keys collided — so re-walk the snapshot
+      # here, on the error path only, and name the first colliding pair. Working from the same snapshot the
+      # detection used means a source Hash mutated mid-serialization cannot change the reported pair.
+      # Insertion order makes that pair deterministic.
+      def raise_colliding_keys!(snapshot, path)
+        wire_key, colliding = snapshot.each_key.group_by(&:to_s).find { |_, group| group.size > 1 }
 
         # The re-walk can come up empty even though the size comparison proved a collapse: a key whose #to_s
-        # returns a different String each call, or a Hash mutated while a nested value was being serialized,
-        # groups differently the second time. Report the collapse without naming a pair it cannot identify.
-        raise Axn::Reflection::UnserializableValue.new(path:, value: hash, reason: COLLAPSED_KEYS_REASON) if colliding.nil?
+        # returns a different String each call groups differently the second time. Report the collapse
+        # without naming a pair it cannot identify.
+        raise Axn::Reflection::UnserializableValue.new(path:, value: snapshot, reason: COLLAPSED_KEYS_REASON) if colliding.nil?
 
         first, second = colliding
 

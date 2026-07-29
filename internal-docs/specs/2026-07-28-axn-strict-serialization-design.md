@@ -57,22 +57,28 @@ Axn::Reflection::Values.serialize_exposed(result, configs, reject_opaque: Axn::O
 
 ### `lib/axn/reflection/values.rb`
 
-The `Hash` branch fuses key checking into the existing single pass rather than adding one. Today's `transform_keys(&:to_s)` allocates an intermediate Hash and calls `to_s` once per key; building the rendered Hash directly from the original does the same work and makes the collision check an O(1) size comparison, so the unconditional check costs nothing in the common case:
+The `Hash` branch renders key by key rather than via `transform_keys(&:to_s)`, which is what makes a collapse observable at all — and it renders from a shallow copy taken before the first value is projected:
 
 ```ruby
 when Hash
   within_container(value, path, seen) do |nested|
-    rendered = value.each_with_object({}) do |(key, element), acc|
+    snapshot = snapshot_container(value)
+
+    rendered = snapshot.each_with_object({}) do |(key, element), acc|
       check_opaque_key!(key, path) if reject_opaque
       wire_key = key.to_s
       acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
     end
-    raise_colliding_keys!(value, path) if rendered.size != value.size
+    raise_colliding_keys!(snapshot, path) unless rendered.size == snapshot.size
     rendered
   end
 ```
 
-The offending pair is located by re-scanning `value` only on the error path (`group_by(&:to_s)`), so the message can name both original keys without a per-key registry in the hot path. Insertion order makes the reported pair deterministic.
+The snapshot is load-bearing, not defensive. Serializing an element runs user code (`as_json`/`to_h`), and that code can reach back into the container being serialized: iterating it live skips whatever the projection removed, and the size comparison still agrees because the live Hash shrank in step with `rendered` — a body quietly missing entries, which is the exact failure this whole change exists to prevent. Comparing against the snapshot's size is what keeps the check honest. The `Array` branch snapshots for the same reason; an element's projection can `delete_at` a later index just as easily.
+
+Allocation is unchanged from `transform_keys`: one intermediate container either way, plus the rendered Hash, and one `to_s` per key. So the unconditional collision check still costs an O(1) size comparison and nothing else. Do not "optimize" the snapshot away — it is the fix for a data-loss path, not overhead.
+
+The offending pair is located by re-scanning the snapshot on the error path only (`group_by(&:to_s)`), so the message names both original keys without a per-key registry in the hot path, and a container mutated mid-serialization cannot change the reported pair. Insertion order makes that pair deterministic. When the re-walk finds no duplicate — a key whose `to_s` returns a different String each call — the collapse is still reported, without naming a pair it cannot identify.
 
 The leaf check sits in the existing `else` arm's final fallback, the only place `value.to_s` is reached:
 
