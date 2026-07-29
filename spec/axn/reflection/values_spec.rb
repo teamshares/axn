@@ -626,6 +626,34 @@ RSpec.describe Axn::Reflection::Values do
   describe "default-to_s Hash keys under reject_opaque:" do
     let(:opaque_key) { Object.new }
 
+    # `#method` is overridable, so the owner lookups ask Object's implementation. A value whose own #method
+    # raises must not be able to replace a serialization decision with its exception.
+    it "never dispatches a value's or key's own #method when checking to_s ownership" do
+      # Built on the masking helper so the value reaches the `to_s` fallback under the full suite, where a
+      # generic Object#as_json exists: without a to_h it would otherwise be an undeclared projection and be
+      # rejected for that reason instead, never exercising the owner lookup under test.
+      hostile_value = opaque_object.tap do |o|
+        def o.to_s = "meaningful"
+        def o.method(_name) = raise(SystemStackError, "boom")
+      end
+      # A Hash key never consults the as_json chain, so it needs no masking.
+      hostile_key = Object.new.tap do |o|
+        def o.to_s = "meaningful"
+        def o.method(_name) = raise(SystemStackError, "boom")
+      end
+
+      expect(described_class.serialize_value(hostile_value, reject_opaque: true)).to eq("meaningful")
+      expect(described_class.serialize_value({ hostile_key => 1 }, reject_opaque: true)).to eq("meaningful" => 1)
+    end
+
+    # By contrast, overriding respond_to? is a supported Ruby idiom (a method_missing proxy depends on it),
+    # so it stays dispatched — the value genuinely owns the answer to "do you respond to this?".
+    it "still honors a respond_to? override, which is the value's own answer to give" do
+      hidden = opaque_object.tap { |o| def o.to_s = "S" }
+
+      expect(described_class.serialize_value(hidden, reject_opaque: true)).to eq("S")
+    end
+
     # The fast path that skips Symbol/String keys must not ask the key what it is: a key answering that
     # question itself could route around the gate, or replace the serialization failure with its own error.
     it "does not let a key claiming to be a Symbol route around the gate" do

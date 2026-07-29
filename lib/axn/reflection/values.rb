@@ -82,6 +82,14 @@ module Axn
                                       "re-encode the key's bytes, or key the Hash by a UTF-8 String or Symbol."
       private_constant :UNRENDERABLE_KEY_BYTES_REASON
 
+      # `#method` is itself overridable, so the owner lookups below go through Object's implementation. A value
+      # whose own `#method` raises would otherwise replace a serialization decision with its exception — and
+      # escape the adapter when that exception is outside StandardError. `respond_to?` is deliberately NOT
+      # treated this way: "do you claim to respond to this?" is genuinely the value's own answer to give, and
+      # overriding it is a supported idiom that a method_missing-backed proxy depends on.
+      UNBOUND_METHOD = ::Object.instance_method(:method)
+      private_constant :UNBOUND_METHOD
+
       UNRENDERABLE_FIELD_BYTES_REASON = "an exposed field's name becomes a JSON property name, and this one " \
                                         "holds bytes that have no UTF-8 rendering, and JSON is a UTF-8 " \
                                         "format — `JSON.generate` refuses such a property name outright. " \
@@ -390,6 +398,10 @@ module Axn
       # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.
       # Separate from the raise so a field name and a Hash key can share one canonicalization while each
       # reports the defect in its own terms — the two are the same mechanism but not the same fix.
+      # The module that actually defines `name` on `value`, asked without dispatching the value's own
+      # `#method`. Raises NameError when nothing defines it, exactly as `#method` would.
+      def owner_of(value, name) = UNBOUND_METHOD.bind_call(value, name).owner
+
       def canonical_wire_key(key)
         rendered = case (candidate = key.to_s)
                    when ::String then candidate
@@ -474,7 +486,7 @@ module Axn
       # opaqueness verdict differs.
       def projection_for(value)
         if value.respond_to?(:as_json)
-          generic = value.method(:as_json).owner == ::Object
+          generic = owner_of(value, :as_json) == ::Object
           return :own_as_json unless generic
           return value.respond_to?(:to_hash) ? :delegated_as_json : :generic_as_json unless value.respond_to?(:to_h)
         end
@@ -493,7 +505,7 @@ module Axn
       # fallback and from a Hash key, so the earlier branches have already routed away everything
       # that stringifies meaningfully.
       def default_to_s?(value)
-        DEFAULT_TO_S_OWNERS.include?(value.method(:to_s).owner)
+        DEFAULT_TO_S_OWNERS.include?(owner_of(value, :to_s))
       rescue NameError
         # `method(:to_s)` can't resolve a #to_s that was undef'd and is served by method_missing without a
         # matching respond_to_missing?. That #to_s is emphatically not the inherited default, and the value
