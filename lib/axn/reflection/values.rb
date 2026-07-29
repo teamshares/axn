@@ -172,13 +172,21 @@ module Axn
             # Every key check and every key's #to_s already happened in the capture, so this loop only
             # renders elements under wire keys it is handed — it never touches `value` or a key again. The
             # list it walks is the capture's own, so `each_with_object` here is Array's own.
-            capture_hash_entries(value, path, reject_opaque:).each_with_object({}) do |(wire_key, _key, element), acc|
+            entries = capture_hash_entries(value, path, reject_opaque:)
+            rendered = entries.each_with_object({}) do |(wire_key, _key, element), acc|
               acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
             end
+
+            no_entries_lost!(rendered.size, entries.size, path)
+            rendered
           end
         when Array
           within_container(value, path, seen) do |nested|
             # As in the Hash branch, the list being indexed is the capture's own Array, not `value`.
+            #
+            # No dropped-entry backstop here, unlike the Hash branch: `map` yields exactly one rendered
+            # element per captured one, so the counts cannot diverge. An Array has no equivalent of two keys
+            # collapsing into one property — an index is a position, not a projection of a caller's object.
             capture_elements(value).each_with_index.map do |element, index|
               serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:)
             end
@@ -428,6 +436,27 @@ module Axn
       def own_wire_key(key, path)
         canonical_wire_key(key) ||
           raise(Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON))
+      end
+
+      # A post-condition, not a detector: every route to dropping an entry is supposed to have been caught
+      # already and named precisely (a collision, an unrenderable key). This asks the cheaper question of
+      # whether anything went missing at all, so an unforeseen route surfaces as a loud failure instead of a
+      # body that is quietly short a value — the outcome this whole module exists to prevent. O(1), so it
+      # costs nothing to keep, and it is worth keeping precisely because the routes are not enumerable: a
+      # caller can override any method the walk touches.
+      #
+      # Reaching it means axn has a bug, not the caller — the message says so rather than blaming the value.
+      def no_entries_lost!(rendered_size, captured_size, path)
+        return if rendered_size == captured_size
+
+        raise Axn::Reflection::UnserializableValue.new(
+          path:,
+          value: nil,
+          reason: "serializing it produced #{rendered_size} of its #{captured_size} entries, and no specific " \
+                  "defect was detected on the way — so a value was dropped for a reason this serializer does " \
+                  "not recognize. That is a bug in axn rather than in the exposed value; please report the " \
+                  "shape that triggered it.",
+        )
       end
 
       # Two field names that converged on one property. Both names are safe to interpolate — Symbol#inspect

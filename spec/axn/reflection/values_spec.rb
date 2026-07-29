@@ -245,6 +245,36 @@ RSpec.describe Axn::Reflection::Values do
   # Stringifying a Hash's keys collapses two keys with the same #to_s into ONE JSON property, dropping
   # a value. Unlike an ugly rendering, the caller cannot tell from the output that anything went
   # missing — so this raises regardless of strictness.
+  # A post-condition behind the specific detectors: every known route to dropping an entry raises with a
+  # precise message before this can fire. It exists for the routes nobody has thought of, since a caller can
+  # override any method the walk touches — so an unforeseen drop surfaces loudly instead of as a body quietly
+  # short a value. That makes it unreachable through the public API by construction, which is why these
+  # examples drive the helper directly and stub the capture to prove it is wired in; there is no honest input
+  # that reaches it.
+  describe "the dropped-entry backstop" do
+    it "raises when rendering produced fewer entries than were captured" do
+      expect { described_class.send(:no_entries_lost!, 1, 2, "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /produced 1 of its 2 entries.*bug in axn/m)
+    end
+
+    it "passes when the counts agree" do
+      expect(described_class.send(:no_entries_lost!, 2, 2, "rec")).to be_nil
+    end
+
+    it "is wired into the Hash branch" do
+      allow(described_class).to receive(:capture_hash_entries).and_return([["k", :k, 1], ["k", :k, 2]])
+
+      expect { described_class.serialize_value({ a: 1 }, path: "rec") }
+        .to raise_error(Axn::Reflection::UnserializableValue, /produced 1 of its 2 entries/)
+    end
+
+    # Deliberately absent from the Array branch: `map` yields exactly one rendered element per captured one,
+    # so the counts cannot diverge there and the check would be provably dead code.
+    it "renders every element of an Array, which needs no backstop to guarantee" do
+      expect(described_class.serialize_value([1, { a: 2 }, nil]).size).to eq(3)
+    end
+  end
+
   describe "colliding Hash keys" do
     it "raises rather than silently dropping a value" do
       expect { described_class.serialize_value({ id: 1, "id" => 2 }, path: "rec") }
