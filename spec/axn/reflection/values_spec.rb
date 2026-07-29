@@ -175,7 +175,8 @@ RSpec.describe Axn::Reflection::Values do
       expect { described_class.serialize_value({ id: 1, "id" => 2 }, path: "rec") }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
-          /`rec \(hash key "id"\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value/m,
+          # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
+          /`rec \(hash key "id"\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value.*Key the Hash by one of them/m,
         )
     end
 
@@ -373,7 +374,8 @@ RSpec.describe Axn::Reflection::Values do
       expect { described_class.serialize_value({ opaque_key => 1 }, path: "data", reject_opaque: true) }
         .to raise_error(
           Axn::Reflection::UnserializableValue,
-          /`data \(hash key #<Object:0x[0-9a-f]+>\)` \(Object\).*a Hash key is rendered via #to_s/m,
+          # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
+          /`data \(hash key #<Object:0x[0-9a-f]+>\)` \(Object\).*a Hash key is rendered via #to_s.*key the Hash by a Symbol, String, or Integer/m,
         )
     end
 

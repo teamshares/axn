@@ -43,7 +43,8 @@ module Axn
       private_constant :OPAQUE_VALUE_REASON
 
       OPAQUE_KEY_REASON = "a Hash key is rendered via #to_s and this one has only the default " \
-                          'Object#to_s (it would stringify to garbage like "#<…>").'
+                          'Object#to_s (it would stringify to garbage like "#<…>") — give the key a ' \
+                          "meaningful #to_s, or key the Hash by a Symbol, String, or Integer."
       private_constant :OPAQUE_KEY_REASON
 
       OPAQUE_AS_JSON_REASON = "it declares no JSON projection of its own: outside Rails it renders as an " \
@@ -196,7 +197,8 @@ module Axn
           path: "#{path} (hash key #{second.inspect})",
           value: second,
           reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
-                  "(#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value.",
+                  "(#{first.inspect} and #{second.inspect}), which would silently collapse and drop a value. " \
+                  "Key the Hash by one of them, not both, or give the keys distinct #to_s values.",
         )
       end
 
