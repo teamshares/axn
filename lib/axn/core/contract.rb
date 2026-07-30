@@ -792,6 +792,17 @@ module Axn
           end
         end
 
+        # Private, though declared next to their definitions rather than relocated below: these are
+        # declaration-time internals of the shape-member walk, called only with an implicit receiver (from here
+        # and from ContractForSubfields, which is extended onto the same class). Kept in place so each stays
+        # beside the walk it belongs to, with its comment.
+        #
+        # Only these — the ones this PR added. The other leading-underscore public class methods are
+        # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
+        # already reach; narrowing those is a separate, breaking question.
+        private :_describe_shape_member, :_reject_colliding_shape_member_names!, :_check_shape_member_names!,
+                :_raise_cyclic_shape!, :_raise_shape_too_deep!, :_raise_duplicate_member!
+
         private
 
         # A true duplicate is the SAME wire key declared under the SAME parent route — keyed on the
