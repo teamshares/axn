@@ -72,6 +72,27 @@ axn-core reserves the top-level public constants (`Result`, `Failure`, `Factory`
   differ (symbol-keyed kwargs vs indifferent-access nested data). But a value with a uniform
   *meaning* (`<field>_id` is always the primary key) must be honored on every path, blank/edge
   inputs included.
+- **A guard derives from what its consumer emits; it never predicts it.** When a check must agree
+  with a projection — the property-name rules against `Reflection::Schema`'s emitted properties, say
+  — read the consumer's own output or call the consumer's own decision (`Schema.shape_property_plan`,
+  `Schema.build_input_for`), rather than re-deriving the answer beside it. A predictor is wrong in two
+  directions at once and both are worse than a late diagnosis: it misses what the consumer emits by a
+  path the predictor doesn't know, and it *rejects legal declarations* the consumer would never emit
+  at all. Five separate defects on one PR shared that root, and each seam-by-seam fix generated the
+  next one until the predictor was deleted. This is also why a check may legitimately fire later than
+  declaration: if only the emitted schema reveals a collision, the honest promise is "before anything
+  can consume it" (at app setup for tools, via `Axn.validate_tool_contracts!`), not "at declaration".
+- **Canonicalizing a value obliges you to re-audit every guard that read the raw form.** Symbolizing
+  keys, defaulting an absent list to `[]`, normalizing a name — each silently disarms any downstream
+  check that distinguished what you just erased. Three regressions on one PR: `[]`-for-absent hid
+  `ShapeValidator`'s "must supply :members"; String-keyed option bags hid `_reject_model_transform!`
+  and made `FieldOptionality#optional?` answer `false` for a declared `allow_blank`, publishing a
+  wrong `required` list that adapters build tool definitions from. Enumerate the consumers of both
+  forms in the same commit, and say which still fire.
+- **An optimization that returns the caller's object unchanged is an aliasing bug.** A fast path
+  skipping work because "nothing needs changing" answers a different question than "nothing needs
+  copying" — a declared contract must be axn's own, so mutating what the caller still holds cannot
+  change it retroactively.
 
 ## Errors
 
