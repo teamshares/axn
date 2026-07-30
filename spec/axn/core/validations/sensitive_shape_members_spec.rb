@@ -234,6 +234,27 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       result = action.call(items: [{ name: "Alice" }])
       expect { result.__action__.internal_context.inspect }.not_to raise_error
     end
+
+    # The tolerance runs one way only. A member that DEFINES `sensitive:` cannot opt out of redaction by
+    # denying the reader — both paths read it from the real method table (`ShapeGraph`), so `inspect` cannot
+    # print in the clear what logging redacts.
+    it "redacts a member that hides its #sensitive reader, in logs AND inspect" do
+      member = Struct.new(:field, :validations, :sensitive) do
+        def respond_to?(name, *) = name.to_sym == :sensitive ? false : super
+      end.new(:ssn, { type: { klass: String } }, true)
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [member], container: Hash }
+
+        def call; end
+      end
+
+      instance = action.send(:new, payload: { ssn: "111-11-1111" })
+      expect(instance.send(:inputs_for_logging)[:payload]).to eq({ ssn: "[FILTERED]" })
+
+      inspected = action.call(payload: { ssn: "111-11-1111" }).__action__.internal_context.inspect
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("111-11-1111")
+    end
   end
 
   describe "object-backed shapes (value isn't a Hash → wholesale masking)" do

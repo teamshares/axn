@@ -378,10 +378,15 @@ module Axn
         # emission itself answers, asked once here for attribution rather than to decide anything.
         plan = Axn::Reflection::Schema.shape_property_plan(config, for_output: !model_id)
         node_path = plan.in_items? ? [*wire_path, ITEMS_SEGMENT] : wire_path
-        plan.base_properties.each_key do |member|
-          sources << PropertySource.new(path: [*node_path, member], kind: :type_member,
-                                        description: "#{inspect_field_name(member)}, a member of the " \
-                                                     "#{describe_type(shape_type_klass(config, plan))} type declared on #{describe_config(config)}")
+        # Every namespace of the type schema, so a source's path is where the property is actually EMITTED —
+        # a multi-class `of:` puts each element type's members in its own `anyOf` branch, one path segment
+        # below the node (see each_type_namespace).
+        origin = describe_type(shape_type_klass(config, plan))
+        each_type_namespace(plan) do |type_path, members|
+          members.each do |member|
+            sources << PropertySource.new(path: [*node_path, *type_path, member], kind: :type_member,
+                                          description: "#{inspect_field_name(member)}, a member of #{origin} declared on #{describe_config(config)}")
+          end
         end
         sources.concat(shape_member_sources(Axn::Internal::ShapeGraph.nested_shape(config), node_path, config))
       end
@@ -397,8 +402,29 @@ module Axn
         end
       end
 
+      # Every namespace of property names a declared TYPE contributes, as `[path_below_the_node, names]`.
+      #
+      # Walked with `each_emitted_node` — the same enumeration that reads a BUILT schema for collisions — over
+      # the type schema `shape_property_plan` carries, which is the very Hash `apply_structured_schema!` emits.
+      # So both consumers of this (the projection size cap, and collision attribution) see every property name
+      # anywhere the emitter puts one, including a nesting no rule here knows about yet. Asking the node's own
+      # `properties` instead missed a whole class of them: a multi-class `of:` emits one `anyOf` BRANCH per
+      # element type, each carrying its own properties, so 26 branches of 1,000 members charged nothing and a
+      # schema of 26,000 properties declared and projected past a 25,000 cap.
+      #
+      # Branches are sibling NAMESPACES, which is why they are enumerated separately rather than flattened: two
+      # branches may legally name the same member (`of: [A, B]` where both define `:id`), and each gets its own
+      # path segment so it counts toward SIZE without reading as a collision.
+      def each_type_namespace(plan, &)
+        each_emitted_node(plan.type_schema, &)
+      end
+
       # The type whose members a structured-type property came from: the `of:` element type inside an array,
-      # the field's own declared type otherwise.
+      # the field's own declared type otherwise. Nil for a UNION (`of: [A, B]`), where the property lives in
+      # one `anyOf` branch and pinning which class contributed it would mean mapping a branch index back to a
+      # declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs once a
+      # failure is certain. The message names the union collectively there instead. A nil answer means exactly
+      # that case: every other way of reaching nil contributes no type properties for a source to describe.
       def shape_type_klass(config, plan)
         source = plan.in_items? ? config.validations[:of] : config.validations[:type]
         klass = source.is_a?(Hash) ? source[:klass] : source
@@ -407,7 +433,7 @@ module Axn
 
       # A declared type is named through a bound `Module#to_s`: a class can define its own, and one that
       # raises would replace the collision being reported (outside StandardError, escaping class definition).
-      def describe_type(klass) = klass.nil? ? "declared" : Axn::Internal::ClassName.of_module(klass)
+      def describe_type(klass) = klass.nil? ? "one of the element types" : "the #{Axn::Internal::ClassName.of_module(klass)} type"
 
       def describe_config(config)
         route = config.on ? " (on: #{inspect_field_name(config.on)})" : ""
@@ -497,9 +523,10 @@ module Axn
       # rather than predicted from the declaration. A shape whose members never become properties therefore costs
       # nothing: a scalar `of:` (`of: String` with `field :length`) validates its members off an element that
       # stays a string, and an outbound-gated or non-member-keyed value emits no object at all. Charging those
-      # rejected a contract over a schema it does not have. The plan's `base_properties` ARE charged even when
-      # the shape overlay is not emitted, because an `of:` element type's own members reach `items` with or
-      # without a shape.
+      # rejected a contract over a schema it does not have. The type's own properties ARE charged even when the
+      # shape overlay is not emitted, because an `of:` element type's own members reach `items` with or without a
+      # shape — and they are charged through `each_type_namespace`, so a type that emits its properties across
+      # several namespaces (a multi-class `of:`) is counted in all of them rather than only at the node.
       #
       # The plan is asked once per shape-bearing node, not per member: a member with no nested shape has no
       # subtree to charge and never reaches this.
@@ -511,7 +538,7 @@ module Axn
         return if nil.equal?(hash) && nil.equal?(validations[:of])
 
         plan = Schema.shape_property_plan(owner, for_output:)
-        budget.spend!(plan.base_properties.size, &label)
+        each_type_namespace(plan) { |_path, names| budget.spend!(names.size, &label) }
         return if nil.equal?(hash) || !plan.emitted
 
         raise_shape_too_deep!(via) if depth > Internal::ShapeGraph::MAX_NESTING
@@ -548,7 +575,7 @@ module Axn
                            :reject_colliding_emitted_properties!, :reject_oversized_schema!,
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
-                           :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
+                           :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
                            :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!
     end
   end

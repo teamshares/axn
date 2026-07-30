@@ -1031,7 +1031,9 @@ module Axn
         plan = shape_property_plan(config, for_output:)
 
         if plan.in_items?
-          items = of ? items_schema_for(of, for_output:) : {}
+          # The plan's own type schema, not a second `items_schema_for` call: one build, and the plan is then
+          # literally what gets emitted rather than a parallel derivation of it.
+          items = plan.type_schema
           if shape && plan.emitted
             member_props, required = member_properties(shape[:members], for_output:)
             items = items.merge(type: "object", properties: plan.base_properties.merge(member_props))
@@ -1071,18 +1073,25 @@ module Axn
       #     `serialize_value` would follow instead), so the property is left untyped rather than promising an
       #     object shape the serializer will not produce.
       #
-      # `base_properties` is what the type itself contributes: a `Data` field's own members, or — for an array
-      # — whatever `items_schema_for` seeded from the `of:` element type, which is the same `Data` members one
-      # level down. Built by calling those paths rather than re-deriving them.
-      ShapePropertyPlan = Data.define(:emitted, :in_items, :base_properties) do
+      # `type_schema` is what the declared TYPE contributes, as the emitter's own Hash: for an array, exactly
+      # what `items_schema_for` seeded from the `of:` element type; for a non-array, a `Data` field's own
+      # members. Carried whole rather than reduced to one property list, because the emitter does not put all
+      # of it at one node — a multi-class `of:` becomes one `anyOf` BRANCH per element type, each with its own
+      # `properties`. `base_properties` is the part that lands at the node itself, which is all the emitter
+      # merges the shape's members into; a consumer that must account for EVERY name (the projection size cap)
+      # walks the whole schema instead. Reducing this to `base_properties` alone is what let a contract naming
+      # 26,000 properties across 26 branches charge zero.
+      ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema) do
         def in_items? = in_items
+
+        def base_properties = type_schema[:properties] || {}
       end
 
       def shape_property_plan(config, for_output:)
         of = config.validations[:of]
         shape = config.validations[:shape]
         in_items = Array(json_type_for(config.validations, for_output:)[:type]).include?("array")
-        nothing = ShapePropertyPlan.new(emitted: false, in_items:, base_properties: {})
+        nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {})
 
         # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
         # neither `of:` nor `shape:` contributes no object properties AT ALL — not even its type's own members —
@@ -1096,8 +1105,7 @@ module Axn
           # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
           emitted = shape_overlay_applies?(of, for_output:)
           # `items_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
-          base = of ? items_schema_for(of, for_output:)[:properties] || {} : {}
-          return ShapePropertyPlan.new(emitted:, in_items:, base_properties: base)
+          return ShapePropertyPlan.new(emitted:, in_items:, type_schema: of ? items_schema_for(of, for_output:) : {})
         end
 
         # Only the `elsif shape` branch emits object properties for a non-array field: `of:` without a shape on
@@ -1109,7 +1117,9 @@ module Axn
         emitted = !for_output || shape_serializes_to_object?(config)
         type_klass = config.validations.dig(:type, :klass)
         base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
-        ShapePropertyPlan.new(emitted:, in_items:, base_properties: base)
+        # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
+        # scalar types, which name no properties), so its schema is just those properties.
+        ShapePropertyPlan.new(emitted:, in_items:, type_schema: { properties: base })
       end
 
       # Whether a shape block should overlay object properties onto an array's items. OUTPUT: each element

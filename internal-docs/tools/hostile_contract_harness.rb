@@ -1967,6 +1967,36 @@ check "an of: element type's own members are still counted", /names more than 25
   end
 end
 
+# ...and they reach it through as many `anyOf` BRANCHES as the `of:` has element types, each branch carrying
+# its own `properties`. A charge that read the node's own `properties` counted none of those, so 26 classes of
+# 1,000 members — 26,000 emitted properties — declared and projected straight past the cap.
+check "an of: with MANY element types counts every branch", /names more than 25000 JSON properties/ do
+  wides = Array.new(26) { |b| Data.define(*Array.new(1_000) { |i| :"b#{b}m#{i}" }) }
+  klass = Class.new do
+    include Axn
+    expects :items, type: Array, of: wides, optional: true
+    def call; end
+  end
+  begin
+    klass.input_schema && "projected"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
+# Branches are sibling NAMESPACES, so counting them for size must not make a name shared by two of them a
+# collision: `of: [A, B]` where both define `:shared` describes one property two ways.
+check "two of: branches may share a member name", '[[:shared, :only_a], [:shared, :only_b]]' do
+  a = Data.define(:shared, :only_a)
+  b = Data.define(:shared, :only_b)
+  klass = Class.new do
+    include Axn
+    expects :items, type: Array, of: [a, b], optional: true
+    def call; end
+  end
+  klass.input_schema.dig(:properties, :items, :items, :anyOf).map { |branch| branch[:properties].keys }.inspect
+end
+
 # The graph bound, in its own vocabulary: flat (per-member charge) and shared (subtree charge).
 check "one flat shape past the path bound is rejected at declaration", /ArgumentError.*has more than 25000 member paths/ do
   members = Array.new(25_001) { |i| SC.new(field: :"m#{i}", validations: {}) }
@@ -2047,6 +2077,45 @@ check "100 fields over 100 separate calls declares in under 1s", true do
   end
   puts format("       (%.3fs)", elapsed)
   elapsed < 1.0
+end
+
+# ---------------------------------------------------------------------------------------------------
+puts "\n== cost: a logged call must not pay for the whole stored graph =========================="
+# ---------------------------------------------------------------------------------------------------
+
+# Redaction reads the stored shape graph to decide what to mask. Everything it can decide from the
+# DECLARATION is decided once per contract, because a stored graph is a declaration-time snapshot — so the
+# per-call cost is independent of the graph's size. It used to be linear in it, and worst for a contract with
+# no `sensitive:` at all: concluding "nothing to redact" is what requires visiting every member.
+def redaction_cost(members)
+  klass = Class.new do
+    include Axn
+    expects :flag, type: :boolean, optional: true
+    expects :payload, type: Hash, shape: { members:, container: Hash }, optional: true
+    def call; end
+  end
+  instance = klass.send(:new, flag: true)
+  data = { payload: { m0: "secret", m1: "other" } }
+  3.times { klass._context_slice(data:, direction: :inbound, action_instance: instance) }
+  t = Benchmark.realtime { 10.times { klass._context_slice(data:, direction: :inbound, action_instance: instance) } }
+  t / 10
+end
+
+{ "no sensitive: anywhere" => nil, "one static sensitive member" => true }.each do |label, sensitive|
+  check "24k members, #{label}: under 1ms per logged call", true do
+    elapsed = redaction_cost(Array.new(24_000) { |i| SC.new(field: :"m#{i}", validations: {}, sensitive: i.zero? && !sensitive.nil?) })
+    puts format("       (%.4fs)", elapsed)
+    elapsed < 0.001
+  end
+end
+
+# A dynamic `sensitive:` is the one case that cannot be decided once — it resolves against the action — so it
+# still walks per call. RECORDED rather than fixed: the alternative is a memo that ignores the instance, which
+# would over-redact a `sensitive: :flag` whose flag is false.
+check "24k members, dynamic sensitive: still walks per call", true do
+  elapsed = redaction_cost(Array.new(24_000) { |i| SC.new(field: :"m#{i}", validations: {}, sensitive: i.zero? ? :flag : false) })
+  puts format("       (%.4fs)", elapsed)
+  elapsed > 0.001
 end
 
 # ---------------------------------------------------------------------------------------------------

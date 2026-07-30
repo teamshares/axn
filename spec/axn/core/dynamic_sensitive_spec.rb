@@ -300,4 +300,108 @@ RSpec.describe "Dynamic sensitive fields" do
       expect(ctx[:outputs][:output]).to eq("sensitive-data")
     end
   end
+
+  # What redaction can derive from the DECLARATION is derived once per contract, so a logged call's cost does
+  # not scale with the stored shape graph. Everything here pins the two ways that can go wrong: an answer
+  # outliving the contract it was derived from, and an answer being reused where it depends on the instance.
+  describe "facts reused across calls" do
+    def logged(klass, data, instance = klass.send(:new))
+      klass._context_slice(data:, direction: :inbound, action_instance: instance)
+    end
+
+    # A contract can grow after it has been logged: a reopened class, a subclass, a `Mountable` builder. The
+    # derived answers are keyed on the IDENTITY of the config arrays, which declaration replaces, so a grown
+    # contract misses rather than answering from the old one. `inspection_filter` had exactly this bug before
+    # the memo was keyed that way: a field declared `sensitive:` after the first logged call was logged in the
+    # clear, forever.
+    it "redacts a sensitive field declared after the first logged call" do
+      klass = build_axn { expects :a, optional: true }
+      expect(logged(klass, { a: "1" })).to eq({ a: "1" })
+
+      klass.class_eval { expects :b, sensitive: true, optional: true }
+
+      expect(logged(klass, { a: "1", b: "s3cr3t" })).to eq({ a: "1", b: "[FILTERED]" })
+      expect(klass.sensitive_fields).to eq([:b])
+      expect(klass.inspection_filter.filter({ b: "s3cr3t" })).to eq({ b: "[FILTERED]" })
+    end
+
+    it "redacts a sensitive shape member declared after the first logged call" do
+      klass = build_axn { expects(:p, type: Hash) { field :m, type: String } }
+      expect(logged(klass, { p: { m: "1" } })).to eq({ p: { m: "1" } })
+
+      klass.class_eval { expects(:q, type: Hash) { field :ssn, type: String, sensitive: true } }
+
+      expect(logged(klass, { p: { m: "1" }, q: { ssn: "9", other: "x" } }))
+        .to eq({ p: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
+      # The shaped value may also be a non-Hash the key filter cannot descend into, which is masked wholesale
+      # off the derived shape paths rather than the field-name set.
+      expect(logged(klass, { q: "opaque" })).to eq({ q: "[FILTERED]" })
+    end
+
+    it "starts resolving per instance once a dynamic sensitive: is declared after a static contract" do
+      klass = build_axn { expects :a, optional: true }
+      expect(logged(klass, { a: "1" })).to eq({ a: "1" })
+
+      klass.class_eval do
+        expects :flag, type: :boolean, optional: true
+        expects :secret, sensitive: :flag, optional: true
+      end
+
+      expect(logged(klass, { flag: true, secret: "s" }, klass.send(:new, flag: true))).to eq({ flag: true, secret: "[FILTERED]" })
+      expect(logged(klass, { flag: false, secret: "s" }, klass.send(:new, flag: false))).to eq({ flag: false, secret: "s" })
+    end
+
+    # A subclass that declares nothing of its own READS the superclass's config arrays, so it derives the same
+    # answers — and when the superclass's contract later grows, the subclass's derivation has to fall out of date
+    # along with it. A subclass that declares its own `sensitive:` mints its own arrays and never reaches back
+    # into the parent's answer.
+    it "re-derives for a subclass when the superclass's contract grows" do
+      parent = build_axn { expects :a, optional: true }
+      plain_child = Class.new(parent)
+      expect(logged(plain_child, { a: "1" })).to eq({ a: "1" })
+
+      own_child = Class.new(parent) { expects :b, sensitive: true, optional: true }
+      expect(logged(own_child, { a: "1", b: "s" })).to eq({ a: "1", b: "[FILTERED]" })
+      expect(parent.sensitive_fields).to eq([])
+
+      parent.class_eval { expects :c, sensitive: true, optional: true }
+
+      expect(logged(plain_child, { a: "1", c: "s" })).to eq({ a: "1", c: "[FILTERED]" })
+    end
+
+    # A dynamic `sensitive:` is resolved per instance, in BOTH orders: an answer cached from the first instance
+    # to call would over-redact for the next one, which looks safe and is still a behavior change. Both
+    # mechanisms are exercised, because they are reached differently — a Hash member is redacted by key name,
+    # while a NON-Hash value in a member-bearing position can only be masked off the resolved shape paths.
+    it "resolves a dynamic sensitive: per instance, whichever instance calls first" do
+      klass = build_axn do
+        expects :flag, type: :boolean, optional: true
+        expects :payload, type: Hash, optional: true do
+          field :ssn, type: String, sensitive: :flag
+        end
+      end
+      data = { payload: { ssn: "9", other: "x" } }
+
+      expect(logged(klass, data.merge(flag: false), klass.send(:new, flag: false))).to eq({ flag: false, payload: { ssn: "9", other: "x" } })
+      expect(logged(klass, data.merge(flag: true), klass.send(:new, flag: true))).to eq({ flag: true, payload: { ssn: "[FILTERED]", other: "x" } })
+      expect(logged(klass, data.merge(flag: false), klass.send(:new, flag: false))).to eq({ flag: false, payload: { ssn: "9", other: "x" } })
+
+      expect(logged(klass, { flag: true, payload: "opaque" }, klass.send(:new, flag: true))).to eq({ flag: true, payload: "[FILTERED]" })
+      expect(logged(klass, { flag: false, payload: "opaque" }, klass.send(:new, flag: false))).to eq({ flag: false, payload: "opaque" })
+    end
+
+    # "No Proc or Symbol" is NOT the condition for reusing an answer: any other truthy value resolves
+    # differently depending on which path asks, since the per-instance resolution truthiness-tests it while the
+    # instanceless one counts only a literal `true`. So it keeps resolving per call, and the shaped value it
+    # guards is still masked when an instance is present.
+    it "keeps resolving a truthy non-literal sensitive: per call" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: "yes")
+      klass = build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash }, optional: true }
+
+      expect(logged(klass, { payload: { ssn: "9" } })).to eq({ payload: { ssn: "9" } })
+      expect(logged(klass, { payload: "opaque" })).to eq({ payload: "[FILTERED]" })
+      # Without an instance (async reporting) only a literal `true` counts, as ever.
+      expect(klass._context_slice(data: { payload: "opaque" }, direction: :inbound)).to eq({ payload: "opaque" })
+    end
+  end
 end

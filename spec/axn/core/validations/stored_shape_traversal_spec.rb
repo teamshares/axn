@@ -135,11 +135,10 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     it "keeps inspect's own redaction walk bounded" do
       member, klass = declared_and_projected
       member.mode = :generative
-      inspector = Axn::Core::ContextFacadeInspector.allocate
 
-      # It RETURNS — no member here claims to be sensitive, so a bare inspector never needs its `action`, and
-      # what this pins is that the walk terminates at all. Unbounded, it raised SystemStackError instead.
-      expect(inspector.send(:collect_sensitive_member_names, klass.internal_field_configs.first)).to eq([])
+      # It RETURNS — no member here claims to be sensitive, so the walk never needs an instance, and what this
+      # pins is that it terminates at all. Unbounded, it raised SystemStackError instead.
+      expect(klass._sensitive_member_names(klass.internal_field_configs.first, nil)).to eq([])
     end
 
     it "still settles a logged call as an ordinary result" do

@@ -2072,10 +2072,10 @@ RSpec.describe "declaration-time property name collisions" do
         expect(elapsed).to be < 1.0
       end
 
-      # Past a point that sharing is not a graph anything can walk cheaply: the PATHS are exponential, and the
-      # walks that read a stored contract on every logged call pay one step per path (measured: 262,000 paths ≈
-      # 4s per call). Rejecting at declaration is the better of the two outcomes — the alternative is declaring
-      # cleanly and then paying that on every call, and hanging the first time anything reflects it.
+      # Past a point that sharing is not a graph anything can walk cheaply: the PATHS are exponential, and every
+      # walk of a stored graph pays one step per path — runtime validation on each call, and redaction once per
+      # contract or per logged call for an instance-resolved `sensitive:` (measured: 786,000 paths ≈ 1.3s per log
+      # line, ≈2s for the one derivation). Rejecting at declaration is the better of the two outcomes.
       #
       # Deliberately about the GRAPH, not about emitted properties: see `stored_shape_traversal_spec.rb` for the
       # separate, plan-derived bound on what a schema emits.
@@ -2123,13 +2123,34 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       # ...and an `of:` element type's OWN members reach `items` whether or not a shape overlays them, so the
-      # plan's `base_properties` are charged even when the overlay is not emitted.
+      # type's own properties are charged even when the overlay is not emitted.
       it "counts an of: element type's own members, which the schema does emit" do
         names = Array.new(26_000) { |i| :"m#{i}" }
         wide = Data.define(*names)
 
         expect { build_axn { expects :items, type: Array, of: wide }.input_schema }
           .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+      end
+
+      # A UNION `of:` reaches `items` through one `anyOf` branch per element type, each carrying its own
+      # `properties` — so the charge has to count every namespace of the type schema, not the node's own
+      # properties (which are empty for a union). Reading one key off the plan counted zero for all 26 branches
+      # and let a 26,000-property schema project.
+      it "counts every anyOf branch of a union of:" do
+        wides = Array.new(26) { |b| Data.define(*Array.new(1_000) { |i| :"b#{b}m#{i}" }) }
+
+        expect { build_axn { expects :items, type: Array, of: wides, optional: true }.input_schema }
+          .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+      end
+
+      # Counting a branch for SIZE must not make it a claim space: branches are alternatives, so two of them
+      # may legally name the same member. The collision verdict is read from the emitted schema, where the two
+      # sit at different paths.
+      it "does not turn a member name shared by two branches into a collision" do
+        klass = build_axn { expects :items, type: Array, of: [Data.define(:shared, :only_a), Data.define(:shared, :only_b)], optional: true }
+
+        expect(klass.input_schema.dig(:properties, :items, :items, :anyOf).map { |branch| branch[:properties].keys })
+          .to eq([%i[shared only_a], %i[shared only_b]])
       end
 
       it "reaches that rejection quickly rather than walking the whole graph first" do

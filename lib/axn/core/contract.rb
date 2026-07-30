@@ -306,8 +306,68 @@ module Axn
           end
         end
 
+        # Everything redaction derives from the DECLARATION rather than from a call: the candidate config
+        # set, whether resolving `sensitive:` needs an instance at all, the static field-name filter, the
+        # static shape paths, and — per shape — which members a mask has to descend into.
+        #
+        # All of it is a pure function of the class, because a stored shape graph is a declaration-time
+        # SNAPSHOT (the declaration walk copies every node it can rebuild). Re-deriving it per logged call
+        # instead made the cost of redaction scale with the size of that graph, and worst for the contracts
+        # that use no `sensitive:` at all: concluding "there is nothing to redact" is exactly what requires
+        # visiting every member, so a 24,000-member shape with no `sensitive:` anywhere cost more per logged
+        # call (~34ms) than the same shape with one.
+        #
+        # Keyed by the IDENTITY of the three config arrays, exactly as `_resolved_subfields` is and as
+        # `PropertyNames.validate_outbound!`'s verdict is: the arrays are copy-on-write, so ANY later
+        # declaration — a reopened class, a subclass, `Mountable`'s builder clearing them, a downstream gem
+        # assigning the attribute directly — mints new ones and the stale table misses on `equal?`. That is
+        # invalidation with no hook to keep in sync, which matters more here than for a schema cache: a
+        # stale answer does not merely disagree with the contract, it fails to redact a `sensitive:` field
+        # declared after the first logged call.
+        def _contract_redaction
+          internals = internal_field_configs
+          externals = external_field_configs
+          subfields = subfield_configs
+          memo = @_axn_contract_redaction
+          return memo if memo&.current?(internals, externals, subfields)
+
+          @_axn_contract_redaction = ContractRedaction.new(internals:, externals:, subfields:)
+        end
+
+        # The table `_contract_redaction` hands out. Mutable (so not a `Data`) because each fact is derived
+        # on first demand and written once, with `nil` meaning "not yet derived" — which none of the values
+        # can be. Unlocked deliberately: every slot's value is the one answer that contract will ever have, so
+        # a racing second derivation recomputes it and writes the same thing (the resolved-subfield cache's
+        # single-ivar-write reasoning). The two per-shape tables are the same bargain one level down — a lost
+        # race costs a repeat derivation, and a single Hash insert is not interruptible by another Ruby thread.
+        class ContractRedaction
+          attr_reader :internals, :externals, :subfields
+          attr_accessor :candidates, :dynamic, :static_resolution, :static_fields, :filter,
+                        :static_shape_paths, :static_ambient_shape_paths
+
+          def initialize(internals:, externals:, subfields:)
+            @internals = internals
+            @externals = externals
+            @subfields = subfields
+            # Per shape / per config, by identity — neither defines a `hash`/`eql?` axn would want to run,
+            # and identity is the right question anyway: the stored graph is the one axn snapshotted.
+            @nested_members = {}.compare_by_identity
+            @member_names = {}.compare_by_identity
+          end
+
+          def current?(internals, externals, subfields)
+            @internals.equal?(internals) && @externals.equal?(externals) && @subfields.equal?(subfields)
+          end
+
+          def nested_members_for(shape, &derive) = @nested_members.fetch(shape) { @nested_members[shape] = derive.call }
+
+          def member_names_for(config, &derive) = @member_names.fetch(config) { @member_names[config] = derive.call }
+        end
+        private_constant :ContractRedaction
+
         def inspection_filter
-          @__inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
+          memo = _contract_redaction
+          memo.filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
         end
 
         def sensitive_fields
@@ -319,9 +379,12 @@ module Axn
         # in validations[:shape][:members] at every depth, so the walk is uniform — a sensitive member at
         # any nesting level contributes its name to the ParameterFilter set (which redacts by key name at
         # any depth, array elements included). Single-sources the traversal for all three collectors.
+        # Derived from the arrays the memo is KEYED on, never re-read from the class: a table that answered
+        # from a newer contract than the one it is keyed to would be a stale answer wearing a valid key.
         def _sensitive_candidate_configs
-          (internal_field_configs + external_field_configs + subfield_configs)
-            .flat_map { |config| _flatten_sensitive_candidates(config) }
+          memo = _contract_redaction
+          memo.candidates ||= (memo.internals + memo.externals + memo.subfields)
+                              .flat_map { |config| _flatten_sensitive_candidates(config) }
         end
 
         def _flatten_sensitive_candidates(config, seen = nil, depth = 0)
@@ -331,8 +394,9 @@ module Axn
           # Bounded BOTH ways, because a STORED graph can be untraversable even though no declared one is: a
           # member axn cannot rebuild is the caller's own object, so the nested shape it carries can be pointed
           # back at itself (which `CycleGuard` sees) or made to mint a fresh one on every read (which nothing
-          # sees but depth). This runs on every logged call, and the alternative is SystemStackError from a log
-          # line — a side channel taking down the call it observes.
+          # sees but depth). This runs while a log line or an exception report is being built — once per
+          # contract, or per logged call for a `sensitive:` that resolves against the action — and the
+          # alternative is SystemStackError from a log line, a side channel taking down the call it observes.
           #
           # Nothing is lost by stopping at a cycle: it re-reaches members an enclosing frame is already
           # collecting. Past the depth bound there IS no honest answer, and the wholesale mask does the work —
@@ -347,15 +411,45 @@ module Axn
         end
 
         def _static_sensitive_fields
-          _sensitive_candidate_configs
-            .select { |c| _config_sensitive(c) == true }
-            .flat_map { |c| _sensitive_field_keys(c) }
+          memo = _contract_redaction
+          memo.static_fields ||= _sensitive_candidate_configs
+                                 .select { |c| _config_sensitive(c) == true }
+                                 .flat_map { |c| _sensitive_field_keys(c) }
         end
 
+        # `false` is one of the two answers, so the memo is guarded on `nil` rather than written with `||=`:
+        # an `||=` here re-ran the whole candidate walk on every logged call for precisely the contracts that
+        # have no dynamic `sensitive:` — which is nearly all of them.
         def _has_dynamic_sensitive_fields?
-          @_has_dynamic_sensitive_fields ||= _sensitive_candidate_configs.any? do |config|
+          memo = _contract_redaction
+          return memo.dynamic unless memo.dynamic.nil?
+
+          memo.dynamic = _sensitive_candidate_configs.any? do |config|
             sensitive = _config_sensitive(config)
             sensitive.is_a?(Proc) || sensitive.is_a?(Symbol)
+          end
+        end
+
+        # Whether every `sensitive:` in the contract resolves to the SAME answer with or without an instance
+        # — the condition under which a static answer may be reused for a logged call, and a stricter
+        # question than "no dynamic `sensitive:`". A Proc or Symbol is evaluated against the action, so it
+        # obviously needs the instance; but so does any OTHER truthy value, because the two paths disagree
+        # about it — `_resolve_sensitive_value` truthiness-tests it (`sensitive: "yes"` → sensitive) while
+        # the instanceless path counts only a literal `true` (→ not sensitive). Memoizing the instanceless
+        # answer for such a contract would under-redact, so it keeps deriving per call.
+        #
+        # Decided with `case`/`when` against the literals, whose `===` is identity, so nothing a
+        # caller-supplied member's value can define decides it. `_config_sensitive` has already normalized
+        # an absent or nil reader to `false`.
+        def _static_sensitive_resolution?
+          memo = _contract_redaction
+          return memo.static_resolution unless memo.static_resolution.nil?
+
+          memo.static_resolution = _sensitive_candidate_configs.all? do |config|
+            case _config_sensitive(config)
+            when true, false then true
+            else false
+            end
           end
         end
 
@@ -375,10 +469,10 @@ module Axn
         # `sensitive:` cannot opt out of redaction by denying the reader.
         #
         # That costs a Method allocation per read (~0.25µs, against ~0.04µs for `respond_to?` plus a
-        # dispatch) and is spent deliberately: the reads here are per config on a filter build, and a
+        # dispatch) and is spent deliberately: the reads here are per config on a derivation, and a
         # member hiding from redaction leaks a secret. `_sensitive_shape_paths` makes the opposite call for
-        # the opposite reason — it reads axn's OWN configs, which cannot lie, on every logged call, so it
-        # takes the cheap `shape_in` path. The tradeoff differs because the exposure does.
+        # the opposite reason — it reads axn's OWN configs, which cannot lie, so it takes the cheap
+        # `shape_in` path. The tradeoff differs because the exposure does.
         def _config_sensitive(config)
           Internal::ShapeGraph.read(config, :sensitive) || false
         end
@@ -475,8 +569,22 @@ module Axn
         # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
         # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
         # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
+        # Memoized whenever the contract's `sensitive:` values all resolve without an instance (see
+        # `_static_sensitive_resolution?`), which is what keeps a logged call from paying for the whole
+        # stored graph. A contract that DOES need the instance still derives per call — correctness requires
+        # it, and a memo ignoring the instance would over-redact a `sensitive: :flag` member whose flag is
+        # false, which looks safe and is a behavior change.
         def _sensitive_shape_paths(action_instance)
-          (internal_field_configs + external_field_configs + subfield_configs).filter_map do |config|
+          return _derive_sensitive_shape_paths(action_instance) unless _static_sensitive_resolution?
+
+          memo = _contract_redaction
+          memo.static_shape_paths ||= _derive_sensitive_shape_paths(nil)
+        end
+
+        # Over the arrays the memo is keyed on, for the reason `_sensitive_candidate_configs` gives.
+        def _derive_sensitive_shape_paths(action_instance)
+          memo = _contract_redaction
+          (memo.internals + memo.externals + memo.subfields).filter_map do |config|
             shape = Internal::ShapeGraph.shape_in(config.validations)
             next unless shape && _shape_has_sensitive_member?(shape, action_instance)
 
@@ -495,6 +603,13 @@ module Axn
         # since the mask applies to the ambient VALUE the reader returns, not a hash wrapped under an
         # `:ambient_context` key.
         def _sensitive_ambient_shape_paths(action_instance)
+          return _derive_sensitive_ambient_shape_paths(action_instance) unless _static_sensitive_resolution?
+
+          memo = _contract_redaction
+          memo.static_ambient_shape_paths ||= _derive_sensitive_ambient_shape_paths(nil)
+        end
+
+        def _derive_sensitive_ambient_shape_paths(action_instance)
           _ambient_subfield_tree.index.filter_map do |config, path|
             shape = Internal::ShapeGraph.shape_in(config.validations)
             next unless shape && _shape_has_sensitive_member?(shape, action_instance)
@@ -664,8 +779,8 @@ module Axn
         # It also bounds the graph's SIZE, in member paths (see ShapeGraph::MAX_MEMBER_PATHS) — deliberately not
         # in emitted JSON properties, which is a different limit belonging to reflection, derived from what the
         # emitter emits, and applied at projection. This one is about the graph itself: the walks that read a
-        # stored graph on every logged call have no per-reference memo, so a graph that multiplies out costs the
-        # CALL. Counting it here is what keeps that knowable at declaration, where the author is present.
+        # stored graph on a live call have no per-reference memo, so a graph that multiplies out costs the CALL.
+        # Counting it here is what keeps that knowable at declaration, where the author is present.
         #
         # So a caller's members list is read exactly ONCE per declaration, and the answer it gave is the
         # contract: a list that would answer a later read differently never gets that read. What it cannot do is
@@ -706,11 +821,13 @@ module Axn
           raise ArgumentError,
                 "the shape on #{_inspect_field_name(fields.first)} has more than " \
                 "#{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — a nested shape object reused by " \
-                "sibling members multiplies out, so N levels of two-way sharing are 2^N distinct paths, and the " \
-                "walks that read this contract on every logged call pay one step per path (measured: 262,000 " \
-                "paths cost about four seconds per call). Give each member its own nested shape, or flatten the " \
-                "nesting. This is a bound on the graph, not on what a schema emits — an oversized SCHEMA is " \
-                "reported separately, when a projection is first built."
+                "sibling members multiplies out, so N levels of two-way sharing are 2^N distinct paths, and " \
+                "every walk of the stored graph pays one step per path: runtime validation walks it on each " \
+                "call, and redaction re-walks it per logged call whenever a `sensitive:` resolves against the " \
+                "action (measured: 786,000 paths cost about 1.3 seconds per log line, and about two seconds " \
+                "for the one derivation any contract makes on its first). Give each member its own nested " \
+                "shape, or flatten the nesting. This is a bound on the graph, not on what a schema emits — an " \
+                "oversized SCHEMA is reported separately, when a projection is first built."
         end
 
         def _walk_shape_graph!(shape, walk, allowance, via: nil, via_name: nil)
@@ -986,12 +1103,71 @@ module Axn
         def _mask_shape_element(element, shape, action_instance)
           return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
 
-          Internal::ShapeGraph.members(shape).each_with_object(element.dup) do |member, masked|
+          _sensitive_nested_members(shape, action_instance).each_with_object(element.dup) do |(member, nested), masked|
+            _present_key_variants(masked, member.field).each do |key|
+              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+            end
+          end
+        end
+
+        # The `[(member, nested_shape)]` pairs a mask has to descend into: the members of `shape` whose OWN
+        # nested shape carries a sensitive member. Memoized per shape (by identity) on the same condition as
+        # `_sensitive_shape_paths`, because for the ordinary flat shape the answer is EMPTY and finding that
+        # out cost a `nested_shape` read — a bound-Method allocation each — for every member of the shape,
+        # on every value masked.
+        def _sensitive_nested_members(shape, action_instance)
+          return _derive_sensitive_nested_members(shape, action_instance) unless _static_sensitive_resolution?
+
+          _contract_redaction.nested_members_for(shape) { _derive_sensitive_nested_members(shape, nil) }
+        end
+
+        def _derive_sensitive_nested_members(shape, action_instance)
+          Internal::ShapeGraph.members(shape).filter_map do |member|
             nested = _member_shape(member)
             next unless nested && _shape_has_sensitive_member?(nested, action_instance)
 
-            _present_key_variants(masked, member.field).each do |key|
-              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+            [member, nested]
+          end
+        end
+
+        # The names of the `sensitive:` members reachable inside one shape-bearing config's value — the flat
+        # key set `inspect` hands to a `ParameterFilter`, since a member redacts by NAME wherever it appears
+        # (every array element, any nesting depth), unlike the precise wire path a subfield contributes.
+        # Memoized on the same condition as `_sensitive_shape_paths`: `inspect` asks it once per displayed
+        # field, and the walk covers the whole stored graph.
+        #
+        # Lives here rather than with the inspector because it is a question about the CONTRACT, and because
+        # sensitivity is read through `_config_sensitive` — the same seam logging reads — so a member that
+        # defines `sensitive:` cannot escape redaction in `inspect` by denying the reader while logging
+        # redacts it anyway.
+        def _sensitive_member_names(config, action_instance)
+          return _derive_sensitive_member_names(config, action_instance) unless _static_sensitive_resolution?
+
+          _contract_redaction.member_names_for(config) { _derive_sensitive_member_names(config, nil) }
+        end
+
+        # Bounded both ways, exactly as `_flatten_sensitive_candidates` is: a STORED graph can be
+        # untraversable even though no declared one is, because a member axn cannot rebuild is the caller's
+        # own object and the nested shape it carries can later be pointed at itself (which `CycleGuard` sees)
+        # or made to mint a fresh one on every read (which nothing but depth sees). `inspect` is reachable
+        # directly, not only from a side channel, so an unbounded walk here raises SystemStackError at the
+        # caller rather than degrading a log line.
+        #
+        # A cycle re-reaches members an enclosing frame is already collecting, so stopping loses nothing.
+        # Past the depth bound nothing can enumerate a graph that mints its members on demand — and the
+        # value it describes is masked wholesale by then anyway (`_shape_has_sensitive_member?` answers true
+        # past the same bound), so `inspect` shows a redacted value rather than a leaked one.
+        def _derive_sensitive_member_names(config, action_instance, seen = nil, depth = 0)
+          shape = Internal::ShapeGraph.shape_in(config.validations)
+          return [] if nil.equal?(shape) || depth > Internal::ShapeGraph::MAX_NESTING
+
+          Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
+            # Through the shared seam, for the reason _flatten_sensitive_candidates gives: a list hiding
+            # itself from `flat_map` would drop a sensitive member from the redaction set.
+            Internal::ShapeGraph.members(shape).flat_map do |member|
+              names = _derive_sensitive_member_names(member, action_instance, open, depth + 1)
+              names << member.field if _member_sensitive?(member, action_instance)
+              names
             end
           end
         end

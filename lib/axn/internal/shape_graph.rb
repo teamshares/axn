@@ -152,15 +152,23 @@ module Axn
       # nested shape reused by two siblings twice, because every walk of the stored graph walks it twice.
       #
       # Not a bound on emitted JSON properties: that one lives with reflection, is derived from what the emitter
-      # actually emits, and applies at projection. This is a bound on the graph ITSELF, and it exists because the
-      # walks that read a stored graph per CALL have no per-reference memo — the redaction candidate set and the
-      # sensitive-member predicate walk a path at a time on every logged call. Measured, with the bound removed:
-      # a flat 26,000-member shape costs ~0.5s per logged call, and one nested shape shared by two siblings 18
-      # levels deep (262,000 paths) costs ~4s per call, every call. So the number bounds what a call pays, and
-      # 25,000 paths is where that is already about half a second.
+      # actually emits, and applies at projection. This is a bound on the graph ITSELF, and what it bounds is the
+      # cost of WALKING one, since every walk pays a step per path.
       #
-      # (Raising it is not the way to make a large flat shape legal — memoizing the redaction candidate set per
-      # class is, and then this bound would only need to catch multiplying graphs.)
+      # The walks that read a stored graph on a live CALL are what needs bounding, and each needs it for its own
+      # reason. Runtime shape
+      # validation walks the graph per call and can never be memoized — it is matching a VALUE against members,
+      # not deriving a constant. Redaction derives what it can from the declaration once per class
+      # (`Contract#_contract_redaction`), so an ordinary contract pays for the graph one time — but that one time
+      # lands inside a side channel on a real call: measured with the bound removed, 786,000 paths (one nested
+      # shape shared by two siblings, 18 levels deep) cost about two seconds there. And a `sensitive:` that
+      # resolves against the ACTION cannot be derived once at all, so it re-walks per logged call: about 1.3
+      # seconds per log line at that same size.
+      #
+      # So the number is what a call may be asked to walk, and 25,000 is generous for anything hand-written: it
+      # only fires on a graph that MULTIPLIES out, where N levels of two-way sharing are 2^N paths and one extra
+      # nesting level is the whole distance from legal to rejected (13 levels charge 24,574 paths; 14 charge
+      # 49,150).
       MAX_MEMBER_PATHS = 25_000
 
       # A shape's members, captured into an Array this module owns. Captured via `each` — the one
@@ -285,7 +293,7 @@ module Axn
       # The shape carried by an already-read validations Hash. For axn's OWN configs, whose `validations`
       # is the framework's own Hash and so cannot lie — only the shape it holds came from a caller, and
       # that is what gets type-tested here. Skips the method-table lookup `nested_shape` needs, which
-      # matters because the redaction walk reads every config's shape on every logged call.
+      # matters because the redaction walks read every config's shape.
       def self.shape_in(validations)
         hash = hash_or_nil(validations)
         hash_or_nil(hash && hash[:shape])
