@@ -360,66 +360,9 @@ RSpec.describe "declaration-time property name collisions" do
       expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq(%i[deep sneaked])
     end
 
-    # The sharp edge of that same residue: the aliased nested shape can be pointed back at its own member, so a
-    # graph that was acyclic when declared is cyclic when projected. Every projection walks it, and
-    # SystemStackError is outside StandardError — it escapes the rescue meant to settle a result — so the walk
-    # is cycle-guarded and reports the cycle the way the declaration-time guard does.
-    describe "a graph that becomes cyclic after it is declared" do
-      def cyclic_after_declaration
-        member = Class.new do
-          attr_accessor :validations
-
-          def initialize = @validations = { type: { klass: Hash }, shape: { members: [], container: Hash } }
-          def field = :outer
-        end.new
-        member.validations[:shape][:members] << Axn::Core::Contract::ShapeConfig.new(field: :inner, validations: {})
-        [member, build_axn do
-          expects :payload, type: Hash, shape: { members: [member], container: Hash }
-          exposes :out, type: Hash, shape: { members: [member], container: Hash }
-        end]
-      end
-
-      it "reports a bounded error on the inbound projection" do
-        member, klass = cyclic_after_declaration
-        expect(klass.input_schema.dig(:properties, :payload, :properties, :outer, :properties).keys).to eq([:inner])
-
-        member.validations[:shape] = { members: [member], container: Hash }
-
-        expect { klass.input_schema }
-          .to raise_error(ArgumentError, /`shape:` graph.*contains itself.*cannot rebuild.*after the class is declared/m)
-      end
-
-      it "reports the same on the outbound projection" do
-        member, klass = cyclic_after_declaration
-        klass.output_schema
-
-        member.validations[:shape] = { members: [member], container: Hash }
-
-        expect { klass.output_schema }.to raise_error(ArgumentError, /contains itself/)
-      end
-
-      # The member is named by CLASS: reading its `field` here would run the caller's code while the failure is
-      # being reported, which is what the rest of these error paths refuse to do.
-      it "names the member by class rather than reading its name" do
-        member, klass = cyclic_after_declaration
-        stub_const("CyclicAfterDeclaration", member.class)
-
-        member.validations[:shape] = { members: [member], container: Hash }
-
-        expect { klass.input_schema }.to raise_error(ArgumentError, /shape member of class CyclicAfterDeclaration/)
-      end
-
-      # The redaction walk reads the same stored graph on every logged call, and a side channel must not be able
-      # to take down the call it observes.
-      it "leaves the sensitive-member walk bounded too" do
-        member, klass = cyclic_after_declaration
-        member.validations[:shape] = { members: [member], container: Hash }
-
-        expect(klass.send(:_shape_has_sensitive_member?, { members: [member], container: Hash }, nil)).to be(false)
-        expect(klass.send(:_sensitive_candidate_configs).map { |c| Axn::Internal::ShapeGraph.read(c, :field) })
-          .to include(:payload, :outer)
-      end
-    end
+    # The sharp edge of that same residue — the aliased nested shape pointed back at its own member, or made to
+    # mint a fresh one on every read — is covered in `stored_shape_traversal_spec.rb`, since it is about the
+    # traversability of a graph axn holds rather than about the names it emits.
 
     # The same aliasing existed in the other option containers axn stores.
     # No tolerance flag on purpose: `optional:`/`allow_nil:`/`allow_blank:` push tolerance into each validator,
