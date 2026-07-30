@@ -1438,13 +1438,35 @@ module Axn
         # the container just derived.
         def _derive_raw_shape_container!(validations)
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
-          return if nil.equal?(shape) || !nil.equal?(shape[:container])
+          return if nil.equal?(shape)
+          return _reject_non_class_container!(shape[:container]) unless nil.equal?(shape[:container])
 
           derived = {}
           shape.each { |key, value| derived[key] = value }
           derived[:members] = Internal::ShapeGraph.members(shape)
           derived[:container] = _shape_compatible_type!(validations)
           validations[:shape] = derived
+        end
+
+        # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
+        # ShapeValidator), so it has to be a class or module. A raw `shape:` may name its own, and nothing
+        # checked it — so a junk value reached that check and every call raised a bare `TypeError: class or
+        # module required`, with nothing pointing at the declaration that caused it. Held to the same bar the
+        # derived container is (`_shape_compatible_type!` rejects a `type:` that is not a structured class),
+        # since this is the same value arrived at two ways.
+        #
+        # `Module` covers a class and a module both, tested with `case`/`when` so nothing the value defines
+        # decides the answer.
+        def _reject_non_class_container!(container)
+          case container
+          when ::Module then return
+          end
+
+          raise ArgumentError,
+                "a shape's `container:` must be a class (got #{_inspect_field_name(container)}) — it is what the " \
+                "shaped value is type-checked against, so a non-class makes every call raise `TypeError: class " \
+                "or module required`. Name the container class (`Hash`, `Array`, or the object's own class), or " \
+                "omit `container:` and let it be derived from `type:`."
         end
 
         def _partition_field_options(fields, **options)

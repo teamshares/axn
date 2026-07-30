@@ -740,6 +740,39 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # A shape's `container:` is what the shaped value is type-checked against, so it has to be a class. A raw
+  # `shape:` may name its own, and a junk one previously reached that check and made every call raise a bare
+  # TypeError with nothing pointing at the declaration.
+  describe "a non-class shape container:" do
+    it "is rejected at declaration rather than failing every call" do
+      members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+      expect { build_axn { expects :p, type: Hash, shape: { members:, container: :junk } } }
+        .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+    end
+
+    it "names the fix" do
+      members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+      expect { build_axn { expects :p, type: Hash, shape: { members:, container: 42 } } }
+        .to raise_error(ArgumentError, /Name the container class .*or omit `container:`/)
+    end
+
+    it "accepts a module as well as a class" do
+      members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+      expect { build_axn { expects :p, type: Hash, shape: { members:, container: Enumerable } } }.not_to raise_error
+    end
+
+    it "leaves a valid container: validating as before" do
+      members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { presence: true })]
+      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+
+      expect(klass.call(p: { a: 1 })).to be_ok
+      expect(klass.call(p: {})).not_to be_ok
+    end
+  end
+
   describe "the identical-name duplicate this generalizes" do
     it "keeps its existing message" do
       expect do
@@ -1321,19 +1354,18 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
-      it "does not let a container whose nil? raises hijack the declaration" do
+      # `nil?` is a type test, so nothing the container defines gets to decide whether derivation runs — and the
+      # container is now itself required to be a class, so the declaration reports that rather than either
+      # being hijacked or carrying a junk container through to a per-call TypeError.
+      it "reports a container whose nil? raises as the declaration defect it is" do
         raising_nil = Class.new { def nil? = raise(NotImplementedError, "hijacked from nil?") }
         shape = Class.new(Hash) do
           define_method(:[]) { |key| key == :container ? raising_nil.new : super(key) }
         end.new
         shape.store(:members, [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})])
 
-        klass = nil
-        expect { klass = build_axn { expects :payload, type: Hash, shape: } }.not_to raise_error
-        # The container the caller supplied is left alone — it said it had one — but nothing it defines got
-        # to decide that. Read through `[]` rather than `dig`, which bypasses the override under test.
-        stored = klass.internal_field_configs.first.validations[:shape]
-        expect(stored[:container].class).to eq(raising_nil)
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError, /`container:` must be a class/)
       end
 
       # A NoMethodError subclass whose `name` is an object with a raising `==`. Deciding "does this mean no
