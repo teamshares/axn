@@ -70,8 +70,12 @@ Docs: `docs/recipes/authoring-tool-adapters.md` (teaches the old names throughou
 | axn-openapi | `openapi.rb:60`, `openapi.rb:75` | 1 line in `registration_spec.rb` | README, AGENTS-consuming.md, CHANGELOG, internal-docs |
 | axn-ruby_llm | `ruby_llm.rb:28`, `ruby_llm/tool_adapter.rb:157` | 2 lines in `tool_adapter_spec.rb` | README, CHANGELOG |
 | axn-webhooks | none | none | one design-doc mention |
+| slack_sender | none | none | none |
+| data_shifter | none | none | none |
 
-`slack_sender` and `data_shifter` have no call sites (data_shifter's apparent hits are a vendored axn copy in its bundle path). No gem calls `owns_failure_exception?` at all.
+**Sweep method and result.** Every consumer repo was grepped for the full rename set — `owns_failure_exception`, `tools_for`, `register_tool_adapter`, `versions_for`, `validate_tool_contracts`, `broad_tool_path`, `normalize_tool_path`, `TOOL_PATHS_BLOCKLIST`, `BROAD_TOOL_PATH_LEAVES`, `Core::Tools` — as bare substrings rather than `Axn.`-qualified, over `.rb`/`.rake`/`.erb`/`.md`/`.gemspec`, excluding vendored and bundled paths. Beyond the four axn-prefixed gems: `slack_sender`, `data_shifter`, `buyout-app`, `invoice-app`, `teamshares-rails`, `workbench`, and `agents` have zero hits. `os-app` has zero real hits — its 24 matches are all one data-shift method, `role_versions_for_users_with_employment`, incidentally containing `versions_for`, duplicated across seven `.claude/worktrees` copies of the same file. An earlier check reporting `data_shifter` hits was reading a vendored axn copy in its bundle path.
+
+No consumer calls `owns_failure_exception?`, and none references the renamed `Configuration` predicates or constants, so those two cleanups are core-only in fact and not just by intent.
 
 ## Sequencing
 
