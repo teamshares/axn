@@ -58,10 +58,17 @@ module Axn
       BASIC_EQUAL = ::BasicObject.instance_method(:equal?)
       private_constant :HASH_EACH, :KERNEL_DUP, :ARRAY_SIZE, :ARRAY_AT, :BASIC_EQUAL
 
+      # Every entry of a caller Hash — THE seam for reading one, so no layer ever asks a Hash subclass to
+      # traverse itself.
+      def self.each_entry(hash, &)
+        HASH_EACH.bind_call(hash, &)
+        nil
+      end
+
       # A caller Hash's entries, in a plain Hash this module owns.
       def self.copy_entries(hash)
         copy = {}
-        HASH_EACH.bind_call(hash) { |key, value| copy[key] = value }
+        each_entry(hash) { |key, value| copy[key] = value }
         copy
       end
 
@@ -174,26 +181,29 @@ module Axn
       DATA_WITH = ::Data.instance_method(:with)
       private_constant :DATA_WITH
 
-      # `validations` is passed in ALREADY READ, and `nested` is the copy the walk made of the shape inside it:
-      # both are things the walk needed anyway, and reading them here a second time would ask the caller's
-      # object questions it has already answered — which is the same divergence the single walk exists to close.
-      # `nested` is omitted when this member carries no nested shape, so a member without one never gains a
-      # `:shape` key it did not declare.
-      def self.snapshot_member(member, validations, nested: NOT_DEFINED)
+      # Whether a member can be rebuilt at all — asked separately because a member that cannot is stored as the
+      # caller's own object, so nothing should read (and run) the readers only a rebuild would consume.
+      def self.rebuildable?(member)
         case member
-        when ::Data then nil
-        else return member
+        when ::Data then true
+        else false
         end
+      end
 
+      # `validations` and `metadata` are passed in ALREADY READ and already canonicalized (see
+      # `Contract#_symbol_keyed_member_validations`), and `nested` is the copy the walk made of the shape inside
+      # them: all three are things the walk needed anyway, and reading them here a second time would ask the
+      # caller's object questions it has already answered — which is the same divergence the single walk exists
+      # to close. `nested` is omitted when this member carries no nested shape, so a member without one never
+      # gains a `:shape` key it did not declare.
+      def self.snapshot_member(member, validations, metadata, nested: NOT_DEFINED)
+        return member unless rebuildable?(member)
         return member if nil.equal?(validations)
 
         copied = copy_entries(validations)
         copied[:shape] = nested unless missing?(nested)
-        # `nil.equal?` rather than `metadata.nil?`: a Hash subclass answering `nil?` with true would leave the
-        # caller's own metadata aliased into the stored contract.
-        metadata = hash_or_nil(read(member, :metadata))
         attributes = { validations: copied }
-        attributes[:metadata] = copy_entries(metadata) unless nil.equal?(metadata)
+        attributes[:metadata] = metadata unless nil.equal?(metadata)
         DATA_WITH.bind_call(member, **attributes)
       end
 

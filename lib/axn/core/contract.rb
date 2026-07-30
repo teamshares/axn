@@ -748,15 +748,18 @@ module Axn
             # multiplies out is rejected while the work done on it is still bounded by the budget.
             budget.spend!(1)
             emitted += 1
-            # `validations` is read ONCE and threaded to both uses — the nested shape to walk, and the copy of
-            # this member. A second read is a second answer the caller can give.
-            validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
+            # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the copy of
+            # this member. A second read is a second answer the caller can give. `metadata` is read only for a
+            # member that can be rebuilt: a duck-typed member is stored as the caller's own object, so reading
+            # it would run a reader nothing then consumes.
+            validations = _symbol_keyed_member_validations(member, name)
+            metadata = Internal::ShapeGraph.rebuildable?(member) ? _symbol_keyed_member_metadata(member, name) : nil
             nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
-            next Internal::ShapeGraph.snapshot_member(member, validations) if nil.equal?(nested)
+            next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
 
             inner = _walk_shape_graph!(nested, child, budget, via: member, via_name: name)
             emitted += inner.emitted
-            Internal::ShapeGraph.snapshot_member(member, validations, nested: inner.copy)
+            Internal::ShapeGraph.snapshot_member(member, validations, metadata, nested: inner.copy)
           end
 
           WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), emitted:)
@@ -786,6 +789,76 @@ module Axn
                 "object that builds a fresh nested shape on every read is endless and would recurse until the " \
                 "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
                 "flatten the nesting."
+        end
+
+        # A member's declared validations, symbol-canonical at BOTH levels its grammar has: the validator names,
+        # and each validator's own option bag (see _symbolize_option_bags!, which does the same for a field).
+        # A raw `shape:` member bypasses `expects`' option handling entirely, so this is the one place its
+        # grammar gets canonicalized — and it must, because the copy taken here turns an indifferent-access
+        # Hash into a plain one: a member declared with String keys would validate nothing at all, silently,
+        # from the moment the contract was copied.
+        def _symbol_keyed_member_validations(member, name)
+          validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
+          return nil if nil.equal?(validations)
+
+          # ONE pass over the member's validations, answering both questions it has to answer: are the validator
+          # names Symbols, and does any validator's own bag need canonicalizing. A member is walked on every
+          # declaration, so a pass that could be fused and was not is a cost every honest contract pays.
+          names = false
+          bags = nil
+          Internal::ShapeGraph.each_entry(validations) do |key, value|
+            case key
+            when ::String then names = true
+            end
+
+            bag = Internal::ShapeGraph.hash_or_nil(value)
+            next if nil.equal?(bag)
+
+            rebuilt = _symbol_keyed_bag(bag) { "the `#{key}:` option bag of #{_member_owner_label(member, name)}" }
+            (bags ||= {})[key] = rebuilt unless nil.equal?(rebuilt)
+          end
+          return validations if !names && nil.equal?(bags)
+
+          copy = if names
+                   _symbol_keyed_bag(validations) { "the validations of #{_member_owner_label(member, name)}" }
+                 else
+                   Internal::ShapeGraph.copy_entries(validations)
+                 end
+          # Keyed by the ORIGINAL key, which the line above may have canonicalized — so each replacement lands
+          # under the same canonical name its bag was read from.
+          bags&.each do |key, bag|
+            canonical = case key
+                        when ::String then key.to_sym
+                        else key
+                        end
+            copy[canonical] = bag
+          end
+          copy
+        end
+
+        def _member_owner_label(member, name) = "shape member #{_describe_shape_member(member, name)}"
+
+        # Metadata is one level of grammar (`description:` and whatever an extension registered), read as
+        # Symbols — `ShapeConfig#description` is `metadata[:description]` — so a String-keyed metadata Hash
+        # silently loses every entry it holds.
+        def _symbol_keyed_member_metadata(member, name)
+          metadata = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :metadata))
+          return nil if nil.equal?(metadata)
+
+          # Canonicalized WHILE being copied, in one pass: metadata is copied either way (what is stored IS the
+          # contract — see snapshot_member), so asking about its keys separately would be a second pass over
+          # every member for nothing.
+          copy = {}
+          Internal::ShapeGraph.each_entry(metadata) do |key, value|
+            canonical = case key
+                        when ::String then key.to_sym
+                        else key
+                        end
+            _raise_ambiguous_option_key!("the metadata of #{_member_owner_label(member, name)}", canonical) if copy.key?(canonical)
+
+            copy[canonical] = value
+          end
+          copy
         end
 
         # Named by class, since it has no name — through `_describe_shape_member`, so nothing of the member's
@@ -864,8 +937,10 @@ module Axn
         # Only these — the ones this PR added. The other leading-underscore public class methods are
         # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
         # already reach; narrowing those is a separate, breaking question.
-        private :_describe_shape_member, :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!, :_check_and_copy_shape_members!,
-                :_raise_cyclic_shape!, :_raise_shape_too_deep!, :_raise_duplicate_member!, :_raise_nameless_member!
+        private :_symbol_keyed_member_validations, :_symbol_keyed_member_metadata, :_member_owner_label, :_describe_shape_member,
+                :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
+                :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
+                :_raise_duplicate_member!, :_raise_nameless_member!
 
         private
 
@@ -1350,7 +1425,75 @@ module Axn
                   "Field metadata (#{metadata.keys.join(', ')}) can only be provided when declaring a single field"
           end
 
+          _symbolize_option_bags!(validations)
+
           [validations, metadata]
+        end
+
+        # Option-bag keys are axn's own grammar — `klass:`, `in:`, `with:`, `minimum:` — and every consumer reads
+        # them as Symbols (`options[:klass]`, `options[:in]`), axn's and ActiveModel's alike. A bag keyed by
+        # STRINGS therefore answers no consumer at all, which is what a params-derived Hash or
+        # `.with_indifferent_access` produces: `type:`, `inclusion:` and `length:` declared cleanly and then
+        # rejected the values they were declared to accept, `model:` looked up a class inferred from the field
+        # name, and `of:` raised "must supply :klass". Symbol-canonical here, for the same reason a field name
+        # and a shape member name are symbol-canonical at declaration: one spelling per slot, decided once.
+        #
+        # KEYS only, and only the bag's own. Values stay the caller's objects (an `inclusion:` list must keep
+        # its own `include?`), and nothing deeper is touched — below a bag is the caller's data, whose meaning
+        # is not axn's to reinterpret.
+        #
+        # Runs AFTER the unknown-key rejection above, deliberately: a String key at the DECLARATION level
+        # (`expects :a, "type" => String`) is an unknown key and still says so, rather than being quietly
+        # accepted by this.
+        def _symbolize_option_bags!(validations)
+          Internal::ShapeGraph.each_entry(validations) do |key, value|
+            bag = Internal::ShapeGraph.hash_or_nil(value)
+            next if nil.equal?(bag)
+
+            symbolized = _symbol_keyed_bag(bag) { "the `#{key}:` option bag" }
+            validations[key] = symbolized unless nil.equal?(symbolized)
+          end
+        end
+
+        # The bag with String keys converted, or nil when every key is already a Symbol — so an ordinary
+        # declaration allocates nothing here. A key that is neither is left exactly as it came: it is not this
+        # grammar, and reinterpreting it would be widening rather than canonicalizing.
+        #
+        # Read through the bound-`each` seam, never by asking the bag to convert itself: `symbolize_keys` (like
+        # `transform_values` and `dup` before it) is the caller's own method, and an indifferent-access bag is a
+        # Hash subclass like any other.
+        #
+        # The label is YIELDED rather than passed, so naming the bag costs nothing until there is an error to
+        # name: every declaration pays for a String built here otherwise, which is measurable on a shape-heavy
+        # contract (240 members, ~1ms).
+        def _symbol_keyed_bag(bag)
+          found = false
+          Internal::ShapeGraph.each_entry(bag) do |key, _value|
+            case key
+            when ::String then found = true
+            end
+          end
+          return nil unless found
+
+          copy = {}
+          Internal::ShapeGraph.each_entry(bag) do |key, value|
+            canonical = case key
+                        when ::String then key.to_sym
+                        else key
+                        end
+            _raise_ambiguous_option_key!(yield, canonical) if copy.key?(canonical)
+
+            copy[canonical] = value
+          end
+          copy
+        end
+
+        def _raise_ambiguous_option_key!(label, canonical)
+          raise ArgumentError,
+                "#{label} declares #{Axn::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
+                "under a String key and once under a Symbol — and one option cannot hold two values, so " \
+                "canonicalizing them would silently drop one of the two declared. Declare the option once, under " \
+                "a Symbol key."
         end
 
         # Pure parse: builds the configs without touching the class (no readers defined), so callers
