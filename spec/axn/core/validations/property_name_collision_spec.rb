@@ -456,6 +456,54 @@ RSpec.describe "declaration-time property name collisions" do
       expect(klass.input_schema.dig(:properties, :a, :enum)).to eq(before)
     end
 
+    # A raw member's options are detached on exactly the same terms as a field's. They were not, for a reason
+    # worth naming: the member path skipped the copy whenever no KEY needed canonicalizing, and "needs no key
+    # change" is a different question from "needs no copy".
+    describe "a raw shape member's own options" do
+      def member_axn(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :choice, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      it "does not let a mutated inclusion: list widen a member's enum" do
+        allowed = %w[a b]
+        klass = member_axn({ inclusion: { in: allowed } })
+
+        expect(klass.call(payload: { choice: "c" })).not_to be_ok
+        allowed << "c"
+        expect(klass.call(payload: { choice: "c" })).not_to be_ok
+      end
+
+      it "does not let a mutated option bag change what a member validates" do
+        bag = { in: %w[a b] }
+        klass = member_axn({ inclusion: bag })
+
+        expect(klass.call(payload: { choice: "c" })).not_to be_ok
+        bag[:in] = %w[a b c]
+        expect(klass.call(payload: { choice: "c" })).not_to be_ok
+      end
+
+      # The same two controls the field path established, so the copy cannot over-reach here either.
+      it "keeps a subclass's own membership behavior" do
+        values = Class.new(Array) { def include?(_value) = true }.new.push("a", "b")
+        klass = member_axn({ inclusion: { in: values } })
+
+        expect(klass.call(payload: { choice: "z" })).to be_ok
+      end
+
+      it "rejects a container whose duplication alters its elements" do
+        values = Class.new(Array) do
+          def initialize_dup(source)
+            super
+            clear
+          end
+        end.new.push("a", "b")
+
+        expect { member_axn({ inclusion: { in: values } }) }
+          .to raise_error(ArgumentError, /does not survive being copied/)
+      end
+    end
+
     # A container is detached whatever it says about itself and whatever its copiers do. Each of these three
     # subclasses defeated the detach in a different way while the plain-Array cases above were copied correctly
     # — the same lying-subclass class the shape guards close, one layer over.

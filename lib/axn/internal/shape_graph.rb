@@ -215,9 +215,10 @@ module Axn
         return member unless rebuildable?(member)
         return member if nil.equal?(validations)
 
-        copied = copy_entries(validations)
-        copied[:shape] = nested unless missing?(nested)
-        attributes = { validations: copied }
+        # `validations` is already a Hash axn owns, canonicalized and detached by the walk, so it is written into
+        # rather than copied again.
+        validations[:shape] = nested unless missing?(nested)
+        attributes = { validations: }
         attributes[:metadata] = metadata unless nil.equal?(metadata)
         DATA_WITH.bind_call(member, **attributes)
       end

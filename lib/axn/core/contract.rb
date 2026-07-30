@@ -820,38 +820,27 @@ module Axn
           validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
           return nil if nil.equal?(validations)
 
-          # ONE pass over the member's validations, answering both questions it has to answer: are the validator
-          # names Symbols, and does any validator's own bag need canonicalizing. A member is walked on every
-          # declaration, so a pass that could be fused and was not is a cost every honest contract pays.
-          names = false
-          bags = nil
+          # A Hash axn owns, ALWAYS — canonicalized and copied in one pass. "Needs no key change" and "needs no
+          # copy" are different questions, and answering only the first left a member's options aliased to the
+          # objects the caller still held while a top-level field's were detached: mutating an `inclusion:` list
+          # afterwards widened a declared member's enum. The copy is also what `snapshot_member` stores, so it is
+          # one allocation rather than two.
+          copy = {}
           Internal::ShapeGraph.each_entry(validations) do |key, value|
-            case key
-            when ::String then names = true
-            end
-
-            bag = Internal::ShapeGraph.hash_or_nil(value)
-            next if nil.equal?(bag)
-
-            rebuilt = _symbol_keyed_bag(bag) { "the `#{key}:` option bag of #{_member_owner_label(member, name)}" }
-            (bags ||= {})[key] = rebuilt unless nil.equal?(rebuilt)
-          end
-          return validations if !names && nil.equal?(bags)
-
-          copy = if names
-                   _symbol_keyed_bag(validations) { "the validations of #{_member_owner_label(member, name)}" }
-                 else
-                   Internal::ShapeGraph.copy_entries(validations)
-                 end
-          # Keyed by the ORIGINAL key, which the line above may have canonicalized — so each replacement lands
-          # under the same canonical name its bag was read from.
-          bags&.each do |key, bag|
             canonical = case key
                         when ::String then key.to_sym
                         else key
                         end
-            copy[canonical] = bag
+            _raise_ambiguous_option_key!("the validations of #{_member_owner_label(member, name)}", canonical) if copy.key?(canonical)
+
+            copy[canonical] = value
           end
+          # Each bag's own keys, then the containers themselves — through the same two helpers a field's options
+          # go through, in the same order, so a member is held to exactly what a field is held to: an
+          # `inclusion:` list keeps its class (its own `include?` is what membership means), and a container
+          # whose duplication alters its elements is rejected.
+          _symbolize_option_bags!(copy)
+          _detach_option_containers!(copy)
           copy
         end
 
