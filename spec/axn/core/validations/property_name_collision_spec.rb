@@ -720,13 +720,29 @@ RSpec.describe "declaration-time property name collisions" do
       shaped = Data.define(unrenderable_name, :ok)
 
       expect { build_axn { expects(:t, type: shaped, optional: true) { field :ok, type: String } } }
-        .to raise_error(ArgumentError, /a member of a type declared on a shaped field becomes a JSON property name/)
+        .to raise_error(ArgumentError, /a member of a declared type becomes a JSON property name/)
     end
 
     it "is rejected on exposes too" do
       shaped = Data.define(unrenderable_name, :ok)
 
       expect { build_axn { exposes(:t, type: shaped, optional: true) { field :ok, type: String } } }
+        .to raise_error(ArgumentError, /bytes that have no UTF-8 rendering/)
+    end
+
+    # Derivation is only as good as the plan's fidelity to WHETHER properties are emitted. A `Data` used purely
+    # as a `type:` — no shape, no `of:` — contributes no object properties at all, so its member names name
+    # nothing and the rule must not fire on it.
+    it "does not fire for a Data used only as type:, which emits no member properties" do
+      shaped = Data.define(unrenderable_name)
+
+      expect { build_axn { expects :payload, type: shaped, optional: true } }.not_to raise_error
+    end
+
+    it "still fires for the same Data once a shape overlays it" do
+      shaped = Data.define(unrenderable_name)
+
+      expect { build_axn { expects(:payload, type: shaped, optional: true) { field :ok, type: String } } }
         .to raise_error(ArgumentError, /bytes that have no UTF-8 rendering/)
     end
 
@@ -770,6 +786,74 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect(klass.call(p: { a: 1 })).to be_ok
       expect(klass.call(p: {})).not_to be_ok
+    end
+  end
+
+  # Derivation is only as good as the walker's coverage of WHERE properties are emitted. A multi-class `type:`
+  # or `of:` reflects as alternative branches, each carrying its own `properties` — a namespace the walk has to
+  # visit. Branches are alternatives, so one name in two different branches describes one property two ways and
+  # is not a collision.
+  describe "properties emitted inside anyOf branches" do
+    it "rejects a collision inside a branch" do
+      colliding = Data.define(utf8_name, latin1_name)
+      other = Data.define(:other)
+
+      expect { build_axn { expects :l, type: Array, of: [colliding, other], optional: true } }
+        .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property .*café/)
+    end
+
+    it "still declares the same name in two different branches" do
+      first = Data.define(:shared)
+      second = Data.define(:shared)
+
+      expect { build_axn { expects :l, type: Array, of: [first, second], optional: true } }.not_to raise_error
+    end
+
+    # Where the branches come from, checked rather than assumed: only an `of:` element type reflects as a
+    # property-bearing branch (`single_items_schema`). A multi-class `type:` maps each class through
+    # `single_type_for`, which gives a Data `"string"` — no properties, so no namespace. The walk handles
+    # `anyOf` wherever it appears regardless, since which sites produce one is the emitter's business to change.
+    it "emits no property-bearing branch for a multi-class type:, so there is nothing to collide" do
+      colliding = Data.define(utf8_name, latin1_name)
+      members = [Axn::Core::Contract::ShapeConfig.new(field: :ok, validations: {})]
+      klass = nil
+
+      expect { klass = build_axn { expects :t, type: [colliding, Hash], shape: { members:, container: Hash }, optional: true } }
+        .not_to raise_error
+      expect(klass.input_schema.dig(:properties, :t, :anyOf).flat_map(&:keys)).not_to include(:properties)
+    end
+  end
+
+  # Derivation is only as good as the seam's agreement on WHICH members exist. The declaration guard and the
+  # runtime validator capture a member list with `each`; reflection used `Array(...)` and then dispatched
+  # `filter_map`, which an Array subclass can answer differently — so the three walks saw two different answers.
+  # The fix is in the EMITTER, and it corrects the guard at the same time, because the guard is derived from it.
+  describe "a caller-supplied member list that answers filter_map differently from each" do
+    def hiding_member_list(*members)
+      Class.new(Array) do
+        def filter_map(*) = []
+        def map(*) = []
+        def select(*) = []
+      end.new(members)
+    end
+
+    it "is walked identically by reflection, the guard, and runtime validation" do
+      members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {}),
+                                   Axn::Core::Contract::ShapeConfig.new(field: :b, validations: {}))
+      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+      stored = klass.internal_field_configs.first.validations[:shape][:members]
+
+      expect(klass.input_schema.dig(:properties, :p, :properties).keys).to eq(%i[a b])
+      expect(Axn::Internal::ShapeGraph.capture(stored).size).to eq(2)
+      expect(stored.each_with_object([]) { |m, acc| acc << m }.size).to eq(2)
+    end
+
+    it "does not let such a list hide a collision from the guard" do
+      members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+                                   Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
+
+      expect { build_axn { expects :p, type: Hash, shape: { members:, container: Hash } } }
+        .to raise_error(Axn::DuplicateFieldError, /café/)
     end
   end
 

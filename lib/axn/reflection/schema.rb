@@ -81,7 +81,13 @@ module Axn
       end
 
       # The members of a shape that actually name a property, paired with that name.
-      def named_members(members) = Array(members).filter_map { |m| (name = member_name(m)) && [m, name] }
+      # Captured through the shared seam rather than iterated directly: `Array(...)` preserves a caller's
+      # Array SUBCLASS and then dispatches its `filter_map`, so a list answering that differently from `each`
+      # made reflection disagree with the declaration guard and the runtime validator — which both capture with
+      # `each` — about which members exist. One owned Array, three consumers.
+      def named_members(members)
+        Axn::Internal::ShapeGraph.capture(members).filter_map { |m| (name = member_name(m)) && [m, name] }
+      end
 
       # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
       # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
@@ -1067,15 +1073,29 @@ module Axn
 
       def shape_property_plan(config, for_output:)
         of = config.validations[:of]
+        shape = config.validations[:shape]
         in_items = Array(json_type_for(config.validations, for_output:)[:type]).include?("array")
-        return ShapePropertyPlan.new(emitted: false, in_items:, base_properties: {}) if for_output && conditionally_gated?(config)
+        nothing = ShapePropertyPlan.new(emitted: false, in_items:, base_properties: {})
+
+        # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
+        # neither `of:` nor `shape:` contributes no object properties AT ALL — not even its type's own members —
+        # so a `Data` used purely as a `type:` names nothing, and a rule keyed on these names must not fire on
+        # it. Likewise a wholly gated outbound config, which `build_property` leaves untyped before reaching
+        # emission.
+        return nothing unless of || shape
+        return nothing if for_output && conditionally_gated?(config)
 
         if in_items
           # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
           emitted = shape_overlay_applies?(of, for_output:)
-          base = emitted && of ? items_schema_for(of, for_output:)[:properties] || {} : {}
+          # `items_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
+          base = of ? items_schema_for(of, for_output:)[:properties] || {} : {}
           return ShapePropertyPlan.new(emitted:, in_items:, base_properties: base)
         end
+
+        # Only the `elsif shape` branch emits object properties for a non-array field: `of:` without a shape on
+        # a non-array type reaches neither branch.
+        return nothing unless shape
 
         # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
         # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.

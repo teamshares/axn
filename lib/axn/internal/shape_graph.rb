@@ -59,11 +59,19 @@ module Axn
       # overridable — a members list answering true would hide itself from every guard.
       def self.members(shape)
         hash = hash_or_nil(shape)
-        list = hash && hash[:members]
+        capture(hash && hash[:members])
+      end
+
+      # A caller-supplied list, captured into an Array this module owns. THE seam every layer reads a member
+      # list through — the declaration guard, schema reflection, and runtime validation all consume this, so
+      # they cannot see different members. A list that answers `filter_map`/`map`/`select` differently from
+      # `each` would otherwise give them two answers: reflection emitted nothing while the guard and the
+      # validator saw two members.
+      def self.capture(list)
         return [] if nil.equal?(list)
 
         captured = []
-        list.each { |member| captured << member } # rubocop:disable Style/MapIntoArray -- `map` is overridable; `each` only
+        list.each { |element| captured << element } # rubocop:disable Style/MapIntoArray -- `map` is overridable; `each` only
         captured
       end
 

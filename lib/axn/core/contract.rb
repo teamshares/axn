@@ -967,18 +967,34 @@ module Axn
         # array's ELEMENT properties are a node of their own — a non-object parent's subfields are not emitted
         # there, so nothing else can name a property beside its elements — and carry a path segment no declared
         # name can produce.
+        # Every way a built schema nests property names, enumerated from what `build_property` can produce:
+        #
+        #   - `properties`      — an object's own; the node itself
+        #   - `items`           — an array element's, its own namespace (a non-object parent's subfields are not
+        #                         emitted there, so nothing else can name a property beside its elements)
+        #   - `anyOf`           — one branch per member of a multi-class `type:` or `of:`, each with its own
+        #                         `properties` (`single_type_for` / `single_items_schema`)
+        #   - `allOf`           — the conditional schemas `build_input` appends
+        #
+        # A branch is an ALTERNATIVE, not a sibling: the same name in two different `anyOf` branches describes
+        # one property two ways and is not a collision, so each branch gets its own path segment. Recursion is
+        # driven by these keys rather than by "has properties", which is what let a collision inside a branch go
+        # unseen — the walk returned as soon as a hash had no top-level `properties`.
         def _each_emitted_node(schema, path = [], &block)
+          return unless schema.is_a?(Hash)
+
           properties = schema[:properties]
-          return unless properties.is_a?(Hash)
+          if properties.is_a?(Hash)
+            yield(path, properties.keys)
+            properties.each { |name, subschema| _each_emitted_node(subschema, [*path, name], &block) }
+          end
 
-          yield(path, properties.keys)
-          properties.each do |name, subschema|
-            next unless subschema.is_a?(Hash)
+          _each_emitted_node(schema[:items], [*path, ITEMS_SEGMENT], &block)
+          %i[anyOf allOf].each do |key|
+            branches = schema[key]
+            next unless branches.is_a?(Array)
 
-            child = [*path, name]
-            _each_emitted_node(subschema, child, &block)
-            items = subschema[:items]
-            _each_emitted_node(items, [*child, ITEMS_SEGMENT], &block) if items.is_a?(Hash)
+            branches.each_with_index { |branch, index| _each_emitted_node(branch, [*path, :"#{key}[#{index}]"], &block) }
           end
         end
 
@@ -1122,7 +1138,7 @@ module Axn
             plan = Axn::Reflection::Schema.shape_property_plan(config, for_output:)
             next unless plan.emitted
 
-            _reject_unrenderable_field_names!(plan.base_properties.keys, kind: "a member of a type declared on a shaped field")
+            _reject_unrenderable_field_names!(plan.base_properties.keys, kind: "a member of a declared type")
           end
         end
 
