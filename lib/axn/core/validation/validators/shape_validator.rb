@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_model"
+require "axn/internal/shape_graph"
 
 module Axn
   module Validators
@@ -113,7 +114,10 @@ module Axn
         end
       end
 
-      def members = options[:members] || []
+      # Captured through the shared seam, so runtime validation, schema reflection, and the declaration
+      # guard all consume one owned Array: a list answering `map`/`select`/`filter_map` differently from
+      # `each` would otherwise validate a different set of members than the schema advertises.
+      def members = Axn::Internal::ShapeGraph.members(options)
 
       # A member's `method_call:` opt-in, honored when present. The documented member contract is
       # duck-typed (`#field` + `#validations`) — a raw `shape:` supplied with a member object that

@@ -829,11 +829,16 @@ RSpec.describe "declaration-time property name collisions" do
   # `filter_map`, which an Array subclass can answer differently — so the three walks saw two different answers.
   # The fix is in the EMITTER, and it corrects the guard at the same time, because the guard is derived from it.
   describe "a caller-supplied member list that answers filter_map differently from each" do
+    # Overrides every Enumerable convenience a consumer might reach for, leaving only `each` honest — so any
+    # consumer not going through the shared seam shows up.
     def hiding_member_list(*members)
       Class.new(Array) do
         def filter_map(*) = []
         def map(*) = []
         def select(*) = []
+        def flat_map(*) = []
+        def any?(*) = false
+        def to_a = []
       end.new(members)
     end
 
@@ -846,6 +851,17 @@ RSpec.describe "declaration-time property name collisions" do
       expect(klass.input_schema.dig(:properties, :p, :properties).keys).to eq(%i[a b])
       expect(Axn::Internal::ShapeGraph.capture(stored).size).to eq(2)
       expect(stored.each_with_object([]) { |m, acc| acc << m }.size).to eq(2)
+    end
+
+    # The same divergence in the redaction path is a LEAK rather than a disagreement: a `sensitive:` member the
+    # walk cannot see contributes no key to the ParameterFilter, so its value is logged in the clear.
+    it "still redacts a sensitive: member the list hides from flat_map" do
+      members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true))
+      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+
+      sliced = klass.send(:_context_slice, data: { p: { secret: "SHH" } }, direction: :inbound)
+
+      expect(sliced.dig(:p, :secret)).to eq("[FILTERED]")
     end
 
     it "does not let such a list hide a collision from the guard" do

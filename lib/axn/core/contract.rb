@@ -336,7 +336,9 @@ module Axn
         end
 
         def _flatten_sensitive_candidates(config)
-          members = config.validations.dig(:shape, :members) || []
+          # Through the shared seam: a member list that hides itself from `flat_map` would drop a
+          # `sensitive:` member from the redaction set, which leaks rather than merely disagreeing.
+          members = Internal::ShapeGraph.members(Internal::ShapeGraph.shape_in(config.validations))
           [config, *members.flat_map { |member| _flatten_sensitive_candidates(member) }]
         end
 

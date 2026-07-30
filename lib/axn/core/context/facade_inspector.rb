@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/shape_graph"
+
 module Axn
   module Core
     class ContextFacadeInspector
@@ -131,7 +133,9 @@ module Axn
       end
 
       def collect_sensitive_member_names(config)
-        members = config.validations.dig(:shape, :members) || []
+        # Through the shared seam, for the reason _flatten_sensitive_candidates gives: a list hiding itself
+        # from `flat_map` would drop a sensitive member from the redaction set.
+        members = Axn::Internal::ShapeGraph.members(Axn::Internal::ShapeGraph.shape_in(config.validations))
         members.flat_map do |member|
           names = collect_sensitive_member_names(member)
           names << member.field if member.respond_to?(:sensitive) && action.class._resolve_sensitive_value(member.sensitive, action)
