@@ -242,7 +242,7 @@ module Axn
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
-            _reject_colliding_wire_paths!(internal_field_configs + configs, subfield_configs)
+            _reject_colliding_property_claims!(_inbound_property_claims(internal_field_configs + configs, subfield_configs))
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -297,6 +297,10 @@ module Axn
             end
 
             _reject_duplicate_fields!(external_field_configs, configs)
+            # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
+            # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
+            # collapse in `output_schema` exactly as their inbound counterparts do.
+            _reject_colliding_property_claims!(_outbound_property_claims(external_field_configs + configs))
 
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
@@ -675,12 +679,19 @@ module Axn
           names.each { |name| Contract.validate_shape_member_name!(name) }
           _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
+          # Only the SAME key declared twice in one block is judged here — keyed by `to_sym`, which is exactly
+          # what `Schema#member_properties` keys a member's property by, so the two agree about what "the same
+          # member" is. Two members whose names merely CANONICALIZE alike are two distinct keys at one node,
+          # which is a property collapse rather than a repeat declaration, and the one claim space judges every
+          # such collapse (`_reject_colliding_property_claims!`) so no mechanism pair can slip between checks.
+          # This one cannot move there: two identical claims are a legal MERGE by that rule, while two
+          # identical members of one block are a genuine duplicate.
           claimed = {}
           names.each do |name|
-            property = Axn::Reflection::Values.canonical_wire_key(name)
-            _raise_colliding_members!(claimed[property], name, property) if claimed.key?(property)
+            key = name.to_sym
+            _raise_duplicate_member!(name) if claimed.key?(key)
 
-            claimed[property] = name
+            claimed[key] = name
           end
 
           child = walk.with(depth: walk.depth + 1)
@@ -715,21 +726,13 @@ module Axn
                 "flatten the nesting."
         end
 
-        # Two spellings of one member name are reported as a plain duplicate; two different names that
-        # collapse are reported as the collision they are. A Symbol and a String spelling of one name are
-        # different spellings, so they take the collapsed branch and the message names the shared property
-        # — which is the useful thing to say about them.
-        def _raise_colliding_members!(claimed, offending, property)
-          if _same_field_spelling?(claimed, offending)
-            raise Axn::DuplicateFieldError,
-                  "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
-                  "validate the same key, and the reflected schema would keep only the last. Declare each member once."
-          end
-
+        # The same member key declared twice in one block. No comparison of the two names is needed — and so
+        # none is made: they arrived under one `to_sym` key, which is the identity the schema itself uses, so
+        # nothing a name's class can define (an `==` that raises) is dispatched to reach this conclusion.
+        def _raise_duplicate_member!(offending)
           raise Axn::DuplicateFieldError,
-                "Duplicate shape member declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
-                "both render as the JSON property #{property.inspect}, so the reflected schema would emit it twice. " \
-                "Declare them under names that stay distinct once converted to UTF-8."
+                "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
+                "validate the same key, and the reflected schema would keep only the last. Declare each member once."
         end
 
         # Whether two colliding names are the same SPELLING — decided while a failure is already being
@@ -737,24 +740,6 @@ module Axn
         # caller-supplied String subclass, and its `==` can raise in place of the duplicate error being
         # built, escaping every rescue when what it raises is outside StandardError.
         #
-        # The two SPELLINGS are compared instead: `_field_name_spelling` renders a Symbol and a String
-        # (subclass included) through a bound core `inspect`, so both are plain Strings this layer owns, and
-        # `String#==` is bound for the same reason the spellings are. A name with no spelling to render
-        # (neither Symbol nor String) is treated as a different spelling, which is both the safe direction
-        # and the accurate one: two such names are two distinct objects that happen to render one property,
-        # and the collapsed message — naming both offenders and the property they share — is what describes
-        # that. Nothing about either name is dispatched on this path.
-        STRING_NAME_EQUALS = ::String.instance_method(:==)
-        private_constant :STRING_NAME_EQUALS
-
-        def _same_field_spelling?(first, second)
-          first_label = _field_name_spelling(first)
-          second_label = _field_name_spelling(second)
-          return false unless first_label && second_label
-
-          STRING_NAME_EQUALS.bind_call(first_label, second_label)
-        end
-
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
         # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
         # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
@@ -816,11 +801,12 @@ module Axn
         # ambiguously.
         #
         # This is the SYNTACTIC half of field identity: "the same name declared twice under the same route
-        # as written". It cannot see two DIFFERENT routes that resolve to one parent, which is what
-        # `_reject_colliding_wire_paths!` answers on the resolved tree. The two are complementary, not
-        # redundant: `on:` spelling is what distinguishes declaring one thing twice (rejected here) from
-        # reaching one wire slot by two routes (legitimate), and only the resolved path can tell whether
-        # two leaf names under one resolved parent collapse onto one property.
+        # as written". It cannot see two DIFFERENT routes that resolve to one parent, nor any of the other
+        # mechanisms that name a property at a node — that is what the one claim space
+        # (`_reject_colliding_property_claims!`) answers. The two are complementary, not redundant: `on:`
+        # spelling is what distinguishes declaring one thing twice (rejected here) from reaching one wire slot
+        # by two routes (legitimate, and a MERGE under the claim rule), so this check catches exactly the case
+        # the claim space treats as legal.
         #
         # Returns `[claimed_field, offending_field]` pairs; equal entries are an identical-name duplicate.
         def _duplicate_fields(existing, new_configs)
@@ -908,84 +894,222 @@ module Axn
           end
         end
 
-        # The RESOLVED half of field identity, complementary to `_duplicate_fields` above. A declared name
-        # becomes a JSON property under its RESOLVED wire parent, and two supported spellings of one route —
-        # a dotted `on:` and a subfield reader (or an `as:` alias of one) — resolve to the same parent while
-        # differing as written. So two leaf names that canonicalize to one property can sit under one parent
-        # with nothing syntactic in common, and the schema then emits that property twice.
+        # ONE claim space for every mechanism that can contribute a JSON property name at a node.
         #
-        # Route resolution is taken from `SubfieldTree`, which already owns it and which the schema and the
-        # runtime both read: a second resolver here that disagreed with the tree would be the same defect one
-        # layer up. The tree is built over the PROSPECTIVE configs, before any class mutation, exactly as
-        # `SubfieldContradictions.check!` does at the same point in `_expects_subfields`.
+        # A property name at a node can come from six places, and each earlier attempt to police them in pairs
+        # left the remaining pairs open — a shape member checked in isolation cannot see a subfield resolved to
+        # its parent, a resolved-path check over field configs cannot see shape members at all, and so on. So
+        # every mechanism is turned into a CLAIM of `(resolved path, canonical property, source)` and judged
+        # together. The mechanisms, with the reflection code each mirrors:
         #
-        # A collision is "canonical paths equal, raw paths different". Both halves matter:
-        #   - equal canonical AND equal raw is a MERGED NODE — one wire slot reached by two routes, which is
-        #     legitimate and gated on reader-name uniqueness instead. It reflects as one property.
-        #   - equal canonical, different raw means two SEPARATE tree nodes whose names collapse onto one
-        #     JSON property, dropping a value. That is the defect.
+        #   1. a top-level field name              — depth 0; `Schema#build_input`'s `properties[config.field]`
+        #   2. a subfield leaf name                — at its RESOLVED parent, from `SubfieldTree`
+        #   3. a shape member name                 — at its owner's node, at any nesting depth
+        #      (`Schema#member_properties`)
+        #   4. a `model:`-generated `<field>_id`   — top-level or subfield, keyed by
+        #      `Internal::FieldConfig.model_id_key`, the same helper `Schema#model_id_property` uses
+        #   5. an implicit intermediate segment    — every node a dotted `on:` passes THROUGH, which is every
+        #      proper prefix of a resolved wire path
+        #   6. the members of a `Data` type        — emitted as base properties beside a shape's members
+        #      (`Schema#apply_structured_schema!`), so only when a shape is also declared
         #
-        # A `model:` field additionally claims its generated `<field>_id`, derived from the same
-        # `Internal::FieldConfig.model_id_key` the schema uses so the guard and the schema cannot disagree
-        # about the generated name. The same rule then covers it for free, and covers it CORRECTLY: an
-        # explicit `<field>_id` in the same spelling has an equal raw path, so it stays legal and keeps
-        # merging (`properties[id_field] ||= id_prop`), while one that only canonicalizes the same is
-        # rejected. Claiming generated ids unconditionally would have broken the same-spelling pattern.
-        def _reject_colliding_wire_paths!(field_configs, subfield_configs)
-          claimed = {}
+        # Resolution comes from `SubfieldTree`, which the schema and the runtime already read, so the guard
+        # cannot disagree with what is emitted. Mechanisms 2 and 5 are the SAME computation under this
+        # framing — a node and the nodes on the way to it — which is why prefixes are claimed rather than
+        # special-cased.
+        #
+        # The rule, unchanged from when it covered only routes: a collision is "same canonical path, DIFFERENT
+        # raw spelling". Equal canonical AND equal raw is a MERGE — one wire slot named the same way twice, by
+        # two routes, or by a shape member and a subfield, or by a generated id and an explicit field — which
+        # is legitimate and reflects as exactly one property. Two claims that differ only once canonicalized
+        # are two separate nodes whose properties collapse, dropping a value.
+        #
+        # Inbound and outbound are separate spaces: a name may legitimately be both expected and exposed.
+        def _reject_colliding_property_claims!(claims)
+          claims.group_by(&:canonical).each_value do |group|
+            by_spelling = group.group_by(&:path)
+            next if by_spelling.size == 1
 
-          _claimed_wire_paths(field_configs, subfield_configs).each do |config, wire_path|
-            canonical = wire_path.map { |segment| Axn::Reflection::Values.canonical_wire_key(segment) }
-            # A route segment with no UTF-8 rendering has no property to compare. Declared NAMES are already
-            # rejected upstream (`_reject_unrenderable_field_names!`), so this only skips an exotic route,
-            # and skipping is required rather than merely safe: two unrenderable segments both canonicalize
-            # to nil and would otherwise compare as one path.
-            next if canonical.any?(&:nil?)
-
-            first_config, first_path = claimed[canonical]
-            # Raw paths are Arrays of Symbols the tree built (`to_sym` on every segment), so comparing them
-            # dispatches only Symbol#==, which no class can override.
-            _raise_colliding_wire_paths!(first_config, first_path, config, wire_path, canonical) if first_path && first_path != wire_path
-
-            claimed[canonical] ||= [config, wire_path]
+            first, second = by_spelling.values.first(2).map { |candidates| _most_specific_claim(candidates) }
+            _raise_colliding_claims!(first, second)
           end
         end
 
-        # Every JSON property each declared config claims, as `[config, raw_wire_path]`. A config with no
-        # entry in the tree's index is unattached — only a bare `on: :ambient_context` with no declared
-        # ambient field, which is deliberately excluded from the schema and so claims no property.
-        def _claimed_wire_paths(field_configs, subfield_configs)
+        # One JSON property contributed at one resolved node. `path` is the raw spelling (Symbols the tree and
+        # the declarations supply), `canonical` the property each segment renders as, `description` how a
+        # message names the contributor, and `precise` false only for an implicit intermediate — the one
+        # source that names nothing the author wrote, so a claim that does is preferred when reporting.
+        #
+        # The source is kept as DATA (`kind`/`config`/`name`) and rendered into prose only for a claim actually
+        # being reported. Every declaration re-collects the whole contract's claims, so a contract of N
+        # declarations builds O(N^2) of them, and interpolating a description for each one cost more than the
+        # rest of this check combined.
+        PropertyClaim = Data.define(:path, :canonical, :kind, :config, :name, :precise)
+        private_constant :PropertyClaim
+
+        def _most_specific_claim(candidates) = candidates.find(&:precise) || candidates.first
+
+        # Inbound claims: every declared field and subfield, resolved through the tree built over the
+        # PROSPECTIVE configs — before any class mutation, exactly as `SubfieldContradictions.check!` does at
+        # the same point in `_expects_subfields`.
+        def _inbound_property_claims(field_configs, subfield_configs)
           tree = Axn::Reflection::SubfieldTree.build(field_configs, subfield_configs)
 
-          (field_configs + subfield_configs).flat_map do |config|
-            path = tree.index[config]
-            next [] unless path
+          ClaimCollector.new.tap do |into|
+            (field_configs + subfield_configs).each do |config|
+              resolved = tree.index[config]
+              # No index entry means the config is attached nowhere — only a bare `on: :ambient_context` with no
+              # declared ambient field, deliberately excluded from the schema, so it names no property.
+              next unless resolved
 
-            claims = [[config, path.wire_path]]
-            claims << [config, [*path.wire_path[0..-2], Internal::FieldConfig.model_id_key(config.field)]] if config.validations[:model]
-            claims
+              _collect_claims!(into, config, resolved.wire_path)
+            end
+          end.claims
+        end
+
+        # Outbound claims: `exposes` has no `on:`, so every exposure is its own root and needs no tree. An
+        # outbound `model:` field emits no generated `<field>_id` (it reflects under its own name), so
+        # mechanism 4 has no outbound counterpart.
+        def _outbound_property_claims(field_configs)
+          ClaimCollector.new.tap do |into|
+            field_configs.each { |config| _collect_claims!(into, config, [config.field], model_id: false) }
+          end.claims
+        end
+
+        def _collect_claims!(into, config, wire_path, model_id: true)
+          # Mechanisms 1, 2 and 5: the node this config names, plus every node its route passes through. The
+          # prefix claims are what make an implicit intermediate visible; where another config names that same
+          # node itself, the two claims share a raw path and merge.
+          wire_path.each_index do |depth|
+            leaf = depth == wire_path.size - 1
+            into.add(wire_path[0..depth], leaf ? :config : :intermediate, config, wire_path[depth], precise: leaf)
+          end
+
+          if model_id && config.validations[:model]
+            id_key = Internal::FieldConfig.model_id_key(config.field)
+            into.add([*wire_path[0..-2], id_key], :model_id, config, id_key)
+          end
+
+          shape = _member_shape(config)
+          _collect_data_type_member_claims!(into, config, wire_path, shape)
+          _collect_shape_member_claims!(into, shape, wire_path, config)
+        end
+
+        # Mechanism 3, at any depth: a shape member is a property of its owner's node, and a member's own
+        # nested block descends from there. Cyclic and generated-depth graphs are already rejected by
+        # `_reject_colliding_shape_member_names!`, which every declaration path runs over its shape before
+        # reaching here, so this recursion needs no cycle guard of its own — but it does need a size bound,
+        # because a nested shape reused by SIBLING members multiplies the distinct property paths beneath it.
+        def _collect_shape_member_claims!(into, shape, node_path, owner)
+          Internal::ShapeGraph.members(shape).each do |member|
+            name = Internal::ShapeGraph.fetch(member, :field)
+            next if Internal::ShapeGraph.missing?(name)
+
+            _raise_too_many_claims!(owner) if into.claims.size > MAX_PROPERTY_CLAIMS
+
+            path = [*node_path, name.to_sym]
+            into.add(path, :member, owner, name)
+            _collect_shape_member_claims!(into, _member_shape(member), path, owner)
           end
         end
 
-        def _raise_colliding_wire_paths!(first_config, first_path, config, wire_path, canonical)
-          raise Axn::DuplicateFieldError,
-                "Duplicate field(s) declared: #{_describe_wire_claim(first_config, first_path)} and " \
-                "#{_describe_wire_claim(config, wire_path)} both resolve to the JSON property " \
-                "#{canonical.join('.').inspect} — a declared name becomes a property name in the reflected " \
-                "schema and in serialized output, so the two would collapse onto one. Declare them under " \
-                "names that stay distinct once converted to UTF-8."
+        # Mechanism 6: a `Data`-typed field declaring a shape block emits its type's own members as base
+        # properties at that node, which the shape's members then merge over — so the two sets share a node.
+        # Gated exactly as `Schema#apply_structured_schema!` gates it (a shape present, and a type that is a
+        # Class below Data), so the guard claims a property precisely when the schema emits one.
+        def _collect_data_type_member_claims!(into, config, wire_path, shape)
+          return unless shape
+
+          klass = config.validations.dig(:type, :klass)
+          return unless klass.is_a?(Class) && klass < Data
+
+          klass.members.each { |member| into.add([*wire_path, member], :type_member, config, member) }
         end
 
-        # How this error names one claim: the declared name, the route it was declared under when it has one
-        # (two claims colliding here usually differ in exactly that), and a note when the property is one axn
-        # generates rather than one the author wrote — otherwise the message names a `<field>_id` the author
-        # cannot find in their own code.
-        def _describe_wire_claim(config, wire_path)
-          name = _inspect_field_name(config.field)
-          route = config.on ? " (on: #{_inspect_field_name(config.on)})" : ""
-          return "#{name}#{route}" if wire_path.last == config.field
+        # Generous enough that no hand-written contract approaches it — a thousand fields carrying twenty
+        # members each is a fifth of it — so it only ever fires on a shape graph whose PROPERTY COUNT is
+        # exponential rather than merely large. That happens when a nested shape object is reused by sibling
+        # members: every path through the graph is a distinct property path, so N levels of two-way sharing
+        # emit 2^N properties. Such a contract has no reflectable schema either — `input_schema` walks the same
+        # paths — so it is rejected at declaration rather than left to declare and then hang the first time
+        # anything reflects it.
+        MAX_PROPERTY_CLAIMS = 25_000
+        private_constant :MAX_PROPERTY_CLAIMS
 
-          "the `model:`-generated #{_inspect_field_name(wire_path.last)} of #{name}#{route}"
+        def _raise_too_many_claims!(config)
+          raise ArgumentError,
+                "the shape on #{_describe_config(config)} names more than #{MAX_PROPERTY_CLAIMS} JSON properties — " \
+                "a nested shape object reused by sibling members multiplies out, so every path through it is a " \
+                "separate property and the reflected schema grows exponentially (`input_schema` would not " \
+                "finish either). Give each member its own nested shape, or flatten the nesting."
+        end
+
+        # Accumulates one declaration's claims, memoizing each segment's canonical property.
+        #
+        # The memo is what keeps this affordable. Every declaration re-collects the whole contract's claims —
+        # it has to, since adding a top-level field can RE-ANCHOR existing subfields and change their resolved
+        # paths — so a contract of N declarations canonicalizes O(N^2) segments, and the same handful of names
+        # dominates that. Canonicalizing allocates a transcode-checked, frozen String per call; looking one up
+        # does not. Measured on 300 fields carrying 20 shape members each: 2.8s without the memo, 0.2s with it.
+        #
+        # Segments are Symbols the tree and the declarations supply, so they key the memo by value with no
+        # caller dispatch. A claim is dropped when any segment has no UTF-8 rendering: declared NAMES are
+        # rejected upstream by `_reject_unrenderable_field_names!`, so this only drops an exotic route — and
+        # dropping is required rather than merely tidy, since two unrenderable segments both canonicalize to
+        # nil and would otherwise compare as one path.
+        class ClaimCollector
+          attr_reader :claims
+
+          def initialize
+            @claims = []
+            @canonical = {}
+          end
+
+          def add(path, kind, config, name, precise: true)
+            canonical = path.map { |segment| @canonical.fetch(segment) { |s| @canonical[s] = Axn::Reflection::Values.canonical_wire_key(s) } }
+            return if canonical.any?(&:nil?)
+
+            @claims << PropertyClaim.new(path:, canonical:, kind:, config:, name:, precise:)
+          end
+        end
+        private_constant :ClaimCollector
+
+        def _describe_config(config)
+          route = config.on ? " (on: #{_inspect_field_name(config.on)})" : ""
+          "#{_inspect_field_name(config.field)}#{route}"
+        end
+
+        # How a message names one claim's source. Rendered only for a claim being reported.
+        def _describe_claim(claim)
+          case claim.kind
+          when :member then "shape member #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
+          when :model_id then "the `model:`-generated #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
+          when :intermediate then "#{_inspect_field_name(claim.name)}, a nested key introduced by #{_describe_config(claim.config)}"
+          when :type_member then "#{_inspect_field_name(claim.name)}, a member of the #{claim.config.validations.dig(:type, :klass)} type"
+          else _describe_config(claim.config)
+          end
+        end
+
+        # Names both SOURCES rather than only both spellings: with six mechanisms contributing property names,
+        # which two declarations collided is no longer evident from the names alone.
+        #
+        # Two shape members of one block keep the wording that case has always had — it is by far the most
+        # common collision and its fix is stated in its own terms — while every other pair reads as the
+        # resolved property they converge on.
+        def _raise_colliding_claims!(first, second)
+          if [first, second].all? { |claim| claim.kind == :member } && first.path[0..-2] == second.path[0..-2]
+            raise Axn::DuplicateFieldError,
+                  "Duplicate shape member declared: #{_inspect_field_name(first.name)} and " \
+                  "#{_inspect_field_name(second.name)} both render as the JSON property " \
+                  "#{first.canonical.last.inspect}, so the reflected schema would emit it twice. Declare them " \
+                  "under names that stay distinct once converted to UTF-8."
+          end
+
+          raise Axn::DuplicateFieldError,
+                "Duplicate field(s) declared: #{_describe_claim(first)} and #{_describe_claim(second)} both " \
+                "resolve to the JSON property #{first.canonical.join('.').inspect} — a declared name becomes a " \
+                "property name in the reflected schema and in serialized output, so the two would collapse " \
+                "onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
 
         # The three declaration paths (top-level expects, exposes, subfields) report through here rather

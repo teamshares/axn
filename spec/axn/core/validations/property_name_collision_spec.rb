@@ -266,6 +266,242 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # Six mechanisms can contribute a JSON property name at one node, and five rounds of review each surfaced a
+  # different PAIR of them that could converge without either seeing the other. They are judged in one claim
+  # space now, so the pairs below are the cross-product rather than a list of past defects: each is checked in
+  # its encoding-distinct form (rejected) and its same-spelling form (a legal merge, emitting one property).
+  # The mechanism list, with the reflection each mirrors, is in the comment on
+  # `_reject_colliding_property_claims!`.
+  describe "every mechanism that can name a property at one node" do
+    def widget
+      @widget ||= Class.new do
+        def self.name = "Widget"
+        def self.find(_id) = new
+      end
+    end
+
+    # The reflected property names at one node, canonicalized — so "one property" and "two that collapse onto
+    # one" are distinguishable, which is the whole question.
+    def canonical_props(klass, *path)
+      node = path.inject(klass.input_schema) { |acc, key| acc.dig(:properties, key) }
+      (node[:properties] || {}).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+    end
+
+    describe "a subfield leaf and a shape member of its parent" do
+      it "rejects them when their names collapse onto one property" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field utf8, type: String }
+            expects latin1, on: :payload, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      it "names the shape member and the subfield as the two sources" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field utf8, type: String }
+            expects latin1, on: :payload, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError) { |error|
+          expect(error.message).to include("shape member :café of :payload", "(on: :payload)")
+        }
+      end
+
+      it "still merges them into one property when the spelling matches" do
+        utf8 = utf8_name
+
+        klass = build_axn do
+          expects(:payload, type: Hash) { field utf8, type: String }
+          expects utf8, on: :payload, optional: true
+        end
+
+        expect(canonical_props(klass, :payload)).to eq(["café"])
+      end
+
+      it "rejects them at depth, where the member is nested and the subfield is dotted" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field(:mid, type: Hash) { field utf8, type: String } }
+            expects latin1, on: "payload.mid", optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.mid\.café"/)
+      end
+    end
+
+    describe "a shape member and a model:-generated <field>_id" do
+      it "rejects them when their names collapse onto one property" do
+        utf8_id = :café_id
+        latin1 = latin1_name
+        model = widget
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field utf8_id, type: String }
+            expects latin1, on: :payload, model:, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
+      end
+
+      it "still merges them when the spelling matches" do
+        utf8_id = :café_id
+        utf8 = utf8_name
+        model = widget
+
+        klass = build_axn do
+          expects(:payload, type: Hash) { field utf8_id, type: String }
+          expects utf8, on: :payload, model:, optional: true
+        end
+
+        expect(canonical_props(klass, :payload)).to eq(["café_id"])
+      end
+    end
+
+    describe "an implicit intermediate introduced by a dotted on:" do
+      it "collides with a shape member of the same parent" do
+        utf8 = utf8_name
+        route = "payload.#{latin1_name}"
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field utf8, type: Hash }
+            expects :leaf, on: route, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      it "names itself as a nested key rather than as something the author declared" do
+        utf8 = utf8_name
+        route = "payload.#{latin1_name}"
+
+        expect do
+          build_axn do
+            expects(:payload, type: Hash) { field utf8, type: Hash }
+            expects :leaf, on: route, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /a nested key introduced by :leaf/)
+      end
+
+      it "collides with a subfield declared at the same parent" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :leaf, on: "payload.#{utf8}", optional: true
+            expects latin1, on: :payload, type: Hash, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      it "collides with a model:-generated id at the same parent" do
+        utf8 = utf8_name
+        route = "payload.#{"caf\xE9_id".dup.force_encoding('ISO-8859-1').to_sym}"
+        model = widget
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects utf8, on: :payload, model:, optional: true
+            expects :leaf, on: route, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
+      end
+
+      it "collides with another implicit intermediate at the same parent" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :a, on: "payload.#{utf8}", optional: true
+            expects :b, on: "payload.#{latin1}", optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      it "still merges with a subfield of the same spelling" do
+        utf8 = utf8_name
+
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :leaf, on: "payload.#{utf8}", optional: true
+          expects utf8, on: :payload, type: Hash, optional: true
+        end
+
+        expect(canonical_props(klass, :payload)).to eq(["café"])
+      end
+    end
+
+    # A `Data`-typed field declaring a shape block emits its type's own members as properties beside the
+    # shape's (Reflection::Schema#apply_structured_schema!), so those two sets share a node. This mechanism was
+    # not on the review's list; it was found by walking the cross-product.
+    describe "the members of a Data type declared alongside a shape" do
+      it "rejects a shape member that collapses onto a Data member's property" do
+        shaped = Data.define(:café)
+        latin1 = latin1_name
+
+        expect do
+          build_axn { expects(:payload, type: shaped) { field latin1, type: String } }
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      it "names the Data type as the source" do
+        shaped = Data.define(:café)
+        latin1 = latin1_name
+
+        expect do
+          build_axn { expects(:payload, type: shaped) { field latin1, type: String } }
+        end.to raise_error(Axn::DuplicateFieldError, /a member of the .* type/)
+      end
+
+      it "still merges a shape member of the same spelling" do
+        shaped = Data.define(:café)
+        utf8 = utf8_name
+
+        klass = build_axn { expects(:payload, type: shaped) { field utf8, type: String } }
+
+        expect(canonical_props(klass, :payload)).to eq(["café"])
+      end
+    end
+
+    describe "the outbound claim space" do
+      it "rejects a Data member colliding with an exposed shape member" do
+        shaped = Data.define(:café)
+        latin1 = latin1_name
+
+        expect do
+          build_axn { exposes(:payload, type: shaped) { field latin1, type: String } }
+        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+      end
+
+      # Inbound and outbound are separate spaces: one name may legitimately be both expected and exposed, and
+      # they are emitted into different schemas.
+      it "does not compare an inbound name against an outbound one" do
+        utf8 = utf8_name
+        latin1 = latin1_name
+
+        expect do
+          build_axn do
+            expects utf8, optional: true
+            exposes latin1, optional: true
+          end
+        end.not_to raise_error
+      end
+    end
+  end
+
   describe "a name with no UTF-8 rendering" do
     it "is rejected on expects" do
       name = unrenderable_name
@@ -935,21 +1171,47 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(ArgumentError, /cannot contain itself.*shape member `a`/)
       end
 
-      # A nested shape reused by two sibling members at EVERY level is legal (the diamond above, repeated),
-      # but re-walking it per route is 2^depth walks — 22 levels took 22 seconds before shapes already
-      # verified were remembered, so an honest generated schema hung at class definition. The bound is wide:
-      # the point is finished-vs-hung, not a benchmark.
-      it "declares a deeply nested shape whose sub-shapes are shared, without re-walking each route" do
+      # A nested shape reused by two SIBLING members multiplies the distinct property paths beneath it: each
+      # level doubles them, so N levels name 2^N properties. Shallow sharing — what anyone writes by hand — is
+      # legal and cheap, and the walk remembers shapes it has already verified so each is checked once.
+      def shared_sibling_shape(depth)
         shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }
-        22.times do
+        depth.times do
           shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
                               Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
                     container: Hash }
         end
+        shape
+      end
+
+      it "declares a nested shape shared between sibling members, without re-walking each route" do
+        shape = shared_sibling_shape(10)
         elapsed = nil
 
         expect { elapsed = Benchmark.realtime { build_axn { expects :payload, type: Hash, shape: } } }.not_to raise_error
-        expect(elapsed).to be < 2.0
+        expect(elapsed).to be < 1.0
+      end
+
+      # Past a point that sharing is not a schema anyone can use: the property count is exponential, and
+      # `input_schema` walks the same paths (786k nodes at eighteen levels, measured). Rejecting at declaration
+      # is the better of the two outcomes — the alternative is declaring cleanly and then hanging the first
+      # time anything reflects the contract.
+      it "rejects sharing deep enough that the property count is exponential" do
+        shape = shared_sibling_shape(18)
+
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+      end
+
+      it "reaches that rejection quickly rather than walking the whole graph first" do
+        shape = shared_sibling_shape(22)
+        elapsed = Benchmark.realtime do
+          build_axn { expects :payload, type: Hash, shape: }
+        rescue ArgumentError
+          nil
+        end
+
+        expect(elapsed).to be < 1.0
       end
 
       # A member name that is neither String nor Symbol renders a property through its `to_s`, so it reaches

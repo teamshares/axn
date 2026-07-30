@@ -503,7 +503,7 @@ module Axn
             # The resolved half of the same identity rule: two supported spellings of one route (a dotted
             # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
             # written, so leaf names that collapse onto one property need the tree to be seen at all.
-            _reject_colliding_wire_paths!(internal_field_configs, subfield_configs + configs)
+            _reject_colliding_property_claims!(_inbound_property_claims(internal_field_configs, subfield_configs + configs))
 
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
