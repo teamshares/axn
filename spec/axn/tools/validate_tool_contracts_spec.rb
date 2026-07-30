@@ -131,6 +131,43 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError)
   end
 
+  # The width of the guarantee, pinned: membership is the union of a directory grant and a DECLARATION grant, so
+  # a `tool`-DSL axn is enumerated with no tool root configured at all. What bounds coverage is whether the class
+  # is LOADED and whether any adapter is registered — not whether it lives in a directory.
+  describe "what enumeration covers" do
+    it "enumerates a declaration-granted tool with no tool roots configured" do
+      Axn.register_tool_adapter(:mcp)
+      tool = valid_tool
+
+      expect(Axn::Tools::Registry.send(:_all_adapter_dirs)).to be_empty
+      expect(Axn::Tools::Registry.tool_classes).to include(tool)
+    end
+
+    # The local is NOT named `tool`: bare `tool` inside the class body would then parse as that local variable
+    # (nil at that point) instead of the DSL method, and the fixture would declare no tool at all.
+    it "enumerates a tool declared for every adapter (bare `tool`)" do
+      Axn.register_tool_adapter(:mcp)
+      bare = stub_const("ToolContractsSpec::BareTool", Class.new do
+        include Axn
+        tool
+        expects :a, optional: true
+        def call; end
+      end)
+
+      expect(bare._tool_declaration).to eq(:all)
+      expect(Axn::Tools::Registry.tool_classes).to include(bare)
+    end
+
+    # With no adapter registered there is no membership to test, so setup validation is a no-op. An app that
+    # expects it must register the adapter its tools are for.
+    it "validates nothing when no adapter is registered" do
+      colliding_tool
+
+      expect(Axn::Tools::Registry.tool_classes).to be_empty
+      expect { Axn.validate_tool_contracts! }.not_to raise_error
+    end
+  end
+
   describe "Registry.tool_classes" do
     # The registry is process-global, so this asserts membership rather than an exact set: another spec's named
     # tool class may legitimately still be defined.

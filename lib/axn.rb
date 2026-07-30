@@ -79,15 +79,26 @@ module Axn
   # right after requiring its action files. Nothing else changes if it is never called: the same errors still
   # raise on first projection.
   #
-  # TWO COVERAGE HOLES, deliberately not papered over:
+  # WHAT THIS COVERS, precisely — the guarantee is only as wide as enumeration.
   #
-  # 1. Under Rails, Zeitwerk's `eager_load_dir` loads a directory as one unit (it has no public API to load a
-  #    managed file in isolation), so a file that raises aborts the rest of THAT directory — warn-logged by the
-  #    registry, and the siblings it skipped are never validated here.
-  # 2. An axn made a tool by the `tool` DSL in a file OUTSIDE the configured tool directories is not loaded at
-  #    boot in a dev environment, so it is not enumerable yet and falls back to validating on first projection.
+  # Membership is the union of a directory grant and a DECLARATION grant (`Registry#member?`), and enumeration
+  # honors both: a class that declares `tool` is enumerated with no tool root configured at all. What it cannot
+  # see is a class that is not LOADED yet, since it walks the classes the registry has recorded. So:
   #
-  # Both narrow the set this covers; neither makes an invalid contract reachable without any error at all.
+  # - Nothing at all is validated unless at least one tool adapter is registered. With no adapter there are no
+  #   tool roots and no membership to test, so this is a no-op — an app that expects setup validation must
+  #   register the adapter its tools are for.
+  # - A tool inside a configured tool root is loaded here (`ensure_loaded!`) and validated, declaration-granted
+  #   or directory-granted alike.
+  # - A `tool`-DSL axn OUTSIDE every configured root is validated only if something already loaded it. Under
+  #   eager loading (production) everything is loaded, so it is covered; in a lazily-loading development
+  #   environment it is not, and falls back to validating on first projection.
+  # - Under Rails, Zeitwerk's `eager_load_dir` loads a directory as one unit (it has no public API to load a
+  #   managed file in isolation), so a file that raises aborts the rest of THAT directory — warn-logged by the
+  #   registry, and the siblings it skipped are not validated here.
+  #
+  # None of these makes an invalid contract reachable with no error at all: every gap falls back to the first
+  # projection, which is where every non-tool axn is validated anyway.
   def self.validate_tool_contracts!
     Axn::Tools::Registry.tool_classes.each do |klass|
       klass.input_schema if klass.respond_to?(:input_schema)

@@ -8,13 +8,18 @@
 # spec's boot), so these drive the real callback chains: `ActiveSupport::Reloader.prepare!` runs the `to_prepare`
 # callbacks the engine registered, which is also the path a development reload takes.
 RSpec.describe "tool contract validation at app setup" do
-  around do |example|
-    original_adapters = Axn::Tools::Registry.adapters.dup
-    Axn::Tools::Registry.reset_adapters!
-    example.run
-  ensure
-    Axn::Tools::Registry.reset_adapters!
-    original_adapters.each { |adapter| Axn.register_tool_adapter(adapter) }
+  # Scoped to the examples that register their own adapters: the boot-state examples above must see the app's
+  # real registrations, since those are precisely what boot used.
+  shared_context "with an isolated adapter registry" do
+    around do |example|
+      original = Axn::Tools::Registry.adapters.to_a
+      sources = original.to_h { |adapter| [adapter, Axn::Tools::Registry.adapter_config_source(adapter)] }
+      Axn::Tools::Registry.reset_adapters!
+      example.run
+    ensure
+      Axn::Tools::Registry.reset_adapters!
+      sources.each { |adapter, source| Axn.register_tool_adapter(adapter, source) }
+    end
   end
 
   # A colliding contract no eager rule sees: two shape members whose names canonicalize to one JSON property.
@@ -40,6 +45,45 @@ RSpec.describe "tool contract validation at app setup" do
     Rails.application.config.to_prepare_blocks.select { |block| block.source_location.first.end_with?("lib/axn/rails/engine.rb") }
   end
 
+  # The end-to-end assertion, and the only one that proves the guarantee rather than the plumbing: a real,
+  # directory-resident tool axn was validated during boot, before any spec touched it.
+  #
+  # `config/initializers/axn_tool_validation.rb` registers the `:boot_check` adapter with
+  # `actions/boot_validated` as a tool root, and that directory holds one valid tool. Nothing else references
+  # that class — so if the memo below is populated, the only thing that can have populated it is axn's
+  # `after_initialize` hook projecting it at setup. If the hook did not run (or enumerated nothing), referencing
+  # the class here autoloads it fresh and the memo is nil.
+  #
+  # This is what the directly-invoked-block examples further down cannot show: those would pass identically if
+  # enumeration always returned an empty set.
+  describe "validation actually performed at boot" do
+    subject(:tool) { Actions::BootValidated::ValidTool }
+
+    it "validated a real tool's contract before any spec referenced it" do
+      expect(tool.instance_variable_get(:@_axn_validated_projections)).to include(:input, :output)
+    end
+
+    it "enumerated it as a tool, which is what made it reachable" do
+      expect(Axn::Tools::Registry.adapters).to include(:boot_check)
+      expect(Axn::Tools::Registry.tool_classes).to include(tool)
+    end
+
+    # The memo is what makes setup validation free for adapters later: an adapter asking for the schema pays
+    # nothing, because it was already validated at boot.
+    it "leaves nothing for a later projection to re-validate" do
+      walks = 0
+      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+        walks += 1
+        original.call(*args, &block)
+      end
+
+      tool.input_schema
+      tool.output_schema
+
+      expect(walks).to eq(0)
+    end
+  end
+
   describe "the engine's hooks" do
     # `to_prepare` is not redundant with `after_initialize`: Zeitwerk unloads on code change, so a one-shot hook
     # would validate only the first boot and every reload after it would go unchecked.
@@ -56,6 +100,8 @@ RSpec.describe "tool contract validation at app setup" do
   end
 
   describe "a reload with an invalid tool contract" do
+    include_context "with an isolated adapter registry"
+
     it "raises through the engine's hook, naming the offending class" do
       Axn.register_tool_adapter(:mcp)
       colliding_tool
