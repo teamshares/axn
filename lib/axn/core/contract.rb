@@ -515,11 +515,14 @@ module Axn
         # a member that DOES define it cannot deny the reader to escape the check (see
         # Internal::ShapeGraph). A cyclic graph is impossible here — every declaration path runs
         # `_reject_colliding_shape_member_names!`, which rejects one, before reaching this walk.
+        # The name is read BEFORE the violation is detected, so the message is built from a name already in
+        # hand rather than by dispatching the reader again once a failure is being reported.
         def _reject_outbound_shape_user_facing!(shape)
           Internal::ShapeGraph.members(shape).each do |member|
+            name = Internal::ShapeGraph.fetch(member, :field)
             if Internal::ShapeGraph.read(member, :user_facing)
               raise ArgumentError,
-                    "shape member #{_describe_shape_member(member)} does not support user_facing: on exposes — an " \
+                    "shape member #{_describe_shape_member(member, name)} does not support user_facing: on exposes — an " \
                     "outbound failure is a dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
             end
             _reject_outbound_shape_user_facing!(_member_shape(member))
@@ -531,8 +534,13 @@ module Axn
         # an exception from it would replace the declaration error (escaping every rescue when it is
         # outside StandardError). A member with no `#field` has no name to print, and its class is the
         # only thing left that identifies it.
-        def _describe_shape_member(member)
-          name = Internal::ShapeGraph.fetch(member, :field)
+        #
+        # `name` is passed in rather than read here, and every caller reads it on the way DOWN, before it
+        # has a failure to report. Re-reading it here would be the same hazard as `inspect` one step
+        # removed: a reader that raises (or answers differently) on a second read replaces the declaration
+        # error with the caller's exception — verified against a member whose `field` raises the second time
+        # it is called.
+        def _describe_shape_member(member, name)
           return "of class #{Axn::Internal::ClassName.of(member)}" if Internal::ShapeGraph.missing?(name)
 
           "`#{_shape_member_label(name)}`"
@@ -552,26 +560,46 @@ module Axn
         # members have names that collide.
         #
         # This is the first shape walk on every declaration path, so it is where an untraversable graph is
-        # rejected on behalf of all of them — the walks in validation, reflection and redaction only ever
-        # see a graph that passed here. `via` names the member whose nested shape is being entered, so a
-        # rejection is reported against the member that caused it.
+        # rejected on behalf of all of them: a graph reaching validation, reflection or redaction has
+        # already been rejected here if it is untraversable AS READ. What no declaration-time walk can
+        # promise is a graph that answers a LATER read differently — a `[]` or a reader giving two answers
+        # is a caller contradicting itself, not a guard missing something (see Internal::ShapeGraph).
+        #
+        # `via`/`via_name` name the member whose nested shape is being entered — the name captured on the
+        # way down, never re-read while a failure is being reported.
         #
         # Two ways a graph can be untraversable, and each needs its own answer. A graph that CONTAINS
         # itself repeats an object, which `CycleGuard` detects by identity. A graph that GENERATES itself —
         # a shape Hash whose `[]` builds a fresh nested shape on every read — never repeats an object, so
         # no identity guard can see it; it is infinitely deep rather than cyclic, and only a depth cap
         # stops it. Both otherwise end in SystemStackError, outside StandardError, escaping every rescue.
-        def _reject_colliding_shape_member_names!(shape, seen = nil, depth: 0, via: nil)
+        def _reject_colliding_shape_member_names!(shape, walk = nil, via: nil, via_name: nil)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
-          return if hash.nil?
+          return if nil.equal?(hash)
 
-          _raise_shape_too_deep!(via) if depth > MAX_SHAPE_NESTING
+          walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
+          return if walk.walked.key?(hash)
 
-          walked = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
-            _check_shape_member_names!(hash, nested, depth)
+          _raise_shape_too_deep!(via, via_name) if walk.depth > MAX_SHAPE_NESTING
+
+          outcome = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
+            _check_shape_member_names!(hash, walk.with(seen: nested))
           end
-          _raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(walked)
+          _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(outcome)
+
+          walk.walked[hash] = true
         end
+
+        # The state one walk carries. `seen` is the ANCESTRY set `CycleGuard` pushes and pops, which is what
+        # makes a diamond (one nested shape reused by two siblings) legal rather than a false cycle.
+        # `walked` is the complement: shapes already walked to completion, which never need walking again —
+        # without it, that same legal diamond costs 2^depth walks (measured: 18 levels took 1.4s, 22 took
+        # 22s), so a generated-but-honest schema with shared sub-shapes hung at class definition. Keyed by
+        # identity, per declaration, and populated only AFTER a shape has passed, so a memoized entry always
+        # means "already verified". A shape that answers a later read differently is the inconsistent-reader
+        # limit above, not something re-walking would have caught.
+        ShapeWalk = Data.define(:seen, :walked, :depth)
+        private_constant :ShapeWalk
 
         # Sentinel for "this shape was already open on the path" — a private object rather than a value a
         # declaration could produce, so nothing a caller supplies can be mistaken for it, and identity is
@@ -586,10 +614,14 @@ module Axn
         MAX_SHAPE_NESTING = 64
         private_constant :MAX_SHAPE_NESTING
 
-        def _check_shape_member_names!(hash, seen, depth)
-          members = Internal::ShapeGraph.members(hash)
-          names = members.map { |member| Internal::ShapeGraph.fetch(member, :field) }
-                         .reject { |name| Internal::ShapeGraph.missing?(name) }
+        # Each member's name is read exactly ONCE per walk, into a (member, name) pair, and every later use
+        # of it — a collision message, a cycle or depth report against a nested shape — reads that capture
+        # rather than the member again. Same reasoning as the renderer's one-#to_s-per-key rule: a second
+        # read may disagree with the first or raise something that is not even a StandardError, replacing
+        # the diagnosis with the escape these guards exist to prevent.
+        def _check_shape_member_names!(hash, walk)
+          named = Internal::ShapeGraph.members(hash).map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
+          names = named.filter_map { |_member, name| name unless Internal::ShapeGraph.missing?(name) }
           _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
           claimed = {}
@@ -600,8 +632,9 @@ module Axn
             claimed[property] = name
           end
 
-          members.each do |member|
-            _reject_colliding_shape_member_names!(_member_shape(member), seen, depth: depth + 1, via: member)
+          child = walk.with(depth: walk.depth + 1)
+          named.each do |member, name|
+            _reject_colliding_shape_member_names!(_member_shape(member), child, via: member, via_name: name)
           end
         end
 
@@ -609,8 +642,8 @@ module Axn
         # runtime validator's, the schema's — recurses until the stack overflows, and SystemStackError is
         # outside StandardError, so it escapes every rescue in the framework rather than settling into a
         # reported failure. Rejected at declaration, where it is knowable and where the author is present.
-        def _raise_cyclic_shape!(member)
-          via = member.nil? ? "" : " reached from shape member #{_describe_shape_member(member)}"
+        def _raise_cyclic_shape!(member, name)
+          via = nil.equal?(member) ? "" : " reached from shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError,
                 "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
                 "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
@@ -621,8 +654,8 @@ module Axn
         # simply endless. Capped rather than walked to exhaustion, for the same reason a cycle is rejected
         # — the alternative outcome is a SystemStackError raised while the class is being defined, which
         # no rescue in the framework can settle.
-        def _raise_shape_too_deep!(member)
-          via = member.nil? ? "" : " at shape member #{_describe_shape_member(member)}"
+        def _raise_shape_too_deep!(member, name)
+          via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError,
                 "a `shape:` graph nested more than #{MAX_SHAPE_NESTING} levels deep#{via} is almost certainly " \
                 "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
@@ -1082,21 +1115,30 @@ module Axn
         # does (via `_shape_compatible_type!`). Mutates `validations`.
         #
         # Nothing the shape object can define decides whether derivation happens: the type test goes
-        # through `ShapeGraph.hash_or_nil`, and the "already has one?" test reads the key rather than
-        # asking `key?` — an overridden `is_a?` or `key?` would otherwise skip derivation, leaving a nil
-        # container that reaches ShapeValidator and raises a bare `TypeError: class or module required`
-        # on EVERY call instead of the declaration error this exists to produce. Reading the key also
-        # derives for an explicit `container: nil`, which is the same unusable state spelled out.
+        # through `ShapeGraph.hash_or_nil`, the "already has one?" test reads the key rather than asking
+        # `key?`, and `nil` is the receiver of the emptiness check rather than the caller's value (`nil?`
+        # is overridable and this is a type test). An overridden `is_a?`, `key?` or `nil?` would otherwise
+        # skip derivation, leaving a nil container that reaches ShapeValidator and raises a bare
+        # `TypeError: class or module required` on EVERY call instead of the declaration error this exists
+        # to produce. Reading the key also derives for an explicit `container: nil`, the same unusable
+        # state spelled out.
         #
-        # The replacement is a plain Hash assembled from the shape's own entries rather than the result of
-        # its `merge`, which a subclass can override to return anything at all — including something that
-        # is not a Hash, or that drops the container just derived.
+        # `:members` is taken from `ShapeGraph.members` — the same read every guard makes — and NOT from
+        # the shape's own entries. This runs after those guards, so whatever it stores is what reflection
+        # then treats as authoritative: copying the raw entries instead would promote members a lying `[]`
+        # had hidden from the guards into a plain Hash the schema reads, which is the split the guards
+        # exist to prevent (a hidden colliding pair emits a duplicate property; a hidden cyclic member
+        # reaches reflection and overflows the stack). Every other entry is copied via `each`, the one
+        # method a walk requires. Assembled as a plain Hash rather than taken from the shape's `merge`,
+        # which a subclass can override to return anything — including a non-Hash, or something that drops
+        # the container just derived.
         def _derive_raw_shape_container!(validations)
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
-          return if shape.nil? || !shape[:container].nil?
+          return if nil.equal?(shape) || !nil.equal?(shape[:container])
 
           derived = {}
           shape.each { |key, value| derived[key] = value }
+          derived[:members] = Internal::ShapeGraph.members(shape)
           derived[:container] = _shape_compatible_type!(validations)
           validations[:shape] = derived
         end

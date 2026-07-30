@@ -14,7 +14,15 @@ module Axn
     #
     # What a walk genuinely REQUIRES stays the graph's own: reading `:members` off a Hash calls its
     # `[]`, and reading a member's `field` invokes that reader. Those are the same calls reflection
-    # makes, so a lie there changes what both decide rather than splitting them apart.
+    # makes, so a CONSISTENT lie there changes what both decide rather than splitting them apart — a
+    # `[]` that hides members hides them from the guard and from the schema alike. Every read of a shape's
+    # members in axn therefore goes through `members` below, and nothing reads them another way; a second
+    # route (an `each`-copy of the shape's real entries) would see members `[]` had hidden and hand the
+    # schema a list no guard had walked.
+    #
+    # An INCONSISTENT lie — a `[]` or a reader answering differently on successive reads — still splits
+    # them, because guard and consumer are separate reads however each is written. Nothing here closes
+    # that, and nothing here claims to: it is a caller giving two answers, not a guard missing one.
     module ShapeGraph
       # `#method` is itself overridable, so the lookup below goes through Object's implementation: an
       # object whose own `#method` raises would otherwise replace a declaration verdict with its
@@ -41,10 +49,12 @@ module Axn
       # A non-Hash shape has no members at all, which is what makes this the type test every shape
       # walk shares: a lie about being a Hash cannot skip a walk, because the walk asks for members
       # rather than asking the shape what it is.
+      # `nil.equal?` rather than `list.nil?`: this is a type test on a caller value, and `nil?` is
+      # overridable — a members list answering true would hide itself from every guard.
       def self.members(shape)
         hash = hash_or_nil(shape)
         list = hash && hash[:members]
-        return [] if list.nil?
+        return [] if nil.equal?(list)
 
         captured = []
         list.each { |member| captured << member } # rubocop:disable Style/MapIntoArray -- `map` is overridable; `each` only
@@ -91,6 +101,11 @@ module Axn
       # is a bug inside the reader and propagates. So an object that genuinely defines nothing is still
       # skipped rather than raising: the distinction drawn is that a LIE cannot bypass a guard, not that
       # a member must be a full ShapeConfig.
+      #
+      # The name axn asked for is the RECEIVER of that comparison, and it is always a Symbol this layer
+      # supplied. `e.name` is whatever the raised exception's `name` returns, which caller code chooses:
+      # a NoMethodError subclass whose `name` is an object with a raising `==` would otherwise replace the
+      # declaration verdict from inside the line that decides it.
       def self.fetch(object, name)
         defined_method = begin
           OBJECT_METHOD.bind_call(object, name)
@@ -102,7 +117,7 @@ module Axn
         begin
           OBJECT_PUBLIC_SEND.bind_call(object, name)
         rescue ::NoMethodError => e
-          raise unless e.name == name
+          raise unless name.equal?(e.name)
 
           NOT_DEFINED
         end

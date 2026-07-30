@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "benchmark"
+
 # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
 # serialized output for an outbound one — so it carries the same UTF-8 promise the serializer enforces on a
 # Hash key. Two names that collapse onto one property, and a name with no UTF-8 rendering at all, are
@@ -613,6 +615,139 @@ RSpec.describe "declaration-time property name collisions" do
         klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } }
 
         expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq(%i[a b])
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a, :properties).keys).to eq([:leaf])
+      end
+
+      # `[]` is the read every guard AND reflection makes, so a lie there must hide the members from BOTH —
+      # that is what "a lie changes what both decide" means. The failure to prevent is the opposite: members
+      # reaching reflection that no guard walked, which is what copying the shape's raw entries would do.
+      describe "a shape whose [] hides the members its real entries carry" do
+        def hidden_member_shape(*members)
+          shape = Class.new(Hash) do
+            def [](key)
+              return [] if key == :members
+              return nil if key == :container
+
+              super
+            end
+          end.new
+          shape.store(:members, members)
+          shape
+        end
+
+        it "does not promote a colliding pair into the reflected schema" do
+          shape = hidden_member_shape(Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+                                      Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
+
+          klass = build_axn { expects :payload, type: Hash, shape: }
+
+          expect(klass.input_schema.dig(:properties, :payload, :properties)).to eq({})
+        end
+
+        it "does not promote a user_facing: member the outbound guard never saw" do
+          shape = hidden_member_shape(Axn::Core::Contract::ShapeConfig.new(field: :status, validations: {}, user_facing: true))
+
+          klass = build_axn { exposes :payload, type: Hash, shape: }
+
+          expect(klass.external_field_configs.first.validations.dig(:shape, :members)).to eq([])
+        end
+
+        # The worst of the three: a cyclic member the guard never walked reaches reflection, whose own walk
+        # has no cycle guard, and the stack overflows outside StandardError — during schema reflection rather
+        # than at declaration.
+        it "does not promote a cyclic member into a graph reflection then walks" do
+          member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})
+          member.validations[:shape] = { members: [member], container: Hash }
+          shape = hidden_member_shape(member)
+
+          klass = build_axn { expects :payload, type: Hash, shape: }
+
+          expect(klass.input_schema.dig(:properties, :payload, :properties)).to eq({})
+        end
+      end
+
+      # `nil?` is overridable, so every "is this absent?" test on a caller value asks `nil` instead.
+      it "does not let a members list claiming to be nil hide itself from the walk" do
+        members = Class.new(Array) { def nil? = true }.new
+        members.push(Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+                     Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end
+
+      it "does not let a container whose nil? raises hijack the declaration" do
+        raising_nil = Class.new { def nil? = raise(NotImplementedError, "hijacked from nil?") }
+        shape = Class.new(Hash) do
+          define_method(:[]) { |key| key == :container ? raising_nil.new : super(key) }
+        end.new
+        shape.store(:members, [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})])
+
+        klass = nil
+        expect { klass = build_axn { expects :payload, type: Hash, shape: } }.not_to raise_error
+        # The container the caller supplied is left alone — it said it had one — but nothing it defines got
+        # to decide that. Read through `[]` rather than `dig`, which bypasses the override under test.
+        stored = klass.internal_field_configs.first.validations[:shape]
+        expect(stored[:container].class).to eq(raising_nil)
+      end
+
+      # A NoMethodError subclass whose `name` is an object with a raising `==`. Deciding "does this mean no
+      # such reader?" must not dispatch that `==`: the NotImplementedError it raises is a ScriptError, which
+      # escapes every rescue in the framework, in place of the member's own NoMethodError.
+      it "does not dispatch == on a hostile NoMethodError#name" do
+        hostile_name = Class.new { def ==(_other) = raise(NotImplementedError, "hijacked from ==") }
+        evil_error = Class.new(NoMethodError) { define_method(:name) { hostile_name.new } }
+        members = [Class.new do
+          def initialize(error_class) = @error_class = error_class
+
+          # No respond_to_missing?, so the fallback dispatch is the path reached.
+          def method_missing(_reader, *_args) = raise(@error_class, "boom") # rubocop:disable Style/MissingRespondToMissing
+        end.new(evil_error)]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(NoMethodError, "boom")
+      end
+
+      # Every message naming a member is built from a name the walk already read on the way down. Reading it
+      # again once a failure is being reported is the same hazard as `inspect`: this member answers the first
+      # read and raises on the second, so a re-read replaces the declaration error with its exception.
+      it "reports a cycle without re-reading the member's name" do
+        member = Class.new do
+          def initialize
+            @reads = 0
+          end
+
+          def field
+            @reads += 1
+            raise(NotImplementedError, "hijacked from a second read") if @reads > 1
+
+            :a
+          end
+
+          def validations = @validations ||= {}
+        end.new
+        shape = { members: [member], container: Hash }
+        member.validations[:shape] = shape
+
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError, /cannot contain itself.*shape member `a`/)
+      end
+
+      # A nested shape reused by two sibling members at EVERY level is legal (the diamond above, repeated),
+      # but re-walking it per route is 2^depth walks — 22 levels took 22 seconds before shapes already
+      # verified were remembered, so an honest generated schema hung at class definition. The bound is wide:
+      # the point is finished-vs-hung, not a benchmark.
+      it "declares a deeply nested shape whose sub-shapes are shared, without re-walking each route" do
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }
+        22.times do
+          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
+                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+                    container: Hash }
+        end
+        elapsed = nil
+
+        expect { elapsed = Benchmark.realtime { build_axn { expects :payload, type: Hash, shape: } } }.not_to raise_error
+        expect(elapsed).to be < 2.0
       end
     end
   end
