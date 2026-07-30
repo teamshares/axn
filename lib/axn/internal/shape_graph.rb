@@ -29,7 +29,13 @@ module Axn
       # exception — and escape every rescue when that exception is outside StandardError.
       OBJECT_METHOD = ::Object.instance_method(:method)
       OBJECT_PUBLIC_SEND = ::Object.instance_method(:public_send)
-      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND
+
+      # The missing name a NameError carries, read through the implementation that STORES it. `NoMethodError`
+      # inherits `name` from `NameError`, so binding NameError's reaches the stored symbol whatever a
+      # subclass defines on top — and a subclass whose `name` raises cannot then replace a declaration
+      # verdict from inside the line that decides it.
+      NAME_ERROR_NAME = ::NameError.instance_method(:name)
+      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND, :NAME_ERROR_NAME
 
       # `value` when it is genuinely a Hash, else nil. `case`/`when` consults the real class through
       # `Module#===` (a C-level check), while `is_a?` is overridable — and a Hash subclass answering
@@ -102,10 +108,11 @@ module Axn
       # skipped rather than raising: the distinction drawn is that a LIE cannot bypass a guard, not that
       # a member must be a full ShapeConfig.
       #
-      # The name axn asked for is the RECEIVER of that comparison, and it is always a Symbol this layer
-      # supplied. `e.name` is whatever the raised exception's `name` returns, which caller code chooses:
-      # a NoMethodError subclass whose `name` is an object with a raising `==` would otherwise replace the
-      # declaration verdict from inside the line that decides it.
+      # Neither half of that comparison dispatches anything the exception's class can define. The stored name
+      # is extracted through `NameError`'s own `name` (see NAME_ERROR_NAME), never the subclass's, and axn's
+      # own Symbol is the receiver of `equal?` — so a subclass overriding `name` to raise, or returning an
+      # object whose `==` raises, changes nothing here. Putting axn's Symbol on the left alone would not be
+      # enough: reading `e.name` is itself the dispatch.
       def self.fetch(object, name)
         defined_method = begin
           OBJECT_METHOD.bind_call(object, name)
@@ -117,7 +124,7 @@ module Axn
         begin
           OBJECT_PUBLIC_SEND.bind_call(object, name)
         rescue ::NoMethodError => e
-          raise unless name.equal?(e.name)
+          raise unless name.equal?(NAME_ERROR_NAME.bind_call(e))
 
           NOT_DEFINED
         end

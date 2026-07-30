@@ -686,27 +686,22 @@ module Axn
         # caller-supplied String subclass, and its `==` can raise in place of the duplicate error being
         # built, escaping every rescue when what it raises is outside StandardError.
         #
-        # The two RENDERINGS are compared instead: `_inspect_field_name` renders a Symbol and a String
-        # (subclass included) through a bound core `inspect`, so both are plain Strings this layer owns,
-        # and `String#==` is bound for the same reason the renderings are. An exotic name (neither Symbol
-        # nor String) renders through its own `inspect`, which may return anything at all — treated as a
-        # different spelling, which is the safe direction: the collapsed message names both offenders and
-        # the property they share, so it is correct for an identical pair too.
+        # The two SPELLINGS are compared instead: `_field_name_spelling` renders a Symbol and a String
+        # (subclass included) through a bound core `inspect`, so both are plain Strings this layer owns, and
+        # `String#==` is bound for the same reason the spellings are. A name with no spelling to render
+        # (neither Symbol nor String) is treated as a different spelling, which is both the safe direction
+        # and the accurate one: two such names are two distinct objects that happen to render one property,
+        # and the collapsed message — naming both offenders and the property they share — is what describes
+        # that. Nothing about either name is dispatched on this path.
         STRING_NAME_EQUALS = ::String.instance_method(:==)
         private_constant :STRING_NAME_EQUALS
 
         def _same_field_spelling?(first, second)
-          first_label = _plain_inspect_field_name(first)
-          second_label = _plain_inspect_field_name(second)
+          first_label = _field_name_spelling(first)
+          second_label = _field_name_spelling(second)
           return false unless first_label && second_label
 
           STRING_NAME_EQUALS.bind_call(first_label, second_label)
-        end
-
-        def _plain_inspect_field_name(name)
-          case (label = _inspect_field_name(name))
-          when ::String then label
-          end
         end
 
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
@@ -790,23 +785,40 @@ module Axn
           end
         end
 
-        # A declared name is interpolated into a message only through this: a name whose bytes have no UTF-8
-        # rendering is exactly what these errors report, and interpolating those bytes into a UTF-8 message
-        # would raise Encoding::CompatibilityError from the reporting itself. `inspect` escapes them to
-        # ASCII, bound rather than dispatched for the same reason the renderer binds `to_s`: a Symbol's
-        # cannot be overridden, but a shape member's name may be a caller-supplied String whose could be.
-        # The `case`/`when` type test consults the real class, which a singleton `is_a?` cannot lie about.
-        # An exotic name (neither String nor Symbol) has no bytes to mangle, so plain dispatch is safe.
+        # The escaped SPELLING of a declared name, or nil when the name is neither a String nor a Symbol and
+        # so has no spelling this layer can render without running the name's own code.
+        #
+        # `inspect` is what escapes a name whose bytes have no UTF-8 rendering — which is exactly what these
+        # errors report, and interpolating those bytes into a UTF-8 message would raise
+        # Encoding::CompatibilityError from the reporting itself. It is bound rather than dispatched for the
+        # same reason the renderer binds `to_s`: a Symbol's `inspect` cannot be overridden, but a shape
+        # member's name may be a caller-supplied String subclass whose can. The `case`/`when` type test
+        # consults the real class, which a singleton `is_a?` cannot lie about, and both branches therefore
+        # return a plain String this layer owns.
         SYMBOL_NAME_INSPECT = ::Symbol.instance_method(:inspect)
         STRING_NAME_INSPECT = ::String.instance_method(:inspect)
         private_constant :SYMBOL_NAME_INSPECT, :STRING_NAME_INSPECT
 
-        def _inspect_field_name(name)
+        def _field_name_spelling(name)
           case name
           when ::Symbol then SYMBOL_NAME_INSPECT.bind_call(name)
           when ::String then STRING_NAME_INSPECT.bind_call(name)
-          else name.inspect
           end
+        end
+
+        # How a declared name is written into a message. A String or Symbol is named by its escaped spelling;
+        # anything else is named by its CLASS, derived without dispatching anything the name defines.
+        #
+        # A name that is neither is reachable only as a shape member's (the field path symbolizes every
+        # declared name before any guard runs), and it gets here having rendered a property through its
+        # `to_s` — so it is a real object whose `inspect` is real caller code. Dispatching that `inspect`
+        # while building the very error the name caused lets the name replace that error with an exception
+        # of its own, and one outside StandardError then escapes class definition entirely. That is the
+        # same hazard the bound `inspect` above exists to avoid, and it has nothing to do with encoding:
+        # a class name identifies the offender without running a line the offender wrote, exactly as
+        # `Reflection::Values#describe_key_classes` names a colliding Hash key.
+        def _inspect_field_name(name)
+          _field_name_spelling(name) || "a name of class #{Axn::Internal::ClassName.of(name)}"
         end
 
         # How a shape member's name is written into any message naming that member: the JSON property it

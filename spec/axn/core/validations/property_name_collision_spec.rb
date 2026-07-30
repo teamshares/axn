@@ -749,6 +749,87 @@ RSpec.describe "declaration-time property name collisions" do
         expect { elapsed = Benchmark.realtime { build_axn { expects :payload, type: Hash, shape: } } }.not_to raise_error
         expect(elapsed).to be < 2.0
       end
+
+      # A member name that is neither String nor Symbol renders a property through its `to_s`, so it reaches
+      # every one of these checks — while its `inspect` is real caller code. Dispatching that `inspect` to
+      # build the error the name caused lets the name replace that error with an exception of its own, and one
+      # outside StandardError then escapes class definition. Named by class instead, as the serializer names a
+      # colliding Hash key. (Reachable only as a shape member's name: the field path symbolizes every declared
+      # name before any guard runs — asserted in the last example here.)
+      describe "a member name that is neither String nor Symbol, whose inspect raises" do
+        def exotic_name_class
+          Class.new do
+            def initialize(rendering) = @rendering = rendering
+            def to_s = @rendering
+            def inspect = raise(NotImplementedError, "hijacked from #inspect")
+          end
+        end
+
+        it "reports a collision naming the offenders by class" do
+          exotic = exotic_name_class
+          members = [Axn::Core::Contract::ShapeConfig.new(field: exotic.new("dup"), validations: {}),
+                     Axn::Core::Contract::ShapeConfig.new(field: exotic.new("dup"), validations: {})]
+
+          expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+            .to raise_error(Axn::DuplicateFieldError, /a name of class .* and a name of class .* both render as the JSON property "dup"/)
+        end
+
+        it "reports an unrenderable name naming it by class" do
+          members = [Axn::Core::Contract::ShapeConfig.new(field: exotic_name_class.new("bad\xFF".dup.force_encoding("ASCII-8BIT")),
+                                                          validations: {})]
+
+          expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+            .to raise_error(ArgumentError, /a name of class .* holds bytes that have no UTF-8 rendering/)
+        end
+
+        # The block form's own option-rejection messages name the member through the same helper, so they
+        # carry the same hazard — a third route to it, found by auditing the helper's callers.
+        it "reports a block-form option error naming the member by class" do
+          name = exotic_name_class.new("bad\xFF".dup.force_encoding("ASCII-8BIT"))
+
+          expect do
+            build_axn do
+              expects(:payload, type: Hash) { field name, model: true }
+            end
+          end.to raise_error(ArgumentError, /shape member `a name of class .*` does not support model:/)
+        end
+
+        # Every declared field name is symbolized before any guard runs, so `config.field` is always a Symbol
+        # and these helpers can never meet an exotic name on the field path. Asserted so the reasoning behind
+        # leaving the field-path messages untouched stays true rather than assumed.
+        it "cannot reach the field path at all, which symbolizes every declared name" do
+          klass = build_axn { expects "stringy", :symbolic }
+          exotic = exotic_name_class.new("dup")
+
+          expect(klass.internal_field_configs.map { |c| c.field.instance_of?(Symbol) }).to all(be(true))
+          expect { build_axn { expects exotic } }.to raise_error(NoMethodError, /to_sym/)
+        end
+      end
+
+      # `NoMethodError` inherits `name` from `NameError`, which is where the missing name is STORED, so the
+      # stored symbol is read through NameError's own implementation. A subclass overriding `name` to raise
+      # would otherwise replace the declaration verdict from inside the line that decides it — putting axn's
+      # own Symbol on the left of the comparison does not help, because reading `e.name` is itself a dispatch.
+      it "reads a NoMethodError's stored name through NameError, not through a subclass override" do
+        raising_name = Class.new(NoMethodError) do
+          def name = raise(NotImplementedError, "hijacked from #name")
+        end
+        ghost = Class.new do
+          def initialize(error_class) = @error_class = error_class
+
+          # No respond_to_missing?, so the dispatch fallback is the path reached, and the raised error stores
+          # the missing name exactly as an implicit NoMethodError would.
+          def method_missing(reader, *_args) = raise(@error_class.new("boom", reader)) # rubocop:disable Style/MissingRespondToMissing
+        end
+        members = [ghost.new(raising_name),
+                   Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+                   Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {})]
+
+        # The ghost is read as absent (its stored name matches what was asked for) and skipped, so the real
+        # defect — the colliding pair beside it — is what gets reported.
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end
     end
   end
 
