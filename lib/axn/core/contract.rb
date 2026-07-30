@@ -62,6 +62,37 @@ module Axn
               "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
       end
 
+      # The grammar of a `sensitive:` value: `true`/`false`, a Symbol (an action method name), or a Proc — plus
+      # `nil`, which means `false` (so `sensitive: some_flag` reads naturally when the flag is unset). Anything
+      # else is rejected at declaration, because the runtime failure mode is a LEAK rather than an error: only
+      # those values are resolution rules, so `sensitive: "yes"` or `sensitive: 1` left the field out of the
+      # name-based redaction set entirely and logged the secret in the clear, with no signal to the author.
+      #
+      # Closing the value space is also what makes one predicate enough to decide whether redaction needs an
+      # action instance: over this grammar, "carries no Proc or Symbol" and "resolves to the same answer with
+      # and without an instance" are the same question (see `_has_dynamic_sensitive_fields?`).
+      #
+      # `case`/`when` consults the real class through `Module#===` (a C-level check) and compares the literals
+      # by identity, so nothing a caller-supplied value defines gets to answer whether it is a valid rule —
+      # and the offender is named by CLASS rather than by `inspect`, which would be running its code while its
+      # own error is being built. A Proc is the callable form the resolver actually implements
+      # (`instance_exec(&sensitive)`); a non-Proc callable would be truthiness-tested, i.e. always sensitive.
+      #
+      # Enforced in both config constructors — every field, subfield, ambient subfield and `Data`-rebuilt shape
+      # member passes through one of them, `Data#with` copies included — and in the declaration walk for a
+      # duck-typed member, the one route that reaches neither.
+      def self.validate_sensitive!(sensitive)
+        case sensitive
+        when true, false, nil, ::Symbol, ::Proc then return
+        end
+
+        raise ArgumentError,
+              "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
+              "class #{Axn::Internal::ClassName.of(sensitive)}) — any other value is not a redaction rule, and " \
+              "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
+              "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
+      end
+
       # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
       # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which
       # Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
@@ -102,6 +133,10 @@ module Axn
       FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
                        method_call: false)
+          # THE choke point for a declared field's `sensitive:`, whichever DSL built it (`expects`, `exposes`,
+          # an `on:` subfield, an ambient subfield, `Axn::Factory`) — and re-run by `Data#with`, so a derived
+          # copy cannot carry a rule the original could not. See Contract.validate_sensitive!.
+          Contract.validate_sensitive!(sensitive)
           super
         end
 
@@ -151,6 +186,7 @@ module Axn
           # failing here.
           Contract.validate_shape_member_name!(field)
           Contract.validate_user_facing!(user_facing)
+          Contract.validate_sensitive!(sensitive)
           # `to_sym` is dispatched, so a String SUBCLASS could return something other than its own spelling —
           # but normalizing once is exactly what makes that harmless: every consumer then reads the one
           # stored Symbol, so a surprising conversion picks a different property name rather than splitting
@@ -342,7 +378,7 @@ module Axn
         # race costs a repeat derivation, and a single Hash insert is not interruptible by another Ruby thread.
         class ContractRedaction
           attr_reader :internals, :externals, :subfields
-          attr_accessor :candidates, :dynamic, :static_resolution, :static_fields, :filter,
+          attr_accessor :candidates, :dynamic, :static_fields, :filter,
                         :static_shape_paths, :static_ambient_shape_paths
 
           def initialize(internals:, externals:, subfields:)
@@ -417,37 +453,27 @@ module Axn
                                  .flat_map { |c| _sensitive_field_keys(c) }
         end
 
-        # `false` is one of the two answers, so the memo is guarded on `nil` rather than written with `||=`:
-        # an `||=` here re-ran the whole candidate walk on every logged call for precisely the contracts that
-        # have no dynamic `sensitive:` — which is nearly all of them.
+        # Whether resolving this contract's `sensitive:` needs an action instance — and therefore the ONE
+        # question every reuse decision below turns on. It can be one question because the value space is closed
+        # at declaration (see Contract.validate_sensitive!): over `true`/`false`/`nil`/Symbol/Proc, "carries a
+        # Proc or Symbol" and "would resolve differently with an instance than without" are the same set. A
+        # second, stricter predicate existed here to cover a truthy value that is neither — which the
+        # instanceless path counted as not-sensitive while the per-instance path truthiness-tested it as
+        # sensitive, observably so for a non-Hash shaped value — and rejecting that value at declaration is what
+        # removes the divergence instead of guarding it.
+        #
+        # `false` is one of the two answers, so the memo is guarded on `nil` rather than written with `||=`: an
+        # `||=` here re-ran the whole candidate walk on every logged call for precisely the contracts that have
+        # no dynamic `sensitive:` — which is nearly all of them.
         def _has_dynamic_sensitive_fields?
           memo = _contract_redaction
           return memo.dynamic unless memo.dynamic.nil?
 
           memo.dynamic = _sensitive_candidate_configs.any? do |config|
-            sensitive = _config_sensitive(config)
-            sensitive.is_a?(Proc) || sensitive.is_a?(Symbol)
-          end
-        end
-
-        # Whether every `sensitive:` in the contract resolves to the SAME answer with or without an instance
-        # — the condition under which a static answer may be reused for a logged call, and a stricter
-        # question than "no dynamic `sensitive:`". A Proc or Symbol is evaluated against the action, so it
-        # obviously needs the instance; but so does any OTHER truthy value, because the two paths disagree
-        # about it — `_resolve_sensitive_value` truthiness-tests it (`sensitive: "yes"` → sensitive) while
-        # the instanceless path counts only a literal `true` (→ not sensitive). Memoizing the instanceless
-        # answer for such a contract would under-redact, so it keeps deriving per call.
-        #
-        # Decided with `case`/`when` against the literals, whose `===` is identity, so nothing a
-        # caller-supplied member's value can define decides it. `_config_sensitive` has already normalized
-        # an absent or nil reader to `false`.
-        def _static_sensitive_resolution?
-          memo = _contract_redaction
-          return memo.static_resolution unless memo.static_resolution.nil?
-
-          memo.static_resolution = _sensitive_candidate_configs.all? do |config|
+            # `case`/`when` consults the real class, so a caller-supplied member's value cannot decide whether
+            # it needs an instance — the same non-dispatching test the declaration guard uses.
             case _config_sensitive(config)
-            when true, false then true
+            when ::Proc, ::Symbol then true
             else false
             end
           end
@@ -485,6 +511,13 @@ module Axn
           keys
         end
 
+        # The first three arms are the whole declared grammar (see Contract.validate_sensitive!); `!!` is what
+        # turns a predicate's arbitrary return value into a decision. The `else` is now reachable only by `nil`
+        # — which `_config_sensitive` already normalizes to `false` on every path that reads a config — and is
+        # kept fail-SAFE rather than dropped: were an out-of-grammar value ever to arrive here, redacting a
+        # truthy one is the direction that cannot leak. This is the branch whose truthiness test used to
+        # disagree with the instanceless path about `sensitive: "yes"`, and closing the value space is what
+        # removed the disagreement rather than a second predicate guarding it.
         def _resolve_sensitive_value(sensitive, action_instance)
           case sensitive
           when true, false
@@ -569,13 +602,13 @@ module Axn
         # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
         # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
         # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
-        # Memoized whenever the contract's `sensitive:` values all resolve without an instance (see
-        # `_static_sensitive_resolution?`), which is what keeps a logged call from paying for the whole
-        # stored graph. A contract that DOES need the instance still derives per call — correctness requires
-        # it, and a memo ignoring the instance would over-redact a `sensitive: :flag` member whose flag is
-        # false, which looks safe and is a behavior change.
+        # Memoized unless a `sensitive:` resolves against the action (`_has_dynamic_sensitive_fields?`), which
+        # is what keeps a logged call from paying for the whole stored graph. A contract that DOES need the
+        # instance still derives per call — correctness requires it, and a memo ignoring the instance would
+        # over-redact a `sensitive: :flag` member whose flag is false, which looks safe and is a behavior
+        # change.
         def _sensitive_shape_paths(action_instance)
-          return _derive_sensitive_shape_paths(action_instance) unless _static_sensitive_resolution?
+          return _derive_sensitive_shape_paths(action_instance) if _has_dynamic_sensitive_fields?
 
           memo = _contract_redaction
           memo.static_shape_paths ||= _derive_sensitive_shape_paths(nil)
@@ -603,7 +636,7 @@ module Axn
         # since the mask applies to the ambient VALUE the reader returns, not a hash wrapped under an
         # `:ambient_context` key.
         def _sensitive_ambient_shape_paths(action_instance)
-          return _derive_sensitive_ambient_shape_paths(action_instance) unless _static_sensitive_resolution?
+          return _derive_sensitive_ambient_shape_paths(action_instance) if _has_dynamic_sensitive_fields?
 
           memo = _contract_redaction
           memo.static_ambient_shape_paths ||= _derive_sensitive_ambient_shape_paths(nil)
@@ -919,7 +952,14 @@ module Axn
             # it would run a reader nothing then consumes.
             validations = _symbol_keyed_member_validations(member, name)
             _raise_member_without_validations!(member, name) if nil.equal?(validations)
-            metadata = Internal::ShapeGraph.rebuildable?(member) ? _symbol_keyed_member_metadata(member, name) : nil
+            rebuildable = Internal::ShapeGraph.rebuildable?(member)
+            metadata = rebuildable ? _symbol_keyed_member_metadata(member, name) : nil
+            # A rebuildable member was held to the `sensitive:` grammar by its constructor (and will be again by
+            # the `with` that copies it), so only a duck-typed one is read here — the one route to redaction that
+            # reaches neither constructor. Read at declaration rather than left to leak at runtime, on the same
+            # terms as its `field`: a value that is not a resolution rule takes the member out of the redaction
+            # set silently.
+            Contract.validate_sensitive!(Internal::ShapeGraph.read(member, :sensitive)) unless rebuildable
             nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
             next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
 
@@ -1112,11 +1152,11 @@ module Axn
 
         # The `[(member, nested_shape)]` pairs a mask has to descend into: the members of `shape` whose OWN
         # nested shape carries a sensitive member. Memoized per shape (by identity) on the same condition as
-        # `_sensitive_shape_paths`, because for the ordinary flat shape the answer is EMPTY and finding that
-        # out cost a `nested_shape` read — a bound-Method allocation each — for every member of the shape,
-        # on every value masked.
+        # `_sensitive_shape_paths` — no `sensitive:` resolving against the action — because for the ordinary
+        # flat shape the answer is EMPTY, and finding that out cost a `nested_shape` read (a bound-Method
+        # allocation each) for every member of the shape, on every value masked.
         def _sensitive_nested_members(shape, action_instance)
-          return _derive_sensitive_nested_members(shape, action_instance) unless _static_sensitive_resolution?
+          return _derive_sensitive_nested_members(shape, action_instance) if _has_dynamic_sensitive_fields?
 
           _contract_redaction.nested_members_for(shape) { _derive_sensitive_nested_members(shape, nil) }
         end
@@ -1133,15 +1173,15 @@ module Axn
         # The names of the `sensitive:` members reachable inside one shape-bearing config's value — the flat
         # key set `inspect` hands to a `ParameterFilter`, since a member redacts by NAME wherever it appears
         # (every array element, any nesting depth), unlike the precise wire path a subfield contributes.
-        # Memoized on the same condition as `_sensitive_shape_paths`: `inspect` asks it once per displayed
-        # field, and the walk covers the whole stored graph.
+        # Memoized on the same condition as `_sensitive_shape_paths` — no `sensitive:` resolving against the
+        # action — since `inspect` asks it once per displayed field, and the walk covers the whole stored graph.
         #
         # Lives here rather than with the inspector because it is a question about the CONTRACT, and because
         # sensitivity is read through `_config_sensitive` — the same seam logging reads — so a member that
         # defines `sensitive:` cannot escape redaction in `inspect` by denying the reader while logging
         # redacts it anyway.
         def _sensitive_member_names(config, action_instance)
-          return _derive_sensitive_member_names(config, action_instance) unless _static_sensitive_resolution?
+          return _derive_sensitive_member_names(config, action_instance) if _has_dynamic_sensitive_fields?
 
           _contract_redaction.member_names_for(config) { _derive_sensitive_member_names(config, nil) }
         end

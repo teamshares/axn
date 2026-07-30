@@ -235,6 +235,51 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect { result.__action__.internal_context.inspect }.not_to raise_error
     end
 
+    # A raw member reaches redaction without passing through `expects`, so the `sensitive:` grammar is enforced
+    # on both of its routes: a `ShapeConfig` supplied directly (its constructor, `Data#with` copies included)
+    # and a duck-typed object (the declaration walk, the only place one is ever read). Without that, a value
+    # that is not a resolution rule takes the member out of the redaction set silently.
+    describe "the sensitive: grammar on a raw member" do
+      let(:grammar_error) { /sensitive: must be true, false, a Symbol naming an action method, or a Proc/ }
+
+      it "rejects it on a ShapeConfig supplied directly" do
+        expect { Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: "yes") }
+          .to raise_error(ArgumentError, grammar_error)
+      end
+
+      it "rejects it on a derived copy, which re-runs the constructor" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: true)
+
+        expect { member.with(sensitive: "yes") }.to raise_error(ArgumentError, grammar_error)
+      end
+
+      it "rejects it on a duck-typed member, at declaration" do
+        member = Struct.new(:field, :validations, :sensitive).new(:ssn, {}, "yes")
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+          .to raise_error(ArgumentError, grammar_error)
+      end
+
+      it "still accepts a duck-typed member with no #sensitive reader at all" do
+        member = Struct.new(:field, :validations).new(:ssn, {})
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }.not_to raise_error
+      end
+
+      # Reading the value at declaration also surfaces a reader that RAISES, at the author, on the same terms as
+      # the `field`/`validations` reads beside it. It used to declare cleanly and then raise from every logged
+      # call instead, where the guard around a side channel degraded the whole slice to a warning — so logging
+      # was quietly broken for the life of the class rather than the declaration being reported.
+      it "reports a #sensitive reader that raises, at declaration" do
+        member = Struct.new(:field, :validations) do
+          def sensitive = raise(NotImplementedError, "hostile sensitive reader")
+        end.new(:ssn, {})
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+          .to raise_error(NotImplementedError, /hostile sensitive reader/)
+      end
+    end
+
     # The tolerance runs one way only. A member that DEFINES `sensitive:` cannot opt out of redaction by
     # denying the reader — both paths read it from the real method table (`ShapeGraph`), so `inspect` cannot
     # print in the clear what logging redacts.

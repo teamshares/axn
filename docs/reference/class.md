@@ -23,7 +23,7 @@ Both `expects` and `exposes` support the same core options:
 
 ### Dynamic `sensitive` fields
 
-The `sensitive` option can accept a proc or symbol in addition to a boolean, allowing you to conditionally filter fields based on runtime values:
+The `sensitive` option can accept a proc or symbol in addition to a boolean, allowing you to conditionally filter fields based on runtime values. Those — plus `nil`, which means `false` — are the **only** values it accepts: anything else raises at class definition, because a value that isn't a redaction rule would silently leave the field logged in the clear rather than fail (`sensitive: "yes"` reads like an opt-in and redacts nothing). The rule is the same wherever `sensitive:` is accepted: a field, an `exposes`, an `on:` subfield, and a shape member.
 
 ```ruby
 class MyAction
