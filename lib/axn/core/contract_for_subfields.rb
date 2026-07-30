@@ -467,6 +467,18 @@ module Axn
           method_call: false,
           **validations
         )
+          # EVERY segment of a dotted `on:` becomes a JSON property name in the reflected schema — the root
+          # names a declared field, and each deeper segment is an implicit nested key `SubfieldTree` emits —
+          # so they carry exactly the same UTF-8 promise a declared field or shape member name does, and are
+          # held to it by the same check. (The property-claim collector cannot stand in for this: a segment
+          # with no UTF-8 rendering canonicalizes to nothing, so there is no property name to compare, and the
+          # claim is dropped while the schema still emits the segment.)
+          #
+          # Ahead of the reader check below, whose message interpolates `on:` — an unrenderable root would
+          # otherwise raise Encoding::CompatibilityError from the reporting itself rather than naming the
+          # defect.
+          _reject_unrenderable_field_names!(on.to_s.split(".").map(&:to_sym), kind: "a nested key in `on:`")
+
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
           # It's resolved by calling the parent's reader (`resolve_parent` → public_send), so it must
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the

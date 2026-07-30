@@ -1062,10 +1062,20 @@ module Axn
         # does not. Measured on 300 fields carrying 20 shape members each: 2.8s without the memo, 0.2s with it.
         #
         # Segments are Symbols the tree and the declarations supply, so they key the memo by value with no
-        # caller dispatch. A claim is dropped when any segment has no UTF-8 rendering: declared NAMES are
-        # rejected upstream by `_reject_unrenderable_field_names!`, so this only drops an exotic route — and
-        # dropping is required rather than merely tidy, since two unrenderable segments both canonicalize to
-        # nil and would otherwise compare as one path.
+        # caller dispatch.
+        #
+        # A claim whose path has any segment with no UTF-8 rendering is DROPPED, because there is no property
+        # name to compare — two such segments both canonicalize to nil and would otherwise compare as one path.
+        # That makes the drop a backstop, not a policy: every source of a property name is supposed to have
+        # been held to the UTF-8 rule before reaching here, by `_reject_unrenderable_field_names!` — over
+        # declared field names (`expects`/`exposes`), over shape member names (the member walk), and over every
+        # segment of a dotted `on:` (`_expects_subfields`). A dropped claim means one of those is missing, and
+        # the schema will emit a property `JSON.generate` refuses.
+        #
+        # One such gap is known and open: `Data.define` accepts a member name with no UTF-8 rendering, and
+        # mechanism 6 claims those members, so an unrenderable one is dropped here and reaches the reflected
+        # schema unchecked. It is left alone deliberately rather than fixed in passing — the fix belongs with
+        # the type-member source, which is under review.
         class ClaimCollector
           attr_reader :claims
 

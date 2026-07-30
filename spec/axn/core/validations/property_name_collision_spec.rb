@@ -649,6 +649,69 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # A dotted `on:` segment becomes a JSON property name in the reflected schema — the root names a declared
+  # field, each deeper segment is an implicit nested key — so it carries the same UTF-8 promise a declared name
+  # does, enforced by the same check. The property-claim collector cannot stand in for this: an unrenderable
+  # segment canonicalizes to nothing, so there is no property to compare and the claim is dropped while the
+  # schema still emits the segment.
+  describe "a dotted on: route segment with no UTF-8 rendering" do
+    it "is rejected at declaration rather than reaching JSON.generate" do
+      route = "payload.#{unrenderable_name}"
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :leaf, on: route, optional: true
+        end
+      end.to raise_error(ArgumentError, /a nested key in `on:` becomes a JSON property name/)
+    end
+
+    it "names the offending segment escaped to ASCII and the fix" do
+      route = "payload.#{unrenderable_name}"
+
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :leaf, on: route, optional: true
+        end
+      end.to raise_error(ArgumentError) { |error|
+        expect(error.message).to include('bad\xFF', "Declare it under a UTF-8 name")
+        expect(error.message.encoding).to eq(Encoding::UTF_8)
+        expect(error.message).to satisfy(&:valid_encoding?)
+      }
+    end
+
+    # An unrenderable ROOT used to reach the reader-existence check, whose message interpolates `on:` — so the
+    # caller got an Encoding::CompatibilityError from the reporting instead of the defect being reported.
+    it "is rejected as the naming defect even in the root position" do
+      root = unrenderable_name
+
+      expect { build_axn { expects :leaf, on: root, optional: true } }
+        .to raise_error(ArgumentError, /a nested key in `on:` becomes a JSON property name/)
+    end
+
+    it "leaves a valid non-ASCII segment alone, emitting it as a property" do
+      route = "payload.#{utf8_name}"
+
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :leaf, on: route, optional: true
+      end
+
+      expect(klass.input_schema.dig(:properties, :payload, :properties).keys
+                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to eq(["café"])
+    end
+
+    it "leaves a plain ASCII dotted route alone" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :leaf, on: "payload.mid", optional: true
+      end
+
+      expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq([:mid])
+    end
+  end
+
   describe "the identical-name duplicate this generalizes" do
     it "keeps its existing message" do
       expect do
