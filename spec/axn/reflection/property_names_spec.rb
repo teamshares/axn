@@ -10,16 +10,16 @@
 # AGENTS.md's namespace policy — `Core::Contract` is its only caller — so a method becoming public here is a
 # widening to make on purpose, not by accident.
 RSpec.describe Axn::Reflection::PropertyNames do
-  # Exactly the entry points `Core::Contract` delegates to. Compared as a whole set rather than one
-  # `respond_to?` per name, so an ADDITION fails this too.
+  # Exactly the entry points its callers use: the three projection triggers reach the validated-* pair and
+  # `validate_outbound!`, and `Core::Contract` reaches the two name renderers it still needs eagerly. Compared
+  # as a whole set rather than one `respond_to?` per name, so an ADDITION fails this too.
   let(:entry_points) do
     %i[
-      inbound_property_sources
       inspect_field_name
-      outbound_property_sources
-      reject_colliding_emitted_properties!
-      reject_oversized_schema!
       reject_unrenderable_field_names!
+      validate_outbound!
+      validated_input
+      validated_output
     ]
   end
 
@@ -29,6 +29,11 @@ RSpec.describe Axn::Reflection::PropertyNames do
 
   it "keeps the walk, the message builders, and provenance resolution internal" do
     internals = %i[
+      validate_projection
+      inbound_property_sources
+      outbound_property_sources
+      reject_colliding_emitted_properties!
+      reject_oversized_schema!
       each_emitted_node
       raise_colliding_properties!
       raise_unrenderable_emitted_name!

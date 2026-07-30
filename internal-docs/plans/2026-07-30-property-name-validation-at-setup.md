@@ -53,19 +53,19 @@ No behavior change. `contract.rb` is 1,994 lines and the claim walker, both rule
 - Modify: `lib/axn/reflection.rb` (require), `lib/axn/core/contract.rb` (delegate), `lib/axn/core/contract_for_subfields.rb` if it calls in
 - Test: existing suite plus the harness are the oracle; add one spec asserting the module's public surface
 
-- [ ] **Step 1: Inventory what moves**
+- [x] **Step 1: Inventory what moves**
 
 List every method involved in the two rules and their reporting, and every caller. The `exposes` field-name renderability check does **not** move. Put the inventory in the report so the next step is mechanical.
 
-- [ ] **Step 2: Move, delegating from `Core::Contract`**
+- [x] **Step 2: Move, delegating from `Core::Contract`**
 
 Keep the call sites in `expects`/`exposes` for now — this task only relocates the implementation. `Core::Contract` calls `Axn::Reflection::PropertyNames`.
 
-- [ ] **Step 3: Verify pure**
+- [x] **Step 3: Verify pure**
 
 `bundle exec rspec`, `bundle exec rubocop`, the harness, and the dummy app. Every one must be green with **no spec edits** — that is the definition of pure here. If a spec needs changing, the move was not pure; say so rather than editing it.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git commit -m "PRO-2995: property-name rules move to the layer whose output they judge"
@@ -79,27 +79,27 @@ git commit -m "PRO-2995: property-name rules move to the layer whose output they
 - Modify: `lib/axn/reflection/property_names.rb` (entry point + memo), `lib/axn/core/contract.rb` (drop the per-declaration calls, mark dirty), `lib/axn/core/schema_reflection.rb` (validate before returning a schema), `lib/axn/extensions/serialization.rb` (validate before rendering)
 - Modify: `spec/axn/core/validations/property_name_collision_spec.rb` and any sibling asserting a declaration-time raise
 
-- [ ] **Step 1: Decide and document the trigger set**
+- [x] **Step 1: Decide and document the trigger set**
 
 Validation must run before any of: `input_schema`, `output_schema`, `Extensions::Serialization.render`. Check whether any other public path exposes a projection; if one exists, it is a trigger too. Record the set in the module's doc comment — it is the contract.
 
-- [ ] **Step 2: Memo and invalidation**
+- [x] **Step 2: Memo and invalidation**
 
 Memoize per class. Every declaration marks the class dirty so the next projection re-validates. A subclass that adds declarations must not inherit a clean memo — verify inheritance explicitly, since the contract is copy-on-write.
 
-- [ ] **Step 3: Migrate the specs**
+- [x] **Step 3: Migrate the specs**
 
 87 of 120 examples in `property_name_collision_spec.rb` assert `expect { build_axn { … } }.to raise_error`. They become "raises when the projection is first demanded." Prefer a helper that declares then projects, so each example still reads as one behavior. **Keep at least one example per rule asserting the error class and full message**, so the migration cannot quietly weaken what is checked.
 
-- [ ] **Step 4: Prove the gate**
+- [x] **Step 4: Prove the gate**
 
 Add specs: an axn that never projects declares cleanly despite a colliding contract; the same axn raises on first `input_schema`; and the raise repeats on a second call (a memo must not swallow it).
 
-- [ ] **Step 5: Re-measure**
+- [x] **Step 5: Re-measure**
 
 Report the five contracts from the table above. The call-count factor should be gone.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ---
 

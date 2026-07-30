@@ -4,6 +4,7 @@
 # axn/reflection/values.rb gives about its own: the renderer is a runtime reference, so a standalone
 # load of this file would NameError on the first call rather than at require time.
 require "axn/reflection/values"
+require "axn/reflection/property_names"
 
 module Axn
   module Extensions
@@ -30,7 +31,14 @@ module Axn
       # Raises Axn::Reflection::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
       def render(result, reject_opaque: false)
-        configs = result.__action__.class.external_field_configs
+        action_class = result.__action__.class
+        # The outbound property-name rules run before the first render of a class, not only before a schema:
+        # a render-only adapter would otherwise learn about a collision from serialize_exposed's runtime
+        # defense on a live call, which is a last line rather than a substitute for telling the author. Costs
+        # one output-schema build on the first render and nothing after.
+        Axn::Reflection::PropertyNames.validate_outbound!(action_class)
+
+        configs = action_class.external_field_configs
 
         # `send` because serialize_exposed is private: this facade is its only caller, and that is
         # what makes `render` the rendering path rather than one of two.

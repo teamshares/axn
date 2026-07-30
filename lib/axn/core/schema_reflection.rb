@@ -29,10 +29,13 @@ module Axn
       end
 
       module InputSchemaMethod
+        # The property-name rules run here rather than at declaration: a projection is the only thing a
+        # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
+        # class, over the schema being returned rather than a second build of it.
         def input_schema
-          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields, klass: self).tap do
-            _warn_dropped_deep_subfields
-          end
+          Axn::Reflection::PropertyNames.validated_input(self) do
+            Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields, klass: self)
+          end.tap { _warn_dropped_deep_subfields }
         end
 
         private
@@ -68,8 +71,9 @@ module Axn
       end
 
       module OutputSchemaMethod
+        # See input_schema: validated once per class, over the schema being returned.
         def output_schema
-          Axn::Reflection::Schema.build_output(external_field_configs)
+          Axn::Reflection::PropertyNames.validated_output(self) { Axn::Reflection::Schema.build_output(external_field_configs) }
         end
       end
     end

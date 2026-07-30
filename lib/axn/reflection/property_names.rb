@@ -26,6 +26,81 @@ module Axn
     module PropertyNames
       module_function
 
+      # THE TRIGGER SET, and the guarantee: the rules run before any of the three public paths that expose a
+      # JSON projection can return one — `input_schema`, `output_schema`, and
+      # `Axn::Extensions::Serialization.render`. That set is exhaustive as audited: those are the only public
+      # methods that build or emit property names (`Axn::Result` defines no `to_h`/`as_json`/`to_json`, and
+      # `Schema.build_input`/`build_output` are reached only through them). Adding a fourth projection path
+      # means adding it here, or the guarantee narrows silently.
+      #
+      # Nothing but a projection can be harmed by a colliding or unrenderable name: for an axn that never
+      # projects, two names that canonicalize alike stay two distinct fields with their own readers and
+      # validations, and the contract works. So validating on demand is not a weaker promise for those
+      # actions — it is the promise stated where it is true.
+      #
+      # `render` is a trigger even though it builds no schema. It costs one `build_output` on the first render
+      # of a class and nothing afterwards, and the alternative is that a render-only adapter learns about a
+      # collision from the runtime `serialize_exposed` defense on a live call instead of at setup. That
+      # defense is a last line, not a substitute for telling the author.
+      def validated_input(klass, &)
+        validate_projection(klass, :input, klass.internal_field_configs, klass.subfield_configs, &)
+      end
+
+      def validated_output(klass, &)
+        validate_projection(klass, :output, klass.external_field_configs, &)
+      end
+
+      # For `render`, which needs the outbound verdict but has no schema of its own to hand over. Builds one
+      # only when the verdict is not already in hand.
+      def validate_outbound!(klass)
+        validated_output(klass) { Schema.build_output(klass.external_field_configs) }
+        nil
+      end
+
+      # Builds the projection through the caller's block and validates it, memoizing the VERDICT per class.
+      #
+      # The block runs exactly once per call, and its result is what the caller returns — validating never
+      # builds a second schema, and the schema itself is never memoized, since a caller may mutate the Hash it
+      # is handed. Only the verdict is remembered, so a repeat projection pays for the build it was going to do
+      # anyway and nothing more.
+      #
+      # The size cap runs BEFORE the build, because avoiding the build is the whole point of it: a contract
+      # whose property count is exponential has no reflectable schema, and paying for one to discover that
+      # would defeat the check.
+      #
+      # A failure does not memoize: the verdict is recorded only after both rules pass, so an invalid contract
+      # raises again on every projection rather than being swallowed after the first.
+      #
+      # Validity is keyed on the IDENTITY of the config arrays it was reached for, exactly as
+      # `_resolved_subfields` keys its cache. Those arrays are copy-on-write — every declaration mints new ones
+      # — so a contract that grows after a projection misses and re-validates, with no explicit invalidation
+      # hook to keep in sync. A subclass holds its own ivars, so it never inherits a verdict either.
+      def validate_projection(klass, direction, *config_arrays, &build)
+        cached = klass.instance_variable_get(:@_axn_validated_projections)
+        return build.call if cached&.dig(direction)&.equal_configs?(config_arrays)
+
+        reject_oversized_schema!(config_arrays.flatten(1))
+        schema = build.call
+        case direction
+        when :input then reject_colliding_emitted_properties!(schema) { inbound_property_sources(*config_arrays) }
+        else reject_colliding_emitted_properties!(schema) { outbound_property_sources(*config_arrays) }
+        end
+
+        klass.instance_variable_set(:@_axn_validated_projections, (cached || {}).merge(direction => ValidatedProjection.new(config_arrays)))
+        schema
+      end
+
+      # The config arrays a verdict was reached for, compared by identity — never by value, so a contract that
+      # replaced an array with an equal one still re-validates.
+      class ValidatedProjection
+        def initialize(config_arrays) = @config_arrays = config_arrays
+
+        def equal_configs?(other)
+          other.size == @config_arrays.size && other.each_with_index.all? { |array, index| array.equal?(@config_arrays[index]) }
+        end
+      end
+      private_constant :ValidatedProjection
+
       # The escaped SPELLING of a declared name, or nil when the name is neither a String nor a Symbol and
       # so has no spelling this layer can render without running the name's own code.
       #
@@ -338,7 +413,9 @@ module Axn
       # the message builders, and the provenance resolution are implementation of the two rules, not surface a
       # caller should reach. `field_name_spelling` is deliberately not public either — `inspect_field_name` is
       # the one way a name gets written into a message.
-      private_class_method :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
+      private_class_method :validate_projection, :inbound_property_sources, :outbound_property_sources,
+                           :reject_colliding_emitted_properties!, :reject_oversized_schema!,
+                           :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
                            :count_shape_members!, :raise_too_many_properties!

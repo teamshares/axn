@@ -240,11 +240,6 @@ module Axn
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
-            candidates = internal_field_configs + configs
-            _reject_oversized_schema!(candidates + subfield_configs)
-            _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(candidates, subfield_configs)) do
-              _inbound_property_sources(candidates, subfield_configs)
-            end
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -305,11 +300,6 @@ module Axn
             # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
             # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
             # collapse in `output_schema` exactly as their inbound counterparts do.
-            exposures = external_field_configs + configs
-            _reject_oversized_schema!(exposures)
-            _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_output(exposures)) do
-              _outbound_property_sources(exposures)
-            end
 
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
@@ -863,30 +853,12 @@ module Axn
           Axn::Reflection::Values.canonical_wire_key(name) || _inspect_field_name(name)
         end
 
-        # The two property-name rules live with reflection, whose emitted schema they judge (see
-        # Axn::Reflection::PropertyNames). Delegated rather than called inline at each site so the contract has
-        # one place that names what it asks of that layer.
-        #
-        # `reject_unrenderable_field_names!` is shared: the rules use it on emitted names, and `exposes` uses it
-        # eagerly on its own field names, which reach the serialized body regardless of any schema.
+        # The two property-name rules are judged on the projection they would appear in, so they run when one is
+        # first demanded rather than here (see Axn::Reflection::PropertyNames). What the contract still asks of
+        # that layer eagerly is name RENDERING — `exposes` field names, whose bytes reach the serialized body
+        # regardless of any schema, and the escaping every declaration message uses.
         def _reject_unrenderable_field_names!(names, kind: "a field name")
           Axn::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
-        end
-
-        def _reject_colliding_emitted_properties!(schema, &)
-          Axn::Reflection::PropertyNames.reject_colliding_emitted_properties!(schema, &)
-        end
-
-        def _inbound_property_sources(field_configs, subfield_configs)
-          Axn::Reflection::PropertyNames.inbound_property_sources(field_configs, subfield_configs)
-        end
-
-        def _outbound_property_sources(field_configs)
-          Axn::Reflection::PropertyNames.outbound_property_sources(field_configs)
-        end
-
-        def _reject_oversized_schema!(configs)
-          Axn::Reflection::PropertyNames.reject_oversized_schema!(configs)
         end
 
         # How a declared name is written into a message, shared with the rules above so every message that
