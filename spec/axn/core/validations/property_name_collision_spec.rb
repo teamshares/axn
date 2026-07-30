@@ -394,6 +394,56 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect(klass.input_schema.dig(:properties, :a, :enum)).to eq(before)
     end
+
+    # A container is detached whatever it says about itself and whatever its copiers do. Each of these three
+    # subclasses defeated the detach in a different way while the plain-Array cases above were copied correctly
+    # — the same lying-subclass class the shape guards close, one layer over.
+    describe "an option container that lies about itself" do
+      def accepts_c?(klass) = klass.call(choice: "c").ok?
+
+      def declared_with(values)
+        build_axn { expects :choice, inclusion: { in: values } }
+      end
+
+      it "detaches one that denies its own class" do
+        values = Class.new(Array) { def is_a?(other) = Array.equal?(other) ? false : super }.new(%w[a b])
+        klass = declared_with(values)
+
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(false)
+      end
+
+      it "detaches one whose dup returns itself" do
+        values = Class.new(Array) { def dup = self }.new(%w[a b])
+        klass = declared_with(values)
+
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(false)
+      end
+
+      it "detaches a bag whose transform_values hands back the receiver" do
+        bag = Class.new(Hash) { def transform_values(&) = self }.new
+        bag[:in] = %w[a b]
+        klass = build_axn { expects :choice, inclusion: bag }
+
+        expect(accepts_c?(klass)).to be(false)
+        bag[:in] << "c"
+        expect(accepts_c?(klass)).to be(false)
+      end
+
+      # The copy must not over-reach either: an Array's own `include?` is how an `inclusion:` set answers
+      # membership, so the stored copy keeps the caller's CLASS rather than becoming a plain Array (which
+      # would also publish an enum reflection deliberately withholds for anything but an exact Array).
+      it "keeps a subclass's own membership behavior" do
+        values = Class.new(Array) { def include?(_value) = true }.new(%w[a b])
+        klass = declared_with(values)
+
+        expect(accepts_c?(klass)).to be(true)
+        expect(klass.input_schema.dig(:properties, :choice, :enum)).to be_nil
+      end
+    end
   end
 
   describe "the canonicalization this check shares with the renderer" do
@@ -1569,16 +1619,33 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
-      # The tolerance the guard deliberately keeps: a member with genuinely no `field` has no name to
-      # collide, so it is skipped rather than raising. Only a LIE about the reader is closed off. Reflection
-      # skips such a member on the same terms, so declaration and emission agree about which members exist.
-      it "still skips a member that genuinely defines no field reader" do
+      # A member with genuinely no `field` is rejected, not skipped. The documented member contract is `#field`
+      # plus `#validations`, and runtime validation reads `member.field` for every member — so skipping it in the
+      # guard left a contract that declared, reflected the member as nothing, and then raised NoMethodError on
+      # the first call. What the guard's tolerance is for is the other direction: a member that DEFINES the
+      # reader cannot escape the check by denying it (the example above).
+      it "rejects a member that defines no field reader" do
         members = [Object.new, Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
-        klass = nil
 
-        expect { klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }.not_to raise_error
-        expect(klass.internal_field_configs.map(&:field)).to eq([:payload])
-        expect(klass.input_schema.dig(:properties, :payload, :properties)).to eq({ a: {} })
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError, /a shape member must answer to `field`.*of class Object/m)
+      end
+
+      # The other half of the same contract: a member implementing BOTH readers and nothing else is legal, and
+      # works end to end — declaring, projecting, and validating a call.
+      it "accepts a member implementing only field and validations, end to end" do
+        member = Class.new do
+          def field = :a
+          def validations = { type: { klass: String } }
+        end.new
+        klass = build_axn do
+          expects :payload, type: Hash, shape: { members: [member], container: Hash }
+          def call = nil
+        end
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties)).to eq({ a: { type: "string" } })
+        expect(klass.call(payload: { a: "ok" })).to be_ok
+        expect(klass.call(payload: { a: 1 })).not_to be_ok
       end
 
       # A member whose name is a String subclass with a hostile `==`. Choosing between the two duplicate
@@ -2023,10 +2090,11 @@ RSpec.describe "declaration-time property name collisions" do
                    Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
                    Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {})]
 
-        # The ghost is read as absent (its stored name matches what was asked for) and skipped, so the real
-        # defect — the colliding pair beside it — is what gets reported.
+        # The ghost is read as ABSENT (its stored name matches what was asked for), which is what this pins:
+        # the verdict is axn's own nameless-member error, not the `NotImplementedError` the subclass's `name`
+        # raises — that would have escaped every rescue in the framework.
         expect { project_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+          .to raise_error(ArgumentError, /a shape member must answer to `field`/)
       end
     end
   end

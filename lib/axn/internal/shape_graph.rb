@@ -46,6 +46,28 @@ module Axn
         end
       end
 
+      # Copying a caller's container: `Hash#each` and `Kernel#dup` BOUND rather than dispatched, so a subclass
+      # overriding either cannot decide what the stored contract holds — one whose `dup` returned `self`, or
+      # whose `each` hid entries, otherwise left the caller's object aliased into a declared contract. Unlike a
+      # members LIST — an arbitrary object whose `each` axn has no choice but to run (see `capture`) — a Hash's
+      # own traversal is reachable without asking the subclass anything.
+      HASH_EACH = ::Hash.instance_method(:each)
+      KERNEL_DUP = ::Kernel.instance_method(:dup)
+      private_constant :HASH_EACH, :KERNEL_DUP
+
+      # A caller Hash's entries, in a plain Hash this module owns.
+      def self.copy_entries(hash)
+        copy = {}
+        HASH_EACH.bind_call(hash) { |key, value| copy[key] = value }
+        copy
+      end
+
+      # A same-CLASS shallow copy. The class is preserved deliberately: a container's own behavior is part of
+      # what a declaration MEANS — an `inclusion:` set answers membership with its own `include?` — so replacing
+      # a subclass with a plain Array would change the contract rather than protect it, and would also publish
+      # an enum reflection deliberately withholds for anything but an exact Array.
+      def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
+
       # A shape's members, captured into an Array this module owns. Captured via `each` — the one
       # method walking a container inherently requires, and the one reflection's own member walk uses
       # — so `select`/`map`/`any?`/`to_a` are never taken from a caller's Array subclass. Each of
@@ -98,8 +120,7 @@ module Axn
       # copy: a shape whose `[]` answers differently from its entries is deciding what the contract IS, and the
       # container check downstream has to see the same answer reflection would.
       def self.snapshot_node(hash, members)
-        copy = {}
-        hash.each { |key, value| copy[key] = value }
+        copy = copy_entries(hash)
         copy[:members] = members
         copy[:container] = hash[:container]
         copy
@@ -137,12 +158,13 @@ module Axn
 
         return member if nil.equal?(validations)
 
-        copied = {}
-        validations.each { |key, value| copied[key] = value }
+        copied = copy_entries(validations)
         copied[:shape] = nested unless missing?(nested)
+        # `nil.equal?` rather than `metadata.nil?`: a Hash subclass answering `nil?` with true would leave the
+        # caller's own metadata aliased into the stored contract.
         metadata = hash_or_nil(read(member, :metadata))
         attributes = { validations: copied }
-        attributes[:metadata] = metadata.dup unless metadata.nil?
+        attributes[:metadata] = copy_entries(metadata) unless nil.equal?(metadata)
         DATA_WITH.bind_call(member, **attributes)
       end
 

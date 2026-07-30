@@ -603,12 +603,14 @@ module Axn
         # kwarg supplies pre-built members that never do — the same reason
         # `_reject_outbound_shape_user_facing!` walks. Recursion covers a member's own nested block.
         #
-        # A member not implementing `#field` is a minimal duck-typed object with no name to collide; skip it
-        # rather than dispatching something it may not define. Membership is decided from the real method
-        # table (see Internal::ShapeGraph), so a member that DEFINES `field` cannot skip the check by
-        # denying the reader — reflection reads that name regardless, and the two must agree. It is still
-        # recursed into either way: a member with no name of its own can carry a nested shape whose
-        # members have names that collide.
+        # A member that answers to no `#field` is rejected rather than skipped. The documented member contract
+        # is `#field` PLUS `#validations`, and runtime validation reads `member.field` for every member it
+        # validates — so a nameless member declared cleanly, reflected as nothing at all, and then raised
+        # NoMethodError on the first call. Skipping it in the guard while the consumer dispatches it anyway is
+        # the guard/consumer divergence this walk exists to eliminate. What the tolerance was ever for is the
+        # opposite direction: a member that DEFINES `field` cannot escape the check by denying the reader,
+        # decided from the real method table (see Internal::ShapeGraph), because reflection reads that name
+        # regardless and the two must agree.
         #
         # This is the first shape walk on every declaration path, so it is where an untraversable graph is
         # rejected on behalf of all of them: a graph reaching validation, reflection or redaction has
@@ -716,7 +718,8 @@ module Axn
         # that is not even a StandardError, replacing the diagnosis with the escape these guards exist to prevent.
         def _check_and_copy_shape_members!(hash, walk, budget)
           named = Internal::ShapeGraph.members(hash).map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
-          names = named.filter_map { |_member, name| name unless Internal::ShapeGraph.missing?(name) }
+          named.each { |member, name| _raise_nameless_member!(member, name) if Internal::ShapeGraph.missing?(name) }
+          names = named.map { |_member, name| name }
           # Ahead of every other name check: a name that is not a String or a Symbol has two independent
           # renderings rather than one property (see Contract.validate_shape_member_name!), so asking whether
           # it is renderable, or whether it collides, would be asking about only one of them. A ShapeConfig
@@ -785,6 +788,18 @@ module Axn
                 "flatten the nesting."
         end
 
+        # Named by class, since it has no name — through `_describe_shape_member`, so nothing of the member's
+        # own runs while the declaration error is being built.
+        def _raise_nameless_member!(member, name)
+          raise ArgumentError,
+                "a shape member must answer to `field`, naming the key it validates — the member " \
+                "#{_describe_shape_member(member, name)} answers to none. Runtime validation reads " \
+                "`member.field` for every member, so such a member would validate nothing, be omitted from " \
+                "the reflected schema entirely, and raise NoMethodError on the first call. Give it a `field` " \
+                "reader (with `validations`, the rest of the member contract), or declare it with " \
+                "`field :name` inside a `shape` block."
+        end
+
         # The same member key declared twice in one block. No comparison of the two names is needed — and so
         # none is made: they arrived under one `to_sym` key, which is the identity the schema itself uses, so
         # nothing a name's class can define (an `==` that raises) is dispatched to reach this conclusion.
@@ -850,7 +865,7 @@ module Axn
         # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
         # already reach; narrowing those is a separate, breaking question.
         private :_describe_shape_member, :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!, :_check_and_copy_shape_members!,
-                :_raise_cyclic_shape!, :_raise_shape_too_deep!, :_raise_duplicate_member!
+                :_raise_cyclic_shape!, :_raise_shape_too_deep!, :_raise_duplicate_member!, :_raise_nameless_member!
 
         private
 
@@ -1181,7 +1196,10 @@ module Axn
         # Returns the structured klass (Array, Hash, or a member-bearing class).
         def _shape_compatible_type!(validations)
           type = validations&.dig(:type)
-          klass = type.is_a?(Hash) ? type[:klass] : type
+          # `case`/`when` (via ShapeGraph) rather than `is_a?`: `type:` is a caller-supplied bag, and a Hash
+          # subclass denying its own class would have the whole bag read as the declared class.
+          type_bag = Internal::ShapeGraph.hash_or_nil(type)
+          klass = nil.equal?(type_bag) ? type : type_bag[:klass]
           klasses = Array(klass)
           return klasses.first if klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
 
@@ -1225,15 +1243,35 @@ module Axn
         # a `model:` class, an `inclusion:` member. Those are meant to be the caller's, and copying them would
         # change what a declaration means rather than protect it. `shape:` is excluded because it needs a deep
         # copy of its own (see _validate_and_snapshot_shape!) and gets one downstream.
+        # Nothing an option container can define decides whether it is detached, or what the detached copy holds.
+        # The type tests are `case`/`when` (`Module#===`, a C-level check) rather than `is_a?`, and the copies are
+        # taken through bound primitives (see ShapeGraph) rather than the container's own `transform_values`/`dup`.
+        # A subclass answering `is_a?(Array)` with false, or whose `dup` returned `self`, or whose
+        # `transform_values` handed back the receiver, otherwise stayed aliased into the declared contract while
+        # the plain-Array case beside it was correctly copied.
+        #
+        # An Array keeps its CLASS (a same-class `dup`) because its own `include?` is what an `inclusion:` set
+        # answers membership with, while a bag becomes a plain Hash — which is what it already became, and axn
+        # reads bags with `[]`/`dig` only.
         def _detach_option_containers!(validations)
           validations.each do |key, value|
             next if key == :shape
 
             case value
-            when ::Hash then validations[key] = value.transform_values { |option| option.is_a?(::Array) ? option.dup : option }
-            when ::Array then validations[key] = value.dup
+            when ::Hash then validations[key] = _detached_option_bag(value)
+            when ::Array then validations[key] = Internal::ShapeGraph.detached_dup(value)
             end
           end
+        end
+
+        def _detached_option_bag(bag)
+          copy = Internal::ShapeGraph.copy_entries(bag)
+          copy.each do |option_key, option|
+            case option
+            when ::Array then copy[option_key] = Internal::ShapeGraph.detached_dup(option)
+            end
+          end
+          copy
         end
 
         def _derive_raw_shape_container!(validations)
