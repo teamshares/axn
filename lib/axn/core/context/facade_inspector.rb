@@ -132,14 +132,29 @@ module Axn
         top_level + subfields
       end
 
-      def collect_sensitive_member_names(config)
-        # Through the shared seam, for the reason _flatten_sensitive_candidates gives: a list hiding itself
-        # from `flat_map` would drop a sensitive member from the redaction set.
-        members = Axn::Internal::ShapeGraph.members(Axn::Internal::ShapeGraph.shape_in(config.validations))
-        members.flat_map do |member|
-          names = collect_sensitive_member_names(member)
-          names << member.field if member.respond_to?(:sensitive) && action.class._resolve_sensitive_value(member.sensitive, action)
-          names
+      # Bounded both ways, exactly as the logging side is (`Contract#_flatten_sensitive_candidates`): a STORED
+      # graph can be untraversable even though no declared one is, because a member axn cannot rebuild is the
+      # caller's own object and the nested shape it carries can later be pointed at itself (which `CycleGuard`
+      # sees) or made to mint a fresh one on every read (which nothing but depth sees). `inspect` is reachable
+      # directly, not only from a side channel, so an unbounded walk here raises SystemStackError at the caller
+      # rather than degrading a log line.
+      #
+      # A cycle re-reaches members an enclosing frame is already collecting, so stopping loses nothing. Past the
+      # depth bound nothing can enumerate a graph that mints its members on demand — and the value it describes
+      # is masked wholesale by then anyway (`_shape_has_sensitive_member?` answers true past the same bound), so
+      # `inspect` shows a redacted value rather than a leaked one.
+      def collect_sensitive_member_names(config, seen = nil, depth = 0)
+        shape = Axn::Internal::ShapeGraph.shape_in(config.validations)
+        return [] if nil.equal?(shape) || depth > Axn::Internal::ShapeGraph::MAX_NESTING
+
+        Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
+          # Through the shared seam, for the reason _flatten_sensitive_candidates gives: a list hiding itself
+          # from `flat_map` would drop a sensitive member from the redaction set.
+          Axn::Internal::ShapeGraph.members(shape).flat_map do |member|
+            names = collect_sensitive_member_names(member, open, depth + 1)
+            names << member.field if member.respond_to?(:sensitive) && action.class._resolve_sensitive_value(member.sensitive, action)
+            names
+          end
         end
       end
     end

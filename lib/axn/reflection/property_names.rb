@@ -481,24 +481,34 @@ module Axn
       # projection — `validate_and_build` runs it ahead of every build, inbound and outbound — so bounding the
       # graph here is what keeps a projection bounded at all.
       #
-      # Cycle-guarded, because a stored graph can be cyclic even though no declared one is. A member axn cannot
-      # rebuild (anything that is not a `Data`) is stored as the caller's own object, so the nested shape it
-      # carries is theirs to change after the class is declared — and pointing it back at itself made every
-      # projection recurse to SystemStackError, which is outside StandardError and so escapes the rescue meant
-      # to settle it. The size budget is no defense: depth costs one property per level, and the stack runs out
+      # Bounded BOTH ways, because a stored graph can be untraversable even though no declared one is: a member
+      # axn cannot rebuild (anything that is not a `Data`) is stored as the caller's own object, so the nested
+      # shape it carries is theirs to change after the class is declared. The two ways need different answers,
+      # and this walk needs both — exactly as the declaration walk does.
+      #
+      # A graph that CONTAINS itself repeats an object, which `CycleGuard` sees by identity. A graph that
+      # GENERATES itself — a member whose `validations` mints a fresh nested shape on every read — repeats
+      # nothing, so no identity guard can see it; it is endless rather than cyclic, and only the depth bound
+      # stops it. Either way the stack goes before StandardError does, escaping the rescue meant to settle a
+      # result, and the size budget is no defense: depth costs one property per level, so the stack runs out
       # thousands of levels before 25,000 does.
+      #
+      # The bound is `ShapeGraph::MAX_NESTING`, the same number from the same place the declaration walk reads —
+      # one cap, so the two cannot drift into disagreeing about what is traversable.
       #
       # Ancestry-scoped (see CycleGuard), so a nested shape reused by SIBLING members is still counted twice —
       # that sharing is exactly what the budget exists to catch, and only genuine self-containment is a cycle.
-      def count_shape_members!(budget, shape, seen = nil, via: nil, &label)
+      def count_shape_members!(budget, shape, seen = nil, depth = 0, via: nil, &label)
         hash = Internal::ShapeGraph.hash_or_nil(shape)
         return if nil.equal?(hash)
+
+        raise_shape_too_deep!(via) if depth > Internal::ShapeGraph::MAX_NESTING
 
         outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
           Internal::ShapeGraph.members(hash).each do |member|
             budget.spend!(1, &label)
 
-            count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), nested, via: member, &label)
+            count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), nested, depth + 1, via: member, &label)
           end
         end
         raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(outcome)
@@ -509,20 +519,14 @@ module Axn
       CYCLIC_SHAPE = ::Object.new.freeze
       private_constant :CYCLIC_SHAPE
 
-      # Reads as the declaration-time cycle error does (Core::Contract#_raise_cyclic_shape!), because it is the
-      # same defect — found later only because the graph became cyclic after the class was declared. The member
-      # is named by CLASS, not by its `field`: reading a name here would run the caller's code while the failure
-      # is being reported, and the class is the identifying thing anyway, since only a member axn could not
-      # rebuild can reach this state.
-      def raise_cyclic_shape!(member)
-        via = nil.equal?(member) ? "" : " reached from the shape member of class #{Axn::Internal::ClassName.of(member)}"
-        raise ArgumentError,
-              "a `shape:` graph#{via} contains itself, so building the reflected schema would recurse until the " \
-              "stack overflows. A member axn cannot rebuild — anything that is not a `Data` — is stored as your " \
-              "own object, so the nested shape it carries can become self-referential after the class is " \
-              "declared. Give the nested shape its own members rather than the shape (or the member) that " \
-              "encloses it."
-      end
+      # Both read from ShapeGraph, which owns the two sentences: the same defects are reported by the ambient
+      # placement check, which re-walks an already-declared graph for the same reason this does, and one text
+      # keeps them from describing it two ways. Each reads as its declaration-time counterpart
+      # (Core::Contract#_raise_cyclic_shape! / #_raise_shape_too_deep!) plus the one thing only a re-walk can
+      # say: the graph was traversable when the class was declared, so it changed afterwards.
+      def raise_cyclic_shape!(member) = raise(ArgumentError, Internal::ShapeGraph.self_containing_message(member))
+
+      def raise_shape_too_deep!(member) = raise(ArgumentError, Internal::ShapeGraph.too_deep_message(member))
 
       # Six entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
       # the message builders, and the provenance resolution are implementation of the two rules, not surface a
@@ -533,7 +537,7 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
-                           :count_shape_members!, :raise_cyclic_shape!
+                           :count_shape_members!, :raise_cyclic_shape!, :raise_shape_too_deep!
     end
   end
 end

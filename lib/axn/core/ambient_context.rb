@@ -116,14 +116,34 @@ module Axn
 
         # Yield every member of `shape`, recursing into each member's own nested shape. Every read goes
         # through Internal::ShapeGraph, so a member supplied by a raw `shape:` kwarg cannot deny a reader
-        # it defines and slip past the checks this walk feeds. A cyclic graph is impossible here — it is
-        # rejected at declaration by `_validate_and_snapshot_shape!`, ahead of this walk.
-        def _each_shape_member(shape, &block)
-          Internal::ShapeGraph.members(shape).each do |member|
-            yield member
-            _each_shape_member(Internal::ShapeGraph.nested_shape(member), &block)
+        # it defines and slip past the checks this walk feeds.
+        #
+        # Bounded both ways, and not because a DECLARED graph can be untraversable — `_validate_and_snapshot_shape!`
+        # rejects that ahead of this walk. This walk re-walks graphs declared EARLIER: declaring a second ambient
+        # subfield rebuilds the tree over every ambient config, so a member axn could not rebuild (the caller's
+        # own object) may carry a nested shape that has since been pointed at itself, or made to mint a fresh one
+        # on every read. Either overflowed the stack while the class was being defined, which no rescue in the
+        # framework can settle. Same two bounds, same two messages, as the projection walk that re-walks for its
+        # own reasons (Reflection::PropertyNames#count_shape_members!).
+        def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
+          hash = Internal::ShapeGraph.hash_or_nil(shape)
+          return if nil.equal?(hash)
+
+          raise ArgumentError, Internal::ShapeGraph.too_deep_message(via) if depth > Internal::ShapeGraph::MAX_NESTING
+
+          outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_AMBIENT_SHAPE) do |nested|
+            Internal::ShapeGraph.members(hash).each do |member|
+              yield member
+              _each_shape_member(Internal::ShapeGraph.nested_shape(member), nested, depth + 1, member, &block)
+            end
           end
+          raise ArgumentError, Internal::ShapeGraph.self_containing_message(via) if CYCLIC_AMBIENT_SHAPE.equal?(outcome)
         end
+
+        # A private object of this module's own, always the RECEIVER of `equal?`, so nothing a declaration can
+        # produce is mistaken for it.
+        CYCLIC_AMBIENT_SHAPE = Object.new.freeze
+        private_constant :CYCLIC_AMBIENT_SHAPE
 
         # Depth-first walk of `node` and all its declared descendants, yielding each node.
         def _each_ambient_node(node, &block)

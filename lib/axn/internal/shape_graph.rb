@@ -104,6 +104,50 @@ module Axn
         true
       end
 
+      # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
+      # can reach it — a hand-written block nests one level per `do…end`, and a schema nested 64 objects deep is
+      # unreadable long before it is undeclarable — so the cap only ever fires on a graph something GENERATED.
+      #
+      # It lives HERE, with the seam every layer reads a shape graph through, because it is the answer to the
+      # half of untraversability that identity cannot see. `CycleGuard` catches a graph that repeats an object; a
+      # graph that MINTS a fresh nested shape on every read repeats nothing, is endless rather than cyclic, and
+      # only a depth bound stops it. Every walk needs both, and two 64s in two layers would be free to drift into
+      # disagreeing about what is declarable.
+      MAX_NESTING = 64
+
+      # The two ways a STORED shape graph can be untraversable, and the sentence for each. They live here rather
+      # than with either walk because more than one layer RE-WALKS an already-declared graph — the projection's
+      # size bound, and the ambient placement check when a later subfield is declared — and a graph that was
+      # traversable at declaration can be either of these by then. One text, so two layers cannot describe the
+      # same defect two ways. Raising is left to the caller: this module answers questions, it does not decide
+      # what a declaration error says.
+      #
+      # The member is named by CLASS, never by reading its `field`: that would run the caller's code while the
+      # failure is being reported, and the class identifies it anyway, since only a member axn could not rebuild
+      # can reach either state.
+      AFTER_DECLARATION = "A member axn cannot rebuild — anything that is not a `Data` — is stored as your own " \
+                          "object, so the nested shape it carries can change after the class is declared."
+      private_constant :AFTER_DECLARATION
+
+      def self.describe_via(member)
+        return "" if nil.equal?(member)
+
+        " reached from the shape member of class #{Axn::Internal::ClassName.of(member)}"
+      end
+
+      def self.self_containing_message(member)
+        "a `shape:` graph#{describe_via(member)} contains itself, so walking it would recurse until the stack " \
+          "overflows. #{AFTER_DECLARATION} Give the nested shape its own members rather than the shape (or the " \
+          "member) that encloses it."
+      end
+
+      def self.too_deep_message(member)
+        "a `shape:` graph#{describe_via(member)} nests more than #{MAX_NESTING} levels deep, so walking it would " \
+          "recurse until the stack overflows — a shape object that builds a fresh nested shape on every read is " \
+          "endless, and no hand-written shape block reaches that depth. #{AFTER_DECLARATION} Have the shape " \
+          "return the same finite nested shape each time it is read, or flatten the nesting."
+      end
+
       # A shape's members, captured into an Array this module owns. Captured via `each` — the one
       # method walking a container inherently requires, and the one reflection's own member walk uses
       # — so `select`/`map`/`any?`/`to_a` are never taken from a caller's Array subclass. Each of

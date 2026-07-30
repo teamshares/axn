@@ -324,18 +324,24 @@ module Axn
             .flat_map { |config| _flatten_sensitive_candidates(config) }
         end
 
-        def _flatten_sensitive_candidates(config, seen = nil)
+        def _flatten_sensitive_candidates(config, seen = nil, depth = 0)
           # Through the shared seam: a member list that hides itself from `flat_map` would drop a
           # `sensitive:` member from the redaction set, which leaks rather than merely disagreeing.
           shape = Internal::ShapeGraph.shape_in(config.validations)
-          # Cycle-guarded because a STORED graph can be cyclic even though no declared one is: a member axn
-          # cannot rebuild is the caller's own object, so the nested shape it carries can point back at itself
-          # after the class is declared. Nothing is lost by stopping — a cycle re-reaches members an enclosing
-          # frame is already collecting — and the alternative is SystemStackError from a log line.
-          return [config] if nil.equal?(shape)
+          # Bounded BOTH ways, because a STORED graph can be untraversable even though no declared one is: a
+          # member axn cannot rebuild is the caller's own object, so the nested shape it carries can be pointed
+          # back at itself (which `CycleGuard` sees) or made to mint a fresh one on every read (which nothing
+          # sees but depth). This runs on every logged call, and the alternative is SystemStackError from a log
+          # line — a side channel taking down the call it observes.
+          #
+          # Nothing is lost by stopping at a cycle: it re-reaches members an enclosing frame is already
+          # collecting. Past the depth bound there IS no honest answer, and the wholesale mask does the work —
+          # `_shape_has_sensitive_member?` answers true there, so the whole value is redacted rather than
+          # filtered per member.
+          return [config] if nil.equal?(shape) || depth > Internal::ShapeGraph::MAX_NESTING
 
           nested = Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
-            Internal::ShapeGraph.members(shape).flat_map { |member| _flatten_sensitive_candidates(member, open) }
+            Internal::ShapeGraph.members(shape).flat_map { |member| _flatten_sensitive_candidates(member, open, depth + 1) }
           end
           [config, *nested]
         end
@@ -545,14 +551,21 @@ module Axn
         # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
         # A nil action_instance (async reporting, no instance to resolve a dynamic predicate against)
         # counts only static `sensitive: true`, matching the static `inspection_filter` used there.
-        # Cycle-guarded for the same reason as `_flatten_sensitive_candidates`, and exactly rather than
-        # defensively: a cyclic branch re-reaches the very members the enclosing frame is already testing, so
-        # answering `false` for it decides nothing on its own and no `sensitive:` member can hide in one.
-        def _shape_has_sensitive_member?(shape, action_instance, seen = nil)
+        # Bounded for the same reasons as `_flatten_sensitive_candidates`. The cycle answer is exact rather than
+        # defensive: a cyclic branch re-reaches the very members the enclosing frame is already testing, so
+        # answering `false` for it decides nothing on its own and no `sensitive:` member can hide in one. The
+        # depth answer cannot be exact, so it is fail-safe instead (see below).
+        def _shape_has_sensitive_member?(shape, action_instance, seen = nil, depth = 0)
+          # Past the depth bound the answer is TRUE, not false: a graph that deep is one minting fresh nested
+          # shapes on every read, so nothing can enumerate what is inside it — and the fail-safe answer for
+          # redaction is "assume a secret", which masks the value wholesale rather than logging it in the clear.
+          # Unreachable for a declared graph, since the declaration walk rejects one this deep.
+          return true if depth > Internal::ShapeGraph::MAX_NESTING
+
           Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: false) do |open|
             Internal::ShapeGraph.members(shape).any? do |member|
               _member_sensitive?(member, action_instance) ||
-                (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance, open))
+                (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance, open, depth + 1))
             end
           end
         end
@@ -689,7 +702,7 @@ module Axn
             return walked
           end
 
-          _raise_shape_too_deep!(via, via_name) if walk.depth > MAX_SHAPE_NESTING
+          _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
           # Read as SUPPLIED, so a shape that names no members is told apart from one naming an empty list.
           members = Internal::ShapeGraph.declared_members(hash)
@@ -721,13 +734,6 @@ module Axn
         # asked of the sentinel so no caller's `equal?` is dispatched.
         CYCLIC_SHAPE = Object.new.freeze
         private_constant :CYCLIC_SHAPE
-
-        # Deep enough that no shape anyone writes by hand can reach it — a hand-written block nests one
-        # level per `do…end`, and a schema nested 64 objects deep is unreadable long before it is
-        # undeclarable. So the cap only ever fires on a graph something GENERATED, which is exactly the
-        # case that has no finite traversal.
-        MAX_SHAPE_NESTING = 64
-        private_constant :MAX_SHAPE_NESTING
 
         # One node: its members checked, counted, and copied. Each member's name is read exactly ONCE, into a
         # (member, name) pair, and every later use of it — a collision message, a cycle or depth report against
@@ -803,7 +809,7 @@ module Axn
         def _raise_shape_too_deep!(member, name)
           via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError,
-                "a `shape:` graph nested more than #{MAX_SHAPE_NESTING} levels deep#{via} is almost certainly " \
+                "a `shape:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is almost certainly " \
                 "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
                 "object that builds a fresh nested shape on every read is endless and would recurse until the " \
                 "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
