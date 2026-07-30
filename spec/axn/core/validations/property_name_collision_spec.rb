@@ -377,6 +377,24 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end
 
+      # A member served entirely by `method_missing` with NO `respond_to_missing?`. `Object#method` falls
+      # back to `respond_to_missing?`, so the member looks reader-less to a method-table lookup — while the
+      # schema's plain `member.field` dispatch reaches `method_missing` and emits the name.
+      def ghost_member_class
+        Class.new do
+          def initialize(name) = @name = name
+
+          # The absent respond_to_missing? IS the fixture: it is what makes a method-table lookup miss a
+          # reader the schema's plain dispatch finds.
+          def method_missing(reader, *_args) # rubocop:disable Style/MissingRespondToMissing
+            case reader
+            when :field then @name
+            when :validations, :metadata then {}
+            end
+          end
+        end
+      end
+
       it "checks a shape Hash that denies being a Hash" do
         shape = sneaky_hash_class.new
         shape[:members] = [
@@ -462,6 +480,124 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect { build_axn { exposes :payload, type: Hash, shape: { members:, container: Hash } } }
           .to raise_error(ArgumentError, /a `shape:` graph cannot contain itself/)
+      end
+
+      it "checks a member whose field reader exists only through method_missing" do
+        member_class = ghost_member_class
+        members = [member_class.new(utf8_name), member_class.new(latin1_name)]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end
+
+      it "still rejects a user_facing: member whose readers exist only through method_missing" do
+        member = Class.new do
+          # The absent respond_to_missing? IS the fixture: it is what makes a method-table lookup miss a
+          # reader the schema's plain dispatch finds.
+          def method_missing(reader, *_args) # rubocop:disable Style/MissingRespondToMissing
+            case reader
+            when :field then :status
+            when :user_facing then true
+            when :validations, :metadata then {}
+            end
+          end
+        end.new
+        members = [member]
+
+        expect { build_axn { exposes :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+      end
+
+      # A reader whose own body raises NoMethodError for a DIFFERENT name is a bug inside the member, not an
+      # absent reader — it must propagate rather than be read as "this member has no name".
+      it "propagates a NoMethodError raised inside a member's own field reader" do
+        members = [Class.new { def field = nil.no_such_method }.new]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(NoMethodError, /no_such_method/)
+      end
+
+      # A shape object that builds a FRESH nested shape on every read never repeats an object, so no
+      # identity-based cycle guard can see it — it is endless rather than cyclic, and would otherwise
+      # recurse to SystemStackError (outside StandardError) while the class was being defined.
+      it "rejects a shape graph that generates a fresh nested shape on every read" do
+        generative = Class.new(Hash) do
+          def [](key)
+            return [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: self.class.new })] if key == :members
+            return Hash if key == :container
+
+            super
+          end
+        end
+        shape = generative.new
+
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError) { |error|
+            expect(error.message).to include("nested more than 64 levels deep", "generated rather than declared",
+                                             "builds a fresh nested shape on every read")
+          }
+      end
+
+      # `:container` is derived from `type:` for a raw shape that omits it, so a raw shape validates the way
+      # a block-built one does. Skipping that derivation leaves a nil container reaching ShapeValidator,
+      # which raises a bare `TypeError: class or module required` on EVERY call — a runtime crash in place of
+      # the declaration-time answer. Neither the shape's `is_a?` nor its `key?` gets to decide.
+      it "derives the container for a shape Hash that denies being a Hash" do
+        shape = sneaky_hash_class.new
+        shape[:members] = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+        klass = build_axn { expects :payload, type: Hash, shape: }
+
+        expect(klass.internal_field_configs.first.validations.dig(:shape, :container)).to eq(Hash)
+        expect(klass.call(payload: { a: 1 })).to be_ok
+      end
+
+      it "derives the container for a shape Hash whose key? claims it already has one" do
+        shape = Class.new(Hash) do
+          def key?(name) = name == :container ? true : super
+        end.new
+        shape[:members] = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+        klass = build_axn { expects :payload, type: Hash, shape: }
+
+        expect(klass.internal_field_configs.first.validations.dig(:shape, :container)).to eq(Hash)
+        expect(klass.call(payload: { a: 1 })).to be_ok
+      end
+
+      # The derived shape is a plain Hash assembled from the original's entries, not whatever the original's
+      # `merge` chose to return — which can be any object at all, including one carrying no container.
+      it "does not take the derived shape from the shape's own merge" do
+        shape = Class.new(Hash) do
+          def merge(*) = "not a hash at all"
+        end.new
+        shape[:members] = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+        klass = build_axn { expects :payload, type: Hash, shape: }
+        derived = klass.internal_field_configs.first.validations[:shape]
+
+        expect(derived).to be_instance_of(Hash)
+        expect(derived[:container]).to eq(Hash)
+        expect(derived[:members].size).to eq(1)
+      end
+
+      # An unusable container spelled out explicitly is the same unusable state as an omitted one, so it is
+      # derived too rather than carried through to a per-call TypeError.
+      it "derives the container for an explicit container: nil" do
+        members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+        klass = build_axn { expects :payload, type: Hash, shape: { members:, container: nil } }
+
+        expect(klass.internal_field_configs.first.validations.dig(:shape, :container)).to eq(Hash)
+      end
+
+      # Derivation still reports the declaration error it exists to produce when there is no structured
+      # `type:` to derive from — the lie must not turn that into silence either.
+      it "raises the declaration error when a lying shape Hash has no structured type: to derive from" do
+        shape = sneaky_hash_class.new
+        shape[:members] = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
+
+        expect { build_axn { expects :payload, shape: } }
+          .to raise_error(ArgumentError, /a shape block requires a single structured type:/)
       end
 
       # A shape reached twice as SIBLINGS is a diamond, not a cycle — the same object legitimately reused as

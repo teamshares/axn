@@ -20,7 +20,8 @@ module Axn
       # object whose own `#method` raises would otherwise replace a declaration verdict with its
       # exception — and escape every rescue when that exception is outside StandardError.
       OBJECT_METHOD = ::Object.instance_method(:method)
-      private_constant :OBJECT_METHOD
+      OBJECT_PUBLIC_SEND = ::Object.instance_method(:public_send)
+      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND
 
       # `value` when it is genuinely a Hash, else nil. `case`/`when` consults the real class through
       # `Module#===` (a C-level check), while `is_a?` is overridable — and a Hash subclass answering
@@ -64,26 +65,56 @@ module Axn
       # caller-supplied member, whose `validations` reader is itself something to read without trusting.
       def self.nested_shape(owner) = shape_in(read(owner, :validations))
 
-      # The Method that actually implements `name` on `object`, or nil when nothing does.
+      # Sentinel for "nothing on this object answers to that name", distinguishing it from a reader
+      # that genuinely returned nil. A private frozen object of this module's own, and always the
+      # RECEIVER of `equal?` (see `missing?`), so no caller's `equal?` is ever dispatched and nothing a
+      # caller can construct is mistaken for it.
+      NOT_DEFINED = ::Object.new.freeze
+      private_constant :NOT_DEFINED
+
+      def self.missing?(value) = NOT_DEFINED.equal?(value)
+
+      # The value of `name` on `object`, or NOT_DEFINED when nothing answers to it.
       #
-      # `Object#method` finds a defined method regardless of what `respond_to?` claims, so an object
-      # DEFINING a reader cannot opt out of a guard by denying it — while a genuinely minimal
-      # duck-typed member, which defines nothing, is still skipped. Duck typing keeps working:
-      # `respond_to_missing?` is consulted only when nothing defines the name, so a `method_missing`-
-      # backed reader still resolves. The distinction this draws is that a LIE cannot bypass a guard,
-      # not that a member must be a full ShapeConfig.
-      def self.reader(object, name)
-        OBJECT_METHOD.bind_call(object, name)
-      rescue ::NameError
-        nil
+      # Two lookups, because the standard of correctness is agreement with what reflection reads. The
+      # first is `Object#method`, which finds a DEFINED method whatever `respond_to?` claims — so an
+      # object defining a reader cannot opt out of a guard by denying it. The second is the plain
+      # dispatch reflection itself makes, reached only when nothing defines the name: `Object#method`
+      # falls back to `respond_to_missing?`, so a member served entirely by `method_missing` WITHOUT a
+      # matching `respond_to_missing?` looks absent to the first lookup while `member.field` answers
+      # reflection perfectly well — and a guard that skipped it would leave reflection emitting a name
+      # nothing checked. Both are bound rather than dispatched (`#method`, `#public_send` and
+      # `#respond_to?` are all overridable), so an object whose own version raises cannot replace a
+      # declaration verdict with its exception.
+      #
+      # Only "nothing answered to THIS name" counts as absence — a NoMethodError naming something else
+      # is a bug inside the reader and propagates. So an object that genuinely defines nothing is still
+      # skipped rather than raising: the distinction drawn is that a LIE cannot bypass a guard, not that
+      # a member must be a full ShapeConfig.
+      def self.fetch(object, name)
+        defined_method = begin
+          OBJECT_METHOD.bind_call(object, name)
+        rescue ::NameError
+          nil
+        end
+        return defined_method.call if defined_method
+
+        begin
+          OBJECT_PUBLIC_SEND.bind_call(object, name)
+        rescue ::NoMethodError => e
+          raise unless e.name == name
+
+          NOT_DEFINED
+        end
       end
 
-      def self.defines?(object, name) = !reader(object, name).nil?
-
-      # The value of `name` on `object`, or nil when nothing defines it. Invoking the reader is the
-      # same read reflection performs, so it is the one dispatch the walk requires. Callers that must
-      # tell "no such reader" from "the reader returned nil" ask for the `reader` instead.
-      def self.read(object, name) = reader(object, name)&.call
+      # The value of `name` on `object`, or nil when nothing answers to it — for a caller that treats an
+      # absent reader and a nil one alike (a truthiness test, or a value that gets type-tested anyway).
+      # A caller that must tell them apart uses `fetch` with `missing?`.
+      def self.read(object, name)
+        value = fetch(object, name)
+        missing?(value) ? nil : value
+      end
     end
   end
 end

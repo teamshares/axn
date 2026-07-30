@@ -8,9 +8,6 @@ require "active_support/core_ext/object/blank"
 
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
-# Declared rather than inherited from the top-level entrypoint's require order: every shape walk below
-# reads a caller-supplied shape graph through ShapeGraph and guards its recursion with CycleGuard, both
-# at declaration time, so a load order that reached this file first would NameError while defining a class.
 require "axn/internal/shape_graph"
 require "axn/internal/cycle_guard"
 require "axn/result"
@@ -308,8 +305,14 @@ module Axn
         # and `shape: { members: [...] }` may be supplied raw with member objects that implement no
         # more than that. `#sensitive` is optional (absent on such a raw member), so read it defensively
         # and treat a missing reader as `false`, mirroring how the validator treats a missing
-        # #method_call as not opted in. Read from the real method table (see Internal::ShapeGraph), so a
-        # member that DEFINES `sensitive:` cannot opt out of redaction by denying the reader.
+        # #method_call as not opted in. Read through Internal::ShapeGraph, so a member that DEFINES
+        # `sensitive:` cannot opt out of redaction by denying the reader.
+        #
+        # That costs a Method allocation per read (~0.25µs, against ~0.04µs for `respond_to?` plus a
+        # dispatch) and is spent deliberately: the reads here are per config on a filter build, and a
+        # member hiding from redaction leaks a secret. `_sensitive_shape_paths` makes the opposite call for
+        # the opposite reason — it reads axn's OWN configs, which cannot lie, on every logged call, so it
+        # takes the cheap `shape_in` path. The tradeoff differs because the exposure does.
         def _config_sensitive(config)
           Internal::ShapeGraph.read(config, :sensitive) || false
         end
@@ -529,8 +532,10 @@ module Axn
         # outside StandardError). A member with no `#field` has no name to print, and its class is the
         # only thing left that identifies it.
         def _describe_shape_member(member)
-          reader = Internal::ShapeGraph.reader(member, :field)
-          reader ? "`#{_shape_member_label(reader.call)}`" : "of class #{Axn::Internal::ClassName.of(member)}"
+          name = Internal::ShapeGraph.fetch(member, :field)
+          return "of class #{Axn::Internal::ClassName.of(member)}" if Internal::ShapeGraph.missing?(name)
+
+          "`#{_shape_member_label(name)}`"
         end
 
         # A shape member's name is an object property in the reflected schema on exactly the same terms as a
@@ -546,16 +551,24 @@ module Axn
         # recursed into either way: a member with no name of its own can carry a nested shape whose
         # members have names that collide.
         #
-        # This is the first shape walk on every declaration path, so it is where a self-referential graph
-        # is rejected on behalf of all of them — the walks in validation, reflection and redaction only
-        # ever see a graph that passed here. `via` names the member whose nested shape is being entered,
-        # so the cycle is reported against the member that closes it.
-        def _reject_colliding_shape_member_names!(shape, seen = nil, via: nil)
+        # This is the first shape walk on every declaration path, so it is where an untraversable graph is
+        # rejected on behalf of all of them — the walks in validation, reflection and redaction only ever
+        # see a graph that passed here. `via` names the member whose nested shape is being entered, so a
+        # rejection is reported against the member that caused it.
+        #
+        # Two ways a graph can be untraversable, and each needs its own answer. A graph that CONTAINS
+        # itself repeats an object, which `CycleGuard` detects by identity. A graph that GENERATES itself —
+        # a shape Hash whose `[]` builds a fresh nested shape on every read — never repeats an object, so
+        # no identity guard can see it; it is infinitely deep rather than cyclic, and only a depth cap
+        # stops it. Both otherwise end in SystemStackError, outside StandardError, escaping every rescue.
+        def _reject_colliding_shape_member_names!(shape, seen = nil, depth: 0, via: nil)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           return if hash.nil?
 
+          _raise_shape_too_deep!(via) if depth > MAX_SHAPE_NESTING
+
           walked = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
-            _check_shape_member_names!(hash, nested)
+            _check_shape_member_names!(hash, nested, depth)
           end
           _raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(walked)
         end
@@ -566,10 +579,17 @@ module Axn
         CYCLIC_SHAPE = Object.new.freeze
         private_constant :CYCLIC_SHAPE
 
-        def _check_shape_member_names!(hash, seen)
+        # Deep enough that no shape anyone writes by hand can reach it — a hand-written block nests one
+        # level per `do…end`, and a schema nested 64 objects deep is unreadable long before it is
+        # undeclarable. So the cap only ever fires on a graph something GENERATED, which is exactly the
+        # case that has no finite traversal.
+        MAX_SHAPE_NESTING = 64
+        private_constant :MAX_SHAPE_NESTING
+
+        def _check_shape_member_names!(hash, seen, depth)
           members = Internal::ShapeGraph.members(hash)
-          readers = members.filter_map { |member| Internal::ShapeGraph.reader(member, :field) }
-          names = readers.map(&:call)
+          names = members.map { |member| Internal::ShapeGraph.fetch(member, :field) }
+                         .reject { |name| Internal::ShapeGraph.missing?(name) }
           _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
           claimed = {}
@@ -580,7 +600,9 @@ module Axn
             claimed[property] = name
           end
 
-          members.each { |member| _reject_colliding_shape_member_names!(_member_shape(member), seen, via: member) }
+          members.each do |member|
+            _reject_colliding_shape_member_names!(_member_shape(member), seen, depth: depth + 1, via: member)
+          end
         end
 
         # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
@@ -593,6 +615,20 @@ module Axn
                 "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
                 "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
                 "shape its own members rather than reusing the shape (or the member) that encloses it."
+        end
+
+        # The generative counterpart: no object repeats, so nothing identifies a loop, and the graph is
+        # simply endless. Capped rather than walked to exhaustion, for the same reason a cycle is rejected
+        # — the alternative outcome is a SystemStackError raised while the class is being defined, which
+        # no rescue in the framework can settle.
+        def _raise_shape_too_deep!(member)
+          via = member.nil? ? "" : " at shape member #{_describe_shape_member(member)}"
+          raise ArgumentError,
+                "a `shape:` graph nested more than #{MAX_SHAPE_NESTING} levels deep#{via} is almost certainly " \
+                "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
+                "object that builds a fresh nested shape on every read is endless and would recurse until the " \
+                "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
+                "flatten the nesting."
         end
 
         # Two spellings of one member name are reported as a plain duplicate; two different names that
@@ -1044,11 +1080,25 @@ module Axn
         # block-built shape already carries `:container`, so this fires only for the raw form; a raw
         # shape with an incompatible/missing `type:` raises the same declaration error the block form
         # does (via `_shape_compatible_type!`). Mutates `validations`.
+        #
+        # Nothing the shape object can define decides whether derivation happens: the type test goes
+        # through `ShapeGraph.hash_or_nil`, and the "already has one?" test reads the key rather than
+        # asking `key?` — an overridden `is_a?` or `key?` would otherwise skip derivation, leaving a nil
+        # container that reaches ShapeValidator and raises a bare `TypeError: class or module required`
+        # on EVERY call instead of the declaration error this exists to produce. Reading the key also
+        # derives for an explicit `container: nil`, which is the same unusable state spelled out.
+        #
+        # The replacement is a plain Hash assembled from the shape's own entries rather than the result of
+        # its `merge`, which a subclass can override to return anything at all — including something that
+        # is not a Hash, or that drops the container just derived.
         def _derive_raw_shape_container!(validations)
-          shape = validations[:shape]
-          return unless shape.is_a?(Hash) && !shape.key?(:container)
+          shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+          return if shape.nil? || !shape[:container].nil?
 
-          validations[:shape] = shape.merge(container: _shape_compatible_type!(validations))
+          derived = {}
+          shape.each { |key, value| derived[key] = value }
+          derived[:container] = _shape_compatible_type!(validations)
+          validations[:shape] = derived
         end
 
         def _partition_field_options(fields, **options)

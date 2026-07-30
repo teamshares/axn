@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
 require "axn/reflection/subfield_tree"
-# The shape walk below reads a caller-supplied shape graph through ShapeGraph while a class is being
-# defined, so a load order reaching this file first would NameError rather than at some later boundary.
 require "axn/internal/shape_graph"
 
 module Axn
