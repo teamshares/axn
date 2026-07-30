@@ -16,6 +16,20 @@ RSpec.describe "declaration-time property name collisions" do
   # Bytes with no UTF-8 rendering at all. ASCII-8BIT is mandatory here (see the plan's fixture note).
   def unrenderable_name = "bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym
 
+  # A shape member that is NOT a ShapeConfig — the duck-typing tolerance ShapeValidator documents (only
+  # `#field` and `#validations` are required). It never routes through ShapeConfig's constructor, so its name
+  # is never normalized, which makes it the one route by which a caller-supplied name still reaches the
+  # guards as itself.
+  def duck_typed_member(name)
+    Class.new do
+      define_method(:field) { name }
+      def validations = {}
+      def metadata = {}
+      def description = nil
+      def optional? = true
+    end.new
+  end
+
   describe "the canonicalization this check shares with the renderer" do
     # The declaration check and the rendering it predicts must agree, so the contract layer calls the
     # renderer's canonicalization rather than re-deriving it. Asserted here so narrowing the renderer's
@@ -353,7 +367,11 @@ RSpec.describe "declaration-time property name collisions" do
       end.to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :a\b/)
     end
 
-    it "treats a symbol and a string spelling of one member name as one property" do
+    # A member name is normalized to a Symbol at declaration, exactly as a top-level field name is, so these
+    # two are not merely one property — they are one NAME, and the identical-duplicate message is the accurate
+    # one. That also puts shape members in step with `expects :foo, "foo"`, which has always reported
+    # "Duplicate field(s) declared: foo" rather than a collapse.
+    it "treats a symbol and a string spelling of one member name as one name" do
       expect do
         build_axn do
           expects :payload, type: Hash do
@@ -361,7 +379,7 @@ RSpec.describe "declaration-time property name collisions" do
             field "a", type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "a"/)
+      end.to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :a —/)
     end
 
     it "rejects a member name with no UTF-8 rendering" do
@@ -612,14 +630,33 @@ RSpec.describe "declaration-time property name collisions" do
       # messages by comparing the names dispatches that `==`, which raises in place of the declaration
       # error being reported — here a NotImplementedError, outside StandardError, so it escapes every
       # rescue in the framework rather than surfacing as the duplicate it is.
-      it "reports the duplicate rather than an exception raised by a name's own ==" do
-        hostile = Class.new(String) do
+      def hostile_equality_name_class
+        Class.new(String) do
           def ==(_other) = raise(NotImplementedError, "hijacked from ==")
         end
+      end
+
+      # A ShapeConfig normalizes its name to a Symbol at construction, so a String subclass with a hostile
+      # `==` cannot even be STORED as a member name — the hazard is gone at its root rather than guarded
+      # against, and the pair reports as the plain duplicate it now is.
+      it "cannot store a hostile-== name on a ShapeConfig at all, and reports the duplicate" do
+        hostile = hostile_equality_name_class
         members = [
           Axn::Core::Contract::ShapeConfig.new(field: hostile.new("dup"), validations: {}),
           Axn::Core::Contract::ShapeConfig.new(field: hostile.new("dup"), validations: {}),
         ]
+
+        expect(members.map { |m| m.field.class }).to eq([Symbol, Symbol])
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :dup —/)
+      end
+
+      # A duck-typed member's reader is not ours to normalize, so this is the one route by which a
+      # caller-supplied String name still reaches the spelling comparison — and where deciding "same spelling"
+      # must still not dispatch the name's own `==`. It is what keeps that guard exercised.
+      it "reports the duplicate for a duck-typed member whose name's own == raises" do
+        hostile = hostile_equality_name_class
+        members = [duck_typed_member(hostile.new("dup")), duck_typed_member(hostile.new("dup"))]
 
         expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
           .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: "dup" —/)
@@ -930,21 +967,37 @@ RSpec.describe "declaration-time property name collisions" do
           end
         end
 
-        it "reports a collision naming the offenders by class" do
+        # These two reached the collision and unrenderable-name checks before a member name had to be a String
+        # or a Symbol. The type rule now rejects such a name outright, ahead of both — a strictly earlier and
+        # simpler answer to the same defect. `_inspect_field_name`'s class-naming branch stays live and
+        # covered by the block-form option example below, which runs before a ShapeConfig is constructed.
+        # A ShapeConfig cannot be CONSTRUCTED with such a name, so the rejection lands before any declaration
+        # — earlier than the collision and unrenderable-name checks that used to be the first to see it.
+        it "cannot be constructed on a ShapeConfig at all" do
           exotic = exotic_name_class
-          members = [Axn::Core::Contract::ShapeConfig.new(field: exotic.new("dup"), validations: {}),
-                     Axn::Core::Contract::ShapeConfig.new(field: exotic.new("dup"), validations: {})]
 
-          expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-            .to raise_error(Axn::DuplicateFieldError, /a name of class .* and a name of class .* both render as the JSON property "dup"/)
+          expect { Axn::Core::Contract::ShapeConfig.new(field: exotic.new("dup"), validations: {}) }
+            .to raise_error(ArgumentError, /a shape member name must be a String or a Symbol \(got a name of class /)
         end
 
-        it "reports an unrenderable name naming it by class" do
-          members = [Axn::Core::Contract::ShapeConfig.new(field: exotic_name_class.new("bad\xFF".dup.force_encoding("ASCII-8BIT")),
-                                                          validations: {})]
+        it "names the offender by class rather than dispatching its inspect" do
+          exotic = exotic_name_class
+
+          expect { Axn::Core::Contract::ShapeConfig.new(field: exotic.new("bad\xFF".dup.force_encoding("ASCII-8BIT")), validations: {}) }
+            .to raise_error(ArgumentError) { |error|
+              expect(error.message).to include("must be a String or a Symbol", "Declare the member under a String or Symbol name")
+              expect(error.message.encoding).to eq(Encoding::UTF_8)
+              expect(error.message).to satisfy(&:valid_encoding?)
+            }
+        end
+
+        # A duck-typed member never routes through that constructor, so the resolved-member walk is the second
+        # enforcement point for the same rule — without it the whole class would stay open.
+        it "is rejected at declaration on a duck-typed member, which bypasses the constructor" do
+          members = [duck_typed_member(exotic_name_class.new("dup"))]
 
           expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-            .to raise_error(ArgumentError, /a name of class .* holds bytes that have no UTF-8 rendering/)
+            .to raise_error(ArgumentError, /a shape member name must be a String or a Symbol/)
         end
 
         # The block form's own option-rejection messages name the member through the same helper, so they

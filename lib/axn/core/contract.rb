@@ -62,6 +62,34 @@ module Axn
               "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
       end
 
+      # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
+      # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which
+      # Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
+      # conversions are each other's inverse, so they are the only names that mean one property. Any other
+      # object defines the two independently, and one whose `to_s` and `to_sym` disagree makes the guard and
+      # the schema compare different property names for the same member: the guard sees no collision while
+      # the schema keys one property for two members and silently discards the first.
+      #
+      # Rejected rather than reconciled, because there is nothing to reconcile — an object whose two
+      # renderings disagree has no single property name to be. Named by class rather than by `inspect`, which
+      # is the offender's own code running while its error is built.
+      #
+      # Enforced at BOTH points a member name can arrive: `ShapeConfig`'s constructor (which then normalizes
+      # a String to its Symbol, so every ShapeConfig carries the value the schema keys by and the two agree
+      # by construction rather than by parallel canonicalization), and the resolved-member walk, which is the
+      # only place a duck-typed member that never routed through that constructor can be seen.
+      def self.validate_shape_member_name!(name)
+        case name
+        when ::String, ::Symbol then return
+        end
+
+        raise ArgumentError,
+              "a shape member name must be a String or a Symbol (got a name of class " \
+              "#{Axn::Internal::ClassName.of(name)}) — a member name is both the JSON property it renders as " \
+              "and the schema property key it is emitted under, and any other object converts to those two " \
+              "independently. Declare the member under a String or Symbol name."
+      end
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
@@ -105,15 +133,29 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
+      #
+      # `field` is always a Symbol on a constructed ShapeConfig: `field "bar"` and `field :bar` are one
+      # member name, and the schema keys a member's property by `field.to_sym`, so storing the Symbol makes
+      # the stored value the one every consumer reads. It is what keeps the declaration guard (which
+      # canonicalizes the name's rendering) and the reflected schema in step by construction — parallel
+      # conversions of an unnormalized name are two questions that can disagree. Same rule as a top-level
+      # field, whose name `expects`/`exposes` symbolize before anything else looks at it.
       ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
         def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
-          # Validate at construction so a member's `user_facing:` grammar holds however the ShapeConfig
-          # is built — the block form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies
-          # pre-built ShapeConfigs, which never route through the block path. A malformed value
-          # (`user_facing: 123`) would otherwise reach the runtime settlement path as a truthy opt-in
-          # and surface as a literal message (`"123"`) instead of failing here.
+          # Validate at construction so a member's grammar holds however the ShapeConfig is built — the block
+          # form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies pre-built ShapeConfigs,
+          # which never route through the block path. This is every ShapeConfig's single choke point:
+          # `Data#with` re-runs it too, so a derived copy cannot carry a name or a `user_facing:` that the
+          # original could not. A malformed `user_facing:` (`123`) would otherwise reach the runtime
+          # settlement path as a truthy opt-in and surface as a literal message (`"123"`) instead of
+          # failing here.
+          Contract.validate_shape_member_name!(field)
           Contract.validate_user_facing!(user_facing)
-          super
+          # `to_sym` is dispatched, so a String SUBCLASS could return something other than its own spelling —
+          # but normalizing once is exactly what makes that harmless: every consumer then reads the one
+          # stored Symbol, so a surprising conversion picks a different property name rather than splitting
+          # the guard from the schema.
+          super(field: field.to_sym, validations:, metadata:, method_call:, sensitive:, user_facing:)
         end
 
         include FieldOptionality
@@ -626,6 +668,11 @@ module Axn
         def _check_shape_member_names!(hash, walk)
           named = Internal::ShapeGraph.members(hash).map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
           names = named.filter_map { |_member, name| name unless Internal::ShapeGraph.missing?(name) }
+          # Ahead of every other name check: a name that is not a String or a Symbol has two independent
+          # renderings rather than one property (see Contract.validate_shape_member_name!), so asking whether
+          # it is renderable, or whether it collides, would be asking about only one of them. A ShapeConfig
+          # was already held to this in its constructor; a duck-typed member reaches it only here.
+          names.each { |name| Contract.validate_shape_member_name!(name) }
           _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
           claimed = {}

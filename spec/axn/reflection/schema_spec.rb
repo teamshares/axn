@@ -1296,10 +1296,12 @@ RSpec.describe Axn::Reflection::Schema do
       expect(props[:required]).to include("label")
     end
 
-    # A shape member's name isn't symbolized at declaration (`field "bar"` keeps a String field), so its
-    # emitted property must still key by symbol — every other schema property key (top-level config.field,
-    # symbolized wire keys, implicit intermediates) is a Symbol. A string key would leave a duplicate
-    # alongside the symbol key a colliding subfield writes, which collide unpredictably in JSON.
+    # A shape member's name is symbolized at declaration (`field "bar"` stores `:bar`, as a top-level field
+    # name does), and its emitted property keys by symbol to match — every other schema property key
+    # (top-level config.field, symbolized wire keys, implicit intermediates) is a Symbol. A string key would
+    # leave a duplicate alongside the symbol key a colliding subfield writes, which collide unpredictably in
+    # JSON. These examples pin the emitted keys, so they hold either way; the normalization is what makes the
+    # declaration guard and this output agree by construction rather than by parallel conversion.
     context "with a string-named shape member (`field \"bar\"`)" do
       it "reflects a plain string-named member under the symbol key (no string duplicate)" do
         klass = Class.new do
