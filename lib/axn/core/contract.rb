@@ -243,6 +243,7 @@ module Axn
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
             candidates = internal_field_configs + configs
+            _reject_unrenderable_type_member_names!(candidates + subfield_configs, for_output: false)
             _reject_oversized_schema!(candidates + subfield_configs)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(candidates, subfield_configs)) do
               _inbound_property_sources(candidates, subfield_configs)
@@ -305,6 +306,7 @@ module Axn
             # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
             # collapse in `output_schema` exactly as their inbound counterparts do.
             exposures = external_field_configs + configs
+            _reject_unrenderable_type_member_names!(exposures, for_output: true)
             _reject_oversized_schema!(exposures)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_output(exposures)) do
               _outbound_property_sources(exposures)
@@ -928,11 +930,18 @@ module Axn
             claimed = {}
             property_names.each do |name|
               canonical = Axn::Reflection::Values.canonical_wire_key(name)
-              # A name with no UTF-8 rendering has no property to compare. Every source of one is held to the
-              # UTF-8 rule before it can reach a schema (`_reject_unrenderable_field_names!` over declared
-              # field names, shape member names, dotted `on:` segments, and structured-type member names), so
-              # this is a backstop; skipping is required either way, since two unrenderable names would both
-              # canonicalize to nil and compare as one property.
+              # A name with no UTF-8 rendering has no property to compare. Every source that can put a name
+              # into a schema is now held to the UTF-8 rule before reaching here, all through
+              # `_reject_unrenderable_field_names!`: declared field names (`expects`/`exposes`), shape member
+              # names (the member walk), every segment of a dotted `on:` (`_expects_subfields`), and a
+              # structured type's own members (`_reject_unrenderable_type_member_names!`). A `model:`-generated
+              # `<field>_id` is derived from an already-validated name, and the array-element segment is this
+              # layer's own.
+              #
+              # So this is a backstop, and it stays rather than becoming a raise: skipping is the only safe
+              # answer if an unforeseen source ever appears, because two unrenderable names both canonicalize
+              # to nil and would otherwise be reported as one collapsed property — a wrong verdict rather than
+              # a missing one. It costs one nil check per property.
               next if canonical.nil?
 
               first = claimed[canonical]
@@ -1091,6 +1100,20 @@ module Axn
         # members each is a fifth of the cap.
         MAX_EMITTED_PROPERTIES = 25_000
         private_constant :MAX_EMITTED_PROPERTIES
+
+        # A structured type declared alongside a shape contributes its OWN members as property names
+        # (`Schema.shape_property_plan`), so those names carry the same UTF-8 promise a declared field name or a
+        # shape member name does — the third source for one rule, held to it by the same check. Without this a
+        # `Data.define` member whose bytes have no UTF-8 rendering reached the reflected schema and
+        # `JSON.generate` refused it.
+        def _reject_unrenderable_type_member_names!(configs, for_output:)
+          configs.each do |config|
+            plan = Axn::Reflection::Schema.shape_property_plan(config, for_output:)
+            next unless plan.emitted
+
+            _reject_unrenderable_field_names!(plan.base_properties.keys, kind: "a member of a type declared on a shaped field")
+          end
+        end
 
         def _reject_oversized_schema!(configs)
           budget = [MAX_EMITTED_PROPERTIES]

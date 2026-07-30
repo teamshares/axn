@@ -712,6 +712,34 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # A structured type's own members become property names beside a shape's, so an unrenderable one is the same
+  # defect a field name or a shape member name already carries — one rule, now on every surface that can name a
+  # property.
+  describe "a structured type member name with no UTF-8 rendering" do
+    it "is rejected at declaration rather than reaching JSON.generate" do
+      shaped = Data.define(unrenderable_name, :ok)
+
+      expect { build_axn { expects(:t, type: shaped, optional: true) { field :ok, type: String } } }
+        .to raise_error(ArgumentError, /a member of a type declared on a shaped field becomes a JSON property name/)
+    end
+
+    it "is rejected on exposes too" do
+      shaped = Data.define(unrenderable_name, :ok)
+
+      expect { build_axn { exposes(:t, type: shaped, optional: true) { field :ok, type: String } } }
+        .to raise_error(ArgumentError, /bytes that have no UTF-8 rendering/)
+    end
+
+    it "leaves a renderable non-ASCII member name alone" do
+      shaped = Data.define(utf8_name)
+
+      klass = build_axn { expects(:t, type: shaped, optional: true) { field :other, type: String } }
+
+      expect(klass.input_schema.dig(:properties, :t, :properties).keys
+                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to contain_exactly("café", "other")
+    end
+  end
+
   describe "the identical-name duplicate this generalizes" do
     it "keeps its existing message" do
       expect do

@@ -516,6 +516,7 @@ module Axn
             # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
             # written, so leaf names that collapse onto one property need the tree to be seen at all.
             candidates = subfield_configs + configs
+            _reject_unrenderable_type_member_names!(internal_field_configs + candidates, for_output: false)
             _reject_oversized_schema!(internal_field_configs + candidates)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(internal_field_configs, candidates)) do
               _inbound_property_sources(internal_field_configs, candidates)
