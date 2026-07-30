@@ -14,9 +14,10 @@
 # rspec failure tracking
 .rspec_status
 
-# vitepress
-docs/.vitepress/dist
-docs/.vitepress/cache
+# vitepress — matched at any depth, because a build run from the repo root writes
+# `.vitepress/cache` beside the config rather than under `docs/`
+**/.vitepress/dist
+**/.vitepress/cache
 node_modules
 yarn-error.log
 /log/
