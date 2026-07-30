@@ -12,6 +12,46 @@ RSpec.describe Axn do
       end
     end
 
+    # The missing SEGMENT is named through `Symbol#inspect`, which supplies its own colon — the template
+    # carries none. Asserted per route form because the exotic path previously doubled the colon
+    # (`named ::"bad\xFF"`), a message defect that no assertion covered.
+    describe "how the missing reader is named" do
+      def missing_reader_message(on)
+        route = on
+        build_axn { expects :leaf, on: route, optional: true }
+        nil
+      rescue ArgumentError => e
+        e.message
+      end
+
+      it "names a bare symbol route" do
+        expect(missing_reader_message(:nope)).to include("named :nope?")
+      end
+
+      # A dotted route must report the segment that is actually missing, not the whole route.
+      it "names only the missing segment of a dotted route" do
+        message = missing_reader_message("a.b")
+
+        expect(message).to include("named :a?")
+        expect(message).not_to include("named :a.b?")
+      end
+
+      it "names a valid non-ASCII route" do
+        expect(missing_reader_message(:café)).to include("named :café?")
+      end
+
+      # `inspect` escapes bytes with no UTF-8 rendering to ASCII, so the message is buildable and the colon
+      # appears exactly once.
+      it "names an unrenderable route with a single colon, in valid UTF-8" do
+        message = missing_reader_message("bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym)
+
+        expect(message).to include('named :"bad\xFF"?')
+        expect(message).not_to include("named ::")
+        expect(message.encoding).to eq(Encoding::UTF_8)
+        expect(message).to satisfy(&:valid_encoding?)
+      end
+    end
+
     context "when missing expects declaration" do
       let(:action) { build_axn { expects :bar, on: :baz } }
       it_behaves_like "raises when improperly configured", on: :baz

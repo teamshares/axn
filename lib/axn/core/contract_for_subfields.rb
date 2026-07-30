@@ -473,9 +473,14 @@ module Axn
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
           unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+            # The missing SEGMENT is named through `Symbol#inspect`, which supplies its own colon — so the
+            # template carries none. `inspect` also escapes bytes with no UTF-8 rendering to ASCII and cannot
+            # be overridden (Symbol takes neither a subclass nor a singleton), which is what lets one form
+            # serve every route: `:baz`, `:a` for a dotted `on: "a.b"` (the segment that is actually missing,
+            # not the whole route), `:café`, and `:"bad\xFF"`.
             raise ArgumentError,
                   "expects called with `on: #{_schema_name_label(on)}`, but no such reader exists " \
-                  "(are you sure you've declared a field — or alias — named :#{_schema_name_label(root)}?)"
+                  "(are you sure you've declared a field — or alias — named #{root.inspect}?)"
           end
 
           # An ambient subfield's value is framework-supplied (the ambient provider /
