@@ -1156,16 +1156,40 @@ module Axn
         # method a walk requires. Assembled as a plain Hash rather than taken from the shape's `merge`,
         # which a subclass can override to return anything — including a non-Hash, or something that drops
         # the container just derived.
-        def _derive_raw_shape_container!(validations)
+        # A contract must not change after the class is declared, and an option value the caller still holds is
+        # aliased into it: mutating a `validate:` bag swapped the validator a declared field runs, a mutated `of:`
+        # bag changed a declared element type, and appending to an `inclusion:` list widened a declared enum —
+        # each after the fact, on a class already defined.
+        #
+        # Detached one level deep, which is exactly the boundary that matters: the plain Hash/Array CONTAINERS
+        # axn stores are copied, while the values inside them stay the caller's objects — a `validate:` callable,
+        # a `model:` class, an `inclusion:` member. Those are meant to be the caller's, and copying them would
+        # change what a declaration means rather than protect it. `shape:` is excluded because it needs a deep
+        # copy of its own (see ShapeGraph.snapshot) and gets one downstream.
+        def _detach_option_containers!(validations)
+          validations.each do |key, value|
+            next if key == :shape
+
+            case value
+            when ::Hash then validations[key] = value.transform_values { |option| option.is_a?(::Array) ? option.dup : option }
+            when ::Array then validations[key] = value.dup
+            end
+          end
+        end
+
+        def _derive_raw_shape_container!(validations, fields)
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return if nil.equal?(shape)
-          return _reject_non_class_container!(shape[:container]) unless nil.equal?(shape[:container])
 
-          derived = {}
-          shape.each { |key, value| derived[key] = value }
-          derived[:members] = Internal::ShapeGraph.members(shape)
-          derived[:container] = _shape_compatible_type!(validations)
-          validations[:shape] = derived
+          # A deep private copy ALWAYS, not only when a container has to be derived: what is stored IS the
+          # contract, and storing the caller's own object leaves it aliased to something they can still mutate
+          # (see ShapeGraph.snapshot). The container is derived onto the copy when absent, and checked either way.
+          # Ahead of the copy: copying an exponentially-large graph is the cost the cap exists to avoid.
+          Axn::Reflection::PropertyNames.reject_oversized_shape!(shape, _inspect_field_name(fields.first))
+          snapshot = Internal::ShapeGraph.snapshot(shape)
+          snapshot[:container] = _shape_compatible_type!(validations) if nil.equal?(snapshot[:container])
+          _reject_non_class_container!(snapshot[:container])
+          validations[:shape] = snapshot
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -1452,6 +1476,7 @@ module Axn
           allow_blank: false,
           **validations
         )
+          _detach_option_containers!(validations)
           _canonicalize_blank_gates!(validations)
 
           # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
@@ -1476,7 +1501,7 @@ module Axn
             raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
 
-          _derive_raw_shape_container!(validations)
+          _derive_raw_shape_container!(validations, fields)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil

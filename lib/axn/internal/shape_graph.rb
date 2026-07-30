@@ -75,6 +75,67 @@ module Axn
         captured
       end
 
+      # A deep, private copy of a caller-supplied shape graph: the shape Hash, its members list, each member's
+      # `validations`/`metadata`, and recursively any nested shape a member carries.
+      #
+      # Taken at DECLARATION because a contract must not change after the class is declared, and storing the
+      # caller's object aliases it: a builder Hash reused across two declarations gave the FIRST class members
+      # appended after it was declared, and mutating a nested shape changed an already-declared contract from
+      # the outside. Copying is what makes "the contract is what you declared" true, and it makes the
+      # validation memo sound for free — what it keys on can no longer change underneath it.
+      #
+      # A copy rather than `freeze`: freezing an object the caller owns raises FrozenError on the ordinary
+      # builder-loop pattern (append a member, declare, append another, declare again), which copying instead
+      # makes behave the way its author obviously meant. Sharing one shape Hash across two axns keeps working
+      # for the same reason — each takes its own copy.
+      #
+      # Only a member that can be REBUILT is copied. A `ShapeConfig` can (`Data#with` re-runs its constructor,
+      # so the copy is held to the same name grammar and normalization as the original), while a duck-typed
+      # member is the caller's own object and cannot be — so its nested shape, if it has one, stays aliased.
+      # That residue is bounded and documented rather than papered over.
+      #
+      # Recursion needs no cycle or depth guard of its own: every declaration path runs the shape-member walk
+      # first, which rejects a self-referential or generated graph, so what reaches here is finite.
+      def self.snapshot(shape)
+        hash = hash_or_nil(shape)
+        return shape if nil.equal?(hash)
+
+        copy = {}
+        hash.each { |key, value| copy[key] = value }
+        # `:members` and `:container` are re-read through `[]` — the read every consumer makes — rather than
+        # taken from the `each` copy: a shape whose `[]` answers differently from its entries is deciding what
+        # the contract IS, and the container check downstream has to see the same answer reflection would.
+        copy[:members] = members(hash).map { |member| snapshot_member(member) }
+        copy[:container] = hash[:container]
+        copy
+      end
+
+      # Rebuildable means a `Data` — `ShapeConfig` is one — tested with `case`/`when`, which consults the real
+      # class. Probing for a `with` METHOD is not the same question and gets a false positive: ActiveSupport
+      # defines `Object#with`, which takes the same keywords but yields a block, so every member would look
+      # rebuildable and none would be. `Data#with` is bound rather than dispatched, so a subclass redefining it
+      # cannot decide what the stored contract becomes.
+      DATA_WITH = ::Data.instance_method(:with)
+      private_constant :DATA_WITH
+
+      def self.snapshot_member(member)
+        case member
+        when ::Data then nil
+        else return member
+        end
+
+        validations = hash_or_nil(read(member, :validations))
+        return member if nil.equal?(validations)
+
+        copied = {}
+        validations.each { |key, value| copied[key] = value }
+        copied[:shape] = snapshot(copied[:shape]) unless nil.equal?(hash_or_nil(copied[:shape]))
+        metadata = hash_or_nil(read(member, :metadata))
+        attributes = { validations: copied }
+        attributes[:metadata] = metadata.dup unless metadata.nil?
+        DATA_WITH.bind_call(member, **attributes)
+      end
+
       # The shape carried by an already-read validations Hash. For axn's OWN configs, whose `validations`
       # is the framework's own Hash and so cannot lie — only the shape it holds came from a caller, and
       # that is what gets type-tested here. Skips the method-table lookup `nested_shape` needs, which
@@ -121,12 +182,16 @@ module Axn
       # own Symbol is the receiver of `equal?` — so a subclass overriding `name` to raise, or returning an
       # object whose `==` raises, changes nothing here. Putting axn's Symbol on the left alone would not be
       # enough: reading `e.name` is itself the dispatch.
+      # The Method the real method table defines for `name`, or nil when nothing does. Asked without dispatching
+      # `respond_to?`, which an object can override to deny a method it has.
+      def self.bound_method(object, name)
+        OBJECT_METHOD.bind_call(object, name)
+      rescue ::NameError
+        nil
+      end
+
       def self.fetch(object, name)
-        defined_method = begin
-          OBJECT_METHOD.bind_call(object, name)
-        rescue ::NameError
-          nil
-        end
+        defined_method = bound_method(object, name)
         return defined_method.call if defined_method
 
         begin

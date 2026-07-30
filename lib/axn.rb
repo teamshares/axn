@@ -102,7 +102,10 @@ module Axn
   def self.validate_tool_contracts!
     Axn::Tools::Registry.tool_classes.each do |klass|
       klass.input_schema if klass.respond_to?(:input_schema)
-      klass.output_schema if klass.respond_to?(:output_schema)
+      # The outbound side goes through PropertyNames rather than `output_schema`: it performs the same build and
+      # the same validation, and additionally records the verdict `render` reads — so a tool validated at setup
+      # also renders without paying for an output-schema build on its first result.
+      Axn::Reflection::PropertyNames.validate_outbound!(klass)
     rescue Axn::ContractViolation, ArgumentError => e
       # Named, because this runs over every tool at once: the underlying error describes the property and the
       # declarations that collide, but at boot the first thing an author needs is WHICH tool. Re-raised as the

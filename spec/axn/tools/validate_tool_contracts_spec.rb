@@ -93,17 +93,18 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   it "validates each tool once regardless of how many adapters claim it" do
     Axn.register_tool_adapter(:mcp)
     Axn.register_tool_adapter(:ruby_llm)
-    valid_tool(adapters: %i[mcp ruby_llm])
-    walks = 0
-    allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
-      walks += 1
-      original.call(*args, &block)
+    tool = valid_tool(adapters: %i[mcp ruby_llm])
+    # Counted on the TARGET class rather than globally: the registry is process-global, so another spec file's
+    # named tool class may legitimately still be enumerable and would inflate a global count.
+    projections = 0
+    allow(tool).to receive(:input_schema).and_wrap_original do |original, *args|
+      projections += 1
+      original.call(*args)
     end
 
     Axn.validate_tool_contracts!
 
-    # One inbound projection and one outbound, not two of each.
-    expect(walks).to eq(2)
+    expect(projections).to eq(1)
   end
 
   it "does not project non-tool axns" do

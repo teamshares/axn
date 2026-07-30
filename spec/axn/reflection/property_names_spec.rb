@@ -18,6 +18,7 @@ RSpec.describe Axn::Reflection::PropertyNames do
   let(:entry_points) do
     %i[
       inspect_field_name
+      reject_oversized_shape!
       reject_unrenderable_field_names!
       renderable_label
       validate_outbound!
@@ -32,7 +33,8 @@ RSpec.describe Axn::Reflection::PropertyNames do
 
   it "keeps the walk, the message builders, and provenance resolution internal" do
     internals = %i[
-      validate_projection
+      validate_and_build
+      attributions
       inbound_property_sources
       outbound_property_sources
       reject_colliding_emitted_properties!

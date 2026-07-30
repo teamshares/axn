@@ -59,8 +59,19 @@ RSpec.describe "tool contract validation at app setup" do
   describe "validation actually performed at boot" do
     subject(:tool) { Actions::BootValidated::ValidTool }
 
-    it "validated a real tool's contract before any spec referenced it" do
-      expect(tool.instance_variable_get(:@_axn_validated_projections)).to include(:input, :output)
+    # The witness is `@_axn_resolved_subfields`, the per-class cache `input_schema` populates on its way to
+    # building a schema: nil for a class that has only been declared, set once one has been projected. So a
+    # populated cache on a class no spec has touched means boot projected it. (The validation verdict itself is
+    # deliberately not memoized for schema projections — see the module — so there is no verdict ivar to read.)
+    it "projected a real tool's contract before any spec referenced it" do
+      expect(tool.instance_variable_get(:@_axn_resolved_subfields)).not_to be_nil
+    end
+
+    # And projecting it is what validates it: the same projection re-run raises for an invalid contract, so a
+    # clean boot over this tool means its contract passed.
+    it "validates on every projection, so the boot pass was a real check" do
+      expect { tool.input_schema }.not_to raise_error
+      expect { tool.output_schema }.not_to raise_error
     end
 
     it "enumerated it as a tool, which is what made it reachable" do
@@ -68,17 +79,16 @@ RSpec.describe "tool contract validation at app setup" do
       expect(Axn::Tools::Registry.tool_classes).to include(tool)
     end
 
-    # The memo is what makes setup validation free for adapters later: an adapter asking for the schema pays
-    # nothing, because it was already validated at boot.
-    it "leaves nothing for a later projection to re-validate" do
+    # What boot leaves free is the RENDER path, the one projection whose verdict is memoized (it builds an output
+    # schema solely to validate, so it would otherwise pay for one on every call).
+    it "leaves render's outbound verdict already established" do
       walks = 0
       allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
 
-      tool.input_schema
-      tool.output_schema
+      Axn::Extensions::Serialization.render(tool.call(widget_id: "abc"))
 
       expect(walks).to eq(0)
     end

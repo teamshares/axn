@@ -121,9 +121,11 @@ RSpec.describe "declaration-time property name collisions" do
         .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
-    # The memo must save the WORK, not merely return. Counted at the walk rather than at the entry point, since
-    # the entry point is reached on every call by design.
-    it "validates a valid contract once across repeated projections" do
+    # A projection that is BUILT is validated, every time. The memo cannot be trusted to stand in for that: a
+    # caller holding the mutable `shape:` graph it declared with can change what the schema emits without
+    # changing any config array, so a verdict keyed on config identity would be stale while the rebuilt schema
+    # came back unvalidated. Validating what was just built costs a fraction of the build it follows.
+    it "validates every projection it builds, not just the first" do
       klass = build_axn do
         expects :a, optional: true
         exposes :b, optional: true
@@ -137,7 +139,26 @@ RSpec.describe "declaration-time property name collisions" do
       3.times { klass.input_schema }
       3.times { klass.output_schema }
 
-      expect(walks).to eq(2)
+      expect(walks).to eq(6)
+    end
+
+    # `render` is the one path that memoizes, because it builds an output schema solely to validate and would
+    # otherwise pay for one on every call. Measured at roughly double the cost of a render without it.
+    it "establishes render's outbound verdict once per class" do
+      klass = build_axn do
+        exposes :b, optional: true
+        define_method(:call) { expose(b: 1) }
+      end
+      result = klass.call
+      walks = 0
+      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+        walks += 1
+        original.call(*args, &block)
+      end
+
+      3.times { Axn::Extensions::Serialization.render(result) }
+
+      expect(walks).to eq(1)
     end
 
     it "re-validates after the contract grows" do
@@ -204,6 +225,112 @@ RSpec.describe "declaration-time property name collisions" do
         "rendering — JSON is a UTF-8 format, so `JSON.generate` refuses such a property name outright. " \
         "Declare it under a UTF-8 name.",
       )
+    end
+  end
+
+  # A contract must not change after the class is declared, so a raw `shape:` is deep-copied at declaration.
+  # Storing the caller's object instead aliased it: a builder Hash reused across two declarations gave the FIRST
+  # class members appended after it was already declared. Copying rather than freezing is what lets the ordinary
+  # builder pattern keep working.
+  describe "a contract is fixed at declaration" do
+    def payload_props(klass) = klass.input_schema.dig(:properties, :payload, :properties).keys
+
+    it "does not let a class gain members appended after it was declared" do
+      builder = { members: [], container: Hash }
+      builder[:members] << Axn::Core::Contract::ShapeConfig.new(field: :one, validations: {})
+      first = build_axn { expects :payload, type: Hash, shape: builder }
+      builder[:members] << Axn::Core::Contract::ShapeConfig.new(field: :two, validations: {})
+      second = build_axn { expects :payload, type: Hash, shape: builder }
+
+      expect(payload_props(first)).to eq([:one])
+      expect(payload_props(second)).to eq(%i[one two])
+    end
+
+    it "copies a nested raw shape too" do
+      inner = { members: [Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {})], container: Hash }
+      outer = { members: [Axn::Core::Contract::ShapeConfig.new(field: :mid, validations: { type: { klass: Hash }, shape: inner })],
+                container: Hash }
+      klass = build_axn { expects :payload, type: Hash, shape: outer }
+      before = klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys
+
+      inner[:members] << Axn::Core::Contract::ShapeConfig.new(field: :sneaked, validations: {})
+
+      expect(before).to eq([:deep])
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq([:deep])
+    end
+
+    # Copying, not freezing: freezing an object the caller owns would raise FrozenError on the builder pattern
+    # above, which copying instead makes behave the way its author meant.
+    it "leaves the caller's own object unfrozen and reusable" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :s, validations: {})], container: Hash }
+      build_axn { expects :payload, type: Hash, shape: }
+
+      expect(shape).not_to be_frozen
+      expect(shape[:members]).not_to be_frozen
+      expect { shape[:members] << Axn::Core::Contract::ShapeConfig.new(field: :later, validations: {}) }.not_to raise_error
+    end
+
+    it "still lets two axns share one shape Hash" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :s, validations: {})], container: Hash }
+
+      expect(payload_props(build_axn { expects :payload, type: Hash, shape: })).to eq([:s])
+      expect(payload_props(build_axn { expects :payload, type: Hash, shape: })).to eq([:s])
+    end
+
+    # The bounded residue: a duck-typed member is the caller's own object and cannot be rebuilt, so a nested
+    # shape it carries stays shared. Asserted rather than left implicit, since the docs claim exactly this much.
+    it "cannot copy a nested shape carried by a duck-typed member" do
+      inner = { members: [Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {})], container: Hash }
+      duck = Class.new do
+        define_method(:initialize) { |validations| @validations = validations }
+        def field = :mid
+        attr_reader :validations
+
+        def metadata = {}
+        def description = nil
+        def optional? = true
+      end.new({ type: { klass: Hash }, shape: inner })
+      klass = build_axn { expects :payload, type: Hash, shape: { members: [duck], container: Hash } }
+      klass.input_schema
+
+      inner[:members] << Axn::Core::Contract::ShapeConfig.new(field: :sneaked, validations: {})
+
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq(%i[deep sneaked])
+    end
+
+    # The same aliasing existed in the other option containers axn stores.
+    # No tolerance flag on purpose: `optional:`/`allow_nil:`/`allow_blank:` push tolerance into each validator,
+    # which rebuilds the option bags as a side effect and would detach this one incidentally — hiding the
+    # aliasing rather than testing it.
+    it "does not let a mutated of: bag change a declared element type" do
+      options = { klass: String }
+      klass = build_axn { expects :list, type: Array, of: options }
+      before = klass.input_schema.dig(:properties, :list, :items)
+
+      options[:klass] = Integer
+
+      expect(klass.input_schema.dig(:properties, :list, :items)).to eq(before)
+    end
+
+    # This one changes RUNTIME behavior, not just a reflected schema: it swapped which validator a declared
+    # field runs.
+    it "does not let a mutated validate: bag change which validator runs" do
+      bag = { with: ->(value) { "bad" if value == 1 } }
+      klass = build_axn { expects :n, validate: bag }
+
+      expect(klass.call(n: 1)).not_to be_ok
+      bag[:with] = ->(_value) {}
+      expect(klass.call(n: 1)).not_to be_ok
+    end
+
+    it "does not let a mutated inclusion: list widen a declared enum" do
+      values = %w[a b]
+      klass = build_axn { expects :a, inclusion: { in: values }, optional: true }
+      before = klass.input_schema.dig(:properties, :a, :enum)
+
+      values << "c"
+
+      expect(klass.input_schema.dig(:properties, :a, :enum)).to eq(before)
     end
   end
 

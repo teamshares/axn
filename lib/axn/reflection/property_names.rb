@@ -45,68 +45,63 @@ module Axn
       # validations, and the contract works. So validating on demand is not a weaker promise for those
       # actions — it is the promise stated where it is true.
       #
-      # `render` is a trigger even though it builds no schema. It costs one `build_output` on the first render
-      # of a class and nothing afterwards, and the alternative is that a render-only adapter learns about a
-      # collision from the runtime `serialize_exposed` defense on a live call instead of at setup. That
-      # defense is a last line, not a substitute for telling the author.
+      # `render` is a trigger even though it builds no schema — the alternative is that a render-only adapter
+      # learns about a collision from the runtime `serialize_exposed` defense on a live call instead of at
+      # setup, and that defense is a last line rather than a substitute for telling the author. It is the ONE
+      # path whose verdict is memoized; see validate_outbound!.
+      #
+      # A projection that is BUILT is validated, every time — the verdict is not memoized here. The schema is
+      # rebuilt on every call anyway (a caller may mutate the Hash it is handed, so it cannot be shared), and
+      # validating what was just built is what makes the guarantee exact: a caller that retains the mutable
+      # `shape:` Hash or members Array it declared with, and mutates it afterwards, changes what the schema
+      # emits without changing any config array — so an identity-keyed verdict would be stale and the new
+      # schema would come back unvalidated. Measured at ~16% of the input build and ~59% of the (much smaller)
+      # output build, against a build that had to happen regardless.
       def validated_input(klass, &)
-        validate_projection(klass, :input, klass.internal_field_configs, klass.subfield_configs, &)
+        validate_and_build(klass.internal_field_configs, klass.subfield_configs, direction: :input, &)
       end
 
       def validated_output(klass, &)
-        validate_projection(klass, :output, klass.external_field_configs, &)
+        validate_and_build(klass.external_field_configs, direction: :output, &)
       end
 
-      # For `render`, which needs the outbound verdict but has no schema of its own to hand over. Builds one
-      # only when the verdict is not already in hand.
+      # For `render`, which needs the outbound verdict but has no schema of its own to hand over, so it would
+      # pay a whole `build_output` per call. That is the one place a memo earns its keep: rendering is a hot
+      # path (measured ~2x per render without it), and the verdict is established once per class.
+      #
+      # The narrow consequence, stated rather than hidden: a caller that mutates a retained `shape:` graph after
+      # the first render is not re-validated HERE. It still is by `output_schema`, which validates every build,
+      # and the rendered body itself is still protected by the serializer's own runtime defenses (colliding
+      # exposed field names, colliding Hash keys). What is lost is only the earliest warning.
+      #
+      # Keyed on the IDENTITY of the config arrays, exactly as `_resolved_subfields` keys its cache: those are
+      # copy-on-write, so every declaration mints new ones and a grown contract misses with no invalidation hook
+      # to keep in sync. A subclass holds its own ivars, so it never inherits a verdict. The verdict is recorded
+      # only after validation passes, so a failure raises again on every render rather than being swallowed.
       def validate_outbound!(klass)
-        validated_output(klass) { Schema.build_output(klass.external_field_configs) }
+        configs = klass.external_field_configs
+        # `equal?` on the CACHED value, so a nil cache is simply not equal rather than needing a guard.
+        return nil if configs.equal?(klass.instance_variable_get(:@_axn_validated_outbound))
+
+        validate_and_build(configs, direction: :output) { Schema.build_output(configs) }
+        klass.instance_variable_set(:@_axn_validated_outbound, configs)
         nil
       end
 
-      # Builds the projection through the caller's block and validates it, memoizing the VERDICT per class.
+      # Builds the projection through the caller's block and validates what it built.
       #
-      # The block runs exactly once per call, and its result is what the caller returns — validating never
-      # builds a second schema, and the schema itself is never memoized, since a caller may mutate the Hash it
-      # is handed. Only the verdict is remembered, so a repeat projection pays for the build it was going to do
-      # anyway and nothing more.
-      #
-      # The size cap runs BEFORE the build, because avoiding the build is the whole point of it: a contract
-      # whose property count is exponential has no reflectable schema, and paying for one to discover that
-      # would defeat the check.
-      #
-      # A failure does not memoize: the verdict is recorded only after both rules pass, so an invalid contract
-      # raises again on every projection rather than being swallowed after the first.
-      #
-      # Validity is keyed on the IDENTITY of the config arrays it was reached for, exactly as
-      # `_resolved_subfields` keys its cache. Those arrays are copy-on-write — every declaration mints new ones
-      # — so a contract that grows after a projection misses and re-validates, with no explicit invalidation
-      # hook to keep in sync. A subclass holds its own ivars, so it never inherits a verdict either.
-      def validate_projection(klass, direction, *config_arrays, &build)
-        cached = klass.instance_variable_get(:@_axn_validated_projections)
-        return build.call if cached&.dig(direction)&.equal_configs?(config_arrays)
-
+      # The block runs exactly once, and its result is what the caller returns — validating never builds a
+      # second schema. The size cap runs BEFORE the build, because avoiding the build is the whole point of it:
+      # a contract whose property count is exponential has no reflectable schema, and paying for one to discover
+      # that would defeat the check.
+      def validate_and_build(*config_arrays, direction:, &build)
         reject_oversized_schema!(config_arrays.flatten(1))
         schema = build.call
-        case direction
-        when :input then reject_colliding_emitted_properties!(schema) { inbound_property_sources(*config_arrays) }
-        else reject_colliding_emitted_properties!(schema) { outbound_property_sources(*config_arrays) }
+        reject_colliding_emitted_properties!(schema) do
+          direction == :input ? inbound_property_sources(*config_arrays) : outbound_property_sources(*config_arrays)
         end
-
-        klass.instance_variable_set(:@_axn_validated_projections, (cached || {}).merge(direction => ValidatedProjection.new(config_arrays)))
         schema
       end
-
-      # The config arrays a verdict was reached for, compared by identity — never by value, so a contract that
-      # replaced an array with an equal one still re-validates.
-      class ValidatedProjection
-        def initialize(config_arrays) = @config_arrays = config_arrays
-
-        def equal_configs?(other)
-          other.size == @config_arrays.size && other.each_with_index.all? { |array, index| array.equal?(@config_arrays[index]) }
-        end
-      end
-      private_constant :ValidatedProjection
 
       # The escaped SPELLING of a declared name, or nil when the name is neither a String nor a Symbol and
       # so has no spelling this layer can render without running the name's own code.
@@ -262,15 +257,11 @@ module Axn
       # two declarations collided is not evident from the names alone.
       #
       # The emitted schema records only names, so provenance is recovered by looking for declarations that
-      # could have produced each name at this node — and ONLY here, once, with a collision already proven. A
-      # best-effort attribution on the failure path cannot cause a wrong verdict, which is exactly why the
-      # detection above does not use it. When nothing matches, the message still names both spellings.
+      # could have produced each name at this node — and ONLY here, with a collision already proven, so the
+      # success path never pays for it.
       def raise_colliding_properties!(path, canonical, first_name, second_name, sources)
         property = [*path.map { |segment| Axn::Reflection::Values.canonical_wire_key(segment) }, canonical].compact.join(".")
-        # Provenance is resolved HERE and nowhere else: the list is built only once a collision is already
-        # proven, so the success path never pays for it and a best-effort attribution can never affect a
-        # verdict.
-        resolved = sources.call
+        resolved = attributions(sources)
         first = property_source(resolved, path, first_name)
         second = property_source(resolved, path, second_name)
 
@@ -294,6 +285,22 @@ module Axn
 
       def property_source(sources, path, name) = sources.find { |source| source.path == [*path, name] }
 
+      # Resolving provenance re-traverses the caller-owned shape graph — its `each`, its members' readers — to
+      # ENRICH a message for a verdict that is already established. So it must not be able to replace that
+      # verdict: a graph whose second walk raises (an Array subclass counting `each` calls, a reader that
+      # answers once) would otherwise substitute its own exception for the collision, which is precisely the
+      # escape these rules exist to prevent — and outside StandardError it escapes every rescue above.
+      #
+      # Attribution is therefore best-effort by construction: anything it raises is dropped and the message
+      # degrades to naming the property and the spellings, which is the part derived from the emitted schema and
+      # needs no caller code at all. `Exception` rather than StandardError because the hazard is exactly the
+      # families that are not StandardError. The failure is always reported; only the enrichment is optional.
+      def attributions(sources)
+        sources.call
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        []
+      end
+
       # A declared name becomes a JSON property name, so one whose bytes have no UTF-8 rendering makes
       # `JSON.generate` refuse the schema. Judged on the EMITTED name for the same reason the collision rule
       # is: a name the schema never emits names no property, so rejecting it is an over-rejection — a dropped
@@ -303,7 +310,7 @@ module Axn
       # The offending name's SOURCE decides the wording, so each kind reads as it always has. Provenance is
       # resolved here only, with a failure already certain.
       def raise_unrenderable_emitted_name!(path, name, sources)
-        kind = UNRENDERABLE_KINDS.fetch(property_source(sources.call, path, name)&.kind, "a field name")
+        kind = UNRENDERABLE_KINDS.fetch(property_source(attributions(sources), path, name)&.kind, "a field name")
         reject_unrenderable_field_names!([name], kind:)
       end
 
@@ -409,24 +416,32 @@ module Axn
         budget = [MAX_EMITTED_PROPERTIES]
         configs.each do |config|
           budget[0] -= 1
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(config), config)
+          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(config)) { raise_too_many_properties!(describe_config(config)) }
         end
+      end
+
+      # The same bound over ONE raw shape, for the declaration path. A deep copy of the shape graph is taken when
+      # the class is declared (see ShapeGraph.snapshot), and copying an exponentially-large graph is exactly the
+      # cost this cap exists to avoid — so it has to run before that copy, not only before a schema build.
+      # `label` names the declaration, since no config exists yet at that point.
+      def reject_oversized_shape!(shape, label)
+        count_shape_members!([MAX_EMITTED_PROPERTIES], shape) { raise_too_many_properties!(label) }
       end
 
       # Decrements a shared budget and raises the moment it runs out, so an exponential graph costs the cap
       # rather than its own size. Counting the whole graph first would be the very expense being avoided.
-      def count_shape_members!(budget, shape, config)
+      def count_shape_members!(budget, shape, &exhausted)
         Internal::ShapeGraph.members(shape).each do |member|
           budget[0] -= 1
-          raise_too_many_properties!(config) if budget[0].negative?
+          exhausted.call if budget[0].negative?
 
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), config)
+          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), &exhausted)
         end
       end
 
-      def raise_too_many_properties!(config)
+      def raise_too_many_properties!(label)
         raise ArgumentError,
-              "the shape on #{describe_config(config)} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
+              "the shape on #{label} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
               "properties — a nested shape object reused by sibling members multiplies out, so every path " \
               "through it is a separate property and the reflected schema grows exponentially " \
               "(`input_schema` would not finish either). Give each member its own nested shape, or flatten " \
@@ -437,7 +452,7 @@ module Axn
       # the message builders, and the provenance resolution are implementation of the two rules, not surface a
       # caller should reach. `field_name_spelling` is deliberately not public either — `inspect_field_name` is
       # the one way a name gets written into a message.
-      private_class_method :validate_projection, :inbound_property_sources, :outbound_property_sources,
+      private_class_method :validate_and_build, :attributions, :inbound_property_sources, :outbound_property_sources,
                            :reject_colliding_emitted_properties!, :reject_oversized_schema!,
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
