@@ -467,18 +467,6 @@ module Axn
           method_call: false,
           **validations
         )
-          # EVERY segment of a dotted `on:` becomes a JSON property name in the reflected schema — the root
-          # names a declared field, and each deeper segment is an implicit nested key `SubfieldTree` emits —
-          # so they carry exactly the same UTF-8 promise a declared field or shape member name does, and are
-          # held to it by the same check. (The property-claim collector cannot stand in for this: a segment
-          # with no UTF-8 rendering canonicalizes to nothing, so there is no property name to compare, and the
-          # claim is dropped while the schema still emits the segment.)
-          #
-          # Ahead of the reader check below, whose message interpolates `on:` — an unrenderable root would
-          # otherwise raise Encoding::CompatibilityError from the reporting itself rather than naming the
-          # defect.
-          _reject_unrenderable_field_names!(on.to_s.split(".").map(&:to_sym), kind: "a nested key in `on:`")
-
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
           # It's resolved by calling the parent's reader (`resolve_parent` → public_send), so it must
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
@@ -486,8 +474,8 @@ module Axn
           root = on.to_s.split(".").first.to_sym
           unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
             raise ArgumentError,
-                  "expects called with `on: #{on}`, but no such reader exists " \
-                  "(are you sure you've declared a field — or alias — named :#{root}?)"
+                  "expects called with `on: #{_schema_name_label(on)}`, but no such reader exists " \
+                  "(are you sure you've declared a field — or alias — named :#{_schema_name_label(root)}?)"
           end
 
           # An ambient subfield's value is framework-supplied (the ambient provider /
@@ -516,7 +504,6 @@ module Axn
             # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
             # written, so leaf names that collapse onto one property need the tree to be seen at all.
             candidates = subfield_configs + configs
-            _reject_unrenderable_type_member_names!(internal_field_configs + candidates, for_output: false)
             _reject_oversized_schema!(internal_field_configs + candidates)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(internal_field_configs, candidates)) do
               _inbound_property_sources(internal_field_configs, candidates)
@@ -548,6 +535,15 @@ module Axn
         end
 
         private
+
+        # A route is rendered as the JSON property it canonicalizes to, never interpolated raw: `on:` may hold
+        # bytes with no UTF-8 rendering, and joining those into this UTF-8 message would raise
+        # Encoding::CompatibilityError from the reporting itself — surfacing an encoding failure instead of the
+        # missing-reader defect being reported. (Whether an unrenderable segment is a defect in its own right
+        # depends on whether the schema EMITS it, which the emitted-name walk decides.)
+        def _schema_name_label(name)
+          Axn::Reflection::Values.canonical_wire_key(name) || name.inspect
+        end
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.

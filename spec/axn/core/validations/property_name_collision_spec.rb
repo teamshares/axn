@@ -681,13 +681,20 @@ RSpec.describe "declaration-time property name collisions" do
       }
     end
 
-    # An unrenderable ROOT used to reach the reader-existence check, whose message interpolates `on:` — so the
-    # caller got an Encoding::CompatibilityError from the reporting instead of the defect being reported.
-    it "is rejected as the naming defect even in the root position" do
+    # In the ROOT position the accurate diagnosis is a different one: a root must name an already-declared
+    # reader, and nothing is declared under an unrenderable name, so "no such reader exists" is what the author
+    # needs to hear. What matters is that the message can be BUILT — it interpolates `on:`, and raw non-UTF-8
+    # bytes there raised Encoding::CompatibilityError from the reporting itself, surfacing an encoding failure
+    # instead of any defect at all.
+    it "reports a missing reader, not an encoding failure, in the root position" do
       root = unrenderable_name
 
       expect { build_axn { expects :leaf, on: root, optional: true } }
-        .to raise_error(ArgumentError, /a nested key in `on:` becomes a JSON property name/)
+        .to raise_error(ArgumentError) { |error|
+          expect(error.message).to include("no such reader exists")
+          expect(error.message.encoding).to eq(Encoding::UTF_8)
+          expect(error.message).to satisfy(&:valid_encoding?)
+        }
     end
 
     it "leaves a valid non-ASCII segment alone, emitting it as a property" do
@@ -1037,14 +1044,20 @@ RSpec.describe "declaration-time property name collisions" do
         }
       end
 
-      # A raw `shape:` kwarg supplies members the builder never sees, so both guards judge them from the
-      # resolved list — and the naming guard runs first, reporting the unusable name rather than the option
-      # that could only ever have been the second problem with that member.
-      it "reports the name, not the option, for a raw shape: member that also declares user_facing:" do
+      # A member carrying BOTH an unusable name and a rejected option now reports the option. The naming rule
+      # moved onto the emitted-property walk — it has to, since a name the schema never emits names nothing and
+      # rejecting it is an over-rejection — and that walk runs after the option checks. Both are real defects;
+      # what matters is that the option message survives an unrenderable name rather than raising
+      # Encoding::CompatibilityError while building itself.
+      it "reports the option for a raw shape: member that also declares user_facing:, in valid UTF-8" do
         member = Axn::Core::Contract::ShapeConfig.new(field: unrenderable_name, validations: {}, user_facing: true)
 
         expect { build_axn { exposes :payload, type: Hash, shape: { members: [member] } } }
-          .to raise_error(ArgumentError, /a shape member name becomes a JSON property name/)
+          .to raise_error(ArgumentError) { |error|
+            expect(error.message).to include("does not support user_facing:")
+            expect(error.message.encoding).to eq(Encoding::UTF_8)
+            expect(error.message).to satisfy(&:valid_encoding?)
+          }
       end
 
       it "still raises the declaration error when the member carries no options at all" do

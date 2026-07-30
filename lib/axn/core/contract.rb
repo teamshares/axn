@@ -200,8 +200,6 @@ module Axn
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
           fields = fields.map(&:to_sym)
 
-          _reject_unrenderable_field_names!(fields)
-
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
@@ -243,7 +241,6 @@ module Axn
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
             candidates = internal_field_configs + configs
-            _reject_unrenderable_type_member_names!(candidates + subfield_configs, for_output: false)
             _reject_oversized_schema!(candidates + subfield_configs)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(candidates, subfield_configs)) do
               _inbound_property_sources(candidates, subfield_configs)
@@ -272,6 +269,9 @@ module Axn
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
           fields = fields.map(&:to_sym)
 
+          # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
+          # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable
+          # one) as well as in `output_schema`, so it must be rejected whatever the schema emits.
           _reject_unrenderable_field_names!(fields)
 
           fields.each do |field|
@@ -306,7 +306,6 @@ module Axn
             # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
             # collapse in `output_schema` exactly as their inbound counterparts do.
             exposures = external_field_configs + configs
-            _reject_unrenderable_type_member_names!(exposures, for_output: true)
             _reject_oversized_schema!(exposures)
             _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_output(exposures)) do
               _outbound_property_sources(exposures)
@@ -689,7 +688,6 @@ module Axn
           # it is renderable, or whether it collides, would be asking about only one of them. A ShapeConfig
           # was already held to this in its constructor; a duck-typed member reaches it only here.
           names.each { |name| Contract.validate_shape_member_name!(name) }
-          _reject_unrenderable_field_names!(names, kind: "a shape member name")
 
           # Only the SAME key declared twice in one block is judged here — keyed by `to_sym`, which is exactly
           # what `Schema#member_properties` keys a member's property by, so the two agree about what "the same
@@ -838,13 +836,16 @@ module Axn
           # rather than slipping two configs onto one wire slot on a spelling difference. It is deliberately
           # not canonicalized or resolved further; see the note above on which half of identity this is.
           #
-          # Every name reaching here is renderable — `_reject_unrenderable_field_names!` runs first in both
-          # `expects` and `exposes` — so a nil property never enters the comparison.
+          # A name with no UTF-8 rendering canonicalizes to nil and names no property, so it is SKIPPED rather
+          # than compared: two of them would otherwise key alike and be reported as duplicates of each other.
+          # Whether such a name is a defect at all depends on whether the schema emits it, which only the
+          # emitted-name walk knows (see `_raise_unrenderable_emitted_name!`).
           key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
 
-          claimed = existing.to_h { |c| [key_for.call(c), c.field] }
+          claimed = existing.reject { |c| key_for.call(c).last.nil? }.to_h { |c| [key_for.call(c), c.field] }
           new_configs.each_with_object([]) do |config, collisions|
             key = key_for.call(config)
+            next if key.last.nil?
             next collisions << [claimed[key], config.field] if claimed.key?(key)
 
             claimed[key] = config.field
@@ -943,20 +944,10 @@ module Axn
             claimed = {}
             property_names.each do |name|
               canonical = Axn::Reflection::Values.canonical_wire_key(name)
-              # A name with no UTF-8 rendering has no property to compare. Every source that can put a name
-              # into a schema is now held to the UTF-8 rule before reaching here, all through
-              # `_reject_unrenderable_field_names!`: declared field names (`expects`/`exposes`), shape member
-              # names (the member walk), every segment of a dotted `on:` (`_expects_subfields`), and a
-              # structured type's own members (`_reject_unrenderable_type_member_names!`). A `model:`-generated
-              # `<field>_id` is derived from an already-validated name, and the array-element segment is this
-              # layer's own.
-              #
-              # So this is a backstop, and it stays rather than becoming a raise: skipping is the only safe
-              # answer if an unforeseen source ever appears, because two unrenderable names both canonicalize
-              # to nil and would otherwise be reported as one collapsed property — a wrong verdict rather than
-              # a missing one. It costs one nil check per property.
-              next if canonical.nil?
-
+              # Rejected HERE, one name at a time, before any comparison: two unrenderable names both
+              # canonicalize to nil, so comparing first would report them as one collapsed property — a wrong
+              # verdict rather than a missing one.
+              _raise_unrenderable_emitted_name!(path, name, sources) if canonical.nil?
               first = claimed[canonical]
               _raise_colliding_properties!(path, canonical, first, name, sources) if first
 
@@ -1040,6 +1031,28 @@ module Axn
         end
 
         def _property_source(sources, path, name) = sources.find { |source| source.path == [*path, name] }
+
+        # A declared name becomes a JSON property name, so one whose bytes have no UTF-8 rendering makes
+        # `JSON.generate` refuse the schema. Judged on the EMITTED name for the same reason the collision rule
+        # is: a name the schema never emits names no property, so rejecting it is an over-rejection — a dropped
+        # subfield's leaf, a member under a scalar `of:`, a member of a type an outbound gate strips. Each of
+        # those declared cleanly and reflected fine; only a separate precheck said otherwise.
+        #
+        # The offending name's SOURCE decides the wording, so each kind reads as it always has. Provenance is
+        # resolved here only, with a failure already certain.
+        def _raise_unrenderable_emitted_name!(path, name, sources)
+          kind = UNRENDERABLE_KINDS.fetch(_property_source(sources.call, path, name)&.kind, "a field name")
+          _reject_unrenderable_field_names!([name], kind:)
+        end
+
+        UNRENDERABLE_KINDS = {
+          config: "a field name",
+          intermediate: "a nested key in `on:`",
+          member: "a shape member name",
+          type_member: "a member of a declared type",
+          model_id: "a `model:` field's generated id",
+        }.freeze
+        private_constant :UNRENDERABLE_KINDS
 
         # One declaration that could have produced a property name at a node. Built only to attribute a
         # collision that has already been detected, so `description` is rendered eagerly — the list is walked
@@ -1129,20 +1142,6 @@ module Axn
         # members each is a fifth of the cap.
         MAX_EMITTED_PROPERTIES = 25_000
         private_constant :MAX_EMITTED_PROPERTIES
-
-        # A structured type declared alongside a shape contributes its OWN members as property names
-        # (`Schema.shape_property_plan`), so those names carry the same UTF-8 promise a declared field name or a
-        # shape member name does — the third source for one rule, held to it by the same check. Without this a
-        # `Data.define` member whose bytes have no UTF-8 rendering reached the reflected schema and
-        # `JSON.generate` refused it.
-        def _reject_unrenderable_type_member_names!(configs, for_output:)
-          configs.each do |config|
-            plan = Axn::Reflection::Schema.shape_property_plan(config, for_output:)
-            next unless plan.emitted
-
-            _reject_unrenderable_field_names!(plan.base_properties.keys, kind: "a member of a declared type")
-          end
-        end
 
         def _reject_oversized_schema!(configs)
           budget = [MAX_EMITTED_PROPERTIES]
