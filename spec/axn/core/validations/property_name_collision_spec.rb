@@ -1030,15 +1030,15 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       # The tolerance the guard deliberately keeps: a member with genuinely no `field` has no name to
-      # collide, so it is skipped rather than raising. Only a LIE about the reader is closed off. (Such a
-      # member is still too minimal for the schema to reflect — that is the pre-existing contract for a raw
-      # member, and orthogonal to what this guard decides.)
+      # collide, so it is skipped rather than raising. Only a LIE about the reader is closed off. Reflection
+      # skips such a member on the same terms, so declaration and emission agree about which members exist.
       it "still skips a member that genuinely defines no field reader" do
         members = [Object.new, Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
         klass = nil
 
         expect { klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }.not_to raise_error
         expect(klass.internal_field_configs.map(&:field)).to eq([:payload])
+        expect(klass.input_schema.dig(:properties, :payload, :properties)).to eq({ a: {} })
       end
 
       # A member whose name is a String subclass with a hostile `==`. Choosing between the two duplicate

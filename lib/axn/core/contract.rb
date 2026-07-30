@@ -242,7 +242,11 @@ module Axn
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
-            _reject_colliding_property_claims!(_inbound_property_claims(internal_field_configs + configs, subfield_configs))
+            candidates = internal_field_configs + configs
+            _reject_oversized_schema!(candidates + subfield_configs)
+            _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_input(candidates, subfield_configs)) do
+              _inbound_property_sources(candidates, subfield_configs)
+            end
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -300,7 +304,11 @@ module Axn
             # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
             # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
             # collapse in `output_schema` exactly as their inbound counterparts do.
-            _reject_colliding_property_claims!(_outbound_property_claims(external_field_configs + configs))
+            exposures = external_field_configs + configs
+            _reject_oversized_schema!(exposures)
+            _reject_colliding_emitted_properties!(Axn::Reflection::Schema.build_output(exposures)) do
+              _outbound_property_sources(exposures)
+            end
 
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
@@ -894,204 +902,171 @@ module Axn
           end
         end
 
-        # ONE claim space for every mechanism that can contribute a JSON property name at a node.
+        # Two declared names that render as ONE JSON property collapse in the reflected schema, silently
+        # dropping a value. The check reads the property names reflection ACTUALLY EMITS rather than predicting
+        # them from the declarations.
         #
-        # A property name at a node can come from six places, and each earlier attempt to police them in pairs
-        # left the remaining pairs open — a shape member checked in isolation cannot see a subfield resolved to
-        # its parent, a resolved-path check over field configs cannot see shape members at all, and so on. So
-        # every mechanism is turned into a CLAIM of `(resolved path, canonical property, source)` and judged
-        # together. The mechanisms, with the reflection code each mirrors:
+        # That direction is the whole design. Six different mechanisms contribute property names at a node — a
+        # top-level field, a subfield leaf at its resolved parent, a shape member at any depth, a
+        # `model:`-generated `<field>_id`, a nested key a dotted `on:` introduces, and the members of a
+        # structured type declared alongside a shape — and a guard that PREDICTED their combined output had to
+        # re-derive, for each of them, both "does this emit here" and "under what name". Every such derivation
+        # is a second copy of a rule that must agree with the emitter, and each copy that drifted produced
+        # either a collapse the guard missed or a legal declaration it rejected. Reading the emitted names
+        # instead makes divergence impossible: there is no second copy to drift.
         #
-        #   1. a top-level field name              — depth 0; `Schema#build_input`'s `properties[config.field]`
-        #   2. a subfield leaf name                — at its RESOLVED parent, from `SubfieldTree`
-        #   3. a shape member name                 — at its owner's node, at any nesting depth
-        #      (`Schema#member_properties`)
-        #   4. a `model:`-generated `<field>_id`   — top-level or subfield, keyed by
-        #      `Internal::FieldConfig.model_id_key`, the same helper `Schema#model_id_property` uses
-        #   5. an implicit intermediate segment    — every node a dotted `on:` passes THROUGH, which is every
-        #      proper prefix of a resolved wire path
-        #   6. the members of a `Data` type        — emitted as base properties beside a shape's members
-        #      (`Schema#apply_structured_schema!`), so only when a shape is also declared
+        # It also makes the legal-merge rule structural rather than stated. Two names that are the SAME
+        # property merge into one Hash key on their way into the schema — two routes to one wire slot, a shape
+        # member beside a same-named subfield, a generated `<field>_id` beside an explicit one — so one key
+        # means "merged, legal" and two keys that canonicalize alike mean "collapsed, rejected". Nothing has to
+        # decide which case it is looking at.
         #
-        # Resolution comes from `SubfieldTree`, which the schema and the runtime already read, so the guard
-        # cannot disagree with what is emitted. Mechanisms 2 and 5 are the SAME computation under this
-        # framing — a node and the nodes on the way to it — which is why prefixes are claimed rather than
-        # special-cased.
-        #
-        # The rule, unchanged from when it covered only routes: a collision is "same canonical path, DIFFERENT
-        # raw spelling". Equal canonical AND equal raw is a MERGE — one wire slot named the same way twice, by
-        # two routes, or by a shape member and a subfield, or by a generated id and an explicit field — which
-        # is legitimate and reflects as exactly one property. Two claims that differ only once canonicalized
-        # are two separate nodes whose properties collapse, dropping a value.
-        #
-        # Inbound and outbound are separate spaces: a name may legitimately be both expected and exposed.
-        def _reject_colliding_property_claims!(claims)
-          claims.group_by(&:canonical).each_value do |group|
-            by_spelling = group.group_by(&:path)
-            next if by_spelling.size == 1
+        # `Schema.build_input`/`build_output` are given the PROSPECTIVE configs, before any class mutation, the
+        # same way `SubfieldContradictions.check!` is.
+        def _reject_colliding_emitted_properties!(schema, &sources)
+          _each_emitted_node(schema) do |path, property_names|
+            claimed = {}
+            property_names.each do |name|
+              canonical = Axn::Reflection::Values.canonical_wire_key(name)
+              # A name with no UTF-8 rendering has no property to compare. Every source of one is held to the
+              # UTF-8 rule before it can reach a schema (`_reject_unrenderable_field_names!` over declared
+              # field names, shape member names, dotted `on:` segments, and structured-type member names), so
+              # this is a backstop; skipping is required either way, since two unrenderable names would both
+              # canonicalize to nil and compare as one property.
+              next if canonical.nil?
 
-            first, second = by_spelling.values.first(2).map { |candidates| _most_specific_claim(candidates) }
-            _raise_colliding_claims!(first, second)
+              first = claimed[canonical]
+              _raise_colliding_properties!(path, canonical, first, name, sources) if first
+
+              claimed[canonical] = name
+            end
           end
         end
 
-        # One JSON property contributed at one resolved node. `path` is the raw spelling (Symbols the tree and
-        # the declarations supply), `canonical` the property each segment renders as, `description` how a
-        # message names the contributor, and `precise` false only for an implicit intermediate — the one
-        # source that names nothing the author wrote, so a claim that does is preferred when reporting.
+        # Yields `[path, property_names]` for every node in a built schema that emits object properties. An
+        # array's ELEMENT properties are a node of their own — a non-object parent's subfields are not emitted
+        # there, so nothing else can name a property beside its elements — and carry a path segment no declared
+        # name can produce.
+        def _each_emitted_node(schema, path = [], &block)
+          properties = schema[:properties]
+          return unless properties.is_a?(Hash)
+
+          yield(path, properties.keys)
+          properties.each do |name, subschema|
+            next unless subschema.is_a?(Hash)
+
+            child = [*path, name]
+            _each_emitted_node(subschema, child, &block)
+            items = subschema[:items]
+            _each_emitted_node(items, [*child, ITEMS_SEGMENT], &block) if items.is_a?(Hash)
+          end
+        end
+
+        # An array's element node, in a path. A segment no declared name can produce, so it cannot be confused
+        # with a property.
+        ITEMS_SEGMENT = :[]
+        private_constant :ITEMS_SEGMENT
+
+        # Names both SOURCES, not just both spellings: with six mechanisms contributing property names, which
+        # two declarations collided is not evident from the names alone.
         #
-        # The source is kept as DATA (`kind`/`config`/`name`) and rendered into prose only for a claim actually
-        # being reported. Every declaration re-collects the whole contract's claims, so a contract of N
-        # declarations builds O(N^2) of them, and interpolating a description for each one cost more than the
-        # rest of this check combined.
-        PropertyClaim = Data.define(:path, :canonical, :kind, :config, :name, :type_klass, :precise)
-        private_constant :PropertyClaim
+        # The emitted schema records only names, so provenance is recovered by looking for declarations that
+        # could have produced each name at this node — and ONLY here, once, with a collision already proven. A
+        # best-effort attribution on the failure path cannot cause a wrong verdict, which is exactly why the
+        # detection above does not use it. When nothing matches, the message still names both spellings.
+        def _raise_colliding_properties!(path, canonical, first_name, second_name, sources)
+          property = [*path.map { |segment| Axn::Reflection::Values.canonical_wire_key(segment) }, canonical].compact.join(".")
+          # Provenance is resolved HERE and nowhere else: the list is built only once a collision is already
+          # proven, so the success path never pays for it and a best-effort attribution can never affect a
+          # verdict.
+          resolved = sources.call
+          first = _property_source(resolved, path, first_name)
+          second = _property_source(resolved, path, second_name)
 
-        def _most_specific_claim(candidates) = candidates.find(&:precise) || candidates.first
+          # Two members of one shape keep the wording that case has always had: it is by far the most common
+          # collision, and its fix reads better in its own terms than as a resolved path.
+          if [first, second].all? { |source| source&.kind == :member }
+            raise Axn::DuplicateFieldError,
+                  "Duplicate shape member declared: #{_inspect_field_name(first_name)} and " \
+                  "#{_inspect_field_name(second_name)} both render as the JSON property #{canonical.inspect}, so " \
+                  "the reflected schema would emit it twice. Declare them under names that stay distinct once " \
+                  "converted to UTF-8."
+          end
 
-        # Inbound claims: every declared field and subfield, resolved through the tree built over the
-        # PROSPECTIVE configs — before any class mutation, exactly as `SubfieldContradictions.check!` does at
-        # the same point in `_expects_subfields`.
-        def _inbound_property_claims(field_configs, subfield_configs)
+          raise Axn::DuplicateFieldError,
+                "Duplicate field(s) declared: #{first&.description || _inspect_field_name(first_name)} and " \
+                "#{second&.description || _inspect_field_name(second_name)} both resolve to the JSON property " \
+                "#{property.inspect} — a declared name becomes a property name in the reflected schema and in " \
+                "serialized output, so the two would collapse onto one. Declare them under names that stay " \
+                "distinct once converted to UTF-8."
+        end
+
+        def _property_source(sources, path, name) = sources.find { |source| source.path == [*path, name] }
+
+        # One declaration that could have produced a property name at a node. Built only to attribute a
+        # collision that has already been detected, so `description` is rendered eagerly — the list is walked
+        # once, on the failure path, and is never consulted to decide anything.
+        PropertySource = Data.define(:path, :kind, :description)
+        private_constant :PropertySource
+
+        def _inbound_property_sources(field_configs, subfield_configs)
           tree = Axn::Reflection::SubfieldTree.build(field_configs, subfield_configs)
 
-          ClaimCollector.new.tap do |into|
-            (field_configs + subfield_configs).each do |config|
-              resolved = tree.index[config]
-              # No index entry means the config is attached nowhere — only a bare `on: :ambient_context` with no
-              # declared ambient field, deliberately excluded from the schema, so it names no property.
-              next unless resolved
+          (field_configs + subfield_configs).flat_map do |config|
+            resolved = tree.index[config]
+            next [] unless resolved
 
-              _collect_claims!(into, config, resolved.wire_path, for_output: false)
-            end
-          end.claims
+            _property_sources_for(config, resolved.wire_path, model_id: true)
+          end
         end
 
-        # Outbound claims: `exposes` has no `on:`, so every exposure is its own root and needs no tree. An
-        # outbound `model:` field emits no generated `<field>_id` (it reflects under its own name), so
-        # mechanism 4 has no outbound counterpart.
-        def _outbound_property_claims(field_configs)
-          ClaimCollector.new.tap do |into|
-            field_configs.each { |config| _collect_claims!(into, config, [config.field], for_output: true, model_id: false) }
-          end.claims
+        def _outbound_property_sources(field_configs)
+          field_configs.flat_map { |config| _property_sources_for(config, [config.field], model_id: false) }
         end
 
-        def _collect_claims!(into, config, wire_path, for_output:, model_id: true)
-          # Mechanisms 1, 2 and 5: the node this config names, plus every node its route passes through. The
-          # prefix claims are what make an implicit intermediate visible; where another config names that same
-          # node itself, the two claims share a raw path and merge.
-          wire_path.each_index do |depth|
+        def _property_sources_for(config, wire_path, model_id:)
+          sources = wire_path.each_index.map do |depth|
             leaf = depth == wire_path.size - 1
-            into.add(wire_path[0..depth], leaf ? :config : :intermediate, config, wire_path[depth], type_klass: nil, precise: leaf)
+            description = leaf ? _describe_config(config) : "#{_inspect_field_name(wire_path[depth])}, a nested key introduced by #{_describe_config(config)}"
+            PropertySource.new(path: wire_path[0..depth], kind: leaf ? :config : :intermediate, description:)
           end
 
           if model_id && config.validations[:model]
             id_key = Internal::FieldConfig.model_id_key(config.field)
-            into.add([*wire_path[0..-2], id_key], :model_id, config, id_key, type_klass: nil)
+            sources << PropertySource.new(path: [*wire_path[0..-2], id_key], kind: :model_id,
+                                          description: "the `model:`-generated #{_inspect_field_name(id_key)} of #{_describe_config(config)}")
           end
 
-          # Mechanisms 3 and 6 both depend on WHETHER the schema emits object properties for this config at
-          # all, and on WHICH node — so both read that from the schema layer rather than deciding it here.
-          plan = Axn::Reflection::Schema.shape_property_plan(config, for_output:)
-          return unless plan.emitted
-
+          # A shape's members land at the field's node, or at its array element's — the same question the
+          # emission itself answers, asked once here for attribution rather than to decide anything.
+          plan = Axn::Reflection::Schema.shape_property_plan(config, for_output: !model_id)
           node_path = plan.in_items? ? [*wire_path, ITEMS_SEGMENT] : wire_path
           plan.base_properties.each_key do |member|
-            into.add([*node_path, member], :type_member, config, member, type_klass: _shape_type_klass(config, plan))
+            sources << PropertySource.new(path: [*node_path, member], kind: :type_member,
+                                          description: "#{_inspect_field_name(member)}, a member of the " \
+                                                       "#{_describe_type(_shape_type_klass(config, plan))} type declared on #{_describe_config(config)}")
           end
-          _collect_shape_member_claims!(into, _member_shape(config), node_path, config)
+          sources.concat(_shape_member_sources(_member_shape(config), node_path, config))
         end
 
-        # An array's ELEMENT properties are a namespace of their own: a non-object parent's subfields are not
-        # emitted there (`Schema#apply_nested_subfields!` stops at a non-nestable parent), so nothing but the
-        # element type and the shape's own members can name a property alongside them. A segment no declared
-        # name can produce keeps them from being compared against the field's own properties.
-        ITEMS_SEGMENT = :[]
-        private_constant :ITEMS_SEGMENT
+        def _shape_member_sources(shape, node_path, owner)
+          Internal::ShapeGraph.members(shape).flat_map do |member|
+            name = Internal::ShapeGraph.fetch(member, :field)
+            next [] if Internal::ShapeGraph.missing?(name)
 
-        # The type whose members a `:type_member` claim came from: the `of:` element type inside an array,
+            path = [*node_path, name.to_sym]
+            [PropertySource.new(path:, kind: :member, description: "shape member #{_inspect_field_name(name)} of #{_describe_config(owner)}"),
+             *_shape_member_sources(_member_shape(member), path, owner)]
+          end
+        end
+
+        # The type whose members a structured-type property came from: the `of:` element type inside an array,
         # the field's own declared type otherwise.
         def _shape_type_klass(config, plan)
           source = plan.in_items? ? config.validations[:of] : config.validations[:type]
           klass = source.is_a?(Hash) ? source[:klass] : source
           klass.is_a?(Class) ? klass : nil
         end
-
-        # Mechanism 3, at any depth: a shape member is a property of its owner's node, and a member's own
-        # nested block descends from there. Cyclic and generated-depth graphs are already rejected by
-        # `_reject_colliding_shape_member_names!`, which every declaration path runs over its shape before
-        # reaching here, so this recursion needs no cycle guard of its own — but it does need a size bound,
-        # because a nested shape reused by SIBLING members multiplies the distinct property paths beneath it.
-        def _collect_shape_member_claims!(into, shape, node_path, owner)
-          Internal::ShapeGraph.members(shape).each do |member|
-            name = Internal::ShapeGraph.fetch(member, :field)
-            next if Internal::ShapeGraph.missing?(name)
-
-            _raise_too_many_claims!(owner) if into.claims.size > MAX_PROPERTY_CLAIMS
-
-            path = [*node_path, name.to_sym]
-            into.add(path, :member, owner, name, type_klass: nil)
-            _collect_shape_member_claims!(into, _member_shape(member), path, owner)
-          end
-        end
-
-        # Generous enough that no hand-written contract approaches it — a thousand fields carrying twenty
-        # members each is a fifth of it — so it only ever fires on a shape graph whose PROPERTY COUNT is
-        # exponential rather than merely large. That happens when a nested shape object is reused by sibling
-        # members: every path through the graph is a distinct property path, so N levels of two-way sharing
-        # emit 2^N properties. Such a contract has no reflectable schema either — `input_schema` walks the same
-        # paths — so it is rejected at declaration rather than left to declare and then hang the first time
-        # anything reflects it.
-        MAX_PROPERTY_CLAIMS = 25_000
-        private_constant :MAX_PROPERTY_CLAIMS
-
-        def _raise_too_many_claims!(config)
-          raise ArgumentError,
-                "the shape on #{_describe_config(config)} names more than #{MAX_PROPERTY_CLAIMS} JSON properties — " \
-                "a nested shape object reused by sibling members multiplies out, so every path through it is a " \
-                "separate property and the reflected schema grows exponentially (`input_schema` would not " \
-                "finish either). Give each member its own nested shape, or flatten the nesting."
-        end
-
-        # Accumulates one declaration's claims, memoizing each segment's canonical property.
-        #
-        # The memo is what keeps this affordable. Every declaration re-collects the whole contract's claims —
-        # it has to, since adding a top-level field can RE-ANCHOR existing subfields and change their resolved
-        # paths — so a contract of N declarations canonicalizes O(N^2) segments, and the same handful of names
-        # dominates that. Canonicalizing allocates a transcode-checked, frozen String per call; looking one up
-        # does not. Measured on 300 fields carrying 20 shape members each: 2.8s without the memo, 0.2s with it.
-        #
-        # Segments are Symbols the tree and the declarations supply, so they key the memo by value with no
-        # caller dispatch.
-        #
-        # A claim whose path has any segment with no UTF-8 rendering is DROPPED, because there is no property
-        # name to compare — two such segments both canonicalize to nil and would otherwise compare as one path.
-        # That makes the drop a backstop, not a policy: every source of a property name is supposed to have
-        # been held to the UTF-8 rule before reaching here, by `_reject_unrenderable_field_names!` — over
-        # declared field names (`expects`/`exposes`), over shape member names (the member walk), and over every
-        # segment of a dotted `on:` (`_expects_subfields`). A dropped claim means one of those is missing, and
-        # the schema will emit a property `JSON.generate` refuses.
-        #
-        # One such gap is known and open: `Data.define` accepts a member name with no UTF-8 rendering, and
-        # mechanism 6 claims those members, so an unrenderable one is dropped here and reaches the reflected
-        # schema unchecked. It is left alone deliberately rather than fixed in passing — the fix belongs with
-        # the type-member source, which is under review.
-        class ClaimCollector
-          attr_reader :claims
-
-          def initialize
-            @claims = []
-            @canonical = {}
-          end
-
-          def add(path, kind, config, name, type_klass:, precise: true)
-            canonical = path.map { |segment| @canonical.fetch(segment) { |s| @canonical[s] = Axn::Reflection::Values.canonical_wire_key(s) } }
-            return if canonical.any?(&:nil?)
-
-            @claims << PropertyClaim.new(path:, canonical:, kind:, config:, name:, type_klass:, precise:)
-          end
-        end
-        private_constant :ClaimCollector
 
         # A declared type is named through a bound `Module#to_s`: a class can define its own, and one that
         # raises would replace the collision being reported (outside StandardError, escaping class definition).
@@ -1102,39 +1077,47 @@ module Axn
           "#{_inspect_field_name(config.field)}#{route}"
         end
 
-        # How a message names one claim's source. Rendered only for a claim being reported.
-        def _describe_claim(claim)
-          case claim.kind
-          when :member then "shape member #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
-          when :model_id then "the `model:`-generated #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
-          when :intermediate then "#{_inspect_field_name(claim.name)}, a nested key introduced by #{_describe_config(claim.config)}"
-          when :type_member
-            "#{_inspect_field_name(claim.name)}, a member of the #{_describe_type(claim.type_klass)} type " \
-            "declared on #{_describe_config(claim.config)}"
-          else _describe_config(claim.config)
+        # Reject a contract whose reflected schema would be exponentially large BEFORE building it, since
+        # building it is the cost the cap exists to avoid.
+        #
+        # A nested shape object reused by SIBLING members multiplies out: every path through the graph is a
+        # distinct property path, so N levels of two-way sharing name 2^N properties. Such a contract has no
+        # usable schema either — `input_schema` walks the same paths, measured at 786k nodes and 2.7s for
+        # eighteen levels — so it is rejected at declaration rather than left to declare and then hang the
+        # first time anything reflects it. Counting is far cheaper than building: no property hashes, no
+        # canonicalization, no descriptions.
+        #
+        # Generous enough that no hand-written contract approaches it: a thousand fields carrying twenty
+        # members each is a fifth of the cap.
+        MAX_EMITTED_PROPERTIES = 25_000
+        private_constant :MAX_EMITTED_PROPERTIES
+
+        def _reject_oversized_schema!(configs)
+          budget = [MAX_EMITTED_PROPERTIES]
+          configs.each do |config|
+            budget[0] -= 1
+            _count_shape_members!(budget, _member_shape(config), config)
           end
         end
 
-        # Names both SOURCES rather than only both spellings: with six mechanisms contributing property names,
-        # which two declarations collided is no longer evident from the names alone.
-        #
-        # Two shape members of one block keep the wording that case has always had — it is by far the most
-        # common collision and its fix is stated in its own terms — while every other pair reads as the
-        # resolved property they converge on.
-        def _raise_colliding_claims!(first, second)
-          if [first, second].all? { |claim| claim.kind == :member } && first.path[0..-2] == second.path[0..-2]
-            raise Axn::DuplicateFieldError,
-                  "Duplicate shape member declared: #{_inspect_field_name(first.name)} and " \
-                  "#{_inspect_field_name(second.name)} both render as the JSON property " \
-                  "#{first.canonical.last.inspect}, so the reflected schema would emit it twice. Declare them " \
-                  "under names that stay distinct once converted to UTF-8."
-          end
+        # Decrements a shared budget and raises the moment it runs out, so an exponential graph costs the cap
+        # rather than its own size. Counting the whole graph first would be the very expense being avoided.
+        def _count_shape_members!(budget, shape, config)
+          Internal::ShapeGraph.members(shape).each do |member|
+            budget[0] -= 1
+            _raise_too_many_properties!(config) if budget[0].negative?
 
-          raise Axn::DuplicateFieldError,
-                "Duplicate field(s) declared: #{_describe_claim(first)} and #{_describe_claim(second)} both " \
-                "resolve to the JSON property #{first.canonical.join('.').inspect} — a declared name becomes a " \
-                "property name in the reflected schema and in serialized output, so the two would collapse " \
-                "onto one. Declare them under names that stay distinct once converted to UTF-8."
+            _count_shape_members!(budget, _member_shape(member), config)
+          end
+        end
+
+        def _raise_too_many_properties!(config)
+          raise ArgumentError,
+                "the shape on #{_describe_config(config)} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
+                "properties — a nested shape object reused by sibling members multiplies out, so every path " \
+                "through it is a separate property and the reflected schema grows exponentially " \
+                "(`input_schema` would not finish either). Give each member its own nested shape, or flatten " \
+                "the nesting."
         end
 
         # The three declaration paths (top-level expects, exposes, subfields) report through here rather

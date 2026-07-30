@@ -71,6 +71,18 @@ module Axn
       # what a member has.
       def declared_attribute(config, name) = Axn::Internal::ShapeGraph.read(config, name)
 
+      # A member's NAME, or nil when it has none. Even `#field` is read tolerantly: declaration accepts a
+      # member too minimal to name a property and simply skips it, so emission skips it on the same terms
+      # rather than raising — the two layers have to agree about which members exist, because the declaration
+      # guard is derived from what this emits.
+      def member_name(member)
+        name = Axn::Internal::ShapeGraph.fetch(member, :field)
+        Axn::Internal::ShapeGraph.missing?(name) ? nil : name
+      end
+
+      # The members of a shape that actually name a property, paired with that name.
+      def named_members(members) = Array(members).filter_map { |m| (name = member_name(m)) && [m, name] }
+
       # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
       # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
       # aliases and dotted segments once, up front). A STRUCTURAL EXCLUSION remains: a deep subfield
@@ -427,7 +439,7 @@ module Axn
 
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
       def required_shape_member?(config)
-        Array(config.validations.dig(:shape, :members)).any? { |m| !optional_for_schema?(m) }
+        named_members(config.validations.dig(:shape, :members)).any? { |m, _name| !optional_for_schema?(m) }
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
@@ -848,7 +860,7 @@ module Axn
       # descent; both respond to `.validations` and expose nested members via `dig(:shape, :members)`.
       def shape_members_at(parent_configs, key)
         Array(parent_configs).flat_map do |config|
-          Array(config.validations.dig(:shape, :members)).select { |m| m.field.to_sym == key }
+          named_members(config.validations.dig(:shape, :members)).filter_map { |m, name| m if name.to_sym == key }
         end
       end
 
@@ -1130,8 +1142,8 @@ module Axn
       def member_properties(members, for_output:)
         props = {}
         required = []
-        members.each do |m|
-          props[m.field.to_sym] = build_property(m, for_output:).compact
+        named_members(members).each do |m, name|
+          props[name.to_sym] = build_property(m, for_output:).compact
           # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
           # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
           # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
@@ -1139,7 +1151,7 @@ module Axn
           # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
           # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
           # send the member) — stricter, and safe.
-          required << m.field.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
+          required << name.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
         end
         [props, required]
       end

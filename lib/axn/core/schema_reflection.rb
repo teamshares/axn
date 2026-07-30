@@ -47,13 +47,23 @@ module Axn
           return if dropped.empty?
 
           @_axn_deep_subfield_warning_emitted = true
-          paths = dropped.map { |c| "#{c.field} (on: #{c.on})" }.join(", ")
+          # Names are rendered as the JSON property they canonicalize to, never interpolated raw: a declared
+          # name may hold bytes that are not UTF-8 (a valid ISO-8859-1 Symbol), and joining those into this
+          # UTF-8 message raised Encoding::CompatibilityError from the warning itself — so reflecting a schema
+          # blew up over a subfield the warning exists to mention in passing.
+          paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
           Axn.config.logger.warn(
             "[Axn] #{resolved_axn_name} input_schema omits deep subfield(s) with no JSON representation — " \
             "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
             "from the reflected input schema; restructure the parent as a Hash/:params field, or handle " \
             "them in the adapter.",
           )
+        end
+
+        # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
+        # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
+        def _schema_name_label(name)
+          Axn::Reflection::Values.canonical_wire_key(name) || name.inspect
         end
       end
 
