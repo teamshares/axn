@@ -112,11 +112,21 @@ module Axn
       Axn::Reflection::PropertyNames.validate_outbound!(klass)
     rescue Axn::ContractViolation, ArgumentError => e
       # Named, because this runs over every tool at once: the underlying error describes the property and the
-      # declarations that collide, but at boot the first thing an author needs is WHICH tool. Re-raised as the
-      # same class so a caller matching on it still matches, with the original as `cause`. Both families are
+      # declarations that collide, but at boot the first thing an author needs is WHICH tool. Both families are
       # caught: a collision is an Axn::ContractViolation, an unrenderable name or an oversized schema an
       # ArgumentError.
-      raise e.class, "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{e.message}"
+      #
+      # `raise e, message` and never `raise e.class, message`. The two look alike and are not: naming the CLASS
+      # constructs a new instance, which fails outright for any exception whose initializer takes more than a
+      # message (`UnserializableValue` requires `path:`/`value:`) — so the wrapper meant to help destroyed both
+      # the contract error and the class it promised to preserve. Raising the OBJECT clones it and sets the
+      # message, running no initializer, and keeps the class, its state, and the original as `cause`.
+      #
+      # The one thing it cannot do is rename an exception that builds its own message from its state: such a
+      # class ignores the message set here, so the tool's name is dropped and its own (more specific) message
+      # stands. That is a degraded message rather than a lost error, which is the right way round — the original
+      # error is the substance, naming the tool is the convenience.
+      raise e, "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{e.message}"
     end
     nil
   end

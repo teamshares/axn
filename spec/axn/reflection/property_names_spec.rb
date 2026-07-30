@@ -16,13 +16,12 @@ RSpec.describe Axn::Reflection::PropertyNames do
   # diagnostic, and the call logger. Compared as a whole set rather than one `respond_to?` per name, so an
   # ADDITION fails this too.
   # `validate_inbound!`/`validate_outbound!` validate a class's projections WITHOUT going through
-  # `input_schema`/`output_schema`, which an adapter base class may own (see Core::SchemaReflection).
-  # `emitted_property_budget` hands out the emitted-property allowance rather than applying it here, because
-  # bounding a declared shape graph and copying it are one walk over the caller's members (see
-  # `Contract#_validate_and_snapshot_shape!`).
+  # `input_schema`/`output_schema`, which an adapter base class may own (see Core::SchemaReflection). The
+  # emitted-property bound is NOT handed out: it is applied here, on the schema this module is about to build,
+  # from the emitter's own plan. The declaration walk's bound is a different limit over the stored graph
+  # (`ShapeGraph::MAX_MEMBER_PATHS`) and belongs to the contract, not to reflection.
   let(:entry_points) do
     %i[
-      emitted_property_budget
       inspect_field_name
       reject_unrenderable_field_names!
       renderable_label
@@ -53,7 +52,7 @@ RSpec.describe Axn::Reflection::PropertyNames do
       shape_member_sources
       field_name_spelling
       describe_config
-      count_shape_members!
+      count_emitted_properties!
     ]
 
     expect(internals.reject { |name| described_class.singleton_class.private_method_defined?(name) }).to be_empty

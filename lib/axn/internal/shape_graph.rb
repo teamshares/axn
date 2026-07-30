@@ -148,6 +148,21 @@ module Axn
           "return the same finite nested shape each time it is read, or flatten the nesting."
       end
 
+      # How many member PATHS a stored shape graph may have — every route from a field to a member, counting a
+      # nested shape reused by two siblings twice, because every walk of the stored graph walks it twice.
+      #
+      # Not a bound on emitted JSON properties: that one lives with reflection, is derived from what the emitter
+      # actually emits, and applies at projection. This is a bound on the graph ITSELF, and it exists because the
+      # walks that read a stored graph per CALL have no per-reference memo — the redaction candidate set and the
+      # sensitive-member predicate walk a path at a time on every logged call. Measured, with the bound removed:
+      # a flat 26,000-member shape costs ~0.5s per logged call, and one nested shape shared by two siblings 18
+      # levels deep (262,000 paths) costs ~4s per call, every call. So the number bounds what a call pays, and
+      # 25,000 paths is where that is already about half a second.
+      #
+      # (Raising it is not the way to make a large flat shape legal — memoizing the redaction candidate set per
+      # class is, and then this bound would only need to catch multiplying graphs.)
+      MAX_MEMBER_PATHS = 25_000
+
       # A shape's members, captured into an Array this module owns. Captured via `each` — the one
       # method walking a container inherently requires, and the one reflection's own member walk uses
       # — so `select`/`map`/`any?`/`to_a` are never taken from a caller's Array subclass. Each of

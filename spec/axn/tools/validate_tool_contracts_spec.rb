@@ -115,6 +115,33 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     }
   end
 
+  # Naming the tool must not cost the error. `raise e.class, message` CONSTRUCTS a new instance, which fails
+  # outright for any exception whose initializer takes more than a message — so the wrapper meant to help
+  # destroyed both the contract error and the class it promised to preserve. Raising the OBJECT clones it, runs
+  # no initializer, and keeps class, state and cause.
+  it "passes a structured exception through with its class, message and cause intact" do
+    structured = Class.new(ArgumentError) do
+      def initialize(path:)
+        @path = path
+        super(nil)
+      end
+
+      # Builds its own message from state, so the tool-name prefix cannot apply — its own message stands, which
+      # is the documented boundary: a degraded message rather than a lost error.
+      def message = "structured at #{@path}"
+    end
+    stub_const("ToolContractsSpec::Structured", structured)
+    Axn.register_tool_adapter(:mcp)
+    klass = valid_tool
+    allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+    allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(structured.new(path: "p"))
+
+    expect { Axn.validate_tool_contracts! }.to raise_error(structured) { |error|
+      expect(error.message).to eq("structured at p")
+      expect(error.cause).to be_a(structured)
+    }
+  end
+
   # An unrenderable name raises ArgumentError rather than a ContractViolation, so both families have to be
   # wrapped or one of them would reach boot unnamed.
   it "names the offending class for an unrenderable name too" do

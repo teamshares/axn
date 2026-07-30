@@ -658,10 +658,14 @@ module Axn
         # declared shape.
         #
         # Fused rather than a check pass followed by a copy pass, because the two have to agree about what the
-        # members ARE. A list that answers a second `each` differently would leave the class holding members no
-        # check ever saw — and the size bound has to gate the copy specifically, since copying a graph that
-        # multiplies out is the expense the bound exists to avoid (measured at 55 seconds for a graph the bound
-        # now rejects in milliseconds).
+        # members ARE: a list that answers a second `each` differently would leave the class holding members no
+        # check ever saw.
+        #
+        # It also bounds the graph's SIZE, in member paths (see ShapeGraph::MAX_MEMBER_PATHS) — deliberately not
+        # in emitted JSON properties, which is a different limit belonging to reflection, derived from what the
+        # emitter emits, and applied at projection. This one is about the graph itself: the walks that read a
+        # stored graph on every logged call have no per-reference memo, so a graph that multiplies out costs the
+        # CALL. Counting it here is what keeps that knowable at declaration, where the author is present.
         #
         # So a caller's members list is read exactly ONCE per declaration, and the answer it gave is the
         # contract: a list that would answer a later read differently never gets that read. What it cannot do is
@@ -669,8 +673,7 @@ module Axn
         # read raises at declaration, which is the intended outcome and the right one: the author is standing
         # there, rather than the failure landing on whoever first reflects the class.
         def _validate_and_snapshot_shape!(shape, fields)
-          budget = Axn::Reflection::PropertyNames.emitted_property_budget { _inspect_field_name(fields.first) }
-          _walk_shape_graph!(shape, nil, budget).copy
+          _walk_shape_graph!(shape, nil, [Internal::ShapeGraph::MAX_MEMBER_PATHS, fields]).copy
         end
 
         # Stores the copy in place of the caller's shape, and only when there is one to copy: a field that
@@ -683,22 +686,43 @@ module Axn
           validations[:shape] = _validate_and_snapshot_shape!(shape, fields)
         end
 
-        # What one walked shape yields. The count travels with the copy because a shape REUSED by two members is
-        # walked (and copied) once but counted twice: sharing is exactly how a graph multiplies out, so the
-        # second reference charges the whole total its subtree expands to.
-        WalkedShape = Data.define(:copy, :emitted)
+        # What one walked shape yields. The path count travels with the copy because a shape REUSED by two
+        # members is walked (and copied) once but COUNTED twice: sharing is exactly how a graph multiplies out,
+        # so the second reference charges the whole total its subtree expands to.
+        WalkedShape = Data.define(:copy, :paths)
         private_constant :WalkedShape
 
-        def _walk_shape_graph!(shape, walk, budget, via: nil, via_name: nil)
+        # The remaining allowance, and the fields to name if it runs out — a two-element Array rather than an
+        # object, because it is threaded through every level of one walk and the label is only ever built on the
+        # failure path.
+        def _spend_paths!(allowance, paths)
+          allowance[0] -= paths
+          return unless allowance[0].negative?
+
+          _raise_too_many_member_paths!(allowance[1])
+        end
+
+        def _raise_too_many_member_paths!(fields)
+          raise ArgumentError,
+                "the shape on #{_inspect_field_name(fields.first)} has more than " \
+                "#{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — a nested shape object reused by " \
+                "sibling members multiplies out, so N levels of two-way sharing are 2^N distinct paths, and the " \
+                "walks that read this contract on every logged call pay one step per path (measured: 262,000 " \
+                "paths cost about four seconds per call). Give each member its own nested shape, or flatten the " \
+                "nesting. This is a bound on the graph, not on what a schema emits — an oversized SCHEMA is " \
+                "reported separately, when a projection is first built."
+        end
+
+        def _walk_shape_graph!(shape, walk, allowance, via: nil, via_name: nil)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           # Not a shape, so it has no members to walk and nothing to copy — returned as it came, for the
           # container check downstream to reject.
-          return WalkedShape.new(copy: shape, emitted: 0) if nil.equal?(hash)
+          return WalkedShape.new(copy: shape, paths: 0) if nil.equal?(hash)
 
           walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
           walked = walk.walked[hash]
           unless nil.equal?(walked)
-            budget.spend!(walked.emitted)
+            _spend_paths!(allowance, walked.paths)
             return walked
           end
 
@@ -709,7 +733,7 @@ module Axn
           _raise_missing_shape_members!(via, via_name) if nil.equal?(members)
 
           walked = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
-            _check_and_copy_shape_members!(hash, members, walk.with(seen: nested), budget)
+            _check_and_copy_shape_members!(hash, members, walk.with(seen: nested), allowance)
           end
           _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
 
@@ -740,7 +764,7 @@ module Axn
         # a nested shape, the copy stored for it — reads that capture rather than the member again. Same reasoning
         # as the renderer's one-#to_s-per-key rule: a second read may disagree with the first or raise something
         # that is not even a StandardError, replacing the diagnosis with the escape these guards exist to prevent.
-        def _check_and_copy_shape_members!(hash, members, walk, budget)
+        def _check_and_copy_shape_members!(hash, members, walk, allowance)
           named = members.map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
           named.each { |member, name| _raise_nameless_member!(member, name) if Internal::ShapeGraph.missing?(name) }
           names = named.map { |_member, name| name }
@@ -766,12 +790,12 @@ module Axn
           end
 
           child = walk.with(depth: walk.depth + 1)
-          emitted = 0
+          paths = 0
           copied = named.map do |member, name|
             # Charged BEFORE this member is copied, and before its nested shape is walked, so a graph that
-            # multiplies out is rejected while the work done on it is still bounded by the budget.
-            budget.spend!(1)
-            emitted += 1
+            # multiplies out is rejected while the work done on it is still bounded by the allowance.
+            _spend_paths!(allowance, 1)
+            paths += 1
             # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the copy of
             # this member. A second read is a second answer the caller can give. `metadata` is read only for a
             # member that can be rebuilt: a duck-typed member is stored as the caller's own object, so reading
@@ -782,12 +806,12 @@ module Axn
             nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
             next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
 
-            inner = _walk_shape_graph!(nested, child, budget, via: member, via_name: name)
-            emitted += inner.emitted
+            inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
+            paths += inner.paths
             Internal::ShapeGraph.snapshot_member(member, validations, metadata, nested: inner.copy)
           end
 
-          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), emitted:)
+          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:)
         end
 
         # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
@@ -980,7 +1004,8 @@ module Axn
         # Only these — the ones this PR added. The other leading-underscore public class methods are
         # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
         # already reach; narrowing those is a separate, breaking question.
-        private :_symbol_keyed_member_validations, :_symbol_keyed_member_metadata, :_member_owner_label, :_describe_shape_member,
+        private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
+                :_symbol_keyed_member_metadata, :_member_owner_label, :_describe_shape_member,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
                 :_raise_duplicate_member!, :_raise_nameless_member!,

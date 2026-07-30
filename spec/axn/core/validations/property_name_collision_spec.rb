@@ -2072,14 +2072,63 @@ RSpec.describe "declaration-time property name collisions" do
         expect(elapsed).to be < 1.0
       end
 
-      # Past a point that sharing is not a schema anyone can use: the property count is exponential, and
-      # `input_schema` walks the same paths (786k nodes at eighteen levels, measured). Rejecting at declaration
-      # is the better of the two outcomes — the alternative is declaring cleanly and then hanging the first
-      # time anything reflects the contract.
-      it "rejects sharing deep enough that the property count is exponential" do
+      # Past a point that sharing is not a graph anything can walk cheaply: the PATHS are exponential, and the
+      # walks that read a stored contract on every logged call pay one step per path (measured: 262,000 paths ≈
+      # 4s per call). Rejecting at declaration is the better of the two outcomes — the alternative is declaring
+      # cleanly and then paying that on every call, and hanging the first time anything reflects it.
+      #
+      # Deliberately about the GRAPH, not about emitted properties: see `stored_shape_traversal_spec.rb` for the
+      # separate, plan-derived bound on what a schema emits.
+      it "rejects sharing deep enough that the path count is exponential" do
         shape = shared_sibling_shape(18)
 
         expect { project_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(ArgumentError, /has more than 25000 member paths/)
+      end
+
+      # The graph bound counts paths one at a time as well as by subtree: a single flat shape past the bound is
+      # rejected on the per-member charge, where the diamond above is caught by the shared-subtree total.
+      it "rejects one flat shape with more paths than the bound" do
+        members = Array.new(25_001) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError, /has more than 25000 member paths/)
+      end
+
+      # The emitted-property bound is DERIVED from the emitter's own plan, so a shape whose members never become
+      # properties costs nothing against it. A scalar `of:` is the clearest case: the members are validated off
+      # an element that stays a String, and the schema names none of them.
+      #
+      # Sized to make the derivation observable: 26 fields x 1,000 members is 26,000 members — past the
+      # emitted-property bound if they were charged — while each field's own graph is 1,000 paths, far inside the
+      # separate bound on graph size. Predicting instead of deriving rejects this contract; deriving projects it.
+      def wide_contract(per_field:, **options)
+        members = Array.new(per_field) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+        build_axn do
+          26.times { |f| expects :"f#{f}", shape: { members:, container: options[:container] }, **options.except(:container) }
+        end
+      end
+
+      it "does not charge members the schema never emits" do
+        klass = wide_contract(per_field: 1_000, type: Array, of: String, container: Array)
+
+        expect(klass.input_schema.dig(:properties, :f0)).to eq({ type: "array", items: { type: "string" } })
+      end
+
+      # The corollary in the other direction: the same width of members that DO emit is still charged, and still
+      # capped, so deriving has not simply disarmed the bound.
+      it "still charges and still caps members the schema does emit" do
+        expect { wide_contract(per_field: 1_000, type: Hash, container: Hash).input_schema }
+          .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+      end
+
+      # ...and an `of:` element type's OWN members reach `items` whether or not a shape overlays them, so the
+      # plan's `base_properties` are charged even when the overlay is not emitted.
+      it "counts an of: element type's own members, which the schema does emit" do
+        names = Array.new(26_000) { |i| :"m#{i}" }
+        wide = Data.define(*names)
+
+        expect { build_axn { expects :items, type: Array, of: wide }.input_schema }
           .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
       end
 

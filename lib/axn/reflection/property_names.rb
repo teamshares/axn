@@ -112,7 +112,7 @@ module Axn
       # a contract whose property count is exponential has no reflectable schema, and paying for one to discover
       # that would defeat the check.
       def validate_and_build(*config_arrays, direction:, &build)
-        reject_oversized_schema!(config_arrays.flatten(1))
+        reject_oversized_schema!(config_arrays.flatten(1), for_output: direction == :output)
         schema = build.call
         reject_colliding_emitted_properties!(schema) do
           direction == :input ? inbound_property_sources(*config_arrays) : outbound_property_sources(*config_arrays)
@@ -462,18 +462,12 @@ module Axn
       end
       private_constant :Budget
 
-      # The allowance the DECLARATION walk spends. Handed out rather than applied here, because bounding the
-      # graph and copying it have to be one walk over the caller's members: the bound gates the copy — copying a
-      # graph that multiplies out is the cost being avoided — and two walks let a members list answer them
-      # differently, leaving the class holding members the bound never counted.
-      def emitted_property_budget(&) = Budget.new(MAX_EMITTED_PROPERTIES, &)
-
-      def reject_oversized_schema!(configs)
+      def reject_oversized_schema!(configs, for_output:)
         budget = Budget.new(MAX_EMITTED_PROPERTIES)
         configs.each do |config|
           label = -> { describe_config(config) }
           budget.spend!(1, &label)
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(config), &label)
+          count_emitted_properties!(budget, config, for_output:, &label)
         end
       end
 
@@ -498,9 +492,27 @@ module Axn
       #
       # Ancestry-scoped (see CycleGuard), so a nested shape reused by SIBLING members is still counted twice —
       # that sharing is exactly what the budget exists to catch, and only genuine self-containment is a cycle.
-      def count_shape_members!(budget, shape, seen = nil, depth = 0, via: nil, &label)
-        hash = Internal::ShapeGraph.hash_or_nil(shape)
-        return if nil.equal?(hash)
+      #
+      # What it charges is DERIVED from `Schema.shape_property_plan` — the same plan the emitter itself acts on —
+      # rather than predicted from the declaration. A shape whose members never become properties therefore costs
+      # nothing: a scalar `of:` (`of: String` with `field :length`) validates its members off an element that
+      # stays a string, and an outbound-gated or non-member-keyed value emits no object at all. Charging those
+      # rejected a contract over a schema it does not have. The plan's `base_properties` ARE charged even when
+      # the shape overlay is not emitted, because an `of:` element type's own members reach `items` with or
+      # without a shape.
+      #
+      # The plan is asked once per shape-bearing node, not per member: a member with no nested shape has no
+      # subtree to charge and never reaches this.
+      def count_emitted_properties!(budget, owner, seen = nil, depth = 0, via: nil, for_output: false, &label)
+        validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(owner, :validations))
+        return if nil.equal?(validations)
+
+        hash = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+        return if nil.equal?(hash) && nil.equal?(validations[:of])
+
+        plan = Schema.shape_property_plan(owner, for_output:)
+        budget.spend!(plan.base_properties.size, &label)
+        return if nil.equal?(hash) || !plan.emitted
 
         raise_shape_too_deep!(via) if depth > Internal::ShapeGraph::MAX_NESTING
 
@@ -508,7 +520,7 @@ module Axn
           Internal::ShapeGraph.members(hash).each do |member|
             budget.spend!(1, &label)
 
-            count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), nested, depth + 1, via: member, &label)
+            count_emitted_properties!(budget, member, nested, depth + 1, via: member, for_output:, &label)
           end
         end
         raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(outcome)
@@ -537,7 +549,7 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
-                           :count_shape_members!, :raise_cyclic_shape!, :raise_shape_too_deep!
+                           :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!
     end
   end
 end

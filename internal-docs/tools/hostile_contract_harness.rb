@@ -1911,7 +1911,78 @@ puts "\n== cost: an honest shape must not hang at class definition =============
   end
 end
 
-check "shared sub-shape 18 deep is rejected, not left to hang on reflection", /ArgumentError.*names more than 25000 JSON properties/ do
+# The two bounds are DIFFERENT limits: one on the stored graph (paths, at declaration, because the walks that
+# read a contract per logged call pay a step per path), one on what a schema EMITS (at projection, derived from
+# the emitter's own plan). Conflating them over-rejected a contract whose schema names nothing.
+check "a scalar of: shape emits nothing, so it costs nothing", '{type: "array", items: {type: "string"}}' do
+  members = Array.new(1_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  klass = Class.new do
+    include Axn
+    expects :items, type: Array, of: String, shape: { members: members, container: Array }
+    def call; end
+  end
+  prop = klass.input_schema.dig(:properties, :items)
+  "{type: #{prop[:type].inspect}, items: {type: #{prop.dig(:items, :type).inspect}}}"
+end
+
+check "...even 26 fields of them, past the emitted bound in total", "declared and projected" do
+  members = Array.new(1_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  klass = Class.new do
+    include Axn
+    26.times { |f| expects :"f#{f}", type: Array, of: String, shape: { members: members, container: Array } }
+    def call; end
+  end
+  klass.input_schema && "declared and projected"
+rescue ::Exception => e
+  "#{e.class}: #{e.message[0, 50]}"
+end
+
+check "the same width of EMITTING members is still capped", /names more than 25000 JSON properties/ do
+  members = Array.new(1_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  klass = Class.new do
+    include Axn
+    26.times { |f| expects :"f#{f}", type: Hash, shape: { members: members, container: Hash } }
+    def call; end
+  end
+  begin
+    klass.input_schema && "projected"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
+# The `of:` element type's own members DO reach `items`, so they are still counted — the earlier of: finding
+# proved they reach the schema.
+check "an of: element type's own members are still counted", /names more than 25000 JSON properties/ do
+  wide = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+  klass = Class.new do
+    include Axn
+    expects :items, type: Array, of: wide
+    def call; end
+  end
+  begin
+    klass.input_schema && "projected"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
+# The graph bound, in its own vocabulary: flat (per-member charge) and shared (subtree charge).
+check "one flat shape past the path bound is rejected at declaration", /ArgumentError.*has more than 25000 member paths/ do
+  members = Array.new(25_001) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  begin
+    Class.new do
+      include Axn
+      expects :payload, type: Hash, shape: { members: members, container: Hash }
+      def call; end
+    end
+    "declared"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
+check "shared sub-shape 18 deep is rejected, not left to hang on reflection", /ArgumentError.*has more than 25000 member paths/ do
   raw = shared_diamond_shape(18)
   project { expects :payload, type: Hash, shape: raw }
 end
@@ -2081,6 +2152,56 @@ def boot_verdict(klass_name, inbound:)
   end
 ensure
   Axn::Tools::Registry.reset_adapters!
+end
+
+# Naming the tool must not cost the error. Reconstructing the exception class (`raise e.class, message`) calls a
+# constructor axn did not write, which fails outright for any exception taking more than a message — destroying
+# both the contract error and the class it promised to keep. Raising the OBJECT clones it and runs no initializer.
+STRUCTURED_BOOT_ERROR = Class.new(ArgumentError) do
+  def initialize(path:)
+    @path = path
+    super(nil)
+  end
+
+  def message = "structured at #{@path}"
+end
+
+def boot_error_verdict(raiser)
+  Axn::Tools::Registry.reset_adapters!
+  Axn.register_tool_adapter(:probe)
+  Object.send(:remove_const, :BootErrorTool) if Object.const_defined?(:BootErrorTool)
+  klass = Class.new do
+    include Axn
+    tool
+    expects :a, optional: true
+    def call; end
+  end
+  Object.const_set(:BootErrorTool, klass)
+  raiser.call(klass)
+  begin
+    Axn.validate_tool_contracts!
+    "NO RAISE"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message[0, 60]} | cause=#{e.cause.class}"
+  end
+ensure
+  # The constant must go, not just the adapters: the registry is process-global and enumerates any named class
+  # still defined, so a tool whose `internal_field_configs` raises would hijack every later boot row.
+  Object.send(:remove_const, :BootErrorTool) if Object.const_defined?(:BootErrorTool)
+  Axn::Tools::Registry.reset_adapters!
+end
+
+check "a structured exception reaches setup with its class, message and cause",
+      "#{STRUCTURED_BOOT_ERROR}: structured at p | cause=#{STRUCTURED_BOOT_ERROR}" do
+  boot_error_verdict(lambda { |klass|
+    error = STRUCTURED_BOOT_ERROR
+    klass.define_singleton_method(:internal_field_configs) { raise error.new(path: "p") }
+  })
+end
+
+# ...and the ordinary case still names the tool, since that is what the naming is for.
+check "a message-only exception is named for its tool", /BootErrorTool has an invalid tool contract — boom/ do
+  boot_error_verdict(->(klass) { klass.define_singleton_method(:internal_field_configs) { raise ArgumentError, "boom" } })
 end
 
 check "boot validates a shadowing tool's INBOUND contract",
