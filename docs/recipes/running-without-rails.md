@@ -33,7 +33,7 @@ Axn.validate_tool_contracts! # [!code focus]
 
 It projects every registered tool once and raises on the first invalid contract, naming the offending class. Nothing changes if you skip it — the same errors still raise the first time anything projects that contract — you just find out later.
 
-::: warning What it covers
+::: warning What It Covers
 The guarantee is exactly as wide as enumeration, and no wider:
 
 * **At least one tool adapter must be registered.** With none there are no tool roots and no membership to test, so the call is a no-op.

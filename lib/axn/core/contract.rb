@@ -227,7 +227,7 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
-          _reject_colliding_shape_member_names!(validations[:shape])
+          _snapshot_declared_shape!(validations, fields)
 
           if on.present?
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
@@ -284,7 +284,7 @@ module Axn
           # option is reported as the naming defect it is. That ordering only governs these two walks over
           # resolved members: in the block form the option error surfaces first, raised inside
           # `_build_shape_member` while `_build_shape` above is still assembling the members.
-          _reject_colliding_shape_member_names!(validations[:shape])
+          _snapshot_declared_shape!(validations, fields)
 
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
@@ -565,7 +565,7 @@ module Axn
         # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in;
         # a member that DOES define it cannot deny the reader to escape the check (see
         # Internal::ShapeGraph). A cyclic graph is impossible here — every declaration path runs
-        # `_reject_colliding_shape_member_names!`, which rejects one, before reaching this walk.
+        # `_validate_and_snapshot_shape!`, which rejects one, before reaching this walk.
         # The name is read BEFORE the violation is detected, so the message is built from a name already in
         # hand rather than by dispatching the reader again once a failure is being reported.
         def _reject_outbound_shape_user_facing!(shape)
@@ -624,21 +624,64 @@ module Axn
         # a shape Hash whose `[]` builds a fresh nested shape on every read — never repeats an object, so
         # no identity guard can see it; it is infinitely deep rather than cyclic, and only a depth cap
         # stops it. Both otherwise end in SystemStackError, outside StandardError, escaping every rescue.
-        def _reject_colliding_shape_member_names!(shape, walk = nil, via: nil, via_name: nil)
+        # THE declaration walk over a caller-supplied shape graph, and the only one: it rejects what cannot be
+        # declared and copies what can, in a single pass. Returns the copy, which the caller stores as the
+        # declared shape.
+        #
+        # Fused rather than a check pass followed by a copy pass, because the two have to agree about what the
+        # members ARE. A list that answers a second `each` differently would leave the class holding members no
+        # check ever saw — and the size bound has to gate the copy specifically, since copying a graph that
+        # multiplies out is the expense the bound exists to avoid (measured at 55 seconds for a graph the bound
+        # now rejects in milliseconds).
+        #
+        # So a caller's members list is read exactly ONCE per declaration, and the answer it gave is the
+        # contract: a list that would answer a later read differently never gets that read. What it cannot do is
+        # decline the first one — the declaration is not knowable without it — so a list that raises on being
+        # read raises at declaration, which is the intended outcome and the right one: the author is standing
+        # there, rather than the failure landing on whoever first reflects the class.
+        def _validate_and_snapshot_shape!(shape, fields)
+          budget = Axn::Reflection::PropertyNames.emitted_property_budget { _inspect_field_name(fields.first) }
+          _walk_shape_graph!(shape, nil, budget).copy
+        end
+
+        # Stores the copy in place of the caller's shape, and only when there is one to copy: a field that
+        # declared no `shape:` must not gain the key here, and a `shape:` that is not a Hash is left exactly as
+        # it came for the container check to reject.
+        def _snapshot_declared_shape!(validations, fields)
+          shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+          return if nil.equal?(shape)
+
+          validations[:shape] = _validate_and_snapshot_shape!(shape, fields)
+        end
+
+        # What one walked shape yields. The count travels with the copy because a shape REUSED by two members is
+        # walked (and copied) once but counted twice: sharing is exactly how a graph multiplies out, so the
+        # second reference charges the whole total its subtree expands to.
+        WalkedShape = Data.define(:copy, :emitted)
+        private_constant :WalkedShape
+
+        def _walk_shape_graph!(shape, walk, budget, via: nil, via_name: nil)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
-          return if nil.equal?(hash)
+          # Not a shape, so it has no members to walk and nothing to copy — returned as it came, for the
+          # container check downstream to reject.
+          return WalkedShape.new(copy: shape, emitted: 0) if nil.equal?(hash)
 
           walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
-          return if walk.walked.key?(hash)
+          walked = walk.walked[hash]
+          unless nil.equal?(walked)
+            budget.spend!(walked.emitted)
+            return walked
+          end
 
           _raise_shape_too_deep!(via, via_name) if walk.depth > MAX_SHAPE_NESTING
 
-          outcome = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
-            _check_shape_member_names!(hash, walk.with(seen: nested))
+          walked = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
+            _check_and_copy_shape_members!(hash, walk.with(seen: nested), budget)
           end
-          _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(outcome)
+          _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
 
-          walk.walked[hash] = true
+          walk.walked[hash] = walked
+          walked
         end
 
         # The state one walk carries. `seen` is the ANCESTRY set `CycleGuard` pushes and pops, which is what
@@ -647,8 +690,9 @@ module Axn
         # without it, that same legal diamond costs 2^depth walks (measured: 18 levels took 1.4s, 22 took
         # 22s), so a generated-but-honest schema with shared sub-shapes hung at class definition. Keyed by
         # identity, per declaration, and populated only AFTER a shape has passed, so a memoized entry always
-        # means "already verified". A shape that answers a later read differently is the inconsistent-reader
-        # limit above, not something re-walking would have caught.
+        # means "already verified" — and carries that shape's copy, so a shape reused by two members is read
+        # from the caller once and both members store the one copy. A shape that answers a later read
+        # differently is the inconsistent-reader limit above, not something re-walking would have caught.
         ShapeWalk = Data.define(:seen, :walked, :depth)
         private_constant :ShapeWalk
 
@@ -665,12 +709,12 @@ module Axn
         MAX_SHAPE_NESTING = 64
         private_constant :MAX_SHAPE_NESTING
 
-        # Each member's name is read exactly ONCE per walk, into a (member, name) pair, and every later use
-        # of it — a collision message, a cycle or depth report against a nested shape — reads that capture
-        # rather than the member again. Same reasoning as the renderer's one-#to_s-per-key rule: a second
-        # read may disagree with the first or raise something that is not even a StandardError, replacing
-        # the diagnosis with the escape these guards exist to prevent.
-        def _check_shape_member_names!(hash, walk)
+        # One node: its members checked, counted, and copied. Each member's name is read exactly ONCE, into a
+        # (member, name) pair, and every later use of it — a collision message, a cycle or depth report against
+        # a nested shape, the copy stored for it — reads that capture rather than the member again. Same reasoning
+        # as the renderer's one-#to_s-per-key rule: a second read may disagree with the first or raise something
+        # that is not even a StandardError, replacing the diagnosis with the escape these guards exist to prevent.
+        def _check_and_copy_shape_members!(hash, walk, budget)
           named = Internal::ShapeGraph.members(hash).map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
           names = named.filter_map { |_member, name| name unless Internal::ShapeGraph.missing?(name) }
           # Ahead of every other name check: a name that is not a String or a Symbol has two independent
@@ -695,9 +739,24 @@ module Axn
           end
 
           child = walk.with(depth: walk.depth + 1)
-          named.each do |member, name|
-            _reject_colliding_shape_member_names!(_member_shape(member), child, via: member, via_name: name)
+          emitted = 0
+          copied = named.map do |member, name|
+            # Charged BEFORE this member is copied, and before its nested shape is walked, so a graph that
+            # multiplies out is rejected while the work done on it is still bounded by the budget.
+            budget.spend!(1)
+            emitted += 1
+            # `validations` is read ONCE and threaded to both uses — the nested shape to walk, and the copy of
+            # this member. A second read is a second answer the caller can give.
+            validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
+            nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
+            next Internal::ShapeGraph.snapshot_member(member, validations) if nil.equal?(nested)
+
+            inner = _walk_shape_graph!(nested, child, budget, via: member, via_name: name)
+            emitted += inner.emitted
+            Internal::ShapeGraph.snapshot_member(member, validations, nested: inner.copy)
           end
+
+          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), emitted:)
         end
 
         # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
@@ -790,7 +849,7 @@ module Axn
         # Only these — the ones this PR added. The other leading-underscore public class methods are
         # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
         # already reach; narrowing those is a separate, breaking question.
-        private :_describe_shape_member, :_reject_colliding_shape_member_names!, :_check_shape_member_names!,
+        private :_describe_shape_member, :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!, :_check_and_copy_shape_members!,
                 :_raise_cyclic_shape!, :_raise_shape_too_deep!, :_raise_duplicate_member!
 
         private
@@ -1165,7 +1224,7 @@ module Axn
         # axn stores are copied, while the values inside them stay the caller's objects — a `validate:` callable,
         # a `model:` class, an `inclusion:` member. Those are meant to be the caller's, and copying them would
         # change what a declaration means rather than protect it. `shape:` is excluded because it needs a deep
-        # copy of its own (see ShapeGraph.snapshot) and gets one downstream.
+        # copy of its own (see _validate_and_snapshot_shape!) and gets one downstream.
         def _detach_option_containers!(validations)
           validations.each do |key, value|
             next if key == :shape
@@ -1177,19 +1236,20 @@ module Axn
           end
         end
 
-        def _derive_raw_shape_container!(validations, fields)
+        def _derive_raw_shape_container!(validations)
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return if nil.equal?(shape)
 
-          # A deep private copy ALWAYS, not only when a container has to be derived: what is stored IS the
-          # contract, and storing the caller's own object leaves it aliased to something they can still mutate
-          # (see ShapeGraph.snapshot). The container is derived onto the copy when absent, and checked either way.
-          # Ahead of the copy: copying an exponentially-large graph is the cost the cap exists to avoid.
-          Axn::Reflection::PropertyNames.reject_oversized_shape!(shape, _inspect_field_name(fields.first))
-          snapshot = Internal::ShapeGraph.snapshot(shape)
-          snapshot[:container] = _shape_compatible_type!(validations) if nil.equal?(snapshot[:container])
-          _reject_non_class_container!(snapshot[:container])
-          validations[:shape] = snapshot
+          # Detached ALWAYS, not only when a container has to be derived: deriving one is a write, and what is
+          # stored IS the contract, so writing into the caller's own Hash would change a shape they still hold.
+          # One level is all this needs — the deep copy, and the bound on how much there is to copy, belong to
+          # the single declaration walk (see _validate_and_snapshot_shape!), which is also what captures the
+          # members list carried forward here. A shape nested inside a `do…end` block reaches this before that
+          # walk, which is exactly why the write must not land on the caller's object.
+          detached = Internal::ShapeGraph.detach_node(shape)
+          detached[:container] = _shape_compatible_type!(validations) if nil.equal?(detached[:container])
+          _reject_non_class_container!(detached[:container])
+          validations[:shape] = detached
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -1501,7 +1561,7 @@ module Axn
             raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
 
-          _derive_raw_shape_container!(validations, fields)
+          _derive_raw_shape_container!(validations)
 
           # Push allow_blank and allow_nil to the individual validations
           if allow_blank || allow_nil

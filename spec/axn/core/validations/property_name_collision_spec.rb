@@ -277,6 +277,68 @@ RSpec.describe "declaration-time property name collisions" do
       expect(payload_props(build_axn { expects :payload, type: Hash, shape: })).to eq([:s])
     end
 
+    # A members list that answers two reads differently is a caller contradicting itself, and the answer is to
+    # ask exactly once: checking the graph, bounding its size, and copying it are ONE walk, so no later layer
+    # can be handed members a check never saw. Measured rather than asserted, at two nesting levels.
+    describe "reading a caller's members list" do
+      # `each` is the only method the walk uses (see Internal::ShapeGraph), so counting it counts the walks.
+      def counting_list(*members)
+        Class.new do
+          attr_reader :walks
+
+          define_method(:initialize) do |items|
+            @items = items
+            @walks = 0
+          end
+
+          define_method(:each) do |&block|
+            @walks += 1
+            @items.each(&block)
+            self
+          end
+        end.new(members)
+      end
+
+      it "reads it exactly once per declaration, at every level of nesting" do
+        inner = counting_list(Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {}))
+        outer = counting_list(Axn::Core::Contract::ShapeConfig.new(field: :mid,
+                                                                   validations: { type: { klass: Hash }, shape: { members: inner, container: Hash } }))
+        klass = build_axn { expects :payload, type: Hash, shape: { members: outer, container: Hash } }
+
+        expect([outer.walks, inner.walks]).to eq([1, 1])
+
+        klass.input_schema
+        klass.output_schema
+
+        expect([outer.walks, inner.walks]).to eq([1, 1])
+      end
+
+      it "holds the answer that one read gave, when a later read would answer differently" do
+        list = Class.new do
+          def initialize = @reads = 0
+
+          def each(&block)
+            @reads += 1
+            [Axn::Core::Contract::ShapeConfig.new(field: :"read#{@reads}", validations: {})].each(&block)
+            self
+          end
+        end.new
+        klass = build_axn { expects :payload, type: Hash, shape: { members: list, container: Hash } }
+
+        expect(payload_props(klass)).to eq([:read1])
+      end
+
+      # The one case that still surfaces at declaration, and deliberately: a list that cannot be read AT ALL
+      # leaves nothing to declare, so its exception propagates to where the author is standing rather than
+      # being deferred to the first projection.
+      it "raises at declaration when the list cannot be read at all" do
+        list = Class.new { def each = raise(TypeError, "no members for you") }.new
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members: list, container: Hash } } }
+          .to raise_error(TypeError, "no members for you")
+      end
+    end
+
     # The bounded residue: a duck-typed member is the caller's own object and cannot be rebuilt, so a nested
     # shape it carries stays shared. Asserted rather than left implicit, since the docs claim exactly this much.
     it "cannot copy a nested shape carried by a duck-typed member" do

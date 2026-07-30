@@ -117,7 +117,7 @@ module Axn
         # Yield every member of `shape`, recursing into each member's own nested shape. Every read goes
         # through Internal::ShapeGraph, so a member supplied by a raw `shape:` kwarg cannot deny a reader
         # it defines and slip past the checks this walk feeds. A cyclic graph is impossible here — it is
-        # rejected at declaration by `_reject_colliding_shape_member_names!`, ahead of this walk.
+        # rejected at declaration by `_validate_and_snapshot_shape!`, ahead of this walk.
         def _each_shape_member(shape, &block)
           Internal::ShapeGraph.members(shape).each do |member|
             yield member

@@ -412,40 +412,62 @@ module Axn
       MAX_EMITTED_PROPERTIES = 25_000
       private_constant :MAX_EMITTED_PROPERTIES
 
+      # An allowance of emitted properties, spent as a graph is walked and exhausted the moment the walk goes
+      # past it — so a graph that multiplies out costs the cap rather than its own size. Counting the whole
+      # graph first would be the very expense being avoided.
+      #
+      # The label names whatever the walk is judging, and is carried as a block rather than a built string
+      # because it is only ever needed on the failure path: every honest declaration would otherwise pay for
+      # rendering a name nothing reads.
+      class Budget
+        def initialize(remaining, &label)
+          @remaining = remaining
+          @label = label
+        end
+
+        # `properties` is what the walk is about to admit — one for a single member, or, when a walk reaches a
+        # shape it has already copied, the whole total that shape expands to (reuse is what makes a graph
+        # multiply out, and the cap bounds what a schema would EMIT rather than how many objects are stored).
+        def spend!(properties, &label)
+          @remaining -= properties
+          return unless @remaining.negative?
+
+          raise ArgumentError, Budget.too_many_properties((label || @label).call)
+        end
+
+        def self.too_many_properties(label)
+          "the shape on #{label} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
+            "properties — a nested shape object reused by sibling members multiplies out, so every path " \
+            "through it is a separate property and the reflected schema grows exponentially " \
+            "(`input_schema` would not finish either). Give each member its own nested shape, or flatten " \
+            "the nesting."
+        end
+      end
+      private_constant :Budget
+
+      # The allowance the DECLARATION walk spends. Handed out rather than applied here, because bounding the
+      # graph and copying it have to be one walk over the caller's members: the bound gates the copy — copying a
+      # graph that multiplies out is the cost being avoided — and two walks let a members list answer them
+      # differently, leaving the class holding members the bound never counted.
+      def emitted_property_budget(&) = Budget.new(MAX_EMITTED_PROPERTIES, &)
+
       def reject_oversized_schema!(configs)
-        budget = [MAX_EMITTED_PROPERTIES]
+        budget = Budget.new(MAX_EMITTED_PROPERTIES)
         configs.each do |config|
-          budget[0] -= 1
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(config)) { raise_too_many_properties!(describe_config(config)) }
+          label = -> { describe_config(config) }
+          budget.spend!(1, &label)
+          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(config), &label)
         end
       end
 
-      # The same bound over ONE raw shape, for the declaration path. A deep copy of the shape graph is taken when
-      # the class is declared (see ShapeGraph.snapshot), and copying an exponentially-large graph is exactly the
-      # cost this cap exists to avoid — so it has to run before that copy, not only before a schema build.
-      # `label` names the declaration, since no config exists yet at that point.
-      def reject_oversized_shape!(shape, label)
-        count_shape_members!([MAX_EMITTED_PROPERTIES], shape) { raise_too_many_properties!(label) }
-      end
-
-      # Decrements a shared budget and raises the moment it runs out, so an exponential graph costs the cap
-      # rather than its own size. Counting the whole graph first would be the very expense being avoided.
-      def count_shape_members!(budget, shape, &exhausted)
+      # The same bound over the stored configs a schema build is about to walk. These are axn's own copies by
+      # then, so nothing here reads a caller's list — the declaration walk already captured it.
+      def count_shape_members!(budget, shape, &label)
         Internal::ShapeGraph.members(shape).each do |member|
-          budget[0] -= 1
-          exhausted.call if budget[0].negative?
+          budget.spend!(1, &label)
 
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), &exhausted)
+          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), &label)
         end
-      end
-
-      def raise_too_many_properties!(label)
-        raise ArgumentError,
-              "the shape on #{label} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
-              "properties — a nested shape object reused by sibling members multiplies out, so every path " \
-              "through it is a separate property and the reflected schema grows exponentially " \
-              "(`input_schema` would not finish either). Give each member its own nested shape, or flatten " \
-              "the nesting."
       end
 
       # Six entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
@@ -457,7 +479,7 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
-                           :count_shape_members!, :raise_too_many_properties!
+                           :count_shape_members!
     end
   end
 end

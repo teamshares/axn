@@ -75,10 +75,10 @@ module Axn
         captured
       end
 
-      # A deep, private copy of a caller-supplied shape graph: the shape Hash, its members list, each member's
-      # `validations`/`metadata`, and recursively any nested shape a member carries.
+      # ONE node of a caller-supplied shape graph, copied into a Hash this module owns, with `members` — the
+      # copies the declaration walk built for this node — put in place of whatever it carried.
       #
-      # Taken at DECLARATION because a contract must not change after the class is declared, and storing the
+      # Copied at DECLARATION because a contract must not change after the class is declared, and storing the
       # caller's object aliases it: a builder Hash reused across two declarations gave the FIRST class members
       # appended after it was declared, and mutating a nested shape changed an already-declared contract from
       # the outside. Copying is what makes "the contract is what you declared" true, and it makes the
@@ -89,47 +89,57 @@ module Axn
       # makes behave the way its author obviously meant. Sharing one shape Hash across two axns keeps working
       # for the same reason — each takes its own copy.
       #
-      # Only a member that can be REBUILT is copied. A `ShapeConfig` can (`Data#with` re-runs its constructor,
-      # so the copy is held to the same name grammar and normalization as the original), while a duck-typed
-      # member is the caller's own object and cannot be — so its nested shape, if it has one, stays aliased.
-      # That residue is bounded and documented rather than papered over.
+      # Copying a node is deliberately NOT recursive, and takes no members of its own: the walk that recurses is
+      # the declaration walk (`Contract#_validate_and_snapshot_shape!`), which is also what checks the graph and
+      # what bounds its size, and those cannot be separate passes — a members list that answers two walks
+      # differently would otherwise leave the class holding members no check ever saw.
       #
-      # Recursion needs no cycle or depth guard of its own: every declaration path runs the shape-member walk
-      # first, which rejects a self-referential or generated graph, so what reaches here is finite.
-      def self.snapshot(shape)
-        hash = hash_or_nil(shape)
-        return shape if nil.equal?(hash)
-
+      # `:container` is re-read through `[]` — the read every consumer makes — rather than taken from the `each`
+      # copy: a shape whose `[]` answers differently from its entries is deciding what the contract IS, and the
+      # container check downstream has to see the same answer reflection would.
+      def self.snapshot_node(hash, members)
         copy = {}
         hash.each { |key, value| copy[key] = value }
-        # `:members` and `:container` are re-read through `[]` — the read every consumer makes — rather than
-        # taken from the `each` copy: a shape whose `[]` answers differently from its entries is deciding what
-        # the contract IS, and the container check downstream has to see the same answer reflection would.
-        copy[:members] = members(hash).map { |member| snapshot_member(member) }
+        copy[:members] = members
         copy[:container] = hash[:container]
         copy
       end
 
-      # Rebuildable means a `Data` — `ShapeConfig` is one — tested with `case`/`when`, which consults the real
-      # class. Probing for a `with` METHOD is not the same question and gets a false positive: ActiveSupport
-      # defines `Object#with`, which takes the same keywords but yields a block, so every member would look
-      # rebuildable and none would be. `Data#with` is bound rather than dispatched, so a subclass redefining it
-      # cannot decide what the stored contract becomes.
+      # The same node with its members carried forward untouched — the caller's own list, which the declaration
+      # walk captures (exactly once) when it reaches this node. For the one WRITE the declaration path makes
+      # into a shape, deriving an absent `:container`: writing that into the caller's Hash would change a shape
+      # they still hold, and a shape shared between two declarations would carry the first one's container into
+      # the second.
+      def self.detach_node(hash) = snapshot_node(hash, hash[:members])
+
+      # Only a member that can be REBUILT is copied. Rebuildable means a `Data` — `ShapeConfig` is one — tested
+      # with `case`/`when`, which consults the real class, and rebuilt through `Data#with`, so the copy is held
+      # to the same name grammar and normalization as the original. Probing for a `with` METHOD is not the same
+      # question and gets a false positive: ActiveSupport defines `Object#with`, which takes the same keywords
+      # but yields a block, so every member would look rebuildable and none would be. `Data#with` is bound
+      # rather than dispatched, so a subclass redefining it cannot decide what the stored contract becomes.
+      #
+      # A duck-typed member is the caller's own object and cannot be rebuilt — so it, and the nested shape it
+      # carries, stay aliased. That residue is bounded and documented rather than papered over.
       DATA_WITH = ::Data.instance_method(:with)
       private_constant :DATA_WITH
 
-      def self.snapshot_member(member)
+      # `validations` is passed in ALREADY READ, and `nested` is the copy the walk made of the shape inside it:
+      # both are things the walk needed anyway, and reading them here a second time would ask the caller's
+      # object questions it has already answered — which is the same divergence the single walk exists to close.
+      # `nested` is omitted when this member carries no nested shape, so a member without one never gains a
+      # `:shape` key it did not declare.
+      def self.snapshot_member(member, validations, nested: NOT_DEFINED)
         case member
         when ::Data then nil
         else return member
         end
 
-        validations = hash_or_nil(read(member, :validations))
         return member if nil.equal?(validations)
 
         copied = {}
         validations.each { |key, value| copied[key] = value }
-        copied[:shape] = snapshot(copied[:shape]) unless nil.equal?(hash_or_nil(copied[:shape]))
+        copied[:shape] = nested unless missing?(nested)
         metadata = hash_or_nil(read(member, :metadata))
         attributes = { validations: copied }
         attributes[:metadata] = metadata.dup unless metadata.nil?
