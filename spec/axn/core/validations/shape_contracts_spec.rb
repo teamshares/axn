@@ -489,6 +489,43 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
+    # Reflection honors the same two-method contract declaration does: a member implementing only #field and
+    # #validations reflects, with every other attribute (#description, #default) treated as absent. Before,
+    # such a member declared cleanly and then raised NoMethodError from `input_schema`.
+    describe "duck-typed member contract (reflection)" do
+      it "reflects a member implementing only #field and #validations" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+        end.new
+        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.input_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+        expect(klass.output_schema[:properties]).to eq({})
+      end
+
+      it "reflects such a member on exposes too" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+        end.new
+        klass = build_axn { exposes :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.output_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+      end
+
+      it "still emits a description when the member defines one" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+          def description = "the ok member"
+        end.new
+        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.input_schema.dig(:properties, :p, :properties, :ok)).to eq({ description: "the ok member" })
+      end
+    end
+
     describe "duck-typed member contract (member without #method_call)" do
       it "treats a member lacking #method_call as not opted in (safe default), no NoMethodError" do
         raw_member = Struct.new(:field, :validations).new(:status, { type: { klass: String } })

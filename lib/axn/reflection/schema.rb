@@ -5,6 +5,8 @@ require "time"
 
 require "axn/reflection/subfield_tree"
 
+require "axn/internal/shape_graph"
+
 module Axn
   module Reflection
     # Builds JSON Schema (input/output) from an Axn's declared contract. Read-only, off the execution
@@ -56,6 +58,18 @@ module Axn
       NodeAnnotation = Data.define(:required, :nullable)
 
       module_function
+
+      # The shape-member contract axn documents is duck-typed: `#field` and `#validations`, and nothing more
+      # (see `shape_contracts_spec.rb`'s "duck-typed member contract"). Declaration honors that — a member is
+      # accepted on those two alone — so the emission path has to as well, or a member the contract permits
+      # declares cleanly and then breaks `input_schema`. Every OTHER attribute a config may carry is optional
+      # here and read through this: today `#description` and `#default`, enumerated at each call site.
+      #
+      # A `FieldConfig` or `ShapeConfig` always answers, so this changes nothing for a declared field or a
+      # block-form member; it only stops reflection demanding more of a raw member than declaration does.
+      # `ShapeGraph.read` is the same tolerant read the declaration guards use, so both layers agree about
+      # what a member has.
+      def declared_attribute(config, name) = Axn::Internal::ShapeGraph.read(config, name)
 
       # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
       # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
@@ -606,9 +620,9 @@ module Axn
       # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
       # other lazy collection) could issue a query or run user code. A non-literal default is present.
       def usable_default?(config, subfield:, satisfiability: false)
-        return false unless config.respond_to?(:default)
-
-        value = config.default
+        # `#default` is beyond the documented member contract, so absent and nil are one answer here — both
+        # mean "no default to relax the field with", which is what the original respond_to? guard did.
+        value = declared_attribute(config, :default)
         return false if value.nil?
         # The governing split (PRO-2889): a Proc default is unknowable at declaration. Strict (schema)
         # mode resolves toward required — the safe direction — while satisfiability mode (the
@@ -655,7 +669,7 @@ module Axn
       def usable_id_token_default?(config)
         return false unless usable_default?(config, subfield: true, satisfiability: true)
 
-        value = config.respond_to?(:default) ? config.default : nil
+        value = declared_attribute(config, :default)
         return true if value.is_a?(Proc)
 
         !presence_blank?(value)
@@ -917,7 +931,9 @@ module Axn
 
       def build_property(config, for_output: false, subfield: false)
         prop = {}
-        prop[:description] = config.description if config.description
+        # `#description` is beyond the documented member contract (see declared_attribute).
+        description = declared_attribute(config, :description)
+        prop[:description] = description if description
 
         # OUTPUT safety runs the other direction from input: the property must admit a SUPERSET of
         # what the serializer can emit. A closed outbound gate skips EVERY validator (not just
@@ -945,11 +961,12 @@ module Axn
         nullable = nil_allowed?(config)
         apply_type_info!(prop, type_info, config, nullable:)
 
-        if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
+        declared_default = declared_attribute(config, :default)
+        if !declared_default.nil? && !declared_default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
           # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
           emit_default = subfield ? config.applied_default? : true
-          prop[:default] = normalize_schema_literal(config.default) if emit_default
+          prop[:default] = normalize_schema_literal(declared_default) if emit_default
         end
 
         if (inclusion = config.validations[:inclusion])
