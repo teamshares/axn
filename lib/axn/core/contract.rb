@@ -691,8 +691,12 @@ module Axn
 
           _raise_shape_too_deep!(via, via_name) if walk.depth > MAX_SHAPE_NESTING
 
+          # Read as SUPPLIED, so a shape that names no members is told apart from one naming an empty list.
+          members = Internal::ShapeGraph.declared_members(hash)
+          _raise_missing_shape_members!(via, via_name) if nil.equal?(members)
+
           walked = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
-            _check_and_copy_shape_members!(hash, walk.with(seen: nested), budget)
+            _check_and_copy_shape_members!(hash, members, walk.with(seen: nested), budget)
           end
           _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
 
@@ -730,8 +734,8 @@ module Axn
         # a nested shape, the copy stored for it — reads that capture rather than the member again. Same reasoning
         # as the renderer's one-#to_s-per-key rule: a second read may disagree with the first or raise something
         # that is not even a StandardError, replacing the diagnosis with the escape these guards exist to prevent.
-        def _check_and_copy_shape_members!(hash, walk, budget)
-          named = Internal::ShapeGraph.members(hash).map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
+        def _check_and_copy_shape_members!(hash, members, walk, budget)
+          named = members.map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
           named.each { |member, name| _raise_nameless_member!(member, name) if Internal::ShapeGraph.missing?(name) }
           names = named.map { |_member, name| name }
           # Ahead of every other name check: a name that is not a String or a Symbol has two independent
@@ -767,6 +771,7 @@ module Axn
             # member that can be rebuilt: a duck-typed member is stored as the caller's own object, so reading
             # it would run a reader nothing then consumes.
             validations = _symbol_keyed_member_validations(member, name)
+            _raise_member_without_validations!(member, name) if nil.equal?(validations)
             metadata = Internal::ShapeGraph.rebuildable?(member) ? _symbol_keyed_member_metadata(member, name) : nil
             nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
             next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
@@ -887,6 +892,35 @@ module Axn
                 "`field :name` inside a `shape` block."
         end
 
+        # A shape is a container plus the members that describe what is inside it, so a raw one that names no
+        # members list at all is malformed — it declares a shaped field nothing describes. It used to be caught
+        # on the first CALL (`ShapeValidator#check_validity!` refuses a nil members list); rejecting it here is
+        # strictly earlier and is where every other malformed declaration is answered.
+        #
+        # An empty list is NOT this: `members: []` is a real declaration (the container type still constrains the
+        # value), pointless rather than wrong, and axn's business is not to refuse it.
+        def _raise_missing_shape_members!(member, name)
+          via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
+          raise ArgumentError,
+                "a raw `shape:`#{via} must supply `members:` — a shape describes what is inside a container, so " \
+                "one with no members list constrains nothing beyond the container type, and runtime validation " \
+                "has nothing to validate against. Supply `members: [...]` (an empty list is accepted, if " \
+                "pointless), or declare the shape with a `do … end` block, which builds the members list for you."
+        end
+
+        # The other half of the documented member contract (see _raise_nameless_member!): runtime validation
+        # reads `member.validations` for every member it validates — repeatedly, and dispatched directly — so a
+        # member that answers to `field` but not `validations` declared cleanly and then raised NoMethodError on
+        # the first call. `validations: {}` is the honest spelling of "constrains nothing".
+        def _raise_member_without_validations!(member, name)
+          raise ArgumentError,
+                "a shape member must answer to `validations` as well as `field` — the member " \
+                "#{_describe_shape_member(member, name)} answers to `field` only. Runtime validation reads " \
+                "`member.validations` for every member, so such a member would raise NoMethodError on the first " \
+                "call. Give it a `validations` reader (`{}` when it constrains nothing), or declare the member " \
+                "with `field :name` inside a `shape` block."
+        end
+
         # The same member key declared twice in one block. No comparison of the two names is needed — and so
         # none is made: they arrived under one `to_sym` key, which is the identity the schema itself uses, so
         # nothing a name's class can define (an `==` that raises) is dispatched to reach this conclusion.
@@ -954,7 +988,8 @@ module Axn
         private :_symbol_keyed_member_validations, :_symbol_keyed_member_metadata, :_member_owner_label, :_describe_shape_member,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
-                :_raise_duplicate_member!, :_raise_nameless_member!
+                :_raise_duplicate_member!, :_raise_nameless_member!,
+                :_raise_missing_shape_members!, :_raise_member_without_validations!
 
         private
 

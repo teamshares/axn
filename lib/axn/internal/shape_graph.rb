@@ -120,6 +120,21 @@ module Axn
         capture(hash && hash[:members])
       end
 
+      # The members list AS SUPPLIED: the captured list, or nil when the shape supplies none at all. The
+      # distinction matters in exactly one place — the declaration walk, where a raw shape with no members list
+      # is malformed while an empty one is a real (if pointless) declaration. Every layer after that wants
+      # `members`, which treats them alike because neither yields anything to walk. Nil for a non-Hash too: it
+      # supplies no members either.
+      def self.declared_members(shape)
+        hash = hash_or_nil(shape)
+        return nil if nil.equal?(hash)
+
+        raw = hash[:members]
+        return nil if nil.equal?(raw)
+
+        capture(raw)
+      end
+
       # A caller-supplied list, captured into an Array this module owns. THE seam every layer reads a member
       # list through — the declaration guard, schema reflection, and runtime validation all consume this, so
       # they cannot see different members. A list that answers `filter_map`/`map`/`select` differently from

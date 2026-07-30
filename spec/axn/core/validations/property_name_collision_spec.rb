@@ -1725,6 +1725,16 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(ArgumentError, /a shape member must answer to `field`.*of class Object/m)
       end
 
+      # The other half of the documented contract, and the same failure mode: runtime validation reads
+      # `member.validations` for every member, dispatched directly, so a member answering to `field` only
+      # declared cleanly and then raised NoMethodError on the first call.
+      it "rejects a member that answers to field but not validations" do
+        members = [Class.new { def field = :a }.new]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
+          .to raise_error(ArgumentError, /must answer to `validations` as well as `field`.*member `a`/m)
+      end
+
       # The other half of the same contract: a member implementing BOTH readers and nothing else is legal, and
       # works end to end — declaring, projecting, and validating a call.
       it "accepts a member implementing only field and validations, end to end" do

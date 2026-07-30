@@ -486,6 +486,41 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # A shape describes what is inside a container, so a raw one that names no members list is malformed. It
+    # used to be caught on the first CALL (ShapeValidator refuses a nil members list); it is rejected at
+    # declaration now, which is strictly earlier and where every other malformed declaration is answered.
+    describe "a raw shape that names no members" do
+      def declared_with(shape)
+        build_axn { expects :payload, type: Hash, shape: }
+      end
+
+      it "rejects an absent members list" do
+        expect { declared_with({ container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`.*do … end/m)
+      end
+
+      it "rejects an explicit nil members list on the same terms" do
+        expect { declared_with({ members: nil, container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`/)
+      end
+
+      it "names the member carrying a malformed nested shape" do
+        nested = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: { container: Hash } })
+
+        expect { declared_with({ members: [nested], container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` at shape member `a` must supply `members:`/)
+      end
+
+      # An empty list is a real declaration — pointless, since only the container type then constrains the
+      # value, but not axn's business to refuse. It declares and calls cleanly.
+      it "accepts an explicitly empty members list" do
+        klass = declared_with({ members: [], container: Hash })
+
+        expect(klass.call(payload: { anything: 1 })).to be_ok
+        expect(klass.call(payload: "not a hash")).not_to be_ok
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
