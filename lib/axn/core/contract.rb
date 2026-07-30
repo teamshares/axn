@@ -1258,20 +1258,42 @@ module Axn
             next if key == :shape
 
             case value
-            when ::Hash then validations[key] = _detached_option_bag(value)
-            when ::Array then validations[key] = Internal::ShapeGraph.detached_dup(value)
+            when ::Hash then validations[key] = _detached_option_bag(key, value)
+            when ::Array then validations[key] = _detached_option_array(value, "`#{key}:`")
             end
           end
         end
 
-        def _detached_option_bag(bag)
+        def _detached_option_bag(key, bag)
           copy = Internal::ShapeGraph.copy_entries(bag)
           copy.each do |option_key, option|
             case option
-            when ::Array then copy[option_key] = Internal::ShapeGraph.detached_dup(option)
+            when ::Array then copy[option_key] = _detached_option_array(option, "`#{key}: { #{option_key}: … }`")
             end
           end
           copy
+        end
+
+        # Copy, then CHECK the copy — rather than predict which containers copy faithfully. A same-class `dup`
+        # runs the container's own `initialize_dup`, which is free to alter what the copy holds: one that cleared
+        # itself produced a declared contract that rejected the very values it was declared with. Refusing every
+        # container that defines the callback would reject the legitimate use of it (rebuilding a derived index
+        # off the copied elements), and skipping the callback would hand back an object whose class expects to
+        # establish its invariants in exactly that hook. Comparing what came back against what went in accepts
+        # both and rejects only a copy that genuinely differs.
+        #
+        # The container is named by class, never by `inspect` — its own code must not run while the declaration
+        # error it caused is being built.
+        def _detached_option_array(value, label)
+          copy = Internal::ShapeGraph.detached_dup(value)
+          return copy if Internal::ShapeGraph.same_elements?(value, copy)
+
+          raise ArgumentError,
+                "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) does not survive being " \
+                "copied — its `initialize_dup` returns a copy holding different elements than the original. A " \
+                "declared contract is copied at declaration so that mutating what you still hold cannot change " \
+                "it, so the copy IS the contract, and this one would validate against elements never declared. " \
+                "Supply a plain Array, or a container whose duplication preserves its elements."
         end
 
         def _derive_raw_shape_container!(validations)

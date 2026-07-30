@@ -433,6 +433,39 @@ RSpec.describe "declaration-time property name collisions" do
         expect(accepts_c?(klass)).to be(false)
       end
 
+      # A same-class copy runs the container's own `initialize_dup`, so the copy is checked against the original
+      # rather than trusted. Only a copy that genuinely differs is rejected.
+      it "rejects one whose duplication drops its elements" do
+        values = Class.new(Array) do
+          def initialize_dup(source)
+            super
+            clear
+          end
+        end.new.push("a", "b")
+
+        expect { declared_with(values) }
+          .to raise_error(ArgumentError, /does not survive being copied.*preserves its elements/m)
+      end
+
+      # ...and accepts the legitimate use of that same callback: rebuilding a derived index off the copied
+      # elements. A blanket refusal of containers defining `initialize_dup` would reject this.
+      it "still accepts one whose duplication rebuilds a derived index" do
+        values = Class.new(Array) do
+          def initialize_dup(source)
+            super
+            reindex
+          end
+
+          def reindex = @index = each_with_object({}) { |value, hash| hash[value] = true }
+
+          def include?(value) = (@index || reindex).key?(value)
+        end.new.push("x", "y")
+        klass = declared_with(values)
+
+        expect(klass.call(choice: "x")).to be_ok
+        expect(klass.call(choice: "z")).not_to be_ok
+      end
+
       # The copy must not over-reach either: an Array's own `include?` is how an `inclusion:` set answers
       # membership, so the stored copy keeps the caller's CLASS rather than becoming a plain Array (which
       # would also publish an enum reflection deliberately withholds for anything but an exact Array).

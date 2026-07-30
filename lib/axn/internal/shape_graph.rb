@@ -53,7 +53,10 @@ module Axn
       # own traversal is reachable without asking the subclass anything.
       HASH_EACH = ::Hash.instance_method(:each)
       KERNEL_DUP = ::Kernel.instance_method(:dup)
-      private_constant :HASH_EACH, :KERNEL_DUP
+      ARRAY_SIZE = ::Array.instance_method(:size)
+      ARRAY_AT = ::Array.instance_method(:[])
+      BASIC_EQUAL = ::BasicObject.instance_method(:equal?)
+      private_constant :HASH_EACH, :KERNEL_DUP, :ARRAY_SIZE, :ARRAY_AT, :BASIC_EQUAL
 
       # A caller Hash's entries, in a plain Hash this module owns.
       def self.copy_entries(hash)
@@ -66,7 +69,33 @@ module Axn
       # what a declaration MEANS — an `inclusion:` set answers membership with its own `include?` — so replacing
       # a subclass with a plain Array would change the contract rather than protect it, and would also publish
       # an enum reflection deliberately withholds for anything but an exact Array.
+      #
+      # `Kernel#dup` still runs the duplication CALLBACK (`initialize_dup`), which is the caller's code and can
+      # alter the copy — one that cleared it left a contract rejecting the very values it declared. Bypassing the
+      # callback is not the answer (a class that establishes its invariants there would get a broken copy), nor
+      # is refusing containers that define one (a subclass rebuilding a derived index from it is legitimate and
+      # works). So the copy is CHECKED instead: see `same_elements?`, and the declaration error its caller
+      # raises. Predicting which containers are safe is what checking replaces.
       def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
+
+      # Whether a copy holds the elements the original held. Nothing either object defines is dispatched: `==`,
+      # `size` and `each` are all overridable, and the copy is the caller's class too, so it can lie exactly as
+      # readily as the original — both are read through `Array`'s own `size`/`[]`. Element IDENTITY is the right
+      # question for a shallow copy (the elements are the same objects, not copies of them), asked through
+      # `BasicObject#equal?` so an element's own override cannot answer it either.
+      def self.same_elements?(original, copy)
+        size = ARRAY_SIZE.bind_call(original)
+        return false unless size == ARRAY_SIZE.bind_call(copy)
+
+        index = 0
+        while index < size
+          return false unless BASIC_EQUAL.bind_call(ARRAY_AT.bind_call(original, index), ARRAY_AT.bind_call(copy, index))
+
+          index += 1
+        end
+
+        true
+      end
 
       # A shape's members, captured into an Array this module owns. Captured via `each` — the one
       # method walking a container inherently requires, and the one reflection's own member walk uses
