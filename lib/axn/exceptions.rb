@@ -16,6 +16,11 @@ module Axn
       # `Module#to_s` rather than `#name`, which is nil for an anonymous class; to_s always returns a
       # String ("#<Class:0x…>" there).
       def self.of(value) = MODULE_TO_S.bind_call(OBJECT_CLASS.bind_call(value))
+
+      # The name of a class or module ITSELF, rather than of a value's class — for a message that names a
+      # declared type. Same reasoning: a class can define its own `to_s`, and one that raises would replace
+      # the failure being reported.
+      def self.of_module(mod) = MODULE_TO_S.bind_call(mod)
     end
 
     # Internal only -- rescued before Axn::Result is returned

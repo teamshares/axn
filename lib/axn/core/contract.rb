@@ -944,7 +944,7 @@ module Axn
         # being reported. Every declaration re-collects the whole contract's claims, so a contract of N
         # declarations builds O(N^2) of them, and interpolating a description for each one cost more than the
         # rest of this check combined.
-        PropertyClaim = Data.define(:path, :canonical, :kind, :config, :name, :precise)
+        PropertyClaim = Data.define(:path, :canonical, :kind, :config, :name, :type_klass, :precise)
         private_constant :PropertyClaim
 
         def _most_specific_claim(candidates) = candidates.find(&:precise) || candidates.first
@@ -962,7 +962,7 @@ module Axn
               # declared ambient field, deliberately excluded from the schema, so it names no property.
               next unless resolved
 
-              _collect_claims!(into, config, resolved.wire_path)
+              _collect_claims!(into, config, resolved.wire_path, for_output: false)
             end
           end.claims
         end
@@ -972,27 +972,49 @@ module Axn
         # mechanism 4 has no outbound counterpart.
         def _outbound_property_claims(field_configs)
           ClaimCollector.new.tap do |into|
-            field_configs.each { |config| _collect_claims!(into, config, [config.field], model_id: false) }
+            field_configs.each { |config| _collect_claims!(into, config, [config.field], for_output: true, model_id: false) }
           end.claims
         end
 
-        def _collect_claims!(into, config, wire_path, model_id: true)
+        def _collect_claims!(into, config, wire_path, for_output:, model_id: true)
           # Mechanisms 1, 2 and 5: the node this config names, plus every node its route passes through. The
           # prefix claims are what make an implicit intermediate visible; where another config names that same
           # node itself, the two claims share a raw path and merge.
           wire_path.each_index do |depth|
             leaf = depth == wire_path.size - 1
-            into.add(wire_path[0..depth], leaf ? :config : :intermediate, config, wire_path[depth], precise: leaf)
+            into.add(wire_path[0..depth], leaf ? :config : :intermediate, config, wire_path[depth], type_klass: nil, precise: leaf)
           end
 
           if model_id && config.validations[:model]
             id_key = Internal::FieldConfig.model_id_key(config.field)
-            into.add([*wire_path[0..-2], id_key], :model_id, config, id_key)
+            into.add([*wire_path[0..-2], id_key], :model_id, config, id_key, type_klass: nil)
           end
 
-          shape = _member_shape(config)
-          _collect_data_type_member_claims!(into, config, wire_path, shape)
-          _collect_shape_member_claims!(into, shape, wire_path, config)
+          # Mechanisms 3 and 6 both depend on WHETHER the schema emits object properties for this config at
+          # all, and on WHICH node — so both read that from the schema layer rather than deciding it here.
+          plan = Axn::Reflection::Schema.shape_property_plan(config, for_output:)
+          return unless plan.emitted
+
+          node_path = plan.in_items? ? [*wire_path, ITEMS_SEGMENT] : wire_path
+          plan.base_properties.each_key do |member|
+            into.add([*node_path, member], :type_member, config, member, type_klass: _shape_type_klass(config, plan))
+          end
+          _collect_shape_member_claims!(into, _member_shape(config), node_path, config)
+        end
+
+        # An array's ELEMENT properties are a namespace of their own: a non-object parent's subfields are not
+        # emitted there (`Schema#apply_nested_subfields!` stops at a non-nestable parent), so nothing but the
+        # element type and the shape's own members can name a property alongside them. A segment no declared
+        # name can produce keeps them from being compared against the field's own properties.
+        ITEMS_SEGMENT = :[]
+        private_constant :ITEMS_SEGMENT
+
+        # The type whose members a `:type_member` claim came from: the `of:` element type inside an array,
+        # the field's own declared type otherwise.
+        def _shape_type_klass(config, plan)
+          source = plan.in_items? ? config.validations[:of] : config.validations[:type]
+          klass = source.is_a?(Hash) ? source[:klass] : source
+          klass.is_a?(Class) ? klass : nil
         end
 
         # Mechanism 3, at any depth: a shape member is a property of its owner's node, and a member's own
@@ -1008,22 +1030,9 @@ module Axn
             _raise_too_many_claims!(owner) if into.claims.size > MAX_PROPERTY_CLAIMS
 
             path = [*node_path, name.to_sym]
-            into.add(path, :member, owner, name)
+            into.add(path, :member, owner, name, type_klass: nil)
             _collect_shape_member_claims!(into, _member_shape(member), path, owner)
           end
-        end
-
-        # Mechanism 6: a `Data`-typed field declaring a shape block emits its type's own members as base
-        # properties at that node, which the shape's members then merge over — so the two sets share a node.
-        # Gated exactly as `Schema#apply_structured_schema!` gates it (a shape present, and a type that is a
-        # Class below Data), so the guard claims a property precisely when the schema emits one.
-        def _collect_data_type_member_claims!(into, config, wire_path, shape)
-          return unless shape
-
-          klass = config.validations.dig(:type, :klass)
-          return unless klass.is_a?(Class) && klass < Data
-
-          klass.members.each { |member| into.add([*wire_path, member], :type_member, config, member) }
         end
 
         # Generous enough that no hand-written contract approaches it — a thousand fields carrying twenty
@@ -1065,14 +1074,18 @@ module Axn
             @canonical = {}
           end
 
-          def add(path, kind, config, name, precise: true)
+          def add(path, kind, config, name, type_klass:, precise: true)
             canonical = path.map { |segment| @canonical.fetch(segment) { |s| @canonical[s] = Axn::Reflection::Values.canonical_wire_key(s) } }
             return if canonical.any?(&:nil?)
 
-            @claims << PropertyClaim.new(path:, canonical:, kind:, config:, name:, precise:)
+            @claims << PropertyClaim.new(path:, canonical:, kind:, config:, name:, type_klass:, precise:)
           end
         end
         private_constant :ClaimCollector
+
+        # A declared type is named through a bound `Module#to_s`: a class can define its own, and one that
+        # raises would replace the collision being reported (outside StandardError, escaping class definition).
+        def _describe_type(klass) = klass.nil? ? "declared" : Axn::Internal::ClassName.of_module(klass)
 
         def _describe_config(config)
           route = config.on ? " (on: #{_inspect_field_name(config.on)})" : ""
@@ -1085,7 +1098,9 @@ module Axn
           when :member then "shape member #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
           when :model_id then "the `model:`-generated #{_inspect_field_name(claim.name)} of #{_describe_config(claim.config)}"
           when :intermediate then "#{_inspect_field_name(claim.name)}, a nested key introduced by #{_describe_config(claim.config)}"
-          when :type_member then "#{_inspect_field_name(claim.name)}, a member of the #{claim.config.validations.dig(:type, :klass)} type"
+          when :type_member
+            "#{_inspect_field_name(claim.name)}, a member of the #{_describe_type(claim.type_klass)} type " \
+            "declared on #{_describe_config(claim.config)}"
           else _describe_config(claim.config)
           end
         end

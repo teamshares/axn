@@ -463,7 +463,19 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect do
           build_axn { expects(:payload, type: shaped) { field latin1, type: String } }
-        end.to raise_error(Axn::DuplicateFieldError, /a member of the .* type/)
+        end.to raise_error(Axn::DuplicateFieldError, /a member of the .* type declared on :payload/)
+      end
+
+      # Naming the type runs a bound `Module#to_s`: a class can define its own, and one that raises would
+      # replace the collision being reported — a ScriptError there escapes class definition entirely.
+      it "reports the collision even when the type's own to_s raises" do
+        shaped = Data.define(:café) do
+          def self.to_s = raise(NotImplementedError, "hijacked from Class#to_s")
+        end
+        latin1 = latin1_name
+
+        expect { build_axn { expects(:payload, type: shaped) { field latin1, type: String } } }
+          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "still merges a shape member of the same spelling" do
@@ -473,6 +485,110 @@ RSpec.describe "declaration-time property name collisions" do
         klass = build_axn { expects(:payload, type: shaped) { field utf8, type: String } }
 
         expect(canonical_props(klass, :payload)).to eq(["café"])
+      end
+    end
+
+    # Mechanism 6's claims must match what `Schema#apply_structured_schema!` actually emits, in both
+    # directions. The guard reads that decision from `Schema.shape_property_plan` rather than restating it:
+    # restating it both missed a path the schema takes (`of:` element types seed `items[:properties]`) and
+    # ignored a gate the schema honors (an output value that is not provably member-keyed), so it
+    # simultaneously let a collapse through and rejected a legal declaration.
+    describe "a structured type whose properties the schema does not emit" do
+      # A custom `as_json`/`to_h` is what `serialize_value` would follow, so the serialized form is not
+      # provably member-keyed and the OUTPUT property is left untyped — there is no property for a shape
+      # member to collide with, and rejecting would break a declaration the author is entitled to write.
+      it "does not reject an exposed Data type carrying a custom as_json" do
+        custom = Data.define(:café) do
+          def as_json(*) = { "totally" => "different" }
+        end
+        latin1 = latin1_name
+
+        expect { build_axn { exposes(:thing, type: custom) { field latin1, type: String } } }.not_to raise_error
+      end
+
+      it "does not reject an exposed Data type carrying a custom to_h" do
+        custom = Data.define(:café) do
+          def to_h = { totally: "different" }
+        end
+        latin1 = latin1_name
+
+        expect { build_axn { exposes(:thing, type: custom) { field latin1, type: String } } }.not_to raise_error
+      end
+
+      it "still rejects an exposed plain Data type, whose properties ARE emitted" do
+        shaped = Data.define(:café)
+        latin1 = latin1_name
+
+        expect { build_axn { exposes(:thing, type: shaped) { field latin1, type: String } } }
+          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+      end
+
+      # INPUT reflects the shape a client is expected to send, regardless of how the value serializes, so a
+      # custom as_json/to_h changes nothing inbound and the collision is real there.
+      it "still rejects inbound, where serialization does not decide the schema" do
+        custom = Data.define(:café) do
+          def as_json(*) = { "totally" => "different" }
+        end
+        latin1 = latin1_name
+
+        expect { build_axn { expects(:thing, type: custom) { field latin1, type: String } } }
+          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+      end
+
+      # A scalar `of:` reads members off the element (`String#length`), which stays a string — the members are
+      # validated but never become properties, so two of them cannot collapse.
+      it "does not reject colliding member names under a scalar of:" do
+        members = [Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
+                   Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {})]
+
+        expect { build_axn { expects :list, type: Array, of: String, shape: { members:, container: Array } } }
+          .not_to raise_error
+      end
+    end
+
+    # An `of:` element type seeds the ARRAY ELEMENT's properties, which the shape's members then merge over —
+    # a separate node from the field's own, and one the guard reached only once it started asking the schema
+    # where properties land. (This also corrects the earlier claim that `of:` contributes nothing: its ELEMENT
+    # TYPE does contribute property names, at the element node.)
+    describe "an of: element type's members, inside the array's items" do
+      def element_props(klass)
+        klass.input_schema.dig(:properties, :list, :items, :properties).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+      end
+
+      it "rejects a shape member that collapses onto an element type's property" do
+        shaped = Data.define(:café)
+        members = [Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: { type: String })]
+
+        expect { build_axn { expects :list, type: Array, of: shaped, shape: { members:, container: Array } } }
+          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "list\.\[\]\.café"/)
+      end
+
+      it "still merges an element type's property with a shape member of the same spelling" do
+        shaped = Data.define(:café)
+        members = [Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: { type: String })]
+
+        klass = build_axn { expects :list, type: Array, of: shaped, shape: { members:, container: Array } }
+
+        expect(element_props(klass)).to eq(["café"])
+      end
+
+      # Each array's element node is its own namespace, under that field's path — so the same element property
+      # name under two different arrays is two properties, not a collision. (A subfield of an array-typed field
+      # is rejected upstream for an unrelated reason, so an element property can never meet one.)
+      it "keeps each array's element properties in their own namespace" do
+        shaped = Data.define(:café)
+        latin1_members = [Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: { type: String })]
+
+        klass = build_axn do
+          expects :list, type: Array, of: shaped, optional: true
+          expects :other, type: Array, shape: { members: latin1_members, container: Array }, optional: true
+        end
+
+        other_props = klass.input_schema.dig(:properties, :other, :items, :properties).keys
+                           .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+
+        expect(element_props(klass)).to eq(["café"])
+        expect(other_props).to eq(["café"])
       end
     end
 

@@ -986,38 +986,74 @@ module Axn
         shape = config.validations[:shape]
         return unless of || shape
 
-        if Array(prop[:type]).include?("array")
+        plan = shape_property_plan(config, for_output:)
+
+        if plan.in_items?
           items = of ? items_schema_for(of, for_output:) : {}
-          # Overlay the shape's object properties onto items only when the ELEMENTS are objects. A scalar
-          # `of:` (e.g. `of: String` + `field :length`) reads members off the scalar element (String#length)
-          # — the elements stay strings, so forcing `type: object` would reject a valid string array. On
-          # OUTPUT the element must additionally serialize member-keyed (a custom-serialization or missing
-          # `of:` isn't provably an object). Input keeps object items for object-typed / untyped elements.
-          if shape && shape_overlay_applies?(of, for_output:)
+          if shape && plan.emitted
             member_props, required = member_properties(shape[:members], for_output:)
-            base_props = items[:properties] || {}
-            items = items.merge(type: "object", properties: base_props.merge(member_props))
+            items = items.merge(type: "object", properties: plan.base_properties.merge(member_props))
             items[:required] = required unless required.empty?
           end
           prop[:items] = items unless items.empty?
         elsif shape
-          # Hash / class field — shape: members are the object's own properties. A shaped object field IS
-          # an object, even when the field's declared type: (e.g. a Data.define subclass) isn't in TYPE_MAP.
-          #
-          # On OUTPUT this holds only when the value serializes to a member-keyed object (its type defines
-          # `to_h`). A reader-only object with no `to_h` serializes to a String (to_s) — so leave that
-          # output field untyped rather than promise an `object` serialize_exposed won't produce. Input is
-          # unaffected: the shape describes the JSON object a client is expected to send.
-          return if for_output && !shape_serializes_to_object?(config)
+          return unless plan.emitted
 
           prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
           prop.delete(:format)
           member_props, required = member_properties(shape[:members], for_output:)
-          type_klass = config.validations.dig(:type, :klass)
-          base_props = type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
-          prop[:properties] = base_props.merge(member_props)
+          prop[:properties] = plan.base_properties.merge(member_props)
           prop[:required] = required unless required.empty?
         end
+      end
+
+      # Whether a config's `shape:` members become object PROPERTIES, at which node, and which property names
+      # its declared TYPE contributes alongside them.
+      #
+      # Single source for the two layers that must agree exactly: `apply_structured_schema!` above, which
+      # emits, and `Core::Contract`'s property-claim collector, which rejects a declaration whose emitted
+      # property names would collapse onto one. The guard has to claim precisely what is emitted — a claim for
+      # a property the schema omits rejects a declaration the author is entitled to write, and a missing claim
+      # lets two names collapse silently. A guard that MIRRORED these rules did both at once, so they live
+      # here, where the emission decision already lived, and are read rather than restated.
+      #
+      # `in_items?` distinguishes the two nodes a shape's members can land at: an ARRAY's element properties
+      # are their own namespace (a non-object parent's subfields are not emitted there, so nothing else can
+      # name a property alongside them), while everything else lands in the field's own `properties`.
+      #
+      # `emitted` false means the shape contributes no properties at all, for one of three reasons:
+      #   - the config is wholly gated on output, so `build_property` leaves it untyped before reaching here;
+      #   - a SCALAR `of:` (`of: String` + `field :length`) reads members off the element, which stays a
+      #     string — so the members are validated but never become properties;
+      #   - on OUTPUT, the value is not provably member-keyed (a custom `as_json`/`to_h` that
+      #     `serialize_value` would follow instead), so the property is left untyped rather than promising an
+      #     object shape the serializer will not produce.
+      #
+      # `base_properties` is what the type itself contributes: a `Data` field's own members, or — for an array
+      # — whatever `items_schema_for` seeded from the `of:` element type, which is the same `Data` members one
+      # level down. Built by calling those paths rather than re-deriving them.
+      ShapePropertyPlan = Data.define(:emitted, :in_items, :base_properties) do
+        def in_items? = in_items
+      end
+
+      def shape_property_plan(config, for_output:)
+        of = config.validations[:of]
+        in_items = Array(json_type_for(config.validations, for_output:)[:type]).include?("array")
+        return ShapePropertyPlan.new(emitted: false, in_items:, base_properties: {}) if for_output && conditionally_gated?(config)
+
+        if in_items
+          # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
+          emitted = shape_overlay_applies?(of, for_output:)
+          base = emitted && of ? items_schema_for(of, for_output:)[:properties] || {} : {}
+          return ShapePropertyPlan.new(emitted:, in_items:, base_properties: base)
+        end
+
+        # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
+        # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
+        emitted = !for_output || shape_serializes_to_object?(config)
+        type_klass = config.validations.dig(:type, :klass)
+        base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
+        ShapePropertyPlan.new(emitted:, in_items:, base_properties: base)
       end
 
       # Whether a shape block should overlay object properties onto an array's items. OUTPUT: each element
