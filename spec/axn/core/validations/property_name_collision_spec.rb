@@ -87,6 +87,171 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # Identity is the property a name renders as under its RESOLVED wire parent, not under the route as
+  # written. A dotted `on:` and a subfield reader (or an `as:` alias of one) are two supported spellings of
+  # the same route, so two leaf names that canonicalize to one property can sit under one parent with nothing
+  # syntactic in common — and the reflected schema then emits that property twice. Resolution is taken from
+  # the SubfieldTree the schema and the runtime already read, so the guard cannot disagree with them.
+  describe "two routes that resolve to the same wire parent" do
+    it "rejects colliding leaf names reached by a dotted route and a subfield reader" do
+      utf8 = utf8_name
+      latin1 = latin1_name
+
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects utf8, on: "foo.bar", optional: true
+          expects latin1, on: :bar, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
+    end
+
+    it "rejects them when the second route is an as: alias of the parent" do
+      utf8 = utf8_name
+      latin1 = latin1_name
+
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash, as: :aliased
+          expects utf8, on: "foo.bar", optional: true
+          expects latin1, on: :aliased, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
+    end
+
+    it "names both offenders with the route each was declared under" do
+      utf8 = utf8_name
+      latin1 = latin1_name
+
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects utf8, on: "foo.bar", optional: true
+          expects latin1, on: :bar, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError) { |error|
+        expect(error.message).to include(':café (on: "foo.bar")', 'caf\xE9" (on: :bar)')
+      }
+    end
+
+    # One wire slot reached by two routes is a MERGED NODE — legitimate, gated on reader-name uniqueness
+    # instead, and reflecting as one property. The rule is "canonical paths equal, RAW paths different", so
+    # this stays declarable: it is the case where both halves are equal.
+    it "still allows one leaf spelling reached by a dotted route and a reader route" do
+      klass = build_axn do
+        expects :address, type: Hash
+        expects :billing, on: :address, type: Hash
+        expects :zip, on: "address.billing", as: :zip_a, optional: true
+        expects :zip, on: :billing, as: :zip_b, optional: true
+      end
+
+      expect(klass.input_schema.dig(:properties, :address, :properties, :billing, :properties).keys).to eq([:zip])
+    end
+  end
+
+  # A `model:` field also claims the `<field>_id` axn generates for it, so an explicit sibling that
+  # canonicalizes to the same property collapses onto it in the reflected schema. The generated name comes
+  # from the same `Internal::FieldConfig.model_id_key` the schema uses, so the two cannot disagree about it.
+  describe "a model:-generated <field>_id" do
+    # A PORO with a finder — `spec/` runs without Rails.
+    def widget_class
+      Class.new do
+        def self.name = "Widget"
+        def self.find(_id) = new
+      end
+    end
+
+    it "collides with an explicit _id declared in another encoding" do
+      utf8 = utf8_name
+      latin1_id = "caf\xE9_id".dup.force_encoding("ISO-8859-1").to_sym
+      widget = widget_class
+
+      expect do
+        build_axn do
+          expects utf8, model: widget, optional: true
+          expects latin1_id, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "café_id"/)
+    end
+
+    it "names it as generated, so the author is not sent looking for a name they never wrote" do
+      utf8 = utf8_name
+      latin1_id = "caf\xE9_id".dup.force_encoding("ISO-8859-1").to_sym
+      widget = widget_class
+
+      expect do
+        build_axn do
+          expects utf8, model: widget, optional: true
+          expects latin1_id, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /the `model:`-generated :café_id of :café/)
+    end
+
+    it "collides for a subfield model: too" do
+      utf8 = utf8_name
+      latin1_id = "caf\xE9_id".dup.force_encoding("ISO-8859-1").to_sym
+      widget = widget_class
+
+      expect do
+        build_axn do
+          expects :p, type: Hash
+          expects utf8, on: :p, model: widget, optional: true
+          expects latin1_id, on: :p, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "p\.café_id"/)
+    end
+
+    # THE control, and the reason the rule is "canonical equal, raw different" rather than "generated ids
+    # join the claimed set". An explicit `<field>_id` in the SAME spelling is a supported pattern: schema
+    # reflection merges the two (`properties[id_field] ||= id_prop`) and emits ONE property. Rejecting it
+    # would break a legal declaration.
+    it "still allows an explicit _id declared in the same spelling, merging into one property" do
+      utf8 = utf8_name
+      widget = widget_class
+
+      klass = build_axn do
+        expects utf8, model: widget, optional: true
+        expects :café_id, optional: true
+      end
+
+      expect(klass.input_schema[:properties].keys).to eq([:café_id])
+    end
+
+    # Two `model:` fields whose generated ids would collide are already rejected on their own names — the
+    # generated ids collide only when the names do, since the id is the name plus a fixed suffix. Asserted so
+    # the mirror case is on the record as covered rather than unexamined.
+    it "is unreachable for two model: fields, whose own names collide first" do
+      utf8 = utf8_name
+      latin1 = latin1_name
+      widget = widget_class
+
+      expect do
+        build_axn do
+          expects utf8, model: widget, optional: true
+          expects latin1, model: widget, optional: true
+        end
+      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    end
+
+    # Checked mirror that does NOT apply: an outbound `model:` field reflects under its own name and emits no
+    # generated `<field>_id` at all, so there is no generated property for an explicit one to collide with.
+    it "has no outbound counterpart, since exposes generates no _id property" do
+      utf8 = utf8_name
+      latin1_id = "caf\xE9_id".dup.force_encoding("ISO-8859-1").to_sym
+      widget = widget_class
+
+      klass = build_axn do
+        exposes utf8, model: widget, optional: true
+        exposes latin1_id, optional: true
+      end
+
+      expect(klass.output_schema[:properties].size).to eq(2)
+    end
+  end
+
   describe "a name with no UTF-8 rendering" do
     it "is rejected on expects" do
       name = unrenderable_name

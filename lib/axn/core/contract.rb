@@ -197,6 +197,10 @@ module Axn
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, user_facing:, **validations).tap do |configs|
             _reject_duplicate_fields!(internal_field_configs, configs)
+            # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
+            # a same-named subfield reader), so the resolved check runs here too rather than only where
+            # subfields are declared.
+            _reject_colliding_wire_paths!(internal_field_configs + configs, subfield_configs)
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -757,20 +761,26 @@ module Axn
         # the remaining gap — two Symbols whose bytes differ but whose property does not.
         #
         # For a top-level field `on:` is nil, so this reduces to property identity. Two SUBFIELDS that
-        # share a leaf wire key but differ by `on:` are NOT duplicates: they are either two routes to one
-        # wire path (a merged node) or two distinct nested fields sharing a leaf key — both legitimate, and
-        # both gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved
+        # share a leaf wire key but differ by `on:` are NOT duplicates HERE: they are either two routes to
+        # one wire path (a merged node) or two distinct nested fields sharing a leaf key — both legitimate,
+        # and both gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved
         # with `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
         # field, the generated reader would be clobbered, and per-field config would collapse
         # ambiguously.
+        #
+        # This is the SYNTACTIC half of field identity: "the same name declared twice under the same route
+        # as written". It cannot see two DIFFERENT routes that resolve to one parent, which is what
+        # `_reject_colliding_wire_paths!` answers on the resolved tree. The two are complementary, not
+        # redundant: `on:` spelling is what distinguishes declaring one thing twice (rejected here) from
+        # reaching one wire slot by two routes (legitimate), and only the resolved path can tell whether
+        # two leaf names under one resolved parent collapse onto one property.
         #
         # Returns `[claimed_field, offending_field]` pairs; equal entries are an identical-name duplicate.
         def _duplicate_fields(existing, new_configs)
           # `on:` is normalized with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling
           # of the same dotted path) name the same route — matching how the SubfieldTree splits `on:` —
-          # rather than slipping two configs onto one wire slot on a spelling difference. It is not
-          # canonicalized further: a route must name an already-declared reader, so two spellings of one
-          # route cannot both be declared to begin with.
+          # rather than slipping two configs onto one wire slot on a spelling difference. It is deliberately
+          # not canonicalized or resolved further; see the note above on which half of identity this is.
           #
           # Every name reaching here is renderable — `_reject_unrenderable_field_names!` runs first in both
           # `expects` and `exposes` — so a nil property never enters the comparison.
@@ -849,6 +859,86 @@ module Axn
                   "UTF-8 rendering — JSON is a UTF-8 format, so `JSON.generate` refuses such a property name outright. " \
                   "Declare it under a UTF-8 name."
           end
+        end
+
+        # The RESOLVED half of field identity, complementary to `_duplicate_fields` above. A declared name
+        # becomes a JSON property under its RESOLVED wire parent, and two supported spellings of one route —
+        # a dotted `on:` and a subfield reader (or an `as:` alias of one) — resolve to the same parent while
+        # differing as written. So two leaf names that canonicalize to one property can sit under one parent
+        # with nothing syntactic in common, and the schema then emits that property twice.
+        #
+        # Route resolution is taken from `SubfieldTree`, which already owns it and which the schema and the
+        # runtime both read: a second resolver here that disagreed with the tree would be the same defect one
+        # layer up. The tree is built over the PROSPECTIVE configs, before any class mutation, exactly as
+        # `SubfieldContradictions.check!` does at the same point in `_expects_subfields`.
+        #
+        # A collision is "canonical paths equal, raw paths different". Both halves matter:
+        #   - equal canonical AND equal raw is a MERGED NODE — one wire slot reached by two routes, which is
+        #     legitimate and gated on reader-name uniqueness instead. It reflects as one property.
+        #   - equal canonical, different raw means two SEPARATE tree nodes whose names collapse onto one
+        #     JSON property, dropping a value. That is the defect.
+        #
+        # A `model:` field additionally claims its generated `<field>_id`, derived from the same
+        # `Internal::FieldConfig.model_id_key` the schema uses so the guard and the schema cannot disagree
+        # about the generated name. The same rule then covers it for free, and covers it CORRECTLY: an
+        # explicit `<field>_id` in the same spelling has an equal raw path, so it stays legal and keeps
+        # merging (`properties[id_field] ||= id_prop`), while one that only canonicalizes the same is
+        # rejected. Claiming generated ids unconditionally would have broken the same-spelling pattern.
+        def _reject_colliding_wire_paths!(field_configs, subfield_configs)
+          claimed = {}
+
+          _claimed_wire_paths(field_configs, subfield_configs).each do |config, wire_path|
+            canonical = wire_path.map { |segment| Axn::Reflection::Values.canonical_wire_key(segment) }
+            # A route segment with no UTF-8 rendering has no property to compare. Declared NAMES are already
+            # rejected upstream (`_reject_unrenderable_field_names!`), so this only skips an exotic route,
+            # and skipping is required rather than merely safe: two unrenderable segments both canonicalize
+            # to nil and would otherwise compare as one path.
+            next if canonical.any?(&:nil?)
+
+            first_config, first_path = claimed[canonical]
+            # Raw paths are Arrays of Symbols the tree built (`to_sym` on every segment), so comparing them
+            # dispatches only Symbol#==, which no class can override.
+            _raise_colliding_wire_paths!(first_config, first_path, config, wire_path, canonical) if first_path && first_path != wire_path
+
+            claimed[canonical] ||= [config, wire_path]
+          end
+        end
+
+        # Every JSON property each declared config claims, as `[config, raw_wire_path]`. A config with no
+        # entry in the tree's index is unattached — only a bare `on: :ambient_context` with no declared
+        # ambient field, which is deliberately excluded from the schema and so claims no property.
+        def _claimed_wire_paths(field_configs, subfield_configs)
+          tree = Axn::Reflection::SubfieldTree.build(field_configs, subfield_configs)
+
+          (field_configs + subfield_configs).flat_map do |config|
+            path = tree.index[config]
+            next [] unless path
+
+            claims = [[config, path.wire_path]]
+            claims << [config, [*path.wire_path[0..-2], Internal::FieldConfig.model_id_key(config.field)]] if config.validations[:model]
+            claims
+          end
+        end
+
+        def _raise_colliding_wire_paths!(first_config, first_path, config, wire_path, canonical)
+          raise Axn::DuplicateFieldError,
+                "Duplicate field(s) declared: #{_describe_wire_claim(first_config, first_path)} and " \
+                "#{_describe_wire_claim(config, wire_path)} both resolve to the JSON property " \
+                "#{canonical.join('.').inspect} — a declared name becomes a property name in the reflected " \
+                "schema and in serialized output, so the two would collapse onto one. Declare them under " \
+                "names that stay distinct once converted to UTF-8."
+        end
+
+        # How this error names one claim: the declared name, the route it was declared under when it has one
+        # (two claims colliding here usually differ in exactly that), and a note when the property is one axn
+        # generates rather than one the author wrote — otherwise the message names a `<field>_id` the author
+        # cannot find in their own code.
+        def _describe_wire_claim(config, wire_path)
+          name = _inspect_field_name(config.field)
+          route = config.on ? " (on: #{_inspect_field_name(config.on)})" : ""
+          return "#{name}#{route}" if wire_path.last == config.field
+
+          "the `model:`-generated #{_inspect_field_name(wire_path.last)} of #{name}#{route}"
         end
 
         # The three declaration paths (top-level expects, exposes, subfields) report through here rather
