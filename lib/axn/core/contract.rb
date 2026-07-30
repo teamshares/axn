@@ -324,11 +324,20 @@ module Axn
             .flat_map { |config| _flatten_sensitive_candidates(config) }
         end
 
-        def _flatten_sensitive_candidates(config)
+        def _flatten_sensitive_candidates(config, seen = nil)
           # Through the shared seam: a member list that hides itself from `flat_map` would drop a
           # `sensitive:` member from the redaction set, which leaks rather than merely disagreeing.
-          members = Internal::ShapeGraph.members(Internal::ShapeGraph.shape_in(config.validations))
-          [config, *members.flat_map { |member| _flatten_sensitive_candidates(member) }]
+          shape = Internal::ShapeGraph.shape_in(config.validations)
+          # Cycle-guarded because a STORED graph can be cyclic even though no declared one is: a member axn
+          # cannot rebuild is the caller's own object, so the nested shape it carries can point back at itself
+          # after the class is declared. Nothing is lost by stopping — a cycle re-reaches members an enclosing
+          # frame is already collecting — and the alternative is SystemStackError from a log line.
+          return [config] if nil.equal?(shape)
+
+          nested = Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
+            Internal::ShapeGraph.members(shape).flat_map { |member| _flatten_sensitive_candidates(member, open) }
+          end
+          [config, *nested]
         end
 
         def _static_sensitive_fields
@@ -536,10 +545,15 @@ module Axn
         # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
         # A nil action_instance (async reporting, no instance to resolve a dynamic predicate against)
         # counts only static `sensitive: true`, matching the static `inspection_filter` used there.
-        def _shape_has_sensitive_member?(shape, action_instance)
-          Internal::ShapeGraph.members(shape).any? do |member|
-            _member_sensitive?(member, action_instance) ||
-              (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance))
+        # Cycle-guarded for the same reason as `_flatten_sensitive_candidates`, and exactly rather than
+        # defensively: a cyclic branch re-reaches the very members the enclosing frame is already testing, so
+        # answering `false` for it decides nothing on its own and no `sensitive:` member can hide in one.
+        def _shape_has_sensitive_member?(shape, action_instance, seen = nil)
+          Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: false) do |open|
+            Internal::ShapeGraph.members(shape).any? do |member|
+              _member_sensitive?(member, action_instance) ||
+                (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance, open))
+            end
           end
         end
 

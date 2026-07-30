@@ -101,10 +101,14 @@ module Axn
   # projection, which is where every non-tool axn is validated anyway.
   def self.validate_tool_contracts!
     Axn::Tools::Registry.tool_classes.each do |klass|
-      klass.input_schema if klass.respond_to?(:input_schema)
-      # The outbound side goes through PropertyNames rather than `output_schema`: it performs the same build and
-      # the same validation, and additionally records the verdict `render` reads — so a tool validated at setup
-      # also renders without paying for an output-schema build on its first result.
+      # BOTH sides go through PropertyNames rather than through `input_schema`/`output_schema`. Those names
+      # belong to the class, and an adapter base that already defines them keeps them (see
+      # Core::SchemaReflection) — so a tool subclassing its adapter's base class, which is the ordinary shape
+      # of one, would have had its transport reader called and its contract validated by nothing at all.
+      # PropertyNames performs the same builds and the same validations against axn's own projections, and the
+      # outbound call additionally records the verdict `render` reads — so a tool validated at setup also
+      # renders without paying for an output-schema build on its first result.
+      Axn::Reflection::PropertyNames.validate_inbound!(klass)
       Axn::Reflection::PropertyNames.validate_outbound!(klass)
     rescue Axn::ContractViolation, ArgumentError => e
       # Named, because this runs over every tool at once: the underlying error describes the property and the

@@ -33,9 +33,8 @@ module Axn
         # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
         # class, over the schema being returned rather than a second build of it.
         def input_schema
-          Axn::Reflection::PropertyNames.validated_input(self) do
-            Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields, klass: self)
-          end.tap { _warn_dropped_deep_subfields }
+          Axn::Reflection::PropertyNames.validated_input(self) { Axn::Reflection::Schema.build_input_for(self) }
+                                        .tap { _warn_dropped_deep_subfields }
         end
 
         private

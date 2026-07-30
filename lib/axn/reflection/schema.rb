@@ -100,6 +100,13 @@ module Axn
       # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
       # a repeated path skip the tree build + annotation derivation; it must have been built from the
       # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
+      # The inbound projection OF A CLASS. The one place `build_input`'s argument list is assembled from a
+      # class, so the reflected reader and the setup-time validator cannot drift into building two different
+      # schemas from the same declaration.
+      def build_input_for(klass)
+        build_input(klass.internal_field_configs, klass.subfield_configs, resolved: klass._resolved_subfields, klass:)
+      end
+
       def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
         tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
         ann = resolved&.annotations || derive_annotations(tree.roots)

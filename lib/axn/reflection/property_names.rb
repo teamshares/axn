@@ -38,7 +38,9 @@ module Axn
       # Axn::RailsIntegration::Engine), and called directly by a non-Rails app. That entry point documents
       # exactly how wide its coverage is — it depends on an adapter being registered and on the tool being
       # loaded — rather than implying it is total. Everything it does not reach falls back to first projection,
-      # which is where every non-tool axn is validated anyway.
+      # which is where every non-tool axn is validated anyway. It projects through `validate_inbound!`/
+      # `validate_outbound!` rather than through the two readers, because those NAMES may not be axn's: see
+      # validate_inbound!.
       #
       # Nothing but a projection can be harmed by a colliding or unrenderable name: for an axn that never
       # projects, two names that canonicalize alike stay two distinct fields with their own readers and
@@ -63,6 +65,21 @@ module Axn
 
       def validated_output(klass, &)
         validate_and_build(klass.external_field_configs, direction: :output, &)
+      end
+
+      # For APP SETUP, which must validate a class's inbound projection without going through its
+      # `input_schema`: that name belongs to the class, and an adapter base that already defines it keeps it
+      # (see Core::SchemaReflection) — so calling the class method runs the adapter's transport-shaped reader,
+      # builds no axn projection, and validates nothing. Exactly the case that matters most, since a tool
+      # subclassing its adapter's base class is the ordinary shape of one.
+      #
+      # Builds axn's projection here instead — the same build the reader performs, through the same one owner
+      # (`Schema.build_input_for`) — and validates it. The schema is discarded: setup wants the verdict.
+      # Deliberately NOT memoized, unlike the outbound verdict: nothing reads an inbound verdict later, and a
+      # memo would only make a second setup pass skip a check that costs one build.
+      def validate_inbound!(klass)
+        validated_input(klass) { Schema.build_input_for(klass) }
+        nil
       end
 
       # For `render`, which needs the outbound verdict but has no schema of its own to hand over, so it would
@@ -460,14 +477,51 @@ module Axn
         end
       end
 
-      # The same bound over the stored configs a schema build is about to walk. These are axn's own copies by
-      # then, so nothing here reads a caller's list — the declaration walk already captured it.
-      def count_shape_members!(budget, shape, &label)
-        Internal::ShapeGraph.members(shape).each do |member|
-          budget.spend!(1, &label)
+      # The same bound over the stored configs a schema build is about to walk, and the FIRST walk of any
+      # projection — `validate_and_build` runs it ahead of every build, inbound and outbound — so bounding the
+      # graph here is what keeps a projection bounded at all.
+      #
+      # Cycle-guarded, because a stored graph can be cyclic even though no declared one is. A member axn cannot
+      # rebuild (anything that is not a `Data`) is stored as the caller's own object, so the nested shape it
+      # carries is theirs to change after the class is declared — and pointing it back at itself made every
+      # projection recurse to SystemStackError, which is outside StandardError and so escapes the rescue meant
+      # to settle it. The size budget is no defense: depth costs one property per level, and the stack runs out
+      # thousands of levels before 25,000 does.
+      #
+      # Ancestry-scoped (see CycleGuard), so a nested shape reused by SIBLING members is still counted twice —
+      # that sharing is exactly what the budget exists to catch, and only genuine self-containment is a cycle.
+      def count_shape_members!(budget, shape, seen = nil, via: nil, &label)
+        hash = Internal::ShapeGraph.hash_or_nil(shape)
+        return if nil.equal?(hash)
 
-          count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), &label)
+        outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
+          Internal::ShapeGraph.members(hash).each do |member|
+            budget.spend!(1, &label)
+
+            count_shape_members!(budget, Axn::Internal::ShapeGraph.nested_shape(member), nested, via: member, &label)
+          end
         end
+        raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(outcome)
+      end
+
+      # A private object of this module's own, and always the RECEIVER of `equal?`, so nothing a declaration can
+      # produce is mistaken for it.
+      CYCLIC_SHAPE = ::Object.new.freeze
+      private_constant :CYCLIC_SHAPE
+
+      # Reads as the declaration-time cycle error does (Core::Contract#_raise_cyclic_shape!), because it is the
+      # same defect — found later only because the graph became cyclic after the class was declared. The member
+      # is named by CLASS, not by its `field`: reading a name here would run the caller's code while the failure
+      # is being reported, and the class is the identifying thing anyway, since only a member axn could not
+      # rebuild can reach this state.
+      def raise_cyclic_shape!(member)
+        via = nil.equal?(member) ? "" : " reached from the shape member of class #{Axn::Internal::ClassName.of(member)}"
+        raise ArgumentError,
+              "a `shape:` graph#{via} contains itself, so building the reflected schema would recurse until the " \
+              "stack overflows. A member axn cannot rebuild — anything that is not a `Data` — is stored as your " \
+              "own object, so the nested shape it carries can become self-referential after the class is " \
+              "declared. Give the nested shape its own members rather than the shape (or the member) that " \
+              "encloses it."
       end
 
       # Six entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
@@ -479,7 +533,7 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :shape_type_klass, :describe_type, :describe_config,
-                           :count_shape_members!
+                           :count_shape_members!, :raise_cyclic_shape!
     end
   end
 end

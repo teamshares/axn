@@ -15,6 +15,8 @@ RSpec.describe Axn::Reflection::PropertyNames do
   # message — the contract's declaration errors, a validation error naming a shape member, the stranded-path
   # diagnostic, and the call logger. Compared as a whole set rather than one `respond_to?` per name, so an
   # ADDITION fails this too.
+  # `validate_inbound!`/`validate_outbound!` validate a class's projections WITHOUT going through
+  # `input_schema`/`output_schema`, which an adapter base class may own (see Core::SchemaReflection).
   # `emitted_property_budget` hands out the emitted-property allowance rather than applying it here, because
   # bounding a declared shape graph and copying it are one walk over the caller's members (see
   # `Contract#_validate_and_snapshot_shape!`).
@@ -24,6 +26,7 @@ RSpec.describe Axn::Reflection::PropertyNames do
       inspect_field_name
       reject_unrenderable_field_names!
       renderable_label
+      validate_inbound!
       validate_outbound!
       validated_input
       validated_output

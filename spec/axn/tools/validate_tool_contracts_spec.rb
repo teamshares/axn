@@ -42,6 +42,67 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
   end
 
+  # THE case that matters most, and the one the guarantee used to miss: a tool subclassing its adapter's base
+  # class, which is the ordinary shape of one (`Axn::MCP::Tool < ::MCP::Tool`). That base already defines
+  # `input_schema`/`output_schema`, so axn deliberately does not install its own (see Core::SchemaReflection) —
+  # and setup that reached the projection through the class method called the adapter's transport reader,
+  # validated nothing, and let the collision through to the model. Setup builds axn's own projections instead.
+  describe "a tool that inherits its adapter's schema readers" do
+    def adapter_base
+      stub_const("ToolContractsSpec::AdapterBase", Class.new do
+        def self.input_schema = { "transport" => "in" }
+        def self.output_schema = { "transport" => "out" }
+      end)
+    end
+
+    def shadowing_tool(inbound:)
+      base = adapter_base
+      latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
+      stub_const("ToolContractsSpec::Shadowing", Class.new(base) do
+        include Axn
+        tool
+        if inbound
+          expects(:payload, type: Hash) do
+            field :café, type: String
+            field latin1, type: Integer
+          end
+        else
+          exposes(:payload, type: Hash) do
+            field :café, type: String
+            field latin1, type: Integer
+          end
+        end
+        def call = expose(payload: {})
+      end)
+    end
+
+    it "keeps the adapter's readers rather than axn's" do
+      Axn.register_tool_adapter(:mcp)
+      klass = shadowing_tool(inbound: true)
+
+      expect(klass.input_schema).to eq({ "transport" => "in" })
+      expect(klass.output_schema).to eq({ "transport" => "out" })
+    end
+
+    it "still validates its inbound contract at setup" do
+      Axn.register_tool_adapter(:mcp)
+      shadowing_tool(inbound: true)
+
+      expect { Axn.validate_tool_contracts! }
+        .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
+    end
+
+    # The outbound half was already immune — `validate_outbound!` builds from the configs and never called
+    # `output_schema` — asserted rather than assumed, since the same shadowing applies to that name.
+    it "still validates its outbound contract at setup" do
+      Axn.register_tool_adapter(:mcp)
+      shadowing_tool(inbound: false)
+
+      expect { Axn.validate_tool_contracts! }
+        .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
+    end
+  end
+
   # This runs over every tool at once, so the first thing an author needs is WHICH tool — the underlying error
   # describes the property and the colliding declarations but not the class.
   it "names the offending class, keeping the original as the cause" do
@@ -96,10 +157,12 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     tool = valid_tool(adapters: %i[mcp ruby_llm])
     # Counted on the TARGET class rather than globally: the registry is process-global, so another spec file's
     # named tool class may legitimately still be enumerable and would inflate a global count.
+    # Counted at the BUILD rather than at `input_schema`: setup validates axn's own projection directly, since
+    # `input_schema` may belong to an adapter base class (see the shadowing example below).
     projections = 0
-    allow(tool).to receive(:input_schema).and_wrap_original do |original, *args|
-      projections += 1
-      original.call(*args)
+    allow(Axn::Reflection::Schema).to receive(:build_input_for).and_wrap_original do |original, klass|
+      projections += 1 if klass == tool
+      original.call(klass)
     end
 
     Axn.validate_tool_contracts!
