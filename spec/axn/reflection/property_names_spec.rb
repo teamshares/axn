@@ -11,12 +11,15 @@
 # widening to make on purpose, not by accident.
 RSpec.describe Axn::Reflection::PropertyNames do
   # Exactly the entry points its callers use: the three projection triggers reach the validated-* pair and
-  # `validate_outbound!`, and `Core::Contract` reaches the two name renderers it still needs eagerly. Compared
-  # as a whole set rather than one `respond_to?` per name, so an ADDITION fails this too.
+  # `validate_outbound!`, and the name renderers are shared by every layer that writes a declared name into a
+  # message — the contract's declaration errors, a validation error naming a shape member, the stranded-path
+  # diagnostic, and the call logger. Compared as a whole set rather than one `respond_to?` per name, so an
+  # ADDITION fails this too.
   let(:entry_points) do
     %i[
       inspect_field_name
       reject_unrenderable_field_names!
+      renderable_label
       validate_outbound!
       validated_input
       validated_output

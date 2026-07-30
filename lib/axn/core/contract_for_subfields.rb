@@ -541,9 +541,7 @@ module Axn
         # Encoding::CompatibilityError from the reporting itself — surfacing an encoding failure instead of the
         # missing-reader defect being reported. (Whether an unrenderable segment is a defect in its own right
         # depends on whether the schema EMITS it, which the emitted-name walk decides.)
-        def _schema_name_label(name)
-          Axn::Reflection::Values.canonical_wire_key(name) || name.inspect
-        end
+        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.

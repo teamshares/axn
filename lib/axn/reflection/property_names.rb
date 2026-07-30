@@ -137,6 +137,23 @@ module Axn
         field_name_spelling(name) || "a name of class #{Axn::Internal::ClassName.of(name)}"
       end
 
+      # How a name is written into a message that names ONE thing rather than distinguishing two spellings: the
+      # UTF-8 property it canonicalizes to, falling back to the escaped form above when its bytes have no UTF-8
+      # rendering at all.
+      #
+      # Every message axn builds is a UTF-8 String, and joining raw non-UTF-8 bytes to one raises
+      # Encoding::CompatibilityError from the reporting itself — so a caller gets an encoding failure instead of
+      # the failure being reported, or loses a log line entirely. Two ASCII-compatible encodings concatenate
+      # fine, which is why this only bites once a message carries non-ASCII text from BOTH sides: a Latin-1
+      # `:"caf\xE9"` beside a UTF-8 `:naïve`.
+      #
+      # The canonical property is byte-identical to the raw spelling for every ASCII name, so ordinary messages
+      # are unchanged. Shared by every layer that names something in prose — a shape member in a validation
+      # error, a stranded subfield path, a Hash key in a log line, a declared name in a declaration error —
+      # because each deriving its own is how three copies of it appeared, and because the fallback has to be the
+      # SAFE escape: an exotic name's own `inspect` is caller code that can raise while the message is built.
+      def renderable_label(name) = Values.canonical_wire_key(name) || inspect_field_name(name)
+
       # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
       # serialized output for an outbound one — so it carries the same UTF-8 promise the serializer
       # enforces on a Hash key. Canonicalization belongs to the layer that renders the property, so the

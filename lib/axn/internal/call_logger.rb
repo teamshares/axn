@@ -4,6 +4,7 @@
 # needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
 # any load path that does not go through it.
 require "axn/internal/cycle_guard"
+require "axn/reflection/property_names"
 require "axn/extensions"
 require "axn/core/tagging"
 
@@ -123,7 +124,10 @@ module Axn
         when Hash
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::HASH_PLACEHOLDER) do |nested|
             # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
-            "{#{data.map { |k, v| "#{k}: #{format_object(v, nested)}" }.join(', ')}}"
+            # Keys are rendered through the shared label rather than interpolated: caller data can carry keys in
+            # two different non-ASCII encodings, and joining those raised Encoding::CompatibilityError from the
+            # log line itself — which the side channel then swallowed, losing the line entirely.
+            "{#{data.map { |k, v| "#{Axn::Reflection::PropertyNames.renderable_label(k)}: #{format_object(v, nested)}" }.join(', ')}}"
           end
         when Array
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|

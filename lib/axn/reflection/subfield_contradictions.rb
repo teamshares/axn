@@ -196,20 +196,27 @@ module Axn
       end
 
       def raise_dead_tolerance!(config, owner, node, ann)
-        stranded = first_required_descendant(node, ann)&.join(".")
+        # Names are rendered rather than interpolated raw, and the stranded path is joined from rendered
+        # SEGMENTS: a declared name may hold non-UTF-8 bytes (a valid Latin-1 Symbol), and joining one to a
+        # non-ASCII UTF-8 name raises Encoding::CompatibilityError from the message itself — so the author gets
+        # an encoding failure instead of the contradiction being reported. `Symbol#inspect` supplies the leading
+        # colon these read with, and escapes bytes that have no UTF-8 rendering.
+        name = owner.inspect
+        segments = first_required_descendant(node, ann)&.map { |segment| PropertyNames.renderable_label(segment) }
+        stranded = segments && ":#{segments.join('.')}"
         model_hint = if config.validations[:model]
-                       " For a model: field, a record-supplying default: on :#{owner} or a defaulted " \
-                         "#{owner}_id sibling (declared first) also rescues omission."
+                       " For a model: field, a record-supplying default: on #{name} or a defaulted " \
+                         "#{PropertyNames.renderable_label(owner)}_id sibling (declared first) also rescues omission."
                      else
                        ""
                      end
         raise ArgumentError,
-              ":#{owner} is declared nil-tolerant (allow_nil:/optional:/allow_blank:/presence: false), but " \
-              "#{stranded ? ":#{stranded}" : 'its subtree'} is required and nothing rescues an omitted :#{owner} — " \
-              "the tolerance can never be exercised (every nil/omitted :#{owner} fails validation). " \
-              "Drop the tolerance on :#{owner}, or mark #{stranded ? ":#{stranded}" : 'the subtree'} optional: or give it a " \
+              "#{name} is declared nil-tolerant (allow_nil:/optional:/allow_blank:/presence: false), but " \
+              "#{stranded || 'its subtree'} is required and nothing rescues an omitted #{name} — " \
+              "the tolerance can never be exercised (every nil/omitted #{name} fails validation). " \
+              "Drop the tolerance on #{name}, or mark #{stranded || 'the subtree'} optional: or give it a " \
               "default: (declare rescuing defaults BEFORE the dependent subfield). If it is only required when " \
-              ":#{owner} is supplied, gate it conditionally: `expects ..., if: -> { #{owner}.present? }`.#{model_hint}"
+              "#{name} is supplied, gate it conditionally: `expects ..., if: -> { #{PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}"
       end
     end
   end

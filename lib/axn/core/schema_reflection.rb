@@ -65,9 +65,7 @@ module Axn
 
         # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
         # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
-        def _schema_name_label(name)
-          Axn::Reflection::Values.canonical_wire_key(name) || name.inspect
-        end
+        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
       end
 
       module OutputSchemaMethod

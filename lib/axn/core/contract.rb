@@ -849,9 +849,7 @@ module Axn
         # instead of the declaration error that was being reported. The canonical property is
         # byte-identical to the raw spelling for every renderable name, so ordinary messages are unchanged;
         # `inspect` is reserved for the name that has no property to print.
-        def _shape_member_label(name)
-          Axn::Reflection::Values.canonical_wire_key(name) || _inspect_field_name(name)
-        end
+        def _shape_member_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
 
         # The two property-name rules are judged on the projection they would appear in, so they run when one is
         # first demanded rather than here (see Axn::Reflection::PropertyNames). What the contract still asks of
