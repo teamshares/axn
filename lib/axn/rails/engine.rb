@@ -41,6 +41,21 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
           end
         end
 
+        # Validate every tool axn's contract at app setup, so a colliding or unrenderable property name is a
+        # boot failure rather than something a user's tool call discovers.
+        #
+        # `after_initialize`, NOT an initializer ordered after `load_config_initializers`: Rails' eager-load
+        # phase runs late in boot, and Axn::Tools::Registry#ensure_loaded! deliberately defers to it (see the
+        # comment there about `initialized?`). Hooking earlier would force every tool class to load before the
+        # app's own initializers had run — changing load order for the sake of a check.
+        #
+        # `to_prepare` as well, and this is not redundant: Zeitwerk unloads on code change, so in development a
+        # one-shot hook would validate only the first boot and every reload after it would go unchecked. It runs
+        # once in production too, right after `after_initialize`, and the per-class memo makes the second pass
+        # free.
+        config.after_initialize { Axn.validate_tool_contracts! }
+        config.to_prepare { Axn.validate_tool_contracts! }
+
         # Register the generator
         generators do
           require_relative "generators/axn_generator"

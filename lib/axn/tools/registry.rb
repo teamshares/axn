@@ -60,6 +60,16 @@ module Axn
         live
       end
 
+      # Every registered class that is a tool for ANY adapter, loaded dirs included. Separate from `tools_for`
+      # because validation is adapter-agnostic: a contract is valid or not, and asking per adapter would project
+      # a class once per adapter it belongs to. Version groups are not collapsed either — each version is its own
+      # class with its own contract, so each is worth validating.
+      def tool_classes
+        ensure_loaded!
+        keys = adapters
+        all_classes.select { |klass| keys.any? { |adapter| member?(klass, adapter) } }
+      end
+
       def tools_for(adapter, all_versions: false)
         ensure_loaded!
         members = all_classes.select { |klass| member?(klass, adapter) }

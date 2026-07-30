@@ -33,6 +33,13 @@ module Axn
       # `Schema.build_input`/`build_output` are reached only through them). Adding a fourth projection path
       # means adding it here, or the guarantee narrows silently.
       #
+      # For a TOOL axn, "first demanded" is made to happen at app setup: `Axn.validate_tool_contracts!` projects
+      # every registered tool once, driven under Rails by `config.after_initialize` and `config.to_prepare` (see
+      # Axn::RailsIntegration::Engine), and called directly by a non-Rails app. Two holes in that coverage are
+      # documented on `Axn.validate_tool_contracts!` rather than implied away: a Zeitwerk directory whose load
+      # aborted, and a `tool`-DSL axn outside the configured tool directories. Both fall back to first
+      # projection, which is where every non-tool axn is validated anyway.
+      #
       # Nothing but a projection can be harmed by a colliding or unrenderable name: for an axn that never
       # projects, two names that canonicalize alike stay two distinct fields with their own readers and
       # validations, and the contract works. So validating on demand is not a weaker promise for those

@@ -67,6 +67,42 @@ module Axn
     Axn::Tools::Registry.tools_for(adapter, all_versions:)
   end
 
+  # Validates every tool axn's contract, once each, and raises on the first invalid one.
+  #
+  # A colliding or unrenderable property name is only harmful to a JSON projection, and for a tool axn the
+  # projection is what an adapter hands a model — so the moment to learn about it is app setup, not a user's
+  # tool call. This loads the configured tool directories and projects each tool once; the per-class memo means a
+  # later `input_schema` from an adapter pays nothing.
+  #
+  # Under Rails this runs automatically (`config.after_initialize`, and again on each `config.to_prepare` so a
+  # dev reload re-validates). Without Rails there is no boot to hook, so an app calls this itself — typically
+  # right after requiring its action files. Nothing else changes if it is never called: the same errors still
+  # raise on first projection.
+  #
+  # TWO COVERAGE HOLES, deliberately not papered over:
+  #
+  # 1. Under Rails, Zeitwerk's `eager_load_dir` loads a directory as one unit (it has no public API to load a
+  #    managed file in isolation), so a file that raises aborts the rest of THAT directory — warn-logged by the
+  #    registry, and the siblings it skipped are never validated here.
+  # 2. An axn made a tool by the `tool` DSL in a file OUTSIDE the configured tool directories is not loaded at
+  #    boot in a dev environment, so it is not enumerable yet and falls back to validating on first projection.
+  #
+  # Both narrow the set this covers; neither makes an invalid contract reachable without any error at all.
+  def self.validate_tool_contracts!
+    Axn::Tools::Registry.tool_classes.each do |klass|
+      klass.input_schema if klass.respond_to?(:input_schema)
+      klass.output_schema if klass.respond_to?(:output_schema)
+    rescue Axn::ContractViolation, ArgumentError => e
+      # Named, because this runs over every tool at once: the underlying error describes the property and the
+      # declarations that collide, but at boot the first thing an author needs is WHICH tool. Re-raised as the
+      # same class so a caller matching on it still matches, with the original as `cause`. Both families are
+      # caught: a collision is an Axn::ContractViolation, an unrenderable name or an oversized schema an
+      # ArgumentError.
+      raise e.class, "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{e.message}"
+    end
+    nil
+  end
+
   def self.versions_for(adapter, tool_name)
     adapter = _registered_tool_adapter!(adapter)
     Axn::Tools::Registry.versions_for(adapter, tool_name)

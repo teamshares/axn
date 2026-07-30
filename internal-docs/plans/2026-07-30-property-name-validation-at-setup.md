@@ -108,27 +108,27 @@ Report the five contracts from the table above. The call-count factor should be 
 **Files:**
 - Modify: `lib/axn/rails/engine.rb` (hooks), `lib/axn/tools/registry.rb` (expose loading + enumeration for validation), `lib/axn.rb` (public entry point)
 
-- [ ] **Step 1: Expose tool-dir loading independent of `tools_for`**
+- [x] **Step 1: Expose tool-dir loading independent of `tools_for`**
 
 `Registry.ensure_loaded!` currently runs only from `tools_for`. Make it callable on its own, and add a way to enumerate registered tool classes for validation.
 
-- [ ] **Step 2: `Axn.validate_tool_contracts!`**
+- [x] **Step 2: `Axn.validate_tool_contracts!`**
 
 Loads tool dirs, projects each tool axn once, and raises on the first invalid contract. This is the non-Rails entry point and what the Rails hooks call.
 
-- [ ] **Step 3: Rails hooks — ordering matters**
+- [x] **Step 3: Rails hooks — ordering matters**
 
 Use `config.after_initialize`, **not** an initializer after `load_config_initializers`: `registry.rb:112-117` documents that Rails' eager-load phase runs late in boot, so an earlier hook would force tool classes to load before the app's own initializers have run. Also register `config.to_prepare` so a dev reload re-validates — Zeitwerk unloads on code change, and a one-shot hook would validate only the first boot.
 
-- [ ] **Step 4: Document the coverage hole**
+- [x] **Step 4: Document the coverage hole**
 
 Under Rails, `eager_load_dir` loads a directory as one unit, so one raising file aborts the rest of that directory (warn-logged) — validation for those siblings silently does not happen. An axn made a tool by the `tool` DSL in a file outside the tool directories is likewise not loaded at boot in dev, and falls back to first projection. Both go in the module doc and the docs page. Do not imply full coverage.
 
-- [ ] **Step 5: Specs, including the dummy app**
+- [x] **Step 5: Specs, including the dummy app**
 
 The Rails path needs coverage in `spec_rails` — a dummy-app tool axn with a colliding contract must fail at boot. Verify the hook fires and the message names the offending class.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ---
 
@@ -138,7 +138,7 @@ The Rails path needs coverage in `spec_rails` — a dummy-app tool axn with a co
 - Create: `docs/recipes/running-without-rails.md`
 - Modify: `docs/.vitepress/config.mts` (nav), `CHANGELOG.md`, and whichever reference page states the declaration-time promise
 
-- [ ] **Step 1: The non-Rails recipe**
+- [x] **Step 1: The non-Rails recipe**
 
 The Rails-conditional behaviors, verified by grep — build the page from these rather than from imagination, and check each against the code:
 
@@ -156,12 +156,12 @@ The Rails-conditional behaviors, verified by grep — build the page from these 
 
 Frame it as "axn runs standalone; these are the seams you own yourself," and link the existing non-Rails notes in `docs/advanced/mountable.md`, `docs/usage/writing.md`, and `docs/reference/class.md` rather than restating them.
 
-- [ ] **Step 2: Correct the promise wording**
+- [x] **Step 2: Correct the promise wording**
 
 Anywhere the docs or CHANGELOG say these rules raise "at declaration" or "when the class is defined", change it to what now holds: raised when the contract's JSON projection is first built, and at app setup for tool axns. Leave the `exposes` field-name rule described as declaration-time, because it is.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 `bundle exec rspec`, `bundle exec rubocop`, the dummy app, and the docs link check if it can be run locally.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
