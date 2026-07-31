@@ -251,12 +251,42 @@ end
 
 ## OpenTelemetry Tracing
 
-Axn automatically creates OpenTelemetry spans for all action executions when OpenTelemetry is available. The framework creates a span named `"axn.call"` with the following attributes:
+Axn automatically creates spans for all action executions when a tracer is available — by default, the OpenTelemetry tracer when OpenTelemetry is loaded. The framework creates a span named `"axn.call"` with the following attributes:
 
 - `axn.resource`: The action class name (e.g., `"UserManagement::CreateUser"`)
 - `axn.outcome`: The execution outcome (`"success"`, `"failure"`, or `"exception"`)
 
 When an action fails or raises an exception, the span is marked as an error with the exception details recorded.
+
+### Supplying or disabling the tracer
+
+`Axn.config.tracer` decides which tracer receives axn's spans, and has three states.
+
+Leave it unset — the default — and axn auto-detects: it uses the OpenTelemetry tracer when OpenTelemetry is loaded, and creates no spans otherwise. Detection re-runs on every action, so OpenTelemetry configured later in boot is still picked up.
+
+Assign a tracer to use it instead, whether or not OpenTelemetry is loaded. Anything responding to `in_span(name, attributes:)` and yielding a span works — a differently-named instrumentation scope, a custom provider, or a test fake:
+
+```ruby
+Axn.configure do |c|
+  c.tracer = OpenTelemetry.tracer_provider.tracer("my-app.axn", "1.0.0")
+end
+```
+
+::: warning Exceptions from an injected tracer propagate
+Unlike axn's other observability sinks (logging, `emit_metrics`, the notification payload), `tracer.in_span` runs outside axn's best-effort guard. An exception raised by an injected tracer's `in_span` — as opposed to one raised by the action body it wraps — propagates out of `.call` rather than being logged and swallowed.
+:::
+
+Assign `nil` to turn axn's spans off without unloading OpenTelemetry — the rest of your instrumentation keeps working:
+
+```ruby
+Axn.configure { |c| c.tracer = nil }
+```
+
+`Axn.config.reset!(:tracer)` returns to auto-detection, which is what a spec that installs a fake tracer wants in its teardown. Note that assigning `nil` is a value, not a reset.
+
+A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `axn.outcome` attributes, every `axn.tag.*` and `axn.dimension.*` facet, and `record_exception` for a failure — but not an error `Status`, which can only be constructed through OpenTelemetry's own class.
+
+An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`.
 
 ### Basic Setup
 
@@ -746,7 +776,8 @@ Axn.configure do |c|
   end
 
   # Observability
-  # OpenTelemetry tracing is automatic when OpenTelemetry is available
+  # Tracing auto-detects OpenTelemetry when it's loaded; assign c.tracer to use a different
+  # tracer, or c.tracer = nil to disable spans without unloading OpenTelemetry.
 
   c.emit_metrics = proc do |resource:, result:|
     Datadog::Metrics.increment("axn.call", tags: { resource:, outcome: result.outcome.to_s })
