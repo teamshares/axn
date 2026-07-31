@@ -34,6 +34,27 @@ module Axn
       nil
     end
 
+    # Every Setting declared anywhere in `klass`'s own ancestry (via `Settings#setting`), merged
+    # into one name => Setting map. Each class in the chain keeps its declarations in its own
+    # `@_declared_settings` ivar rather than one shared registry, so a subclass that declares
+    # additional settings — without re-extending `Settings` — still needs its instances to see
+    # both its own and every ancestor's. Reads the ivar directly (not through `_declared_settings`)
+    # so walking the chain never mints an empty registry on a class that never declared anything.
+    # A name declared on more than one class in the chain resolves to the most specific (deepest)
+    # declaration, since that class's Setting is merged in last.
+    def self.declared_settings_for(klass)
+      chain = []
+      current = klass
+      while current.is_a?(Class)
+        chain << current
+        current = current.superclass
+      end
+
+      chain.reverse_each.with_object({}) do |k, settings|
+        settings.merge!(k.instance_variable_get(:@_declared_settings)) if k.instance_variable_defined?(:@_declared_settings)
+      end
+    end
+
     Setting = Struct.new(:name, :default, :one_of, :validate, :overridable, keyword_init: true) do
       # Raises ArgumentError if the assigned value is not permitted. A `validate:` lambda may return
       # a String instead of `true` to say WHY the value was rejected — worth it for a setting whose
@@ -480,18 +501,24 @@ module Axn
     module Settings
       include PerClassOverrides
 
-      # Declared Setting objects by name, for `reset!`. The class flavor otherwise keeps no registry
-      # (only overridable settings are tracked, by PerClassOverrides).
+      # Declared Setting objects by name, on THIS class only — not merged with an ancestor's. The
+      # class flavor otherwise keeps no registry (only overridable settings are tracked, by
+      # PerClassOverrides). `reset!` reads across the full ancestry via
+      # `Axn::Configurable.declared_settings_for`, not through this method, so that walk never
+      # mints an empty registry on a class that never declared anything.
       def _declared_settings = @_declared_settings ||= {}
 
       # `reset!` is an INSTANCE method on the extending class (a config object), so it is installed
-      # here rather than declared in this module's body. It closes over the extending class, so a
-      # subclass that declares further settings gets its own `reset!` covering its own registry.
+      # here rather than declared in this module's body. It resolves the settings it operates on
+      # from `self.class` up through its ancestry, so an instance of a subclass sees both settings
+      # declared on the subclass and settings declared on any ancestor that extended `Settings` —
+      # regardless of whether the subclass re-extends `Settings` itself.
       def self.extended(base)
         base.send(:define_method, :reset!) do |*names|
-          targets = names.empty? ? base._declared_settings.keys : names.map(&:to_sym)
+          declared = Axn::Configurable.declared_settings_for(self.class)
+          targets = names.empty? ? declared.keys : names.map(&:to_sym)
           targets.each do |name|
-            raise ArgumentError, "unknown setting #{name.inspect}" unless base._declared_settings.key?(name)
+            raise ArgumentError, "unknown setting #{name.inspect}" unless declared.key?(name)
 
             ivar = :"@#{name}"
             remove_instance_variable(ivar) if instance_variable_defined?(ivar)

@@ -689,6 +689,48 @@ RSpec.describe "#reset!" do
     it "returns self so it can be chained" do
       expect(instance.reset!(:literal)).to be(instance)
     end
+
+    it "resets both a subclass's own setting and one inherited from its superclass" do
+      base = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :base_only, default: :base_default
+      end
+      sub = Class.new(base) do
+        setting :sub_only, default: :sub_default
+      end
+      instance = sub.new
+
+      instance.base_only = :changed
+      instance.sub_only = :changed
+
+      instance.reset!(:base_only)
+      expect(instance.base_only).to eq(:base_default)
+      expect(instance.sub_only).to eq(:changed)
+
+      instance.reset!(:sub_only)
+      expect(instance.sub_only).to eq(:sub_default)
+
+      instance.base_only = :changed
+      instance.sub_only = :changed
+      instance.reset!
+      expect(instance.base_only).to eq(:base_default)
+      expect(instance.sub_only).to eq(:sub_default)
+    end
+
+    it "resets an inherited setting on a subclass that declares no settings of its own" do
+      base = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :base_only, default: :base_default
+      end
+      sub = Class.new(base)
+      instance = sub.new
+
+      instance.base_only = :changed
+      instance.reset!(:base_only)
+      expect(instance.base_only).to eq(:base_default)
+    end
   end
 
   context "on the module-singleton flavor" do
@@ -710,6 +752,14 @@ RSpec.describe "#reset!" do
     it "returns a dynamic setting to re-deriving after an assigned nil" do
       mod.config.derived = nil
       mod.config.reset!(:derived)
+      expect(mod.config.derived).to eq(:derived_default)
+    end
+
+    it "resets every setting when called with no arguments" do
+      mod.config.literal = :changed
+      mod.config.derived = nil
+      mod.config.reset!
+      expect(mod.config.literal).to eq(:original)
       expect(mod.config.derived).to eq(:derived_default)
     end
 
