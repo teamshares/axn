@@ -2,6 +2,12 @@
 
 require "axn/internal/shape_graph"
 require "axn/internal/cycle_guard"
+# Declared rather than left to the top-level entrypoint's require order: both rules are DERIVED from a built
+# schema and reported through the canonicalization, so an adapter loading this file (or
+# `axn/extensions/serialization`) standalone would otherwise NameError on its first call instead of at
+# require time.
+require "axn/reflection/schema"
+require "axn/reflection/values"
 
 module Axn
   module Reflection

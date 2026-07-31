@@ -4,6 +4,8 @@ require "date"
 require "time"
 
 require "axn/reflection/subfield_tree"
+# A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
+require "axn/reflection/values"
 
 require "axn/internal/shape_graph"
 
