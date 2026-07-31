@@ -28,10 +28,9 @@ Axn::MCP.reset_config!                            # discard assigned values — 
 
 | Option | Effect |
 | ------ | ------ |
-| `default:` | Value returned until one is assigned. Mutable defaults (e.g. `[]`) are copied per config, so they're safe to assign-then-mutate. |
+| `default:` | Value returned until one is assigned. A Proc default is dynamic: re-derived on every read while the setting is unset, and never cached — so "unset ⇒ derive from the environment now" is expressible, e.g. `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }`. Any other default is copied per config, so a mutable one (e.g. `[]`) is safe to assign-then-mutate. Once a value is assigned, it's returned as-is on every later read — including a Proc, and including `nil` — never invoked and never re-derived. |
 | `one_of:` | Whitelist of permitted values; assigning anything else raises `ArgumentError`. |
 | `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. The callable may instead raise its own `ArgumentError` for a custom message. |
-| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. A callable **default** is re-evaluated on every read, so "unset ⇒ derive from the environment now" is expressible: `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }, callable: true`. |
 | `overridable:` | When `true`, individual actions can override the value per-class (see below). |
 
 When migrating an existing config onto `one_of:` or `validate:`, note that the `ArgumentError` raised on an invalid assignment uses the DSL's own wording (e.g. `mode must be one of :a, :b; got :z`) rather than any message your hand-written setter used before — so any tests asserting on the old message text will need updating.
@@ -116,4 +115,4 @@ class Configuration
 end
 ```
 
-This defines instance-level `log_level` / `log_level=` accessors (with the same `default:` / `one_of:` / `validate:` / `callable:` options) while leaving you free to hand-write any other methods the class needs — which is exactly how Axn keeps its side-effecting settings (`env`, `logger`, `on_exception`, the async setters) bespoke while declaring the simple ones via the DSL.
+This defines instance-level `log_level` / `log_level=` accessors (with the same `default:` / `one_of:` / `validate:` options) while leaving you free to hand-write any other methods the class needs — which is exactly how Axn keeps its side-effecting settings (`env`, `logger`, `on_exception`, the async setters) bespoke while declaring the simple ones via the DSL.

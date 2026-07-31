@@ -53,6 +53,39 @@ RSpec.describe Axn::Configurable do
     end
   end
 
+  describe "dynamic defaults" do
+    let(:derived_module) do
+      Module.new do
+        extend Axn::Configurable
+
+        def self.derivations = @derivations ||= 0
+        def self.bump! = @derivations = derivations + 1
+
+        setting :derived, default: lambda {
+          bump!
+          "derived-#{derivations}"
+        }
+      end
+    end
+
+    it "re-derives a Proc default on every read while unset" do
+      expect(derived_module.config.derived).to eq("derived-1")
+      expect(derived_module.config.derived).to eq("derived-2")
+    end
+
+    it "returns an explicitly assigned Proc as-is, never invoking it" do
+      assigned = -> { "not invoked" }
+      derived_module.config.derived = assigned
+      expect(derived_module.config.derived).to equal(assigned)
+    end
+
+    it "treats an explicitly assigned nil as a value, not as a reset" do
+      derived_module.config.derived = nil
+      expect(derived_module.config.derived).to be_nil
+      expect(derived_module.config.derived?).to be(false)
+    end
+  end
+
   describe "overridable: settings" do
     let(:overridable) do
       Module.new do
