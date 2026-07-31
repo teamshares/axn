@@ -142,10 +142,12 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     }
   end
 
-  # Renaming the error runs the exception's own code, and this is the path that REPORTS a failure — so an
-  # exception whose `#message` or duplication hook raises must degrade the message rather than replace the
-  # failure. Outside StandardError especially: that escapes the rescue meant to settle it, at boot, naming
-  # nothing.
+  # Renaming the error runs the exception's own code, and this is the path that REPORTS a failure — so nothing
+  # the exception defines may replace the failure being reported, least of all outside StandardError, which
+  # escapes the rescue meant to settle it, at boot, naming nothing. Two rules, and the examples below are one per
+  # branch of them: a dispatch axn makes is GUARDED, so at worst the message degrades; a dispatch `raise` makes
+  # cannot be guarded, so an exception whose class owns `#exception` (or a duplication hook, or that is frozen) is
+  # not renamed at all and is reported as axn's own error instead.
   describe "an exception whose own methods refuse to cooperate" do
     def raising_from(klass, error)
       Axn.register_tool_adapter(:mcp)
@@ -167,6 +169,9 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
         expect(Exception.instance_method(:to_s).bind_call(error))
           .to eq("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        # `cause` on a DEGRADED path: reading the hostile `#message` rescues inside the boot rescue, and Ruby
+        # does not restore `$!` afterwards, so the implicit cause was nil here until it was passed explicitly.
+        expect(error.cause).to be_a(hostile)
       }
     end
 
@@ -183,32 +188,105 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       }
     end
 
-    # THE dispatch `raise e, message` made. The override substitutes only when handed a message, and answers the
-    # 0-arg call `raise` makes with itself — so the object can be raised, reach here, and then be replaced by
-    # something else entirely while the contract failure is dropped. Bound, the C implementation runs instead and
-    # the class is kept. (An override that substitutes on the 0-arg call too could never have been RAISED as
-    # itself, so it never reaches this path at all.)
-    it "ignores an #exception override that would substitute another error" do
+    # A `#message` that returns a hostile OBJECT rather than raising: interpolating it into the renamed message
+    # would dispatch that object's `to_s` outside the guard, which is the same escape one indirection over. The
+    # result is type-tested instead, so a non-String falls back to the stored message.
+    it "ignores a #message that answers with an object whose to_s raises" do
+      rude = Class.new do
+        def to_s = raise(NotImplementedError, "hostile to_s")
+      end
       hostile = Class.new(ArgumentError) do
-        def exception(*args) = args.empty? ? self : RuntimeError.new("substituted")
+        define_method(:message) { rude.new }
+      end
+      raising_from(hostile, hostile.new("the stored message"))
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+        expect(Exception.instance_method(:to_s).bind_call(error))
+          .to eq("ToolContractsSpec::Valid has an invalid tool contract — the stored message")
+      }
+    end
+
+    # An exception whose class owns `#exception` is not renamed at all — because renaming ends in `raise`, which
+    # dispatches the 0-arg `#exception` on the object it is handed, and no guard can wrap that. Having been raised
+    # once says nothing about the second call: this override answers itself the first time and raises the second,
+    # and `Exception#exception(message)` clones, so `raise` asks the CLONE. Reported as axn's own error, which
+    # keeps the tool name and the message and carries the original as `cause`.
+    it "reports an #exception override as axn's own error rather than renaming it" do
+      hostile = Class.new(ArgumentError) do
+        def initialize(*)
+          @calls = 0
+          super
+        end
+
+        def exception(*_args)
+          @calls += 1
+          raise NotImplementedError, "second call" if @calls > 1
+
+          self
+        end
       end
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
-        expect(error.message).to eq("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |error|
+        expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         expect(error.cause).to be_a(hostile)
       }
     end
 
-    # A duplication hook that raises is reached by the clone `Exception#exception` makes, so there is no renamed
-    # copy to report — the original stands, unrenamed, rather than being replaced by the hook's exception.
-    it "reports the original object when its duplication hook raises" do
+    # A duplication hook is reached by the clone `Exception#exception(message)` makes, so an exception that owns
+    # one is not cloned either — the hook is never run, and the tool name survives (where reporting the original
+    # unrenamed would have lost it).
+    it "reports one that owns a duplication hook as axn's own error, naming the tool" do
       hostile = Class.new(ArgumentError) do
         def initialize_copy(other) = raise(NotImplementedError, "hostile copy")
       end
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(hostile, "the real defect")
+      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |error|
+        expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(error.cause).to be_a(hostile)
+      }
+    end
+
+    # The ownership test asks the OBJECT here, not the class, because `clone` copies the singleton class onto the
+    # copy and `raise` then dispatches `#exception` on it — so a singleton override IS code the reporting path
+    # would run. (The container check one layer over asks the class, since `dup` carries no singleton.)
+    it "reports one whose SINGLETON defines #exception as axn's own error" do
+      hostile = Class.new(ArgumentError)
+      error = hostile.new("the real defect")
+      # Answers the 0-arg call `raise` makes with itself, so it can BE raised and reach the reporting path, and
+      # substitutes only when handed a message.
+      error.define_singleton_method(:exception) { |*args| args.empty? ? self : RuntimeError.new("substituted") }
+      raising_from(hostile, error)
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |raised|
+        expect(raised.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(raised.cause).to be(error)
+      }
+    end
+
+    # A FROZEN exception owns nothing at all and still cannot be renamed: `clone` preserves frozen state, so
+    # storing the new message on the copy raises FrozenError from inside the reporting path.
+    it "reports a frozen exception as axn's own error" do
+      hostile = Class.new(ArgumentError)
+      raising_from(hostile, hostile.new("the real defect").freeze)
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |error|
+        expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(error.cause).to be_a(hostile)
+      }
+    end
+
+    # The fallback error is itself reportable without running anything: it stores its message rather than building
+    # it in `#message`, so a bound `Exception#to_s` renders the same text.
+    it "renders the fallback error's full text through a bound Exception#to_s" do
+      hostile = Class.new(ArgumentError) { def exception(*_args) = self }
+      raising_from(hostile, hostile.new("the real defect"))
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |error|
+        expect(Exception.instance_method(:to_s).bind_call(error)).to eq(error.message)
+        expect(error.message).to include("axn does not run an exception's own code")
+      }
     end
   end
 

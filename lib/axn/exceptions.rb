@@ -129,6 +129,28 @@ module Axn
 
   class DuplicateFieldError < ContractViolation; end
 
+  # Raised by `Axn.validate_tool_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.
+  # Reporting it as itself means renaming it to say which tool it came from, and renaming an exception runs the
+  # exception's own code — `#exception`, which `raise` dispatches on whatever object it is handed, and the
+  # duplication hooks `Exception#exception(message)` reaches. axn will not run that code while reporting the
+  # failure it caused (an override that raises replaces the failure, and one outside StandardError escapes the
+  # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
+  #
+  # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
+  # Deliberately the only exception in this file that builds its text in `initialize` rather than in `#message`.
+  # Everything it needs is already a plain String by the time it is constructed, so there is nothing to defer —
+  # and this exception exists precisely because reporting must not depend on an exception's own methods, so it
+  # renders identically through `#message`, through a bound `Exception#to_s`, and to anything that reads the
+  # stored message directly.
+  class InvalidToolContract < ContractViolation
+    def initialize(tool:, reason:, original_class:)
+      super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
+            "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
+            "object is frozen: axn does not run an exception's own code while reporting the failure it caused. " \
+            "The original is this error's `cause`.)")
+    end
+  end
+
   class ValidationError < ContractViolation
     attr_reader :errors, :user_facing_message
 

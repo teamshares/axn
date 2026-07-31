@@ -59,8 +59,12 @@ module Axn
       # emits without changing any config array — so an identity-keyed verdict would be stale and the new
       # schema would come back unvalidated. Measured at ~16% of the input build and ~59% of the (much smaller)
       # output build, against a build that had to happen regardless.
+      #
+      # `resolved:` is the class's own cached subfield resolution — the artifact `Schema.build_input_for` nests
+      # properties from — so the size cap reads the emitter's tree rather than building a second one.
       def validated_input(klass, &)
-        validate_and_build(klass.internal_field_configs, klass.subfield_configs, direction: :input, &)
+        validate_and_build(klass.internal_field_configs, klass.subfield_configs,
+                           direction: :input, resolved: klass._resolved_subfields, &)
       end
 
       def validated_output(klass, &)
@@ -111,11 +115,11 @@ module Axn
       # second schema. The size cap runs BEFORE the build, because avoiding the build is the whole point of it:
       # a contract whose property count is exponential has no reflectable schema, and paying for one to discover
       # that would defeat the check.
-      def validate_and_build(*config_arrays, direction:, &build)
-        reject_oversized_schema!(config_arrays.flatten(1), for_output: direction == :output)
+      def validate_and_build(field_configs, subfield_configs = [], direction:, resolved: nil, &build)
+        reject_oversized_schema!(field_configs, subfield_configs, for_output: direction == :output, resolved:)
         schema = build.call
         reject_colliding_emitted_properties!(schema) do
-          direction == :input ? inbound_property_sources(*config_arrays) : outbound_property_sources(*config_arrays)
+          direction == :input ? inbound_property_sources(field_configs, subfield_configs) : outbound_property_sources(field_configs)
         end
         schema
       end
@@ -479,21 +483,76 @@ module Axn
         end
 
         def self.too_many_properties(label)
-          "the shape on #{label} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
-            "properties — a nested shape object reused by sibling members multiplies out, so every path " \
-            "through it is a separate property and the reflected schema grows exponentially " \
-            "(`input_schema` would not finish either). Give each member its own nested shape, or flatten " \
-            "the nesting."
+          "the contract at #{label} names more than #{MAX_EMITTED_PROPERTIES} JSON " \
+            "properties — most often a nested shape object reused by sibling members multiplies out, so every " \
+            "path through it is a separate property and the reflected schema grows exponentially " \
+            "(`input_schema` would not finish either). Give each member its own nested shape, flatten the " \
+            "nesting, or declare fewer properties."
         end
       end
       private_constant :Budget
 
-      def reject_oversized_schema!(configs, for_output:)
+      # THE THREE CHARGE SITES, and which way each can be wrong — stated, because an over-count rejects a legal
+      # declaration while an under-count only loosens the bound, and a charge that cannot say which it does is a
+      # predictor. Nothing here is charged for a config the emitter represents nowhere (`emitted_configs`).
+      #
+      # 1. One per emitted config, below. NOT exact, and off only by a bounded multiple of the DECLARATION count,
+      #    never by a multiple of the emitted schema: it UNDER-counts the implicit intermediate keys a dotted `on:`
+      #    introduces (they are shared nodes, so charging them per config would over-count instead), and it
+      #    OVER-counts by one per pair of declarations that MERGE onto a single property — two routes to one wire
+      #    path, a `model:`-generated `<field>_id` beside an explicitly declared one. So a contract of N merged
+      #    pairs is rejected at 25,000 charges rather than 25,000 properties.
+      # 2. Every property name a declared TYPE contributes (`each_type_namespace`), read out of `plan.type_schema`
+      #    — the very Hash `apply_structured_schema!` assigns — so it is exact by construction, including a
+      #    multi-class `of:` whose element types each land in their own `anyOf` branch. A type that emits nothing
+      #    (a scalar `of:`, a gated outbound config, an input `model:` route) carries no properties to charge.
+      # 3. One per shape MEMBER, recursively, gated on `plan.emitted`. Exact: a member with no name cannot be
+      #    declared at all (the declaration walk rejects a member answering to no `field`, and
+      #    `Contract.validate_shape_member_name!` rejects a name that is neither String nor Symbol), so every
+      #    member the walk sees is one `member_properties` emits, and a nested shape is charged only where the
+      #    parent's own overlay is emitted.
+      #
+      # Separately, `ShapeGraph::MAX_MEMBER_PATHS` charges the STORED graph at declaration — every member path,
+      # emitted or not. That one deliberately does not derive from the emitter: it bounds the cost of WALKING a
+      # graph axn holds (runtime shape validation, redaction), which happens whether or not a property is emitted.
+      def reject_oversized_schema!(field_configs, subfield_configs, for_output:, resolved: nil)
         budget = Budget.new(MAX_EMITTED_PROPERTIES)
-        configs.each do |config|
+        emitted_configs(field_configs, subfield_configs, for_output:, resolved:).each do |config|
           label = -> { describe_config(config) }
           budget.spend!(1, &label)
           count_emitted_properties!(budget, config, for_output:, &label)
+        end
+      end
+
+      # The configs the projection emits properties FOR — asked of the emitter's own artifacts rather than
+      # predicted from the declarations, because a config the schema names nowhere must cost nothing: charging it
+      # rejects a contract over a schema it does not have. Charging one was the seventh defect on this branch
+      # with that single root, and the last charge still predicting instead of deriving.
+      #
+      # Outbound, every declared field is emitted — `build_output` writes one property per config, unconditionally.
+      #
+      # Inbound, emission depends on the config's POSITION, and `SubfieldTree` is what decides it. A config rooted
+      # at `on: :ambient_context` is never attached to a tree at all, so `index` has no entry for it and the
+      # projection is an empty object however many are declared (each was charged one property, plus every member
+      # of its shape). A config whose ancestor chain passes through a parent that cannot hold JSON object
+      # properties — a `model:` route, a non-object or mixed-union type, an implicit key already claimed by a
+      # non-object shape member — is omitted at that ancestor, along with its whole subtree.
+      #
+      # `path_blocked?` is the predicate that decides the second one: the same call `compute_dropped` makes, so
+      # the charge and the drop cannot disagree. It is asked at EVERY depth, because the emitter blocks at every
+      # depth (`apply_nested_subfields!` returns at the blocking node) while `dropped` deliberately records only
+      # the deep configs it reports to the author, a depth-1 subfield under such a parent being silently omitted.
+      #
+      # The tree comes from the class's own cache when the caller has it (`resolved:`), which is the artifact
+      # `Schema.build_input_for` nests from — the same tree, not a second one built beside it.
+      def emitted_configs(field_configs, subfield_configs, for_output:, resolved: nil)
+        return field_configs if for_output
+
+        subfields = Array(subfield_configs)
+        tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
+        (field_configs + subfields).select do |config|
+          path = tree.index[config]
+          path && !SubfieldTree.path_blocked?(path.ancestors)
         end
       end
 
@@ -522,8 +581,10 @@ module Axn
       # What it charges is DERIVED from `Schema.shape_property_plan` — the same plan the emitter itself acts on —
       # rather than predicted from the declaration. A shape whose members never become properties therefore costs
       # nothing: a scalar `of:` (`of: String` with `field :length`) validates its members off an element that
-      # stays a string, and an outbound-gated or non-member-keyed value emits no object at all. Charging those
-      # rejected a contract over a schema it does not have. The type's own properties ARE charged even when the
+      # stays a string, and an outbound-gated value, a non-member-keyed one, or an INPUT `model:` route (whose
+      # `<field>_id` is emitted in place of the field) emits no object at all. Charging those rejected a contract
+      # over a schema it does not have — as did charging a config the projection places nowhere, which is the same
+      # question one level up and is settled before this walk is reached (see `emitted_configs`). The type's own properties ARE charged even when the
       # shape overlay is not emitted, because an `of:` element type's own members reach `items` with or without a
       # shape — and they are charged through `each_type_namespace`, so a type that emits its properties across
       # several namespaces (a multi-class `of:`) is counted in all of them rather than only at the node.
@@ -576,7 +637,7 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
-                           :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!
+                           :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs
     end
   end
 end

@@ -1633,9 +1633,10 @@ module Axn
         # `transform_values` handed back the receiver, otherwise stayed aliased into the declared contract while
         # the plain-Array case beside it was correctly copied.
         #
-        # An Array keeps its CLASS (a same-class `dup`) because its own `include?` is what an `inclusion:` set
-        # answers membership with, while a bag becomes a plain Hash — which is what it already became, and axn
-        # reads bags with `[]`/`dig` only.
+        # An Array keeps its CLASS (a same-class `dup`, or the caller's own object when it is already frozen —
+        # see _detached_option_array) because its own `include?` is what an `inclusion:` set answers membership
+        # with, while a bag becomes a plain Hash — which is what it already became, and axn reads bags with
+        # `[]`/`dig` only.
         def _detach_option_containers!(validations)
           validations.each do |key, value|
             next if key == :shape
@@ -1657,44 +1658,39 @@ module Axn
           copy
         end
 
-        # Copy, then CHECK the copy — rather than predict which containers copy faithfully. A same-class `dup`
-        # runs the container's own `initialize_dup`, which is free to alter what the copy holds: one that cleared
-        # itself produced a declared contract that rejected the very values it was declared with. Refusing every
-        # container that defines the callback would reject the legitimate use of it (rebuilding a derived index
-        # off the copied elements), and skipping the callback would hand back an object whose class expects to
-        # establish its invariants in exactly that hook. Comparing what came back against what went in accepts
-        # both and rejects only a copy that genuinely differs.
+        # Three outcomes, and which one a container gets is decided WITHOUT running any of its code.
         #
-        # Two comparisons, because a copy can differ in two ways and looking like the original is not behaving
-        # like it. The elements are the obvious one. The other is the state a container DERIVES from them: an
-        # `inclusion:` set answers membership with its own `include?`, so a copy whose index was cleared holds
-        # every declared element and still rejects them all (`same_membership?`). Checked in that order, so the
-        # simpler defect is diagnosed as itself, and the behavior check is skipped entirely for a container that
-        # can run no code of its own while being copied.
+        # A container axn can copy faithfully by construction — one whose class owns no duplication hook, which
+        # is every plain Array and every subclass that adds behavior without one — is copied, and the copy is the
+        # contract. A FROZEN container is stored as it is: the copy exists so that mutating what the caller still
+        # holds cannot change a declared contract, and a frozen container cannot be mutated, so there is nothing
+        # to detach it from. Anything else is REFUSED at declaration.
+        #
+        # The refusal is deliberate over-rejection, and it replaces two rounds of verifying the copy instead.
+        # Comparing the copy's ELEMENTS missed a hook that dropped a derived lookup index the container's own
+        # `include?` reads: the elements survived and the copy rejected every one of them. Asking the copy
+        # `include?` about each element then missed a hook that dropped only the index of accepted NON-elements —
+        # a set holding `"canon"` and aliasing `"alias"` to it accepted both, its copy accepted only `"canon"`,
+        # and no element-based probe can see a difference outside the elements. The accepted set is whatever
+        # arbitrary code says, so it is not enumerable from outside, and each verification was defeated by the
+        # next case; ownership is a fact rather than a prediction (see Internal::NativeMethods). A container
+        # whose duplication rebuilds its index faithfully is over-rejected by this and has a bounded way to stay
+        # legal: freeze it.
         #
         # The container is named by class, never by `inspect` — its own code must not run while the declaration
         # error it caused is being built.
         def _detached_option_array(value, label)
-          copy = Internal::ShapeGraph.detached_dup(value)
-          unless Internal::ShapeGraph.same_elements?(value, copy)
-            _raise_unfaithful_option_container!(value, label, "holding different elements than the original")
-          end
-          unless Internal::ShapeGraph.default_duplication?(value) || Internal::ShapeGraph.same_membership?(value, copy)
-            _raise_unfaithful_option_container!(value, label,
-                                                "that answers `include?` differently from the original — the elements " \
-                                                "survived, but the state its membership is derived from did not")
-          end
+          return value if Internal::NativeMethods.frozen?(value)
+          return Internal::ShapeGraph.detached_dup(value) if Internal::ShapeGraph.detachable_container?(value)
 
-          copy
-        end
-
-        def _raise_unfaithful_option_container!(value, label, defect)
           raise ArgumentError,
-                "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) does not survive being " \
-                "copied — its `initialize_dup` returns a copy #{defect}. A declared contract is copied at " \
-                "declaration so that mutating what you still hold cannot change it, so the copy IS the contract, " \
-                "and this one would not validate what you declared. Supply a plain Array, or a container whose " \
-                "duplication preserves its elements and whatever it derives from them."
+                "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) defines its own " \
+                "duplication hook (`initialize_dup` or `initialize_copy`), so axn cannot copy it. A declared " \
+                "contract is copied at declaration so that mutating what you still hold cannot change it — and " \
+                "what your hook does to the copy cannot be established without running it, so a copy that " \
+                "silently rejects the values you declared is indistinguishable from a faithful one. Supply a " \
+                "plain Array, or freeze this container (a frozen one is stored as-is, since nothing can mutate " \
+                "it afterwards)."
         end
 
         def _derive_raw_shape_container!(validations)

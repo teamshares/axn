@@ -434,7 +434,7 @@ RSpec.describe "declaration-time property name collisions" do
         expect(klass.call(payload: { choice: "z" })).to be_ok
       end
 
-      it "rejects a container whose duplication alters its elements" do
+      it "rejects a container that defines a duplication hook" do
         values = Class.new(Array) do
           def initialize_dup(source)
             super
@@ -443,7 +443,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new.push("a", "b")
 
         expect { member_axn({ inclusion: { in: values } }) }
-          .to raise_error(ArgumentError, /does not survive being copied/)
+          .to raise_error(ArgumentError, /defines its own duplication hook/)
       end
     end
 
@@ -485,9 +485,10 @@ RSpec.describe "declaration-time property name collisions" do
         expect(accepts_c?(klass)).to be(false)
       end
 
-      # A same-class copy runs the container's own `initialize_dup`, so the copy is checked against the original
-      # rather than trusted. Only a copy that genuinely differs is rejected.
-      it "rejects one whose duplication drops its elements" do
+      # A container that defines a duplication hook is refused rather than copied-and-checked. What the hook
+      # does to the copy cannot be established without running it, and two rounds of verifying a copy were each
+      # defeated one case later (see the two below), so ownership of the hook is the verdict.
+      it "rejects one that defines a duplication hook at all" do
         values = Class.new(Array) do
           def initialize_dup(source)
             super
@@ -496,13 +497,12 @@ RSpec.describe "declaration-time property name collisions" do
         end.new.push("a", "b")
 
         expect { declared_with(values) }
-          .to raise_error(ArgumentError, /does not survive being copied.*preserves its elements/m)
+          .to raise_error(ArgumentError, /defines its own duplication hook.*Supply a plain Array, or freeze/m)
       end
 
-      # The elements are not the whole contract. An `inclusion:` set answers membership with its OWN `include?`,
-      # which may be derived from state the elements do not determine — so a copy holding the identical elements
-      # can still REJECT what the original accepts. Comparing elements cannot see that; asking the copy the
-      # question the contract will ask it can.
+      # The first case verification missed: the elements are not the whole contract. An `inclusion:` set answers
+      # membership with its OWN `include?`, which may be derived from state the elements do not determine, so a
+      # copy holding the identical elements can still REJECT what the original accepts.
       it "rejects one whose duplication drops the state its membership is derived from" do
         values = Class.new(Array) do
           def initialize(*args)
@@ -519,33 +519,76 @@ RSpec.describe "declaration-time property name collisions" do
         end.new(%w[a b])
 
         expect(values.include?("a")).to be(true)
-        expect { declared_with(values) }
-          .to raise_error(ArgumentError, /does not survive being copied.*answers `include\?` differently/m)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines its own duplication hook/)
       end
 
-      # ...and accepts the legitimate use of that same callback: rebuilding a derived index off the copied
-      # elements. A blanket refusal of containers defining `initialize_dup` would reject this, and so would
-      # verifying the copy's STATE rather than its behavior — a rebuilt index is a different object.
-      it "still accepts one whose duplication rebuilds a derived index" do
-        # Eagerly, with no lazy fallback in `include?`, so the copy answers correctly ONLY because the hook ran —
-        # the mirror image of the case above, and the reason this cannot be settled by rejecting the hook.
+      # The second, which is why no probe closes this: membership can accept values that are not elements, so
+      # asking the copy `include?` about each ELEMENT agrees with the original while the copy has silently
+      # stopped accepting the aliases the original accepted. The accepted set is whatever arbitrary code says.
+      it "rejects one whose duplication drops an alias index no element-based probe can see" do
         values = Class.new(Array) do
           def initialize(*args)
             super
-            reindex
+            @aliases = { "alias" => "canon" }
           end
 
           def initialize_dup(source)
             super
-            reindex
+            @aliases = {} # every ELEMENT still answers `include?`; only the aliases stop
           end
 
-          def reindex = @index = each_with_object({}) { |value, hash| hash[value] = true }
+          def include?(value) = to_a.include?(value) || @aliases.key?(value.to_s)
+        end.new(%w[canon])
+
+        expect(values.include?("canon")).to be(true)
+        expect(values.include?("alias")).to be(true)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines its own duplication hook/)
+      end
+
+      # The bounded escape hatch, and what keeps the over-rejection honest: the copy exists so a caller's later
+      # mutation cannot change a declared contract, and a frozen container cannot be mutated — so it is stored
+      # as-is, hook and all, and its own `include?` (index rebuilt in `initialize`) is what the contract asks.
+      it "accepts a frozen container that defines a duplication hook, and honors its membership" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @index = each_with_object({}) { |value, hash| hash[value] = true }
+          end
+
+          def initialize_dup(source)
+            super
+            @index = {}
+          end
 
           def include?(value) = @index.key?(value)
-        end.new(%w[x y])
+        end.new(%w[x y]).freeze
         klass = declared_with(values)
 
+        expect(klass.call(choice: "x")).to be_ok
+        expect(klass.call(choice: "z")).not_to be_ok
+      end
+
+      # The ownership test asks the CLASS, not the object, because that is where `dup` looks: a copy carries no
+      # singleton class, so a hook defined on this object's singleton is not code the copy can run. Asking the
+      # object would refuse a container axn copies perfectly well.
+      it "accepts one whose SINGLETON defines a duplication hook, which dup cannot reach" do
+        values = %w[a b]
+        values.define_singleton_method(:initialize_dup) { |_source| clear }
+        klass = declared_with(values)
+
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(false)
+        expect(klass.call(choice: "a")).to be_ok
+      end
+
+      # A frozen PLAIN container is stored as-is too — the copy is what a mutable one is protected with, and
+      # there is nothing here to protect against.
+      it "stores a frozen plain Array without copying it" do
+        values = %w[x y].freeze
+        klass = declared_with(values)
+
+        expect(klass.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
         expect(klass.call(choice: "x")).to be_ok
         expect(klass.call(choice: "z")).not_to be_ok
       end
@@ -2152,6 +2195,76 @@ RSpec.describe "declaration-time property name collisions" do
       it "still charges and still caps members the schema does emit" do
         expect { wide_contract(per_field: 1_000, type: Hash, container: Hash).input_schema }
           .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+      end
+
+      # Whether a config emits anything AT ALL is the same question one level up, and it is SubfieldTree's to
+      # answer: a config rooted at `on: :ambient_context` is never attached to a tree, so the projection is an
+      # empty object however many are declared. Charging one property per config (plus every member of its shape)
+      # rejected a contract whose schema names nothing.
+      describe "a config the emitter represents nowhere" do
+        def wide_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+
+        it "charges nothing for an ambient-rooted config, and projects an empty object" do
+          klass = build_axn do
+            expects :items, on: :ambient_context, type: Array, of: Data.define(*Array.new(26_000) { |i| :"m#{i}" }), optional: true
+          end
+
+          expect(klass.input_schema).to eq({ type: "object", properties: {} })
+        end
+
+        it "charges nothing for an ambient-rooted shape either" do
+          members = Array.new(1_000) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+          klass = build_axn do
+            26.times { |f| expects :"f#{f}", on: :ambient_context, type: Hash, shape: { members:, container: Hash }, optional: true }
+          end
+
+          expect(klass.input_schema).to eq({ type: "object", properties: {} })
+        end
+
+        # A DEEP subfield under a parent that cannot hold object properties is omitted with its whole subtree
+        # (reported through dropped_deep_subfields), so it names no property either.
+        it "charges nothing for a dropped deep subfield" do
+          wide = wide_type
+          klass = build_axn do
+            expects :payload, type: Hash do
+              field :bar, type: [Hash, Array]
+            end
+            expects :baz, on: "payload.bar", type: Array, of: wide, optional: true
+          end
+
+          expect(klass.input_schema.dig(:properties, :payload, :properties, :bar)).not_to have_key(:properties)
+          expect(Axn::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
+            .to eq([:baz])
+        end
+
+        # ...and the SAME rule at depth 1, which `dropped` does not record: the emitter blocks at the parent
+        # whatever the depth, so the charge has to ask the blocking predicate rather than the dropped list.
+        it "charges nothing for a depth-1 subfield under a model: parent" do
+          wide = wide_type
+          klass = build_axn do
+            expects :thing, model: Struct.new(:id), optional: true
+            expects :leaf, on: :thing, type: Array, of: wide, optional: true
+          end
+
+          expect(klass.input_schema[:properties].keys).to eq([:thing_id])
+        end
+
+        # A model: route emits `<field>_id` INSTEAD of the field, at any depth, so on input its own declared type
+        # names no property either. Charged from the plan, which now says so, rather than from the emitter's branch.
+        it "charges nothing for a model: route's own type on input" do
+          wide = wide_type
+          klass = build_axn { expects :thing, model: Struct.new(:id), type: Array, of: wide, optional: true }
+
+          expect(klass.input_schema[:properties].keys).to eq([:thing_id])
+        end
+
+        # The control in the other direction: OUTPUT emits the field itself, so the same type is charged there.
+        it "still charges a model: route's type on output, where the field is emitted" do
+          wide = wide_type
+
+          expect { build_axn { exposes :thing, model: Struct.new(:id), type: Array, of: wide, optional: true }.output_schema }
+            .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
       end
 
       # ...and an `of:` element type's OWN members reach `items` whether or not a shape overlays them, so the

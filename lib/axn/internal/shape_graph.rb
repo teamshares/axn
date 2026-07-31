@@ -53,18 +53,7 @@ module Axn
       # own traversal is reachable without asking the subclass anything.
       HASH_EACH = ::Hash.instance_method(:each)
       KERNEL_DUP = ::Kernel.instance_method(:dup)
-      ARRAY_SIZE = ::Array.instance_method(:size)
-      ARRAY_AT = ::Array.instance_method(:[])
-      BASIC_EQUAL = ::BasicObject.instance_method(:equal?)
-      OBJECT_CLASS = ::Object.instance_method(:class)
-      # The real method table of a caller's class, reached without `Module#instance_method` itself being answered
-      # by a singleton the class defines — and the owners of the two duplication hooks as Ruby ships them, read
-      # from the implementations rather than named, so an implementation that moves cannot silently disagree.
-      MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
-      DEFAULT_INITIALIZE_DUP_OWNER = ::Object.instance_method(:initialize_dup).owner
-      DEFAULT_INITIALIZE_COPY_OWNER = ::Array.instance_method(:initialize_copy).owner
-      private_constant :HASH_EACH, :KERNEL_DUP, :ARRAY_SIZE, :ARRAY_AT, :BASIC_EQUAL, :OBJECT_CLASS,
-                       :MODULE_INSTANCE_METHOD, :DEFAULT_INITIALIZE_DUP_OWNER, :DEFAULT_INITIALIZE_COPY_OWNER
+      private_constant :HASH_EACH, :KERNEL_DUP
 
       # Every entry of a caller Hash — THE seam for reading one, so no layer ever asks a Hash subclass to
       # traverse itself.
@@ -85,89 +74,29 @@ module Axn
       # a subclass with a plain Array would change the contract rather than protect it, and would also publish
       # an enum reflection deliberately withholds for anything but an exact Array.
       #
-      # `Kernel#dup` still runs the duplication CALLBACK (`initialize_dup`, and the `initialize_copy` it calls),
-      # which is the caller's code and can alter the copy — one that cleared it left a contract rejecting the very
-      # values it declared. Bypassing the callback is not the answer (a class that establishes its invariants
-      # there would get a broken copy), nor is refusing containers that define one (a subclass rebuilding a
-      # derived index from it is legitimate and works). So the copy is CHECKED instead: see `same_elements?` and
-      # `same_membership?`, and the declaration error their caller raises. Predicting which containers are safe is
-      # what checking replaces.
+      # Only ever called for a container `detachable_container?` has already cleared, so the bound `dup` runs
+      # Ruby's own copy and none of the container's code.
       def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
 
-      # Whether a copy holds the elements the original held. Nothing either object defines is dispatched: `==`,
-      # `size` and `each` are all overridable, and the copy is the caller's class too, so it can lie exactly as
-      # readily as the original — both are read through `Array`'s own `size`/`[]`. Element IDENTITY is the right
-      # question for a shallow copy (the elements are the same objects, not copies of them), asked through
-      # `BasicObject#equal?` so an element's own override cannot answer it either.
-      def self.same_elements?(original, copy)
-        size = ARRAY_SIZE.bind_call(original)
-        return false unless size == ARRAY_SIZE.bind_call(copy)
-
-        index = 0
-        while index < size
-          return false unless BASIC_EQUAL.bind_call(ARRAY_AT.bind_call(original, index), ARRAY_AT.bind_call(copy, index))
-
-          index += 1
-        end
-
-        true
-      end
-
-      # Whether the copy decides MEMBERSHIP the way the original does, asked of each element the original holds.
+      # Whether axn can take a copy of this container that is FAITHFUL BY CONSTRUCTION — the whole condition
+      # being that `Kernel#dup` of it runs none of the container's own code (`NativeMethods.native_array_dup?`),
+      # so the copy holds what the original held and answers as it did, `Array#include?` being a pure function of
+      # the elements. Every plain Array, and every subclass that adds behavior without a duplication hook, passes.
       #
-      # The elements are not the whole contract. What an `inclusion:` set MEANS is its own `include?`, and a
-      # container is free to derive that answer from state its elements do not determine — a lookup index built in
-      # `initialize`. So a copy can hold the identical elements and still answer differently: one whose
-      # `initialize_dup` cleared that index declared cleanly and then REJECTED the very values it was declared
-      # with, which `same_elements?` cannot see, because what changed is not an element.
+      # A container that DOES own a duplication hook is not copied and not accepted, because what the hook does
+      # cannot be established without running it, and no observation of a copy is complete. Comparing the copy's
+      # elements missed a hook that dropped a derived lookup index the container's `include?` reads. Asking the
+      # copy `include?` about each ELEMENT missed a hook that dropped only the index of accepted NON-elements: a
+      # set holding `"canon"` and aliasing `"alias"` to it answered both, its copy answered only the first, and
+      # every element-based probe agreed. Membership is whatever arbitrary code says, so the accepted set is not
+      # enumerable from outside — see NativeMethods for why ownership is the question that terminates.
       #
-      # The copy is therefore asked the question the contract will ask it, and its answer must match the
-      # ORIGINAL's — not `true`. A container whose `include?` legitimately says false about something it holds is
-      # answering consistently, which is all this demands, and a copy that merely rebuilt its index into a fresh
-      # object passes where comparing STATE would have rejected it. Only truthiness is compared, since that is all
-      # a membership check reads, and it is derived without `!` (`BasicObject#!` is overridable) — see `truthy?`.
-      #
-      # `include?` is dispatched, deliberately, and it is the one dispatch here: this is not a guard asking a
-      # caller's object about its type, it is the behavior being verified, through the same call runtime
-      # validation makes. A container that answers it inconsistently across two reads is contradicting itself
-      # rather than evading a check (the documented limit on any caller-supplied reader). Everything else — the
-      # traversal, the element reads — stays bound.
-      def self.same_membership?(original, copy)
-        size = ARRAY_SIZE.bind_call(original)
-        index = 0
-        while index < size
-          element = ARRAY_AT.bind_call(original, index)
-          return false unless truthy?(OBJECT_PUBLIC_SEND.bind_call(original, :include?, element)) ==
-                              truthy?(OBJECT_PUBLIC_SEND.bind_call(copy, :include?, element))
-
-          index += 1
-        end
-
-        true
-      end
-
-      # Whether a bound `dup` of this container can run NONE of the container's own code, in which case the copy
-      # holds what the original held and answers as it did — `Array#include?` is a pure function of the elements —
-      # and `same_membership?` has nothing to find. `Kernel#dup` reaches exactly two hooks (`initialize_dup`,
-      # which calls `initialize_copy`), so owning neither is the whole condition.
-      #
-      # This is what keeps the verification off the common path: every plain Array, and every subclass that adds
-      # behavior without a duplication hook, pays two method lookups instead of a dispatch per element. A class
-      # that DID declare a hook pays for the hook it declared.
-      def self.default_duplication?(value)
-        klass = OBJECT_CLASS.bind_call(value)
-        DEFAULT_INITIALIZE_DUP_OWNER.equal?(MODULE_INSTANCE_METHOD.bind_call(klass, :initialize_dup).owner) &&
-          DEFAULT_INITIALIZE_COPY_OWNER.equal?(MODULE_INSTANCE_METHOD.bind_call(klass, :initialize_copy).owner)
-      end
-
-      # Truthiness derived without dispatching: `!` is `BasicObject#!` and overridable, while `nil` and `false` as
-      # `case` receivers compare by identity in C.
-      def self.truthy?(value)
-        case value
-        when nil, false then false
-        else true
-        end
-      end
+      # The escape hatch is FROZEN, checked by its caller rather than here: the copy exists so that mutating what
+      # the caller still holds cannot change a declared contract, and a frozen container cannot be mutated, so
+      # there is nothing to detach it from (see Contract#_detached_option_array). That is the same one-level
+      # promise the copy makes — a frozen container's ELEMENTS are still the caller's objects — and it keeps a
+      # container whose duplication rebuilds an index faithfully legal, at the cost of the author freezing it.
+      def self.detachable_container?(value) = Axn::Internal::NativeMethods.native_array_dup?(value)
 
       # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
       # can reach it — a hand-written block nests one level per `do…end`, and a schema nested 64 objects deep is

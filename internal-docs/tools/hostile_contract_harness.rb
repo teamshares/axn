@@ -27,7 +27,11 @@
 # has nothing to assert about them.
 #
 # When you add a row here, ask the same question: mutate the guard it exercises, and if the suite stays green,
-# the row is knowledge that dies with this file. Convert it.
+# the row is knowledge that dies with this file. Convert it. The rows added since — the two OWNERSHIP guards
+# (`Internal::NativeMethods`: which containers axn will copy, and which contract failures it will rename) and the
+# emission gate on the projection size cap — are each covered by a mutation-verified example in
+# `property_name_collision_spec.rb` / `validate_tool_contracts_spec.rb`; they stay here for the A/B, which is
+# where their counterexamples came from.
 #
 #   # 1. put the older commit in a detached worktree, with this harness copied in
 #   git worktree add -f --detach /tmp/axn-ab <OLDER_SHA>
@@ -1257,8 +1261,8 @@ check "a member subclass's own include? still decides", true do
   klass.call(payload: { choice: "z" }).ok?
 end
 
-# ...and a container whose duplication alters its elements is rejected for a member too.
-check "a member container whose dup drops elements is rejected", /ArgumentError: the `inclusion: \{ in: … \}` container/ do
+# ...and a container that owns a duplication hook is refused for a member too.
+check "a member container that owns a duplication hook is refused", /ArgumentError: the `inclusion: \{ in: … \}` container/ do
   values = Class.new(Array) do
     def initialize_dup(source)
       super
@@ -1314,26 +1318,30 @@ check "a bag whose transform_values returns self is still detached", [false, fal
   accepts_after_mutation(bag, -> { bag[:in] << "c" })
 end
 
-# A same-class copy runs the container's own `initialize_dup`, so the copy is CHECKED against the original: one
-# that alters the elements is rejected at declaration...
-check "an inclusion set whose dup drops its elements is rejected", /ArgumentError.*does not survive being copied/ do
+# A container that OWNS a duplication hook is refused at declaration, because what the hook does to the copy
+# cannot be established without running it. That is a deliberate over-rejection, and it replaces two rounds of
+# verifying the copy instead — each of which this file recorded as closed, and each of which the next row's
+# counterexample defeated.
+def declaration_verdict(values)
+  inclusion_axn({ in: values }) && "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message}"
+end
+
+check "an inclusion set whose dup drops its elements is refused", /ArgumentError.*defines its own duplication hook/ do
   values = Class.new(Array) do
     def initialize_dup(source)
       super
       clear
     end
   end.new.push("a", "b")
-  begin
-    inclusion_axn({ in: values }) && "declared"
-  rescue ::Exception => e
-    "#{e.class}: #{e.message}"
-  end
+  declaration_verdict(values)
 end
 
-# ...and so is one whose copy merely LOOKS like the original: the elements are what a set holds, but its own
-# `include?` is what a declaration MEANS, and that can be derived from state the elements do not determine. This
-# copy holds every declared element and rejects them all, so comparing elements sees nothing wrong.
-check "an inclusion set whose dup drops its derived index is rejected", /ArgumentError.*answers `include\?` differently/ do
+# Round one's counterexample: the elements are what a set holds, but its own `include?` is what a declaration
+# MEANS, and that can be derived from state the elements do not determine. This copy holds every declared element
+# and rejects them all, so comparing ELEMENTS saw nothing wrong.
+check "an inclusion set whose dup drops its derived index is refused", /ArgumentError.*defines its own duplication hook/ do
   values = Class.new(Array) do
     def initialize(*args)
       super
@@ -1347,35 +1355,75 @@ check "an inclusion set whose dup drops its derived index is rejected", /Argumen
 
     def include?(value) = (@index || []).include?(value.to_s)
   end.new(%w[a b])
-  begin
-    "declared: original accepts a=#{values.include?('a')} declared accepts a=#{inclusion_axn({ in: values }).call(choice: 'a').ok?}"
-  rescue ::Exception => e
-    "#{e.class}: #{e.message}"
-  end
+  declaration_verdict(values)
 end
 
-# ...while the legitimate use of that same callback — rebuilding a derived index off the copied elements — still
-# declares AND still answers membership from the rebuilt index. Eagerly, with no lazy fallback in `include?`, so
-# the copy answers correctly ONLY because the hook ran: a check that rejected the hook, or that compared the
-# copy's STATE (a rebuilt index is a different object), would fail this row.
-check "an inclusion set that reindexes on dup still works", [true, false] do
+# Round two's counterexample, and why no probe closes this: membership can accept values that are not ELEMENTS,
+# so asking the copy `include?` about each element agreed with the original while the copy had silently stopped
+# accepting the aliases the original accepted. The accepted set is whatever arbitrary code says, so it is not
+# enumerable from outside.
+check "an inclusion set whose dup drops an alias index is refused", /ArgumentError.*defines its own duplication hook/ do
   values = Class.new(Array) do
     def initialize(*args)
       super
-      reindex
+      @aliases = { "alias" => "canon" }
     end
 
     def initialize_dup(source)
       super
-      reindex
+      @aliases = {}
     end
 
-    def reindex = @index = each_with_object({}) { |v, h| h[v] = true }
+    def include?(value) = to_a.include?(value) || @aliases.key?(value.to_s)
+  end.new(%w[canon])
+  declaration_verdict(values)
+end
+
+# The bounded escape hatch that keeps the over-rejection honest: the copy exists so a caller's later mutation
+# cannot change a declared contract, and a FROZEN container cannot be mutated — so it is stored as-is, hook and
+# all, and its own `include?` decides membership. A container that rebuilds its index faithfully stays legal this
+# way, at the cost of freezing it.
+check "a frozen inclusion set that reindexes on dup still works", [true, false] do
+  values = Class.new(Array) do
+    def initialize(*args)
+      super
+      @index = each_with_object({}) { |v, h| h[v] = true }
+    end
+
+    def initialize_dup(source)
+      super
+      @index = {}
+    end
 
     def include?(value) = @index.key?(value)
-  end.new(%w[x y])
+  end.new(%w[x y]).freeze
   klass = inclusion_axn({ in: values })
   [klass.call(choice: "x").ok?, klass.call(choice: "z").ok?]
+end
+
+# A frozen PLAIN Array is stored as-is too, rather than copied: same reasoning, and the stored object IS the
+# caller's. (A lying `frozen?` cannot buy this — the flag is read through a bound `Kernel#frozen?`.)
+check "a frozen plain inclusion set is stored without copying", [true, true, false] do
+  values = %w[x y].freeze
+  klass = inclusion_axn({ in: values })
+  [klass.internal_field_configs.first.validations.dig(:inclusion, :in).equal?(values),
+   klass.call(choice: "x").ok?, klass.call(choice: "z").ok?]
+end
+
+check "a container whose frozen? lies is not stored as-is", /ArgumentError.*defines its own duplication hook/ do
+  values = Class.new(Array) do
+    def frozen? = true
+    def initialize_dup(source) = super
+  end.new(%w[x y])
+  declaration_verdict(values)
+end
+
+# The ownership test asks the CLASS, because that is where `dup` looks: a copy carries no singleton class, so a
+# singleton hook is not code the copy can run, and refusing it would reject a container axn copies perfectly.
+check "a SINGLETON duplication hook does not refuse the container", [false, false] do
+  values = %w[a b]
+  values.define_singleton_method(:initialize_dup) { |_source| clear }
+  accepts_after_mutation({ in: values }, -> { values << "c" })
 end
 
 # ...and the copy does not over-reach: an Array's own `include?` IS how an inclusion set answers membership, so
@@ -2055,6 +2103,72 @@ check "an of: with MANY element types counts every branch", /names more than 250
   end
 end
 
+# Whether a config emits ANY property is the same question one level up, and SubfieldTree owns the answer, so
+# the charge asks it rather than assuming every declaration names something. Each of these was charged one
+# property per config plus every member/type name under it, and rejected a contract whose schema names them
+# nowhere at all.
+def projected_input(&block)
+  klass = Class.new do
+    include Axn
+    class_eval(&block)
+    def call; end
+  end
+  JSON.generate(klass.input_schema)
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 60]}"
+end
+
+WIDE_TYPE = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+
+check "an ambient-rooted config costs nothing and emits nothing", '{"type":"object","properties":{}}' do
+  projected_input { expects :items, on: :ambient_context, type: Array, of: WIDE_TYPE, optional: true }
+end
+
+check "...and neither does an ambient-rooted shape", '{"type":"object","properties":{}}' do
+  members = Array.new(1_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  projected_input do
+    26.times { |f| expects :"f#{f}", on: :ambient_context, type: Hash, shape: { members: members, container: Hash }, optional: true }
+  end
+end
+
+# A subfield under a parent that cannot hold object properties is omitted at that parent, with its whole
+# subtree — at ANY depth. `dropped` records only the deep ones it reports to the author, so the charge asks the
+# blocking predicate instead.
+check "a dropped DEEP subfield costs nothing", /\A\{"type":"object","properties":\{"payload"/ do
+  projected_input do
+    expects :payload, type: Hash do
+      field :bar, type: [Hash, Array]
+    end
+    expects :baz, on: "payload.bar", type: Array, of: WIDE_TYPE, optional: true
+  end
+end
+
+check "a depth-1 subfield under a model: parent costs nothing", /\A\{"type":"object","properties":\{"thing_id"/ do
+  projected_input do
+    expects :thing, model: Struct.new(:id), optional: true
+    expects :leaf, on: :thing, type: Array, of: WIDE_TYPE, optional: true
+  end
+end
+
+# An INPUT model route emits `<field>_id` INSTEAD of the field, so its own declared type names nothing either.
+check "a model: route's own type costs nothing on input", /\A\{"type":"object","properties":\{"thing_id"/ do
+  projected_input { expects :thing, model: Struct.new(:id), type: Array, of: WIDE_TYPE, optional: true }
+end
+
+# ...and the control in the other direction: OUTPUT emits the field itself, so the same type is charged.
+check "a model: route's type is still charged on output", /names more than 25000 JSON properties/ do
+  klass = Class.new do
+    include Axn
+    exposes :thing, model: Struct.new(:id), type: Array, of: WIDE_TYPE, optional: true
+    def call; end
+  end
+  begin
+    klass.output_schema && "projected"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
 # Branches are sibling NAMESPACES, so counting them for size must not make a name shared by two of them a
 # collision: `of: [A, B]` where both define `:shared` describes one property two ways.
 check "two of: branches may share a member name", '[[:shared, :only_a], [:shared, :only_b]]' do
@@ -2369,7 +2483,8 @@ def hostile_boot_verdict(error)
     Axn.validate_tool_contracts!
     "NO RAISE"
   rescue ::Exception => e
-    "#{Axn::Internal::ClassName.of(e)}: #{EXCEPTION_TO_S_FOR_HARNESS.bind_call(e)[0, 70]}"
+    "#{Axn::Internal::ClassName.of(e)}: #{EXCEPTION_TO_S_FOR_HARNESS.bind_call(e)[0, 70]} " \
+      "cause=#{Axn::Internal::ClassName.of(e.cause)}"
   end
 ensure
   Object.send(:remove_const, :HostileBootTool) if Object.const_defined?(:HostileBootTool)
@@ -2395,24 +2510,87 @@ HOSTILE_COPY_ERROR = Class.new(ArgumentError) do
   def initialize_copy(other) = raise(NotImplementedError, "hostile copy")
 end
 
+# Succeeds on its FIRST `#exception` call and raises on the second, which is exactly what "it was raised once, so
+# a redispatch is safe" did not cover.
+HOSTILE_SECOND_CALL_ERROR = Class.new(ArgumentError) do
+  def initialize(*)
+    @calls = 0
+    super
+  end
+
+  def exception(*_args)
+    @calls += 1
+    raise NotImplementedError, "second call" if @calls > 1
+
+    self
+  end
+end
+
+HOSTILE_MESSAGE_OBJECT_ERROR = Class.new(ArgumentError) do
+  RUDE_TO_S = Class.new { def to_s = raise(NotImplementedError, "hostile to_s") }
+  def message = RUDE_TO_S.new
+end
+
+# The cause of whatever boot reports, by class name.
+def boot_cause_class(error)
+  verdict = hostile_boot_verdict(error)
+  verdict.is_a?(::String) ? verdict.split("cause=").last : verdict
+end
+
 check "an exception whose #message raises is reported by its stored message",
-      "#{HOSTILE_MESSAGE_ERROR}: HostileBootTool has an invalid tool contract — the real defect" do
+      "#{HOSTILE_MESSAGE_ERROR}: HostileBootTool has an invalid tool contract — the real defect cause=#{HOSTILE_MESSAGE_ERROR}" do
   hostile_boot_verdict(HOSTILE_MESSAGE_ERROR.new("the real defect"))
 end
 
 check "one whose #message and #to_s both raise is reported by its class",
-      "#{HOSTILE_RENDERING_ERROR}: HostileBootTool has an invalid tool contract — #{HOSTILE_RENDERING_ERROR}" do
+      "#{HOSTILE_RENDERING_ERROR}: HostileBootTool has an invalid tool contract — #{HOSTILE_RENDERING_ERROR} " \
+      "cause=#{HOSTILE_RENDERING_ERROR}" do
   hostile_boot_verdict(HOSTILE_RENDERING_ERROR.new)
 end
 
-check "an #exception override cannot substitute another error",
-      "#{HOSTILE_EXCEPTION_ERROR}: HostileBootTool has an invalid tool contract — the real defect" do
+# The two cases axn will not rename AT ALL, decided by OWNERSHIP rather than by observing behaviour: renaming
+# ends in `raise`, which dispatches the 0-arg `#exception` on the object it is handed, and no guard can wrap that.
+# Reported as axn's own error, which keeps the tool name and the message and carries the original as `cause`.
+check "an #exception override is reported as axn's own error",
+      /\AAxn::InvalidToolContract: HostileBootTool has an invalid tool contract — the real defect/ do
   hostile_boot_verdict(HOSTILE_EXCEPTION_ERROR.new("the real defect"))
 end
 
-check "one whose duplication hook raises is reported unrenamed, as itself",
-      "#{HOSTILE_COPY_ERROR}: the real defect" do
+# Being raised once says NOTHING about the second call — the argument this row retired. `Exception#exception`
+# clones, so `raise` asks the CLONE, and an override that answers itself once and raises after destroyed the
+# contract failure at boot.
+check "an #exception that raises on its SECOND call cannot escape",
+      /\AAxn::InvalidToolContract: HostileBootTool has an invalid tool contract — the real defect/ do
+  hostile_boot_verdict(HOSTILE_SECOND_CALL_ERROR.new("the real defect"))
+end
+
+check "one that owns a duplication hook is reported as axn's own error, naming the tool",
+      /\AAxn::InvalidToolContract: HostileBootTool has an invalid tool contract — the real defect/ do
   hostile_boot_verdict(HOSTILE_COPY_ERROR.new("the real defect"))
+end
+
+# A FROZEN exception owns nothing and still cannot be renamed: `clone` preserves frozen state, so storing the new
+# message on the copy raises FrozenError from inside the reporting path.
+check "a frozen exception is reported as axn's own error",
+      /\AAxn::InvalidToolContract: HostileBootTool has an invalid tool contract — the real defect/ do
+  hostile_boot_verdict(::ArgumentError.new("the real defect").freeze)
+end
+
+# A `#message` that answers with a hostile OBJECT rather than raising: interpolating it into the renamed message
+# would dispatch that object's `to_s` outside the guard. The result is type-tested, so a non-String falls back to
+# the stored message — and the class is still kept, since `#message` is not what renaming runs.
+check "a #message answering with an object whose to_s raises degrades to the stored message",
+      "#{HOSTILE_MESSAGE_OBJECT_ERROR}: HostileBootTool has an invalid tool contract — the stored message " \
+      "cause=#{HOSTILE_MESSAGE_OBJECT_ERROR}" do
+  hostile_boot_verdict(HOSTILE_MESSAGE_OBJECT_ERROR.new("the stored message"))
+end
+
+# `cause` is set explicitly, so it survives the DEGRADED paths too: reading a hostile `#message` means rescuing
+# inside the boot rescue, and Ruby does not restore `$!` afterwards, so the implicit cause was nil there.
+check "every reported boot failure carries the original as cause",
+      ["ArgumentError", HOSTILE_MESSAGE_ERROR.to_s, HOSTILE_EXCEPTION_ERROR.to_s, HOSTILE_COPY_ERROR.to_s] do
+  [::ArgumentError.new("plain"), HOSTILE_MESSAGE_ERROR.new("stored"), HOSTILE_EXCEPTION_ERROR.new("x"),
+   HOSTILE_COPY_ERROR.new("x")].map { |error| boot_cause_class(error) }
 end
 
 check "boot validates a shadowing tool's INBOUND contract",

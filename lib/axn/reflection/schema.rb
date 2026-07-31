@@ -1065,8 +1065,11 @@ module Axn
       # are their own namespace (a non-object parent's subfields are not emitted there, so nothing else can
       # name a property alongside them), while everything else lands in the field's own `properties`.
       #
-      # `emitted` false means the shape contributes no properties at all, for one of three reasons:
+      # `emitted` false means the shape contributes no properties at all, for one of four reasons:
       #   - the config is wholly gated on output, so `build_property` leaves it untyped before reaching here;
+      #   - the config is a `model:` route on INPUT, where the client sends `<field>_id` and the record's own
+      #     structure is never emitted — `build_input` (and the nested analog) emit the id property INSTEAD of
+      #     calling `build_property` at all, at top level and at any subfield depth alike;
       #   - a SCALAR `of:` (`of: String` + `field :length`) reads members off the element, which stays a
       #     string — so the members are validated but never become properties;
       #   - on OUTPUT, the value is not provably member-keyed (a custom `as_json`/`to_h` that
@@ -1100,6 +1103,11 @@ module Axn
         # emission.
         return nothing unless of || shape
         return nothing if for_output && conditionally_gated?(config)
+        # An INPUT model route emits `<field>_id` in place of the field, so `apply_structured_schema!` is never
+        # reached for one — stated here rather than only in the emitter's branch, so a consumer deriving from this
+        # plan (the projection size cap; collision attribution) cannot charge or attribute a property the schema
+        # names nowhere. On OUTPUT the field itself is emitted, so its shape is emitted with it.
+        return nothing if !for_output && config.validations[:model]
 
         if in_items
           # Overlay the shape's object properties onto items only when the ELEMENTS are objects.

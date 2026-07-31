@@ -28,6 +28,7 @@ require "axn/internal/current_call_options"
 require "axn/internal/memoization"
 require "axn/internal/callable"
 require "axn/internal/cycle_guard"
+require "axn/internal/native_methods"
 require "axn/internal/shape_graph"
 require "axn/internal/call_logger"
 require "axn/internal/contract_error_handling"
@@ -54,7 +55,7 @@ require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 module Axn
   # `Exception`'s own implementations, for a reporting path that must not run an exception's overrides of them
   # (see `_named_invalid_tool_contract`). `exception` clones and sets a message without running an initializer;
-  # `to_s` reads the stored message.
+  # `to_s` renders the message object the exception was raised with.
   EXCEPTION_EXCEPTION = ::Exception.instance_method(:exception)
   EXCEPTION_TO_S = ::Exception.instance_method(:to_s)
   private_constant :EXCEPTION_EXCEPTION, :EXCEPTION_TO_S
@@ -121,8 +122,12 @@ module Axn
       # Named, because this runs over every tool at once: the underlying error describes the property and the
       # declarations that collide, but at boot the first thing an author needs is WHICH tool. Both families are
       # caught: a collision is an Axn::ContractViolation, an unrenderable name or an oversized schema an
-      # ArgumentError.
-      raise _named_invalid_tool_contract(klass, e)
+      # ArgumentError. Either is reported as ITSELF, renamed — except where renaming would mean running the
+      # exception's own code, which surfaces as Axn::InvalidToolContract (see _named_invalid_tool_contract).
+      # `cause:` explicitly, rather than leaving it to `$!`: reading a hostile `#message` means rescuing inside
+      # this rescue, and Ruby does not restore `$!` to `e` afterwards — so the implicit cause was nil on exactly
+      # the degraded paths where knowing the original matters most.
+      raise _named_invalid_tool_contract(klass, e), cause: e
     end
     nil
   end
@@ -131,42 +136,58 @@ module Axn
   #
   # This is a REPORTING path, so every method it needs is one the exception's own class may override, and an
   # override that raises (outside StandardError included) would replace the failure being reported with the
-  # offending class's exception, at boot, with nothing left naming the tool. AGENTS.md's rule applies: don't
-  # dispatch what can be bound, and guard what must be dispatched.
+  # offending class's exception, at boot, with nothing left naming the tool. Two rules keep it bounded, and
+  # together they are the whole design:
   #
-  # So `Exception#exception` is BOUND rather than reached through `raise e, message`. The two differ in what they
-  # can run: the C implementation clones the object and sets the message, running no initializer, while a
-  # dispatched `exception` is caller code free to return a different object entirely or to raise. Naming the CLASS
-  # (`raise e.class, message`) is a third thing and worse than either — it CONSTRUCTS an instance, which fails
-  # outright for any exception whose initializer takes more than a message (`UnserializableValue` requires
-  # `path:`/`value:`), destroying both the contract error and the class the wrapper promised to preserve.
+  # 1. Every dispatch of the exception's own code sits behind a guard (see `_reported_message`). What a guard
+  #    cannot cover is the 0-arg `#exception` that `raise` itself makes on whatever object it is handed — Ruby
+  #    has no re-raise that skips it, a bare `raise` in a rescue included — so that dispatch is AVOIDED instead:
+  #    the object handed to `raise` is only ever the original when its class does not own `#exception`.
+  # 2. The decision is made by OWNERSHIP, not by behavior (`NativeMethods.native_exception_reporting?`). An
+  #    exception that has already been raised once proves nothing about the second call: an `#exception` that
+  #    answers itself the first time and raises the second defeated exactly that argument, because
+  #    `Exception#exception(message)` clones and `raise` then asks the CLONE.
   #
-  # Class and state survive on every branch, and only the MESSAGE ever degrades — the original error is the
-  # substance, naming the tool is the convenience. Three ways it degrades, in order of how much is left:
-  # an exception that builds its message from its state ignores the one set here, so its own (more specific)
-  # message stands; one whose `#message` raises is reported by whatever message it stored, or failing that by its
-  # class alone; one whose duplication hook raises is reported as the original object, unrenamed. (`cause` is the
-  # un-renamed original on the ordinary path; a degraded one loses that link, which costs nothing — the surfaced
-  # error IS the contract failure rather than something carrying it.)
+  # So a class that owns none of `#exception` or the duplication hooks (the overwhelmingly common case, an
+  # ordinary ArgumentError or DuplicateFieldError included) is renamed and reported as itself, class and state
+  # intact, through a BOUND `Exception#exception`: the C implementation clones the object and sets the message,
+  # running no initializer, where a dispatched `exception` is caller code free to return a different object or to
+  # raise. Naming the CLASS (`raise e.class, message`) is a third thing and worse than either — it CONSTRUCTS an
+  # instance, which fails outright for any exception whose initializer takes more than a message
+  # (`UnserializableValue` requires `path:`/`value:`), destroying both the contract error and the class the
+  # wrapper promised to preserve.
   #
-  # The one dispatch left is the 0-arg `#exception` that `raise` itself makes on whatever object it is handed —
-  # Ruby has no re-raise that skips it, a bare `raise` in a rescue included. It needs no guard: an object only
-  # reaches this rescue by having BEEN raised, which already called that same 0-arg `#exception` and took what it
-  # returned, so the object in hand is by construction one whose answer is itself.
+  # Anything else — an owned `#exception`, an owned duplication hook, a frozen exception whose clone cannot take
+  # a new message — is reported as `Axn::InvalidToolContract`, naming the tool, repeating the original's message,
+  # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
+  # an exception that builds its message from its state keeps that message on either branch.
   def self._named_invalid_tool_contract(klass, error)
-    message = "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{_reported_message(error)}"
-    EXCEPTION_EXCEPTION.bind_call(error, message)
-  rescue ::Exception # rubocop:disable Lint/RescueException
-    error
+    tool = Axn::Internal::ClassName.of_module(klass)
+    reason = _reported_message(error)
+    unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
+      return InvalidToolContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
+    end
+
+    EXCEPTION_EXCEPTION.bind_call(error, "#{tool} has an invalid tool contract — #{reason}")
   end
 
-  # An exception's own message, for a message being built ABOUT it. Dispatched deliberately — an exception that
-  # derives its message from its state (`UnserializableValue`) has no other way to be reported richly — but behind
-  # a guard, because that is caller code in an error path. `Exception#to_s` is the non-dispatching second choice:
-  # the C implementation reads the message the exception was raised with, which is what an ordinary subclass
-  # carries. Its class is what is left when even that will not answer.
+  # An exception's own message, for a message being built ABOUT it, as a String this method owns.
+  #
+  # Dispatched deliberately — an exception that derives its message from its state (`UnserializableValue`) has no
+  # other way to be reported richly — but behind a guard, because that is caller code in an error path, and the
+  # guard has to cover an ordinary class too: `Exception#to_s` renders the message OBJECT the exception was
+  # raised with (`rb_String`), so a plain ArgumentError carrying a value whose `to_s` raises raises here.
+  #
+  # The result is type-tested rather than interpolated, because an owned `#message` may return anything, and
+  # interpolating a non-String dispatches its `to_s` — outside the guard, which is the escape this exists to
+  # prevent. (A String SUBCLASS is safe to interpolate: interpolation returns a T_STRING as-is, running no
+  # `to_s`.) `Exception#to_s` is the non-dispatching second choice, and the class is what is left when even that
+  # will not answer.
   def self._reported_message(error)
-    error.message
+    case (reported = error.message)
+    when ::String then reported
+    else EXCEPTION_TO_S.bind_call(error)
+    end
   rescue ::Exception # rubocop:disable Lint/RescueException
     begin
       EXCEPTION_TO_S.bind_call(error)
