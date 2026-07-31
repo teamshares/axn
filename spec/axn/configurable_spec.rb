@@ -642,3 +642,79 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     expect { src.config_namespace(:mcp) }.to raise_error(ArgumentError, /config_namespace/)
   end
 end
+
+RSpec.describe "#reset!" do
+  context "on the class flavor" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+        setting :derived, default: -> { :derived_default }
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "returns a named literal setting to its default" do
+      instance.literal = :changed
+      instance.reset!(:literal)
+      expect(instance.literal).to eq(:original)
+    end
+
+    it "returns a named dynamic setting to re-deriving, which an assigned nil had suppressed" do
+      instance.derived = nil
+      expect(instance.derived).to be_nil
+      instance.reset!(:derived)
+      expect(instance.derived).to eq(:derived_default)
+    end
+
+    it "resets every declared setting when called with no arguments" do
+      instance.literal = :changed
+      instance.derived = nil
+      instance.reset!
+      expect(instance.literal).to eq(:original)
+      expect(instance.derived).to eq(:derived_default)
+    end
+
+    it "raises on a name that is not a declared setting" do
+      expect { instance.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+    end
+
+    it "is a no-op for a setting that was never assigned" do
+      expect { instance.reset!(:literal) }.not_to raise_error
+      expect(instance.literal).to eq(:original)
+    end
+
+    it "returns self so it can be chained" do
+      expect(instance.reset!(:literal)).to be(instance)
+    end
+  end
+
+  context "on the module-singleton flavor" do
+    let(:mod) do
+      Module.new do
+        extend Axn::Configurable
+
+        setting :literal, default: :original
+        setting :derived, default: -> { :derived_default }
+      end
+    end
+
+    it "returns a named setting to its default" do
+      mod.config.literal = :changed
+      mod.config.reset!(:literal)
+      expect(mod.config.literal).to eq(:original)
+    end
+
+    it "returns a dynamic setting to re-deriving after an assigned nil" do
+      mod.config.derived = nil
+      mod.config.reset!(:derived)
+      expect(mod.config.derived).to eq(:derived_default)
+    end
+
+    it "raises on an unknown setting" do
+      expect { mod.config.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+    end
+  end
+end

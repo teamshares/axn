@@ -435,6 +435,19 @@ module Axn
         end
       end
 
+      # Returns the named settings to their declared defaults (all of them with no arguments).
+      # `reset_config!` on the owning module discards the whole bag; this is the per-setting form,
+      # and the supported alternative to assigning nil, which is a VALUE rather than a reset.
+      def reset!(*names)
+        targets = names.empty? ? @settings.keys : names.map(&:to_sym)
+        targets.each do |name|
+          raise ArgumentError, "unknown setting #{name.inspect}" unless @settings.key?(name)
+
+          @values.delete(name)
+        end
+        self
+      end
+
       private
 
       def _write(name, value)
@@ -467,6 +480,26 @@ module Axn
     module Settings
       include PerClassOverrides
 
+      # Declared Setting objects by name, for `reset!`. The class flavor otherwise keeps no registry
+      # (only overridable settings are tracked, by PerClassOverrides).
+      def _declared_settings = @_declared_settings ||= {}
+
+      # `reset!` is an INSTANCE method on the extending class (a config object), so it is installed
+      # here rather than declared in this module's body. It closes over the extending class, so a
+      # subclass that declares further settings gets its own `reset!` covering its own registry.
+      def self.extended(base)
+        base.send(:define_method, :reset!) do |*names|
+          targets = names.empty? ? base._declared_settings.keys : names.map(&:to_sym)
+          targets.each do |name|
+            raise ArgumentError, "unknown setting #{name.inspect}" unless base._declared_settings.key?(name)
+
+            ivar = :"@#{name}"
+            remove_instance_variable(ivar) if instance_variable_defined?(ivar)
+          end
+          self
+        end
+      end
+
       # Registers the live singleton whose values are the library-level fallback
       # for per-class overrides (e.g. `Axn.config`). Read lazily on each
       # resolution, so a swapped singleton is picked up. Must be declared before
@@ -477,6 +510,7 @@ module Axn
 
       def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
         setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, overridable:)
+        _declared_settings[setting.name] = setting
         ivar = :"@#{name}"
 
         define_method(name) do

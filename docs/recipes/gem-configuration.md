@@ -21,8 +21,12 @@ Axn::MCP.config.mcp_text_content                  # => :structured (the default)
 Axn::MCP.configure { |c| c.mcp_text_content = :message }
 Axn::MCP.config.mcp_text_content                  # => :message
 Axn::MCP.config.mcp_text_content?                 # => true (boolean predicate, available for any setting)
-Axn::MCP.reset_config!                            # discard assigned values — primarily for test isolation
+Axn::MCP.config.reset!(:mcp_text_content)          # return one setting to its declared default
+Axn::MCP.config.reset!                             # return every setting on this config to its declared default
+Axn::MCP.reset_config!                             # discard the whole config object — primarily for test isolation
 ```
+
+`config.reset!` is the supported way back to a setting's declared default — assigning `nil` is a value, not a reset, and would otherwise be the only way to undo an assignment short of reaching into the config's internals. It raises `ArgumentError` for a name that isn't a declared setting. It's distinct from `reset_config!` above: `reset_config!` discards the whole config object (so the next `.config` call rebuilds it from scratch), while `config.reset!` resets individual settings on the config object that's already there. Both flavors of the DSL get `reset!` — on `<Module>.config` for the module-singleton flavor shown here, and directly on a class-flavor config instance (see [Declaring validated settings on a class](#declaring-validated-settings-on-a-class) below).
 
 ## Setting options
 
@@ -116,3 +120,5 @@ end
 ```
 
 This defines instance-level `log_level` / `log_level=` accessors (with the same `default:` / `one_of:` / `validate:` options) while leaving you free to hand-write any other methods the class needs — which is exactly how Axn keeps its side-effecting settings (`env`, `logger`, `on_exception`, the async setters) bespoke while declaring the simple ones via the DSL.
+
+An instance also gets `reset!`, same contract as `config.reset!` above: `instance.reset!(:log_level)` returns that one setting to its declared default, `instance.reset!` with no arguments returns every setting declared on the class, and either raises `ArgumentError` for a name that isn't a declared setting. It's the supported alternative to assigning `nil`, which is a value rather than a reset.
