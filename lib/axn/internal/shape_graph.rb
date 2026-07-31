@@ -74,29 +74,11 @@ module Axn
       # a subclass with a plain Array would change the contract rather than protect it, and would also publish
       # an enum reflection deliberately withholds for anything but an exact Array.
       #
-      # Only ever called for a container `detachable_container?` has already cleared, so the bound `dup` runs
-      # Ruby's own copy and none of the container's code.
+      # Only ever called for a container that answers nothing with its own code
+      # (`NativeMethods.own_array_methods` is empty — see `Contract#_detached_option_array`, which is also where
+      # the frozen escape hatch and the refusal live), so the bound `dup` runs Ruby's own copy, and every answer
+      # the copy gives is the one the original gave.
       def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
-
-      # Whether axn can take a copy of this container that is FAITHFUL BY CONSTRUCTION — the whole condition
-      # being that `Kernel#dup` of it runs none of the container's own code (`NativeMethods.native_array_dup?`),
-      # so the copy holds what the original held and answers as it did, `Array#include?` being a pure function of
-      # the elements. Every plain Array, and every subclass that adds behavior without a duplication hook, passes.
-      #
-      # A container that DOES own a duplication hook is not copied and not accepted, because what the hook does
-      # cannot be established without running it, and no observation of a copy is complete. Comparing the copy's
-      # elements missed a hook that dropped a derived lookup index the container's `include?` reads. Asking the
-      # copy `include?` about each ELEMENT missed a hook that dropped only the index of accepted NON-elements: a
-      # set holding `"canon"` and aliasing `"alias"` to it answered both, its copy answered only the first, and
-      # every element-based probe agreed. Membership is whatever arbitrary code says, so the accepted set is not
-      # enumerable from outside — see NativeMethods for why ownership is the question that terminates.
-      #
-      # The escape hatch is FROZEN, checked by its caller rather than here: the copy exists so that mutating what
-      # the caller still holds cannot change a declared contract, and a frozen container cannot be mutated, so
-      # there is nothing to detach it from (see Contract#_detached_option_array). That is the same one-level
-      # promise the copy makes — a frozen container's ELEMENTS are still the caller's objects — and it keeps a
-      # container whose duplication rebuilds an index faithfully legal, at the cost of the author freezing it.
-      def self.detachable_container?(value) = Axn::Internal::NativeMethods.native_array_dup?(value)
 
       # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
       # can reach it — a hand-written block nests one level per `do…end`, and a schema nested 64 objects deep is

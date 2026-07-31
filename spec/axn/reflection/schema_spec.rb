@@ -1011,11 +1011,14 @@ RSpec.describe Axn::Reflection::Schema do
       expect(bare_prop).to eq(long_prop)
     end
 
+    # Frozen because a container that answers with its own code is only storable frozen (see
+    # `Contract#_detached_option_array`) — which is also the form that reaches reflection as the caller's own
+    # object, so it is the sharp version of this check.
     it "does not run user traversal code for an Array-subclass inclusion set (reflects no enum)" do
       exploding_array = Class.new(Array) do
         def map(*) = raise("reflection must not traverse an Array subclass")
         def each(*) = raise("reflection must not traverse an Array subclass")
-      end.new(%w[a b])
+      end.new(%w[a b]).freeze
       klass = Class.new do
         include Axn
         expects :s, inclusion: exploding_array

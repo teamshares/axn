@@ -1047,8 +1047,8 @@ module Axn
           end
           # Each bag's own keys, then the containers themselves — through the same two helpers a field's options
           # go through, in the same order, so a member is held to exactly what a field is held to: an
-          # `inclusion:` list keeps its class (its own `include?` is what membership means), and a container
-          # whose duplication alters its elements is rejected.
+          # `inclusion:` list keeps its class, and a container that answers with code of its own is refused
+          # unless it is frozen.
           _symbolize_option_bags!(copy)
           _detach_option_containers!(copy)
           copy
@@ -1631,12 +1631,16 @@ module Axn
         # taken through bound primitives (see ShapeGraph) rather than the container's own `transform_values`/`dup`.
         # A subclass answering `is_a?(Array)` with false, or whose `dup` returned `self`, or whose
         # `transform_values` handed back the receiver, otherwise stayed aliased into the declared contract while
-        # the plain-Array case beside it was correctly copied.
+        # the plain-Array case beside it was correctly copied. An ARRAY that owns any of those is now refused
+        # before the copy is attempted (see _detached_option_array), so the bound `dup` is belt-and-braces there;
+        # a BAG is not, since it is copied entry-wise whatever its class, which is what the bound `Hash#each`
+        # holds.
         #
         # An Array keeps its CLASS (a same-class `dup`, or the caller's own object when it is already frozen —
-        # see _detached_option_array) because its own `include?` is what an `inclusion:` set answers membership
-        # with, while a bag becomes a plain Hash — which is what it already became, and axn reads bags with
-        # `[]`/`dig` only.
+        # see _detached_option_array) because its own class is part of what a declaration means — a frozen
+        # `inclusion:` set answers membership with its own `include?`, and reflection withholds an enum for
+        # anything but an exact Array. A bag becomes a plain Hash — which is what it already became, and axn
+        # reads bags with `[]`/`dig` only.
         def _detach_option_containers!(validations)
           validations.each do |key, value|
             next if key == :shape
@@ -1660,37 +1664,64 @@ module Axn
 
         # Three outcomes, and which one a container gets is decided WITHOUT running any of its code.
         #
-        # A container axn can copy faithfully by construction — one whose class owns no duplication hook, which
-        # is every plain Array and every subclass that adds behavior without one — is copied, and the copy is the
-        # contract. A FROZEN container is stored as it is: the copy exists so that mutating what the caller still
-        # holds cannot change a declared contract, and a frozen container cannot be mutated, so there is nothing
-        # to detach it from. Anything else is REFUSED at declaration.
+        # A container axn can copy faithfully by construction is copied, and the copy is the contract. That
+        # condition is that the container answers NOTHING with code of its own (`NativeMethods.own_array_methods`
+        # is empty): `Kernel#dup` copies the elements, so the copy answers as the original exactly where every
+        # answer is a pure function of the elements, which is exactly where every answer is Ruby's own. Every
+        # plain Array passes, as does a subclass that adds no methods. A FROZEN container is stored as it is,
+        # whatever it owns: the copy exists so that mutating what the caller still holds cannot change a declared
+        # contract, and a frozen container cannot be mutated, so there is nothing to detach it from. Anything
+        # else is REFUSED at declaration.
         #
-        # The refusal is deliberate over-rejection, and it replaces two rounds of verifying the copy instead.
-        # Comparing the copy's ELEMENTS missed a hook that dropped a derived lookup index the container's own
-        # `include?` reads: the elements survived and the copy rejected every one of them. Asking the copy
-        # `include?` about each element then missed a hook that dropped only the index of accepted NON-elements —
-        # a set holding `"canon"` and aliasing `"alias"` to it accepted both, its copy accepted only `"canon"`,
-        # and no element-based probe can see a difference outside the elements. The accepted set is whatever
-        # arbitrary code says, so it is not enumerable from outside, and each verification was defeated by the
-        # next case; ownership is a fact rather than a prediction (see Internal::NativeMethods). A container
-        # whose duplication rebuilds its index faithfully is over-rejected by this and has a bounded way to stay
-        # legal: freeze it.
+        # The refusal is deliberate over-rejection, and it replaces two rounds of verifying the copy and one of
+        # gating on the duplication hooks. Comparing the copy's ELEMENTS missed a hook that dropped a derived
+        # lookup index the container's own `include?` reads: the elements survived and the copy rejected every one
+        # of them. Asking the copy `include?` about each element then missed a hook that dropped only the index of
+        # accepted NON-elements — a set holding `"canon"` and aliasing `"alias"` to it accepted both, its copy
+        # accepted only `"canon"`, and no element-based probe can see a difference outside the elements. Gating on
+        # the duplication HOOKS then missed the copy's other two differences from the original: `dup` shares the
+        # instance variables and drops the singleton class, so a membership derived from `self`, from an ivar, or
+        # from a singleton method diverges with entirely native duplication (and an ivar-derived one is still the
+        # caller's to mutate afterwards, which is the aliasing the copy exists to prevent). Ownership of
+        # everything the container answers with is a fact rather than a prediction (see Internal::NativeMethods),
+        # and a container that would copy faithfully is over-rejected by it with a bounded way to stay legal:
+        # freeze it.
         #
-        # The container is named by class, never by `inspect` — its own code must not run while the declaration
-        # error it caused is being built.
+        # Two residues, stated rather than papered over, and both are the same one-level depth the copy promises.
+        # A FROZEN container's elements — and whatever its ivars point at — are still the caller's objects, so a
+        # frozen container deriving membership from a mutable index can still be widened after the class is
+        # declared: freezing promises that axn stores what you froze, and how deep that goes is the author's.
+        # And a membership container that is not an Array (a `Set`, a `Range`, an object answering `include?`) is
+        # not reached here at all: it is stored as the caller's object, so nothing of axn's answers membership and
+        # there is nothing to diverge — but nothing detaches it either. A `Range` is frozen by construction; a
+        # `Set` is mutable. Both residues are recorded in `property_name_collision_spec.rb`.
+        #
+        # The container is named by class and its methods by the method table, never by `inspect` — its own code
+        # must not run while the declaration error it caused is being built, and a method name is rendered like
+        # any other name reaching prose (a non-UTF-8 one would otherwise raise while the error is built).
         def _detached_option_array(value, label)
           return value if Internal::NativeMethods.frozen?(value)
-          return Internal::ShapeGraph.detached_dup(value) if Internal::ShapeGraph.detachable_container?(value)
+
+          own = Internal::NativeMethods.own_array_methods(value)
+          return Internal::ShapeGraph.detached_dup(value) if own.empty?
 
           raise ArgumentError,
-                "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) defines its own " \
-                "duplication hook (`initialize_dup` or `initialize_copy`), so axn cannot copy it. A declared " \
-                "contract is copied at declaration so that mutating what you still hold cannot change it — and " \
-                "what your hook does to the copy cannot be established without running it, so a copy that " \
-                "silently rejects the values you declared is indistinguishable from a faithful one. Supply a " \
-                "plain Array, or freeze this container (a frozen one is stored as-is, since nothing can mutate " \
-                "it afterwards)."
+                "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) defines methods of its " \
+                "own (#{_describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
+                "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \
+                "elements while sharing the instance variables and dropping the singleton class, so the copy " \
+                "answers as you declared only where the answer is Ruby's own. What your code answers in the copy " \
+                "cannot be established without running it, so a copy that silently rejects the values you " \
+                "declared is indistinguishable from a faithful one. Supply a plain Array, or freeze this " \
+                "container (a frozen one is stored as-is, since nothing can mutate it afterwards)."
+        end
+
+        # The first few offending names, so the author is pointed at the method to move or the object to freeze
+        # rather than at a rule. Sorted for a stable message, and capped because a rich subclass has dozens.
+        def _describe_own_methods(names)
+          shown = names.uniq.sort
+          rendered = shown.first(3).map { |name| "`#{_inspect_field_name(name)}`" }.join(", ")
+          shown.size > 3 ? "#{rendered}, and #{shown.size - 3} more" : rendered
         end
 
         def _derive_raw_shape_container!(validations)

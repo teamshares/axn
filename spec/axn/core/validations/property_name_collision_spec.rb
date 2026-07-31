@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "benchmark"
+require "open3"
 
 # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
 # serialized output for an outbound one — so it carries the same UTF-8 promise the serializer enforces on a
@@ -426,12 +427,20 @@ RSpec.describe "declaration-time property name collisions" do
         expect(klass.call(payload: { choice: "c" })).not_to be_ok
       end
 
-      # The same two controls the field path established, so the copy cannot over-reach here either.
-      it "keeps a subclass's own membership behavior" do
-        values = Class.new(Array) { def include?(_value) = true }.new.push("a", "b")
+      # The same two controls the field path established, so a member is held to exactly what a field is.
+      it "keeps a subclass that adds no code of its own, whose copy is faithful" do
+        values = Class.new(Array).new.push("a", "b")
         klass = member_axn({ inclusion: { in: values } })
 
-        expect(klass.call(payload: { choice: "z" })).to be_ok
+        expect(klass.call(payload: { choice: "a" })).to be_ok
+        expect(klass.call(payload: { choice: "z" })).not_to be_ok
+      end
+
+      it "rejects a container that answers membership with its own code" do
+        values = Class.new(Array) { def include?(_value) = true }.new.push("a", "b")
+
+        expect { member_axn({ inclusion: { in: values } }) }
+          .to raise_error(ArgumentError, /defines methods of its own/)
       end
 
       it "rejects a container that defines a duplication hook" do
@@ -443,7 +452,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new.push("a", "b")
 
         expect { member_axn({ inclusion: { in: values } }) }
-          .to raise_error(ArgumentError, /defines its own duplication hook/)
+          .to raise_error(ArgumentError, /defines methods of its own/)
       end
     end
 
@@ -457,22 +466,19 @@ RSpec.describe "declaration-time property name collisions" do
         build_axn { expects :choice, inclusion: { in: values } }
       end
 
-      it "detaches one that denies its own class" do
+      # Neither of these two can escape the detach by lying — the type test is `case`/`when` and the copy is a
+      # bound `Kernel#dup` — but each is a container that answers with CODE OF ITS OWN, so each is now refused
+      # before either lie is consulted.
+      it "refuses one that denies its own class rather than storing it aliased" do
         values = Class.new(Array) { def is_a?(other) = Array.equal?(other) ? false : super }.new(%w[a b])
-        klass = declared_with(values)
 
-        expect(accepts_c?(klass)).to be(false)
-        values << "c"
-        expect(accepts_c?(klass)).to be(false)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own/)
       end
 
-      it "detaches one whose dup returns itself" do
+      it "refuses one whose dup returns itself" do
         values = Class.new(Array) { def dup = self }.new(%w[a b])
-        klass = declared_with(values)
 
-        expect(accepts_c?(klass)).to be(false)
-        values << "c"
-        expect(accepts_c?(klass)).to be(false)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own/)
       end
 
       it "detaches a bag whose transform_values hands back the receiver" do
@@ -485,9 +491,10 @@ RSpec.describe "declaration-time property name collisions" do
         expect(accepts_c?(klass)).to be(false)
       end
 
-      # A container that defines a duplication hook is refused rather than copied-and-checked. What the hook
-      # does to the copy cannot be established without running it, and two rounds of verifying a copy were each
-      # defeated one case later (see the two below), so ownership of the hook is the verdict.
+      # A container that answers with code of its own is refused rather than copied-and-checked. What that code
+      # does in the copy cannot be established without running it, and every narrower rule was defeated one case
+      # later — two rounds of verifying the copy, then gating on the duplication hooks (see the rows below, in
+      # the order the counterexamples arrived) — so ownership of everything it answers with is the verdict.
       it "rejects one that defines a duplication hook at all" do
         values = Class.new(Array) do
           def initialize_dup(source)
@@ -497,7 +504,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new.push("a", "b")
 
         expect { declared_with(values) }
-          .to raise_error(ArgumentError, /defines its own duplication hook.*Supply a plain Array, or freeze/m)
+          .to raise_error(ArgumentError, /defines methods of its own \(`:initialize_dup`\).*Supply a plain Array, or freeze/m)
       end
 
       # The first case verification missed: the elements are not the whole contract. An `inclusion:` set answers
@@ -519,7 +526,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new(%w[a b])
 
         expect(values.include?("a")).to be(true)
-        expect { declared_with(values) }.to raise_error(ArgumentError, /defines its own duplication hook/)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own/)
       end
 
       # The second, which is why no probe closes this: membership can accept values that are not elements, so
@@ -542,7 +549,135 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect(values.include?("canon")).to be(true)
         expect(values.include?("alias")).to be(true)
-        expect { declared_with(values) }.to raise_error(ArgumentError, /defines its own duplication hook/)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own/)
+      end
+
+      # The third counterexample, and the one that moved the gate from the duplication hooks to every method a
+      # container answers with: NO hook at all, native duplication throughout, and the copy still disagrees.
+      # `dup` copies the elements but SHARES the instance variables, so a membership derived from identity is
+      # carried into a copy that reads it as false — and axn then rejected a value the caller declared as
+      # accepted. What a faithful copy needs is not a faithful duplication hook; it is that the copied state
+      # (the elements) determines every answer, which holds only when the answers are Ruby's own.
+      it "rejects one whose membership is derived from its own identity, with no duplication hook at all" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @me = self
+          end
+
+          def include?(value) = @me.equal?(self) && to_a.include?(value)
+        end.new(%w[ok])
+
+        expect(values.include?("ok")).to be(true)
+        expect(values.dup.include?("ok")).to be(false) # the copy Ruby's own `dup` produces already disagrees
+        expect { declared_with(values) }
+          .to raise_error(ArgumentError, /defines methods of its own \(`:include\?`, `:initialize`\).*freeze/m)
+      end
+
+      it "accepts that same container frozen, and answers membership exactly as it declared" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @me = self
+          end
+
+          def include?(value) = @me.equal?(self) && to_a.include?(value)
+        end.new(%w[ok]).freeze
+        klass = declared_with(values)
+
+        expect(klass.call(choice: "ok")).to be_ok
+        expect(klass.call(choice: "z")).not_to be_ok
+      end
+
+      # Where the lookup goes decides this one, the other way round from the duplication hooks: `dup` reaches
+      # hooks on the COPY's class, but a consumer asks the ORIGINAL, and a copy carries no singleton — so a
+      # singleton `include?` is code the original answers with and the copy cannot. Asking the class alone left
+      # this open on a plain Array.
+      it "rejects a plain Array whose SINGLETON answers membership" do
+        values = %w[a b]
+        values.define_singleton_method(:include?) { |_value| true }
+
+        expect(values.include?("z")).to be(true)
+        expect(values.dup.include?("z")).to be(false)
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own \(`:include\?`\)/)
+      end
+
+      # An extended module lives in the same place (the singleton class's ancestry) and is dropped by `dup` the
+      # same way, so one walk answers both.
+      it "rejects one whose membership comes from a module extended onto it" do
+        values = %w[a b]
+        values.extend(Module.new { def include?(_value) = true })
+
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own \(`:include\?`\)/)
+      end
+
+      # The same root, aliasing rather than divergence: `dup` shares the ivars, so a membership reading one is
+      # still the caller's to change after the class is declared — which is the whole thing the copy buys.
+      it "rejects one whose membership reads an instance variable the copy still shares" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @extra = []
+          end
+
+          attr_reader :extra
+
+          def include?(value) = to_a.include?(value) || @extra.include?(value)
+        end.new(%w[a])
+
+        expect { declared_with(values) }.to raise_error(ArgumentError, /defines methods of its own/)
+      end
+
+      # `include?` is what an `inclusion:` set is asked, but it is not the only thing a stored option container
+      # is asked, and the gate is not a list of the predicates one consumer happens to dispatch: `type:` reaches
+      # the same copy and is read with `Array(...)`/`any?`, so an identity-dependent `any?` made a declared
+      # `type: String` reject the String it was declared for.
+      it "rejects a type: container that decides with its own any?" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @me = self
+          end
+
+          def any?(&) = @me.equal?(self) ? super : false
+        end.new([String])
+
+        expect { build_axn { expects :choice, type: values } }
+          .to raise_error(ArgumentError, /the `type:` container.*defines methods of its own \(`:any\?`, `:initialize`\)/m)
+      end
+
+      it "rejects an of: element-type container on the same terms" do
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @me = self
+          end
+
+          def any?(&) = @me.equal?(self) ? super : false
+        end.new([String])
+
+        expect { build_axn { expects :choice, type: Array, of: { klass: values } } }
+          .to raise_error(ArgumentError, /the `of: \{ klass: … \}` container.*defines methods of its own/m)
+      end
+
+      # `exclusion:` reaches the same detach and the same ActiveModel `include?` — with the verdict inverted, so
+      # a copy that answers false ADMITS the value the declaration excluded.
+      it "rejects an exclusion: container that answers with its own code, and accepts it frozen" do
+        klass = Class.new(Array) do
+          def initialize(*args)
+            super
+            @me = self
+          end
+
+          def include?(value) = @me.equal?(self) && to_a.include?(value)
+        end
+
+        expect { build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]) } } }
+          .to raise_error(ArgumentError, /the `exclusion: \{ in: … \}` container.*defines methods of its own/m)
+
+        frozen = build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]).freeze } }
+        expect(frozen.call(choice: "bad")).not_to be_ok
+        expect(frozen.call(choice: "fine")).to be_ok
       end
 
       # The bounded escape hatch, and what keeps the over-rejection honest: the copy exists so a caller's later
@@ -568,18 +703,16 @@ RSpec.describe "declaration-time property name collisions" do
         expect(klass.call(choice: "z")).not_to be_ok
       end
 
-      # The ownership test asks the CLASS, not the object, because that is where `dup` looks: a copy carries no
-      # singleton class, so a hook defined on this object's singleton is not code the copy can run. Asking the
-      # object would refuse a container axn copies perfectly well.
-      it "accepts one whose SINGLETON defines a duplication hook, which dup cannot reach" do
+      # A singleton duplication hook is refused too, and by the general rule rather than by a claim about that
+      # hook: `dup` cannot reach it (the copy carries no singleton), but the rule asked is "does this container
+      # answer anything with its own code", and one carve-out for a method nothing dispatches would be another
+      # guarantee about foreign code to get wrong. `freeze` covers it, as it covers every other own method.
+      it "refuses one whose SINGLETON defines a duplication hook" do
         values = %w[a b]
         values.define_singleton_method(:initialize_dup) { |_source| clear }
-        klass = declared_with(values)
 
-        expect(accepts_c?(klass)).to be(false)
-        values << "c"
-        expect(accepts_c?(klass)).to be(false)
-        expect(klass.call(choice: "a")).to be_ok
+        expect { declared_with(values) }
+          .to raise_error(ArgumentError, /defines methods of its own \(`:initialize_dup`\)/)
       end
 
       # A frozen PLAIN container is stored as-is too — the copy is what a mutable one is protected with, and
@@ -593,15 +726,94 @@ RSpec.describe "declaration-time property name collisions" do
         expect(klass.call(choice: "z")).not_to be_ok
       end
 
-      # The copy must not over-reach either: an Array's own `include?` is how an `inclusion:` set answers
-      # membership, so the stored copy keeps the caller's CLASS rather than becoming a plain Array (which
-      # would also publish an enum reflection deliberately withholds for anything but an exact Array).
-      it "keeps a subclass's own membership behavior" do
-        values = Class.new(Array) { def include?(_value) = true }.new(%w[a b])
+      # The refusal must not over-reach either: a subclass that adds no code of its own is copied exactly as a
+      # plain Array is, and the copy keeps the caller's CLASS (which is also why reflection still withholds an
+      # enum for it — it does that for anything but an exact Array).
+      it "copies a subclass that adds no code of its own, and keeps its class" do
+        subclass = Class.new(Array)
+        values = subclass.new(%w[a b])
+        klass = declared_with(values)
+        stored = klass.internal_field_configs.first.validations.dig(:inclusion, :in)
+
+        expect(stored).not_to be(values)
+        expect(stored.class).to be(subclass)
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(false)
+        expect(klass.call(choice: "a")).to be_ok
+        expect(klass.input_schema.dig(:properties, :choice, :enum)).to be_nil
+      end
+
+      # A method name reaches prose like every other name this PR routes through one renderer: a container
+      # defining a method whose bytes have no UTF-8 rendering would otherwise raise Encoding::CompatibilityError
+      # from inside the declaration error it caused.
+      it "names an offending method whose bytes have no UTF-8 rendering, escaped" do
+        method_name = unrenderable_name
+        values = Class.new(Array) { define_method(method_name) { 1 } }.new(%w[a])
+        name = utf8_name
+
+        expect { build_axn { expects name, inclusion: { in: values } } }
+          .to raise_error(ArgumentError, /defines methods of its own \(`:"bad\\xFF"`\)/)
+      end
+
+      # The baseline for "Ruby's own" is what ::Array itself answers with, read from its ancestors rather than
+      # assumed to be the class alone — so a module PREPENDED to Array (which sits ahead of it in every Array's
+      # ancestry) is Ruby's own here, instead of refusing every container in the app that did it. In a fresh
+      # process, since prepending to Array cannot be undone for the rest of the suite.
+      it "still copies a plain Array in a process where a module is prepended to Array" do
+        script = <<~RUBY
+          $LOAD_PATH.unshift("lib")
+          require "logger"
+          require "axn"
+          Axn.config.logger = Logger.new(IO::NULL)
+          module ArrayPatch
+            def include?(value) = super
+          end
+          Array.prepend(ArrayPatch)
+          klass = Class.new do
+            include Axn
+            expects :choice, inclusion: { in: %w[a b] }
+            def call = nil
+          end
+          print [klass.call(choice: "a").ok?, klass.call(choice: "c").ok?].inspect
+        RUBY
+        out, status = Open3.capture2e(RbConfig.ruby, "-e", script, chdir: File.expand_path("../../../..", __dir__))
+
+        expect([out, status.success?]).to eq(["[true, false]", true])
+      end
+
+      # The other residue, and the same one-level depth the copy promises: freezing a container freezes its own
+      # slots, not the objects its ivars point at, so a frozen container deriving membership from a mutable index
+      # is still the caller's to widen. Recorded, because the escape hatch must not read as more than it is.
+      it "records the residue: a frozen container's ivar-derived membership is still the caller's to widen" do
+        index = { "a" => true }
+        values = Class.new(Array) do
+          define_method(:initialize) do |*args, idx|
+            super(*args)
+            @index = idx
+          end
+
+          def include?(value) = @index.key?(value)
+        end.new(%w[a], index).freeze
         klass = declared_with(values)
 
+        expect(accepts_c?(klass)).to be(false)
+        index["c"] = true
         expect(accepts_c?(klass)).to be(true)
-        expect(klass.input_schema.dig(:properties, :choice, :enum)).to be_nil
+      end
+
+      # A membership container that is not an Array reaches this path and is stored as the caller's OBJECT — not
+      # copied, and so not refused either: nothing of axn's answers membership, the caller's own object does, so
+      # the divergence above is unreachable. What remains is the aliasing the copy exists to prevent, recorded
+      # here rather than claimed closed. A `Range` is frozen by construction and so is unaffected.
+      it "records the residue: a Set membership container stays the caller's own object" do
+        values = Set.new(%w[a])
+        klass = declared_with(values)
+
+        expect(klass.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(true)
       end
     end
   end

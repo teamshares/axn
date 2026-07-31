@@ -21,10 +21,12 @@
 # or inverted and the suite re-run. 22 of the 25 guards have a spec that fails when the guard goes; the three
 # that did not — the projection walk's depth bound, the redaction walks' bounds, and the ambient placement
 # check's bounds — became `spec/axn/core/validations/stored_shape_traversal_spec.rb`. Rows that remain
-# harness-only on purpose: the COST rows (a timing assertion belongs nowhere near CI) and the two rows that
-# record a documented residue rather than a guarantee (a duck-typed member's nested shape staying aliased, and a
-# non-idempotent reader splitting a guard from its consumer) — those exist to keep a claim honest, and a suite
-# has nothing to assert about them.
+# harness-only on purpose: the COST rows (a timing assertion belongs nowhere near CI) and the rows that
+# record a documented residue rather than a guarantee (a duck-typed member's nested shape staying aliased, a
+# non-idempotent reader splitting a guard from its consumer, and a non-Array membership container staying the
+# caller's own object) — those exist to keep a claim honest, and a suite has nothing to assert about them. The
+# residue rows do have specs where the behaviour is observable, which is how a later "fix" of half of one gets
+# noticed.
 #
 # When you add a row here, ask the same question: mutate the guard it exercises, and if the suite stays green,
 # the row is knowledge that dies with this file. Convert it. The rows added since — the two OWNERSHIP guards
@@ -1254,14 +1256,21 @@ check "a mutated member option BAG cannot change what it validates", [false, fal
   member_accepts_after({ inclusion: bag }, -> { bag[:in] = %w[a b c] })
 end
 
-# The control the fix must not break: the member's own class still decides membership...
-check "a member subclass's own include? still decides", true do
-  values = Class.new(Array) { def include?(_v) = true }.new.push("a", "b")
+# The control the fix must not break: a member's container is copied and its class kept, so a subclass that adds
+# no code of its own decides membership exactly as it declared...
+check "a member subclass with no code of its own still decides", [true, false] do
+  values = Class.new(Array).new.push("a", "b")
   klass = member_inclusion_axn({ inclusion: { in: values } })
-  klass.call(payload: { choice: "z" }).ok?
+  [klass.call(payload: { choice: "a" }).ok?, klass.call(payload: { choice: "z" }).ok?]
 end
 
-# ...and a container that owns a duplication hook is refused for a member too.
+# ...one that answers membership ITSELF is refused for a member on the same terms as for a field...
+check "a member container answering membership itself is refused", /ArgumentError: the `inclusion: \{ in: … \}` container/ do
+  values = Class.new(Array) { def include?(_v) = true }.new.push("a", "b")
+  member_accepts_after({ inclusion: { in: values } }, -> {})
+end
+
+# ...and so is one that owns a duplication hook.
 check "a member container that owns a duplication hook is refused", /ArgumentError: the `inclusion: \{ in: … \}` container/ do
   values = Class.new(Array) do
     def initialize_dup(source)
@@ -1285,8 +1294,9 @@ check "the top-level field control is unchanged", [false, false] do
   [before, klass.call(choice: "c").ok?]
 end
 
-# A container is detached whatever it claims about itself and whatever its own copiers do. Three subclasses,
-# three different ways of defeating the detach; the plain-Array/plain-Hash rows above are the controls.
+# A container is detached whatever it claims about itself, and one that answers anything with its own code is
+# refused instead of copied. The rows below are the counterexamples in the order they arrived — each defeated the
+# gate the row above it established — plus the frozen escape hatch and the plain-Array/plain-Hash controls.
 def inclusion_axn(values)
   Class.new do
     include Axn
@@ -1302,14 +1312,20 @@ def accepts_after_mutation(values, mutate)
   [before, klass.call(choice: "c").ok?]
 end
 
-check "an inclusion set denying its own class is still detached", [false, false] do
-  values = Class.new(Array) { def is_a?(other) = ::Array.equal?(other) ? false : super }.new(%w[a b])
-  accepts_after_mutation({ in: values }, -> { values << "c" })
+def declaration_verdict(values)
+  inclusion_axn({ in: values }) && "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message}"
 end
 
-check "an inclusion set whose dup returns self is still detached", [false, false] do
+check "an inclusion set denying its own class is refused", /ArgumentError.*defines methods of its own/ do
+  values = Class.new(Array) { def is_a?(other) = ::Array.equal?(other) ? false : super }.new(%w[a b])
+  declaration_verdict(values)
+end
+
+check "an inclusion set whose dup returns self is refused", /ArgumentError.*defines methods of its own/ do
   values = Class.new(Array) { def dup = self }.new(%w[a b])
-  accepts_after_mutation({ in: values }, -> { values << "c" })
+  declaration_verdict(values)
 end
 
 check "a bag whose transform_values returns self is still detached", [false, false] do
@@ -1318,17 +1334,11 @@ check "a bag whose transform_values returns self is still detached", [false, fal
   accepts_after_mutation(bag, -> { bag[:in] << "c" })
 end
 
-# A container that OWNS a duplication hook is refused at declaration, because what the hook does to the copy
-# cannot be established without running it. That is a deliberate over-rejection, and it replaces two rounds of
-# verifying the copy instead — each of which this file recorded as closed, and each of which the next row's
-# counterexample defeated.
-def declaration_verdict(values)
-  inclusion_axn({ in: values }) && "declared"
-rescue ::Exception => e # rubocop:disable Lint/RescueException
-  "#{e.class}: #{e.message}"
-end
-
-check "an inclusion set whose dup drops its elements is refused", /ArgumentError.*defines its own duplication hook/ do
+# A container that answers ANYTHING with code of its own is refused at declaration, because what that code
+# answers in the copy cannot be established without running it. That is a deliberate over-rejection, and it
+# replaces two rounds of verifying the copy and one of gating on the duplication hooks — each of which this
+# file recorded as closed, and each of which a later row's counterexample defeated.
+check "an inclusion set whose dup drops its elements is refused", /ArgumentError.*defines methods of its own/ do
   values = Class.new(Array) do
     def initialize_dup(source)
       super
@@ -1341,7 +1351,7 @@ end
 # Round one's counterexample: the elements are what a set holds, but its own `include?` is what a declaration
 # MEANS, and that can be derived from state the elements do not determine. This copy holds every declared element
 # and rejects them all, so comparing ELEMENTS saw nothing wrong.
-check "an inclusion set whose dup drops its derived index is refused", /ArgumentError.*defines its own duplication hook/ do
+check "an inclusion set whose dup drops its derived index is refused", /ArgumentError.*defines methods of its own/ do
   values = Class.new(Array) do
     def initialize(*args)
       super
@@ -1362,7 +1372,7 @@ end
 # so asking the copy `include?` about each element agreed with the original while the copy had silently stopped
 # accepting the aliases the original accepted. The accepted set is whatever arbitrary code says, so it is not
 # enumerable from outside.
-check "an inclusion set whose dup drops an alias index is refused", /ArgumentError.*defines its own duplication hook/ do
+check "an inclusion set whose dup drops an alias index is refused", /ArgumentError.*defines methods of its own/ do
   values = Class.new(Array) do
     def initialize(*args)
       super
@@ -1377,6 +1387,106 @@ check "an inclusion set whose dup drops an alias index is refused", /ArgumentErr
     def include?(value) = to_a.include?(value) || @aliases.key?(value.to_s)
   end.new(%w[canon])
   declaration_verdict(values)
+end
+
+# Round three's counterexample, which moved the gate from the duplication HOOKS to everything a container answers
+# with: no hook at all, native duplication throughout, and the copy still disagrees — `dup` copies the elements
+# but shares the ivars, so a membership derived from IDENTITY reads false in the copy and axn rejected a value the
+# caller had declared as accepted. The lesson is that native duplication only buys a faithful copy where the
+# copied state (the elements) determines the answers, i.e. where the answers are Ruby's own.
+def identity_membership_class
+  Class.new(Array) do
+    def initialize(*args)
+      super
+      @me = self
+    end
+
+    def include?(value) = @me.equal?(self) && to_a.include?(value)
+  end
+end
+
+check "an inclusion set whose membership is its own identity is refused", /ArgumentError.*defines methods of its own \(`:include\?`/ do
+  declaration_verdict(identity_membership_class.new(%w[ok]))
+end
+
+check "that same set FROZEN declares and answers membership as declared", [true, false] do
+  klass = inclusion_axn({ in: identity_membership_class.new(%w[ok]).freeze })
+  [klass.call(choice: "ok").ok?, klass.call(choice: "z").ok?]
+end
+
+# The same defect through the other thing `dup` does not carry: a SINGLETON `include?` (or one from an extended
+# module, which lives in the same ancestry) answers on the original and is simply absent from the copy. Only a
+# lookup that goes through the object sees either.
+check "a plain Array whose singleton answers membership is refused", /ArgumentError.*defines methods of its own \(`:include\?`\)/ do
+  values = %w[a b]
+  values.define_singleton_method(:include?) { |_v| true }
+  declaration_verdict(values)
+end
+
+check "a plain Array with an extended membership module is refused", /ArgumentError.*defines methods of its own \(`:include\?`\)/ do
+  values = %w[a b]
+  values.extend(Module.new { def include?(_v) = true })
+  declaration_verdict(values)
+end
+
+# And the third: `dup` SHARES the ivars, so a membership reading one is still the caller's to widen after the
+# class is declared — the aliasing the copy exists to prevent, reached without any hook.
+check "an inclusion set whose membership reads a shared ivar is refused", /ArgumentError.*defines methods of its own/ do
+  values = Class.new(Array) do
+    def initialize(*args)
+      super
+      @extra = []
+    end
+
+    attr_reader :extra
+
+    def include?(value) = to_a.include?(value) || @extra.include?(value)
+  end.new(%w[a])
+  declaration_verdict(values)
+end
+
+# `include?` is not the only thing a stored option container is asked, which is why the gate is not a list of the
+# predicates one consumer dispatches: `type:`/`of:` reach the same copy path and axn reads them with
+# `Array(…)`/`any?`, so an identity-dependent `any?` made a declared `type: String` reject a String.
+check "a type: container deciding with its own any? is refused", /ArgumentError: the `type:` container.*defines methods of its own/ do
+  values = Class.new(Array) do
+    def initialize(*args)
+      super
+      @me = self
+    end
+
+    def any?(&) = @me.equal?(self) ? super : false
+  end.new([String])
+  Class.new do
+    include Axn
+    expects :choice, type: values
+    def call; end
+  end && "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message}"
+end
+
+# `exclusion:` is the same copy and the same ActiveModel `include?` with the verdict inverted, so the same
+# divergence ADMITS what the declaration excluded.
+check "an exclusion: container answering with its own code is refused", /ArgumentError: the `exclusion: \{ in: … \}` container.*defines methods of its own/ do
+  values = identity_membership_class.new(%w[bad])
+  Class.new do
+    include Axn
+    expects :choice, exclusion: { in: values }
+    def call; end
+  end && "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message}"
+end
+
+check "a frozen exclusion: container excludes exactly what it declared", [false, true] do
+  values = identity_membership_class.new(%w[bad]).freeze
+  klass = Class.new do
+    include Axn
+    expects :choice, exclusion: { in: values }
+    def call; end
+  end
+  [klass.call(choice: "bad").ok?, klass.call(choice: "fine").ok?]
 end
 
 # The bounded escape hatch that keeps the over-rejection honest: the copy exists so a caller's later mutation
@@ -1410,7 +1520,7 @@ check "a frozen plain inclusion set is stored without copying", [true, true, fal
    klass.call(choice: "x").ok?, klass.call(choice: "z").ok?]
 end
 
-check "a container whose frozen? lies is not stored as-is", /ArgumentError.*defines its own duplication hook/ do
+check "a container whose frozen? lies is not stored as-is", /ArgumentError.*defines methods of its own/ do
   values = Class.new(Array) do
     def frozen? = true
     def initialize_dup(source) = super
@@ -1418,21 +1528,57 @@ check "a container whose frozen? lies is not stored as-is", /ArgumentError.*defi
   declaration_verdict(values)
 end
 
-# The ownership test asks the CLASS, because that is where `dup` looks: a copy carries no singleton class, so a
-# singleton hook is not code the copy can run, and refusing it would reject a container axn copies perfectly.
-check "a SINGLETON duplication hook does not refuse the container", [false, false] do
+# A singleton duplication hook is refused too — not because `dup` can reach it (it cannot: the copy carries no
+# singleton) but because the rule asked is whether the container answers anything with its own code, and a
+# carve-out for a method nothing dispatches would be one more guarantee about foreign code to get wrong.
+check "a SINGLETON duplication hook is refused as well", /ArgumentError.*defines methods of its own \(`:initialize_dup`\)/ do
   values = %w[a b]
   values.define_singleton_method(:initialize_dup) { |_source| clear }
-  accepts_after_mutation({ in: values }, -> { values << "c" })
+  declaration_verdict(values)
 end
 
-# ...and the copy does not over-reach: an Array's own `include?` IS how an inclusion set answers membership, so
-# the stored copy keeps the caller's class (and reflection still withholds an enum for anything but an exact
-# Array).
-check "a subclass's own membership behavior survives the copy", [true, nil] do
-  values = Class.new(Array) { def include?(_v) = true }.new(%w[a b])
+# ...and the refusal does not over-reach: a subclass that adds no code of its own is copied exactly as a plain
+# Array is, keeping the caller's CLASS (which is why reflection still withholds an enum — it does that for
+# anything but an exact Array).
+check "a subclass with no code of its own is copied, class and all", ["declared", false, true, nil] do
+  subclass = Class.new(Array)
+  values = subclass.new(%w[a b])
   klass = inclusion_axn({ in: values })
-  [klass.call(choice: "c").ok?, klass.input_schema.dig(:properties, :choice, :enum)]
+  stored = klass.internal_field_configs.first.validations.dig(:inclusion, :in)
+  ["declared", stored.equal?(values), stored.class.equal?(subclass),
+   klass.input_schema.dig(:properties, :choice, :enum)]
+end
+
+# A RESIDUE row: freezing freezes the container's own slots, not the objects its ivars point at, so a frozen
+# container deriving membership from a mutable index is still the caller's to widen after the class is declared.
+# The same one-level depth the copy promises for elements — recorded so the escape hatch does not read as more.
+check "a frozen container's ivar-derived membership is still the caller's to widen", [false, true] do
+  index = { "a" => true }
+  values = Class.new(Array) do
+    define_method(:initialize) do |*args, idx|
+      super(*args)
+      @index = idx
+    end
+
+    def include?(value) = @index.key?(value)
+  end.new(%w[a], index).freeze
+  klass = inclusion_axn({ in: values })
+  before = klass.call(choice: "c").ok?
+  index["c"] = true
+  [before, klass.call(choice: "c").ok?]
+end
+
+# A RESIDUE row, not a guarantee: a membership container that is not an Array never reaches the copy at all, so
+# nothing of axn's answers membership (no divergence is possible) but nothing detaches it either — a mutable Set
+# can still be widened after the class is declared. A Range is frozen by construction.
+check "a Set membership container is stored as the caller's own object", [true, false, true] do
+  require "set"
+  values = Set.new(%w[a])
+  klass = inclusion_axn({ in: values })
+  stored = klass.internal_field_configs.first.validations.dig(:inclusion, :in).equal?(values)
+  before = klass.call(choice: "c").ok?
+  values << "c"
+  [stored, before, klass.call(choice: "c").ok?]
 end
 
 # A member that answers to no `field` cannot be declared: runtime validation reads `member.field` for every
