@@ -21,12 +21,12 @@
 # or inverted and the suite re-run. 22 of the 25 guards have a spec that fails when the guard goes; the three
 # that did not — the projection walk's depth bound, the redaction walks' bounds, and the ambient placement
 # check's bounds — became `spec/axn/core/validations/stored_shape_traversal_spec.rb`. Rows that remain
-# harness-only on purpose: the COST rows (a timing assertion belongs nowhere near CI) and the rows that
-# record a documented residue rather than a guarantee (a duck-typed member's nested shape staying aliased, a
-# non-idempotent reader splitting a guard from its consumer, and a non-Array membership container staying the
-# caller's own object) — those exist to keep a claim honest, and a suite has nothing to assert about them. The
-# residue rows do have specs where the behaviour is observable, which is how a later "fix" of half of one gets
-# noticed.
+# harness-only on purpose: the COST rows (a timing assertion belongs nowhere near CI) and the rows that record a
+# documented residue rather than a guarantee — today just one, a non-Array membership container staying the
+# caller's own object. (Two others were residue rows until the member snapshot closed them: a duck-typed member's
+# nested shape staying aliased, and a non-idempotent reader splitting a guard from its consumer. They kept their
+# fixtures and now assert the closure, which is exactly the A/B this file exists for.) The residue rows do have
+# specs where the behaviour is observable, which is how a later "fix" of half of one gets noticed.
 #
 # When you add a row here, ask the same question: mutate the guard it exercises, and if the suite stays green,
 # the row is knowledge that dies with this file. Convert it. The rows added since — the two OWNERSHIP guards
@@ -251,8 +251,8 @@ RAISING_NAME_GHOST = Class.new do
   def method_missing(reader, *_args) = raise(RAISING_NAME_NME.new("boom", reader)) # rubocop:disable Style/MissingRespondToMissing
 end
 
-# Reports a DIFFERENT name on each read. Nothing closes this; the row exists so no claim of
-# guard/consumer agreement "by construction" survives.
+# Reports a DIFFERENT name on each read. The member snapshot is what makes the first read the contract, so this
+# fixture now pins agreement by construction rather than recording its absence.
 DRIFTING = Class.new do
   def initialize = @reads = 0
 
@@ -1716,16 +1716,56 @@ check "an indifferent-access member's grammar validates", [true, false] do
   [klass.call(payload: { a: "x" }).ok?, klass.call(payload: { a: 1 }).ok?]
 end
 
+# The same, on a DUCK-TYPED member — which is where the canonical copy used to be computed and then thrown away,
+# because the member was stored as the caller's object. The schema omitted the type constraint entirely while
+# every call raised `ArgumentError: must supply :klass` from the raw String-keyed bag: two layers, two answers,
+# neither the declaration. One snapshot, one canonical form, both layers reading it.
+check "a duck-typed member's String-keyed grammar validates too", [["string"], true, false] do
+  m = Struct.new(:field, :validations).new(:a, { "type" => { "klass" => String } })
+  klass = expects_axn({ members: [m], container: Hash }, type: Hash)
+  [Array(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)),
+   klass.call(payload: { a: "x" }).ok?, klass.call(payload: { a: 1 }).ok?]
+end
+
+# The control it must match: the Symbol-keyed spelling of the same duck-typed member, unchanged throughout.
+check "a duck-typed member's Symbol-keyed grammar is identical", [["string"], true, false] do
+  m = Struct.new(:field, :validations).new(:a, { type: { klass: String } })
+  klass = expects_axn({ members: [m], container: Hash }, type: Hash)
+  [Array(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)),
+   klass.call(payload: { a: "x" }).ok?, klass.call(payload: { a: 1 }).ok?]
+end
+
+# A retained member's `sensitive:` settled nothing consistently: the redaction table keys on the IDENTITY of the
+# config arrays, which a member's own state cannot change, so flipping it after declaration took effect or did
+# not depending only on whether anything had asked yet. Snapshotted, both directions are inert and the DECLARED
+# behaviour is what persists — read first or not.
+def sensitive_after_mutation(declared, mutated, read_first:)
+  member = Struct.new(:field, :validations, :sensitive).new(:ssn, {}, declared)
+  klass = expects_axn({ members: [member], container: Hash }, type: Hash)
+  klass.sensitive_fields if read_first
+  member.sensitive = mutated
+  [klass.sensitive_fields,
+   klass.send(:_context_slice, data: { payload: { ssn: "SHH" } }, direction: :inbound).dig(:payload, :ssn)]
+end
+
+check "flipping a member's sensitive: ON after declaration changes nothing", [[[], "SHH"], [[], "SHH"]] do
+  [sensitive_after_mutation(false, true, read_first: false), sensitive_after_mutation(false, true, read_first: true)]
+end
+
+check "...and flipping it OFF leaves the declared redaction in place", [[[:ssn], "[FILTERED]"], [[:ssn], "[FILTERED]"]] do
+  [sensitive_after_mutation(true, false, read_first: false), sensitive_after_mutation(true, false, read_first: true)]
+end
+
 check "a String-keyed member's metadata is read", "the a" do
   m = SC.new(field: :a, validations: {}, metadata: { "description" => "the a" })
   klass = expects_axn({ members: [m], container: Hash }, type: Hash)
   klass.input_schema.dig(:properties, :payload, :properties, :a, :description)
 end
 
-# The snapshot's bounded residue, recorded rather than implied away: a duck-typed member is the caller's own
-# object and cannot be rebuilt, so a nested shape it carries stays aliased and CAN still be mutated after
-# declaration. A ShapeConfig member (what the block form and every documented example produce) is rebuilt.
-check "a duck-typed member's nested shape stays aliased — the documented residue", [%i[deep], %i[deep sneaked]] do
+# The snapshot stops at no member: a duck-typed one is read once and rebuilt as axn's own ShapeConfig, so the
+# nested shape it carries is copied too and mutating the caller's Hash afterwards changes nothing. This row was
+# the recorded residue until the snapshot covered it.
+check "a duck-typed member's nested shape is copied too", [%i[deep], %i[deep]] do
   inner = { members: [SC.new(field: :deep, validations: {})], container: Hash }
   duck = Class.new do
     define_method(:initialize) { |v| @validations = v }
@@ -1742,10 +1782,9 @@ check "a duck-typed member's nested shape stays aliased — the documented resid
 end
 
 # Attribution enriches a message for a verdict that is ALREADY established, so it must not be able to replace
-# it. The deep snapshot closed the hostile-`each` half of this outright — every walk after declaration iterates
-# axn's own copy — leaving only a duck-typed member's READERS, which the snapshot cannot rebuild. A reader that
-# breaks during a REQUIRED read has no schema to judge, so its own error is honest; one that breaks during
-# attribution must degrade instead.
+# it. The deep snapshot closed both halves of this outright: every walk after declaration iterates axn's own
+# copy, and every member reader is read once and rebuilt into axn's own ShapeConfig. What these rows now pin is
+# that ONE read: a list or a reader that misbehaves on a later one never gets it.
 def nth_walk_raiser(nth, *members)
   Class.new(Array) do
     define_method(:initialize) { |a| super(a); @walks = 0 }
@@ -1758,7 +1797,7 @@ def nth_walk_raiser(nth, *members)
   end.new(members)
 end
 
-# A duck-typed member is not rebuilt by the snapshot, so its readers stay caller code in the stored contract.
+# Counts its own reads, so a row can name WHICH read would break.
 def reader_raising_member(nth)
   Class.new do
     define_method(:initialize) { @reads = 0 }
@@ -1807,23 +1846,17 @@ check "the caller's list is walked exactly once per level", [1, 1] do
   [outer.instance_variable_get(:@walks), inner.instance_variable_get(:@walks)]
 end
 
-# A required read cannot produce a schema, so the reader's own error is the honest outcome.
-check "a reader that breaks during the schema build raises its own error", /NotImplementedError: read 2/ do
-  verdict_when_reader_breaks_on(2)
+# The FIRST read is the one the declaration is not knowable without, so it is the only one taken: the collision
+# between the name it gave and its sibling's is the verdict, and no second read can substitute an exception for
+# it. Before the member snapshot, read 2 landed in the schema build (which raised NotImplementedError instead of
+# reporting the collision) and read 3 in attribution (which degraded the message to the property alone).
+check "a reader that would break on a later read is never read twice", [true, true, true] do
+  [2, 3, 9].map { |nth| verdict_when_reader_breaks_on(nth).include?("both render as the JSON property") }
 end
 
-# The collision is already proven here; attribution must not replace it.
-check "a reader that breaks during attribution still reports the collision", /DuplicateFieldError/ do
+# ...and the report keeps its full source-naming form, because attribution re-traverses axn's own snapshot.
+check "the report keeps its full form", /DuplicateFieldError: Duplicate shape member declared/ do
   verdict_when_reader_breaks_on(3)
-end
-
-check "and that report degrades to the property rather than going silent", /both resolve to the JSON property/ do
-  verdict_when_reader_breaks_on(3)
-end
-
-# When attribution survives, the message keeps its full source-naming form.
-check "attribution that survives still names both sources", /Duplicate shape member declared/ do
-  verdict_when_reader_breaks_on(9)
 end
 
 # Mutating the members Array after declaring cannot introduce a collision at all now — the stored contract is a
@@ -1905,10 +1938,11 @@ end
 
 # What a member may CARRY, as opposed to what it must answer to. `sensitive:` and `user_facing:` are rules the
 # runtime resolves, so a value outside their grammar is not a rule at all — a `sensitive: "yes"` silently drops
-# the member from the redaction set and logs the value in the clear. Held over every member the class stores,
-# whatever its class: a ShapeConfig constructor is not evidence of anything here, since a member can be a `Data`
-# of the caller's own (rebuildable, never constructed by axn) or a `Data#with` copy on a Ruby where `with` skips
-# a custom `initialize`. Both stored an unchecked rule before the declaration walk read them.
+# the member from the redaction set and logs the value in the clear. Held by the declaration walk, over every
+# member whatever its class, at the point it reads the value into the snapshot — which is what makes the check and
+# the stored value one read. A ShapeConfig constructor is not evidence on its own: a member arriving as a `Data`
+# of the caller's own, or as a `Data#with` copy on a Ruby where `with` skips a custom `initialize`, ran no such
+# constructor, and both stored an unchecked rule before the walk read them.
 def member_grammar_verdict(member)
   klass = expects_axn({ members: [member], container: Hash }, type: Hash)
   "declared: sensitive_fields=#{klass.sensitive_fields.inspect} " \
@@ -2750,13 +2784,31 @@ check "boot validates a shadowing tool's OUTBOUND contract too",
 end
 
 # ---------------------------------------------------------------------------------------------------
-puts "\n== a graph that becomes cyclic AFTER it is declared ====================================="
+puts "\n== a graph a class HOLDS that was never walked =========================================="
 # ---------------------------------------------------------------------------------------------------
 
-# The documented duck-typed residue at its sharpest: the member is stored by reference, so its nested shape
-# can be pointed back at itself once the class is declared. Every projection walks it, and SystemStackError
-# escapes every rescue meant to settle a result — so the walk is guarded and reports the cycle the way the
+# Declaring cannot produce an untraversable stored graph: the declaration walk rejects one and snapshots what it
+# accepts into axn's own Hashes and ShapeConfigs, nested shapes included. What remains is the config arrays
+# themselves, which are writable — so a shape assigned onto a class rather than declared is held exactly as its
+# author built it, and can be pointed back at itself. Every projection walks it, and SystemStackError escapes
+# every rescue meant to settle a result, so each walk is bounded and reports the cycle the way the
 # declaration-time guard does.
+FC = Axn::Core::Contract::FieldConfig
+
+def held_shape_config(field, member, **)
+  FC.new(field:, reader_as: field, validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } }, **)
+end
+
+def axn_holding(member)
+  klass = Class.new do
+    include Axn
+    def call = expose(out: {})
+  end
+  klass.internal_field_configs = [held_shape_config(:payload, member)].freeze
+  klass.external_field_configs = [held_shape_config(:out, member)].freeze
+  klass
+end
+
 def cyclic_after_declaration
   member = Class.new do
     attr_accessor :validations
@@ -2765,13 +2817,7 @@ def cyclic_after_declaration
     def field = :outer
   end.new
   member.validations[:shape][:members] << SC.new(field: :inner, validations: {})
-  klass = Class.new do
-    include Axn
-    expects :payload, type: Hash, shape: { members: [member], container: Hash }
-    exposes :out, type: Hash, shape: { members: [member], container: Hash }
-    def call = expose(out: {})
-  end
-  [member, klass]
+  [member, axn_holding(member)]
 end
 
 def projection_verdict(projection)
@@ -2809,13 +2855,7 @@ def generative_after_declaration
     def field = :outer
     def validations = { type: { klass: Hash }, shape: @gen ? { members: [self], container: Hash } : @fixed }
   end.new
-  klass = Class.new do
-    include Axn
-    expects :payload, type: Hash, shape: { members: [member], container: Hash }
-    exposes :out, type: Hash, shape: { members: [member], container: Hash }
-    def call = expose(out: {})
-  end
-  [member, klass]
+  [member, axn_holding(member)]
 end
 
 def generative_verdict(projection)
@@ -2880,8 +2920,8 @@ check "the inspect redaction walk is bounded for a generative graph", true do
   end
 end
 
-# Declaring a LATER ambient subfield re-walks every ambient config's shape, so a graph mutated since its own
-# declaration reaches that walk. Both halves, both bounded.
+# Declaring a LATER ambient subfield re-walks every ambient config's shape, so a graph the class was handed
+# rather than declared reaches that walk. Both halves, both bounded.
 def ambient_verdict(mode)
   member = Class.new do
     attr_accessor :mode
@@ -2904,9 +2944,10 @@ def ambient_verdict(mode)
   end.new
   klass = Class.new do
     include Axn
-    expects :request, on: :ambient_context, type: Hash, shape: { members: [member], container: Hash }
+    expects :request, on: :ambient_context, type: Hash
     def call; end
   end
+  klass.subfield_configs = [held_shape_config(:request, member, on: :ambient_context)].freeze
   member.mode = mode
   begin
     klass.class_eval { expects :other, on: :ambient_context, type: Hash }
@@ -2957,13 +2998,15 @@ check "a logged call still settles as an ordinary result", "Axn::InboundValidati
 end
 
 # ---------------------------------------------------------------------------------------------------
-puts "\n== documented limit: NOT closed, recorded so a claim about it stays honest =============="
+puts "\n== the last of that: a reader that answers differently each read ========================"
 # ---------------------------------------------------------------------------------------------------
 
-# A reader reporting a different name on each read splits the guard from its consumer whichever single
-# read either makes. Recorded, not fixed: the honest claim is "a reachable reader is read the way
-# reflection reads it", not "the two agree by construction".
-check "non-idempotent reader: still splits guard from consumer", /declared props=\[:collide\]/ do
+# This was the recorded limit — a reader reporting a different name on each read split the guard from its
+# consumer whichever single read either made, so the guard saw two distinct names and the schema emitted one
+# property twice. The member snapshot closes it: the FIRST read is the declaration, and every consumer reads
+# what was stored. A caller's object still decides what its contract SAYS; it no longer gets to say one thing
+# to a guard and another to the schema.
+check "non-idempotent reader: the first read is the contract", /declared props=\[:unique\d+, :unique\d+\]/ do
   members = [DRIFTING.new, DRIFTING.new]
   declare_and_reflect({ members:, container: Hash }, type: Hash)
 end

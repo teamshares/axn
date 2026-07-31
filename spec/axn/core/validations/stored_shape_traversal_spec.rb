@@ -1,23 +1,24 @@
 # frozen_string_literal: true
 
-# A STORED shape graph can be untraversable even though no DECLARED one is. A member axn cannot rebuild —
-# anything that is not a `Data` — is stored as the caller's own object (the documented residue), so the nested
-# shape it carries is theirs to change after the class is declared.
+# A shape graph a class HOLDS can be untraversable even though no DECLARED one is. Declaring through
+# `expects`/`exposes` cannot produce one — the declaration walk rejects an untraversable graph and snapshots what
+# it accepts into axn's own Hashes and `ShapeConfig`s — but `internal_field_configs`/`subfield_configs` are
+# writable, so a config array assigned onto a class directly carries whatever shape its author built, unwalked.
 #
-# There are two ways to do that, and they need different answers. Pointing the nested shape back at itself makes
-# an identity repeat, which `CycleGuard` sees. Making it mint a FRESH nested shape on every read repeats nothing
-# at all, so no identity guard can see it — the graph is endless rather than cyclic, and only a depth bound stops
-# it. The size budget is no defense either: depth costs one property per level, so the stack runs out thousands
-# of levels before 25,000 does.
+# There are two ways such a graph is untraversable, and they need different answers. Pointing a nested shape back
+# at itself makes an identity repeat, which `CycleGuard` sees. Making it mint a FRESH nested shape on every read
+# repeats nothing at all, so no identity guard can see it — the graph is endless rather than cyclic, and only a
+# depth bound stops it. The size budget is no defense either: depth costs one property per level, so the stack
+# runs out thousands of levels before 25,000 does.
 #
-# Every walk of a stored graph needs both bounds, because `SystemStackError` is outside `StandardError` and
+# Every walk of a held graph needs both bounds, because `SystemStackError` is outside `StandardError` and
 # escapes the rescue meant to settle a result — from a projection it reaches the caller, and from a log line it
 # takes down the call it was only observing.
 #
 # Its own file rather than `property_name_collision_spec.rb`: this is about whether a graph axn holds can be
 # WALKED, not about the property names it emits, and that file is already two thousand lines.
-RSpec.describe "a stored shape graph that becomes untraversable" do
-  # A duck-typed member (so axn stores this very object) whose nested shape follows `mode`:
+RSpec.describe "a shape graph a class holds that cannot be traversed" do
+  # A member whose nested shape follows `mode`:
   #   :fixed      — an ordinary nested shape, walked once
   #   :cycle      — the same Hash every read, containing this member: an identity repeats
   #   :generative — a fresh Hash every read: nothing repeats, and the graph is endless
@@ -43,18 +44,25 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     end.new
   end
 
-  # Declared while the graph is honest, and projected once so the "before" state is real rather than assumed.
-  def declared_with(member)
-    build_axn do
-      expects :payload, type: Hash, shape: { members: [member], container: Hash }
-      exposes :out, type: Hash, shape: { members: [member], container: Hash }
-      define_method(:call) { expose(out: {}) } # define_method, not `def`: this is inside a method body
-    end
+  # A field config carrying the member's shape, ASSIGNED onto the class rather than declared — the one route by
+  # which a graph the declaration walk never saw becomes the contract a class holds.
+  def config_for(field, member)
+    Axn::Core::Contract::FieldConfig.new(
+      field:, reader_as: field, validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } },
+    )
   end
 
-  def declared_and_projected
+  def held_by(member)
+    klass = build_axn { define_method(:call) { expose(out: {}) } } # define_method: this is inside a method body
+    klass.internal_field_configs = [config_for(:payload, member)].freeze
+    klass.external_field_configs = [config_for(:out, member)].freeze
+    klass
+  end
+
+  # Assigned while the graph is honest, and projected once so the "before" state is real rather than assumed.
+  def held_and_projected
     member = mutable_member
-    klass = declared_with(member)
+    klass = held_by(member)
     expect(klass.input_schema.dig(:properties, :payload, :properties, :outer, :properties).keys).to eq([:inner])
     [member, klass]
   end
@@ -62,26 +70,26 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
   describe "the projection walks" do
     %i[input_schema output_schema].each do |projection|
       it "reports a bounded error on #{projection} for a self-referential graph" do
-        member, klass = declared_and_projected
+        member, klass = held_and_projected
         member.mode = :cycle
 
         expect { klass.public_send(projection) }
-          .to raise_error(ArgumentError, /shape member of class.*contains itself.*after the class is declared/m)
+          .to raise_error(ArgumentError, %r{shape member of class.*contains itself.*without being declared through `expects`/`exposes`}m)
       end
 
       it "reports a bounded error on #{projection} for a generative graph" do
-        member, klass = declared_and_projected
+        member, klass = held_and_projected
         member.mode = :generative
 
         expect { klass.public_send(projection) }
-          .to raise_error(ArgumentError, /nests more than 64 levels deep.*after the class is declared/m)
+          .to raise_error(ArgumentError, %r{nests more than 64 levels deep.*without being declared through `expects`/`exposes`}m)
       end
     end
 
     # The two are distinguished rather than reported as one defect: a cycle is fixed by not nesting a shape
     # inside itself, an endless graph by returning the same nested shape each read.
     it "does not report a generative graph as a cycle" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       member.mode = :generative
 
       expect { klass.input_schema }.to raise_error(ArgumentError, /fresh nested shape on every read is endless/)
@@ -90,7 +98,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     # Naming the member by CLASS: reading its `field` here would run the caller's code while the failure is
     # being reported, which is what every one of these error paths refuses to do.
     it "names the member by class rather than reading its name" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       stub_const("UntraversableMember", member.class)
       member.mode = :generative
 
@@ -102,7 +110,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
   # it observes — and must not answer in a way that leaks.
   describe "the redaction walks" do
     it "keeps the sensitive-member predicate exact for a self-referential graph" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       member.mode = :cycle
 
       # False is EXACT here, not defensive: a cyclic branch re-reaches the very members the enclosing frame is
@@ -111,7 +119,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     end
 
     it "answers true past the depth bound, so a generative graph is masked wholesale" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       member.mode = :generative
 
       # Nothing can enumerate a graph that mints its members on demand, and the fail-safe answer for redaction
@@ -121,7 +129,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
 
     %i[cycle generative].each do |mode|
       it "keeps the candidate walk bounded for a #{mode} graph" do
-        member, klass = declared_and_projected
+        member, klass = held_and_projected
         member.mode = mode
 
         configs = klass.send(:_sensitive_candidate_configs)
@@ -133,7 +141,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     # `inspect` is reachable directly, not only from a side channel, so an unbounded walk there raises at the
     # caller rather than degrading a log line.
     it "keeps inspect's own redaction walk bounded" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       member.mode = :generative
 
       # It RETURNS — no member here claims to be sensitive, so the walk never needs an instance, and what this
@@ -142,7 +150,7 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     end
 
     it "still settles a logged call as an ordinary result" do
-      member, klass = declared_and_projected
+      member, klass = held_and_projected
       member.mode = :generative
 
       result = klass.call(payload: { outer: { inner: 1 } })
@@ -152,13 +160,17 @@ RSpec.describe "a stored shape graph that becomes untraversable" do
     end
   end
 
-  # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so a graph mutated since its
-  # own declaration is re-walked there. That walk carried neither bound until it was enumerated for.
+  # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so a graph the class was
+  # handed rather than declared is re-walked there. That walk carried neither bound until it was enumerated for.
   describe "the ambient placement check" do
     def ambient_klass(member)
-      build_axn do
-        expects :request, on: :ambient_context, type: Hash, shape: { members: [member], container: Hash }
-      end
+      klass = build_axn { expects :request, on: :ambient_context, type: Hash }
+      config = Axn::Core::Contract::FieldConfig.new(
+        field: :request, reader_as: :request, on: :ambient_context,
+        validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } }
+      )
+      klass.subfield_configs = [config].freeze
+      klass
     end
 
     # Each mode asserts ITS OWN message, not merely that something raised: with the two bounds collapsed into

@@ -340,9 +340,9 @@ RSpec.describe "declaration-time property name collisions" do
       end
     end
 
-    # The bounded residue: a duck-typed member is the caller's own object and cannot be rebuilt, so a nested
-    # shape it carries stays shared. Asserted rather than left implicit, since the docs claim exactly this much.
-    it "cannot copy a nested shape carried by a duck-typed member" do
+    # A duck-typed member is snapshotted into axn's own `ShapeConfig` like any other, so the nested shape it
+    # carries is copied too — there is no member the copy stops at.
+    it "copies a nested shape carried by a duck-typed member" do
       inner = { members: [Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {})], container: Hash }
       duck = Class.new do
         define_method(:initialize) { |validations| @validations = validations }
@@ -358,12 +358,12 @@ RSpec.describe "declaration-time property name collisions" do
 
       inner[:members] << Axn::Core::Contract::ShapeConfig.new(field: :sneaked, validations: {})
 
-      expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq(%i[deep sneaked])
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq(%i[deep])
     end
 
-    # The sharp edge of that same residue — the aliased nested shape pointed back at its own member, or made to
-    # mint a fresh one on every read — is covered in `stored_shape_traversal_spec.rb`, since it is about the
-    # traversability of a graph axn holds rather than about the names it emits.
+    # What a stored graph can still be — untraversable, because a field config was assigned onto a class rather
+    # than declared — is covered in `stored_shape_traversal_spec.rb`, since it is about whether a graph axn holds
+    # can be walked rather than about the names it emits.
 
     # The same aliasing existed in the other option containers axn stores.
     # No tolerance flag on purpose: `optional:`/`allow_nil:`/`allow_blank:` push tolerance into each validator,

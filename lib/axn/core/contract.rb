@@ -52,10 +52,9 @@ module Axn
       # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
       # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
       # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes` field-level
-      # check, `ShapeConfig`'s own construction, the declaration walk over every stored member
-      # (`_check_member_value_grammar!`) and `ShapeValidator`'s runtime read hold members and fields to one
-      # grammar — a member built via the block form, via a raw `shape:` kwarg, or by the caller's own class is
-      # validated identically.
+      # check, `ShapeConfig`'s own construction and the declaration walk that reads every member's value on its
+      # way into the snapshot (`_snapshot_member_attributes!`) hold members and fields to one grammar — a member
+      # built via the block form, via a raw `shape:` kwarg, or by the caller's own class is validated identically.
       def self.validate_user_facing!(user_facing)
         return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
                   Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
@@ -81,9 +80,9 @@ module Axn
       # (`instance_exec(&sensitive)`); a non-Proc callable would be truthiness-tested, i.e. always sensitive.
       #
       # Enforced in `FieldConfig`'s constructor, which every field, subfield and ambient subfield is built by, and
-      # in the DECLARATION WALK for every shape member, whatever its class (see `_check_member_value_grammar!`).
-      # `ShapeConfig`'s constructor checks it too, as an earlier error rather than the gate — a member reaches a
-      # stored contract by two routes that never run it.
+      # in the DECLARATION WALK for every shape member, whatever its class — the walk reads the value once, on its
+      # way into the snapshot, so the check and the stored value are the same read
+      # (`_snapshot_member_attributes!`). `ShapeConfig`'s constructor checks it too, for the block form.
       def self.validate_sensitive!(sensitive)
         case sensitive
         when true, false, nil, ::Symbol, ::Proc then return
@@ -109,11 +108,10 @@ module Axn
       # is the offender's own code running while its error is built.
       #
       # Enforced in the DECLARATION WALK, unconditionally, for every member the class will store — the one point a
-      # member of any class passes through. `ShapeConfig`'s constructor enforces it too, and normalizes a String
-      # to its Symbol so a ShapeConfig built there carries the value the schema keys by; that is an earlier error
-      # and a canonical spelling, not the gate (see `_check_member_value_grammar!` for the two routes that skip
-      # it). A stored member may therefore carry a String name — every consumer keys it by `to_sym`, exactly as
-      # `Schema#member_properties` does.
+      # member of any class passes through, and the point before the name is converted. Every STORED member is a
+      # `ShapeConfig`, whose constructor holds the same rule and normalizes a String to its Symbol, so a stored
+      # name is always the Symbol the schema keys by; that conversion is what keeps parallel `to_s`/`to_sym`
+      # readings of an unnormalized name from being two questions that can disagree.
       def self.validate_shape_member_name!(name)
         case name
         when ::String, ::Symbol then return
@@ -183,12 +181,11 @@ module Axn
       ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
         def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
           # Validate at construction so a member's grammar holds however the ShapeConfig is built — the block
-          # form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies pre-built ShapeConfigs, which
-          # never route through the block path. An EARLY error, deliberately not the gate: `Data#with` re-runs
-          # this on Ruby 3.3+ and skips it on 3.2, and a member of some other class never runs it at all, so what
-          # holds every STORED member to these rules is the declaration walk
-          # (`_check_member_value_grammar!`/`validate_shape_member_name!`). Failing here as well is worth it for
-          # the message the author gets at the point of construction.
+          # form (via `_build_shape_member`), a raw `shape:` kwarg supplying pre-built ShapeConfigs, and the
+          # declaration walk's own snapshot of a member of any other class. The walk still reads and checks each
+          # value itself, ahead of this: that keeps the error in ITS order (a member carrying both a bad
+          # `sensitive:` and an untraversable nested shape is reported as the value defect), and the read it makes
+          # is the one it stores. Here the check is the first thing the block form meets.
           Contract.validate_shape_member_name!(field)
           Contract.validate_user_facing!(user_facing)
           Contract.validate_sensitive!(sensitive)
@@ -352,7 +349,10 @@ module Axn
         # static shape paths, and — per shape — which members a mask has to descend into.
         #
         # All of it is a pure function of the class, because a stored shape graph is a declaration-time
-        # SNAPSHOT (the declaration walk copies every node it can rebuild). Re-deriving it per logged call
+        # SNAPSHOT — every node a Hash axn built, every member a `ShapeConfig` axn constructed from values read
+        # once (`_snapshot_member_attributes!`). That is what makes an identity-keyed table sound at all: a
+        # retained member would have left `sensitive:` free to change with nothing the key could see, so the
+        # first read of a contract decided it and a later flip changed nothing. Re-deriving it per logged call
         # instead made the cost of redaction scale with the size of that graph, and worst for the contracts
         # that use no `sensitive:` at all: concluding "there is nothing to redact" is exactly what requires
         # visiting every member, so a 24,000-member shape with no `sensitive:` anywhere cost more per logged
@@ -432,12 +432,13 @@ module Axn
           # Through the shared seam: a member list that hides itself from `flat_map` would drop a
           # `sensitive:` member from the redaction set, which leaks rather than merely disagreeing.
           shape = Internal::ShapeGraph.shape_in(config.validations)
-          # Bounded BOTH ways, because a STORED graph can be untraversable even though no declared one is: a
-          # member axn cannot rebuild is the caller's own object, so the nested shape it carries can be pointed
-          # back at itself (which `CycleGuard` sees) or made to mint a fresh one on every read (which nothing
-          # sees but depth). This runs while a log line or an exception report is being built — once per
-          # contract, or per logged call for a `sensitive:` that resolves against the action — and the
-          # alternative is SystemStackError from a log line, a side channel taking down the call it observes.
+          # Bounded BOTH ways, because the configs this walks need not have been DECLARED: the declaration walk
+          # rejects an untraversable graph and snapshots what it accepts, but `internal_field_configs` and friends
+          # are writable, so a config assigned onto a class carries whatever shape its author built — pointed back
+          # at itself (which `CycleGuard` sees) or minting a fresh nested shape on every read (which nothing sees
+          # but depth). This runs while a log line or an exception report is being built — once per contract, or
+          # per logged call for a `sensitive:` that resolves against the action — and the alternative is
+          # SystemStackError from a log line, a side channel taking down the call it observes.
           #
           # Nothing is lost by stopping at a cycle: it re-reaches members an enclosing frame is already
           # collecting. Past the depth bound there IS no honest answer, and the wholesale mask does the work —
@@ -742,9 +743,8 @@ module Axn
         # Truthy-based (not key-presence): a pre-built member exposes only its resolved `#user_facing`
         # value, whose `false` default is indistinguishable from unset — only a truthy value is a real
         # opt-in (the block form, seeing the literal opts, still rejects an explicit `user_facing: false`).
-        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in;
-        # a member that DOES define it cannot deny the reader to escape the check (see
-        # Internal::ShapeGraph). A cyclic graph is impossible here — every declaration path runs
+        # Walks the SNAPSHOT, so what it reads is what the class will hold and nothing here re-runs a
+        # caller's reader. A cyclic graph is impossible for the same reason — every declaration path runs
         # `_validate_and_snapshot_shape!`, which rejects one, before reaching this walk.
         # The name is read BEFORE the violation is detected, so the message is built from a name already in
         # hand rather than by dispatching the reader again once a failure is being reported.
@@ -947,51 +947,61 @@ module Axn
           child = walk.with(depth: walk.depth + 1)
           paths = 0
           copied = named.map do |member, name|
-            # Charged BEFORE this member is copied, and before its nested shape is walked, so a graph that
+            # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
             # multiplies out is rejected while the work done on it is still bounded by the allowance.
             _spend_paths!(allowance, 1)
             paths += 1
-            # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the copy of
-            # this member. A second read is a second answer the caller can give. `metadata` is read only for a
-            # member that can be rebuilt: a duck-typed member is stored as the caller's own object, so reading
-            # it would run a reader nothing then consumes.
+            # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
+            # of this member. A second read is a second answer the caller can give.
             validations = _symbol_keyed_member_validations(member, name)
             _raise_member_without_validations!(member, name) if nil.equal?(validations)
-            rebuildable = Internal::ShapeGraph.rebuildable?(member)
-            metadata = rebuildable ? _symbol_keyed_member_metadata(member, name) : nil
-            _check_member_value_grammar!(member)
-            nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
-            next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
-
-            inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
-            paths += inner.paths
-            Internal::ShapeGraph.snapshot_member(member, validations, metadata, nested: inner.copy)
+            # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
+            # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
+            attributes = _snapshot_member_attributes!(member, name, validations)
+            nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+            unless nil.equal?(nested)
+              inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
+              paths += inner.paths
+              validations[:shape] = inner.copy
+            end
+            ShapeConfig.new(**attributes)
           end
 
           WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:)
         end
 
-        # The `sensitive:` and `user_facing:` grammars, held over EVERY member about to be stored — a
-        # `ShapeConfig`, any other `Data`, a duck-typed object alike. THIS is the gate, because it is the one
-        # point every stored member passes through however it was built; `ShapeConfig`'s constructor is an
-        # earlier, friendlier error on the same rules, not a choke point. Two routes reach a stored contract
-        # without running it: a member of some OTHER class (any `Data` is rebuildable, so being rebuildable is
-        # not evidence a ShapeConfig constructor ever ran), and — on Ruby 3.2, where `Data#with` does not call a
-        # custom `initialize` — a `ShapeConfig` copy. Both landed a `sensitive: "yes"` in a stored contract,
-        # where it silently dropped the member from the redaction set and logged the value in the clear.
+        # Everything a stored member carries, read off the caller's object exactly ONCE and held to its grammar
+        # on the way — so what the class stores is axn's own `ShapeConfig` and the caller keeps nothing live in a
+        # declared contract. Read through `ShapeGraph`, so a member that denies a reader it defines is still held
+        # to the rules, and the value snapshotted is the one that reader gives.
         #
-        # Read through `ShapeGraph`, so a member that denies the reader is still held to it, and read at
-        # declaration rather than left to the runtime, on the same terms as its `field`: the failure mode for
-        # `sensitive:` is a LEAK with no signal, and for `user_facing:` a first call that surfaces a bogus value
-        # as a literal message.
+        # Snapshotting rather than storing the object is what makes "the contract is what you declared" true for
+        # a member too: a retained member's `sensitive:` could be flipped after the class was declared (changing
+        # what redaction masked, or not, depending only on whether anything had asked yet), its canonicalized
+        # `validations` were computed and then thrown away (so a String-keyed `type:` bag validated nothing and
+        # reflected nothing), its option containers stayed aliased where a field's were detached, and the nested
+        # shape it carried could gain members or be pointed at itself afterwards.
         #
-        # A falsey `user_facing:` is "not opted in" and has no grammar to meet — `nil` is what an absent reader
-        # answers — matching `ShapeValidator`'s runtime read, which still guards the one thing no declaration
-        # walk can: members a duck-typed member's aliased nested shape gains after the class is declared.
-        def _check_member_value_grammar!(member)
-          Contract.validate_sensitive!(Internal::ShapeGraph.read(member, :sensitive))
+        # The grammars for `sensitive:`/`user_facing:` are checked HERE, ahead of `ShapeConfig`'s constructor,
+        # only so the error keeps its place in this walk's order; the constructor enforces the same rules for the
+        # block form, where it is the first thing to see them. A falsey `user_facing:` is "not opted in" and has
+        # no grammar to meet — `nil` is what an absent reader answers.
+        #
+        # `description` is read directly rather than taken from `metadata`, because that is where reflection
+        # reads it from (`Schema.declared_attribute`) and a duck-typed member may define the reader without any
+        # metadata at all; folding it into the metadata Hash is what `ShapeConfig#description` then answers with.
+        def _snapshot_member_attributes!(member, name, validations)
+          sensitive = Internal::ShapeGraph.read(member, :sensitive)
+          Contract.validate_sensitive!(sensitive)
           user_facing = Internal::ShapeGraph.read(member, :user_facing)
           Contract.validate_user_facing!(user_facing) if user_facing
+
+          metadata = _symbol_keyed_member_metadata(member, name) || {}
+          description = Internal::ShapeGraph.read(member, :description)
+          metadata[:description] = description unless nil.equal?(description)
+
+          { field: name, validations:, metadata:, sensitive: sensitive || false, user_facing: user_facing || false,
+            method_call: Internal::ShapeGraph.read(member, :method_call) || false }
         end
 
         # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
@@ -1023,9 +1033,9 @@ module Axn
         # A member's declared validations, symbol-canonical at BOTH levels its grammar has: the validator names,
         # and each validator's own option bag (see _symbolize_option_bags!, which does the same for a field).
         # A raw `shape:` member bypasses `expects`' option handling entirely, so this is the one place its
-        # grammar gets canonicalized — and it must, because the copy taken here turns an indifferent-access
-        # Hash into a plain one: a member declared with String keys would validate nothing at all, silently,
-        # from the moment the contract was copied.
+        # grammar gets canonicalized — and it must, because what the snapshot stores is a plain Hash: a member
+        # declared with String keys otherwise validated nothing at all, silently, and reflected an empty
+        # constraint beside it.
         def _symbol_keyed_member_validations(member, name)
           validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
           return nil if nil.equal?(validations)
@@ -1033,8 +1043,8 @@ module Axn
           # A Hash axn owns, ALWAYS — canonicalized and copied in one pass. "Needs no key change" and "needs no
           # copy" are different questions, and answering only the first left a member's options aliased to the
           # objects the caller still held while a top-level field's were detached: mutating an `inclusion:` list
-          # afterwards widened a declared member's enum. The copy is also what `snapshot_member` stores, so it is
-          # one allocation rather than two.
+          # afterwards widened a declared member's enum. The copy is also what the snapshot stores, so it is one
+          # allocation rather than two.
           copy = {}
           Internal::ShapeGraph.each_entry(validations) do |key, value|
             canonical = case key
@@ -1064,8 +1074,8 @@ module Axn
           return nil if nil.equal?(metadata)
 
           # Canonicalized WHILE being copied, in one pass: metadata is copied either way (what is stored IS the
-          # contract — see snapshot_member), so asking about its keys separately would be a second pass over
-          # every member for nothing.
+          # contract — see `_snapshot_member_attributes!`), so asking about its keys separately would be a second
+          # pass over every member for nothing.
           copy = {}
           Internal::ShapeGraph.each_entry(metadata) do |key, value|
             canonical = case key
@@ -1209,12 +1219,11 @@ module Axn
           _contract_redaction.member_names_for(config) { _derive_sensitive_member_names(config, nil) }
         end
 
-        # Bounded both ways, exactly as `_flatten_sensitive_candidates` is: a STORED graph can be
-        # untraversable even though no declared one is, because a member axn cannot rebuild is the caller's
-        # own object and the nested shape it carries can later be pointed at itself (which `CycleGuard` sees)
-        # or made to mint a fresh one on every read (which nothing but depth sees). `inspect` is reachable
-        # directly, not only from a side channel, so an unbounded walk here raises SystemStackError at the
-        # caller rather than degrading a log line.
+        # Bounded both ways, exactly as `_flatten_sensitive_candidates` is, and for its reason: a config assigned
+        # onto a class rather than declared carries a shape no walk has traversed, which can be pointed at itself
+        # (which `CycleGuard` sees) or mint a fresh one on every read (which nothing but depth sees). `inspect` is
+        # reachable directly, not only from a side channel, so an unbounded walk here raises SystemStackError at
+        # the caller rather than degrading a log line.
         #
         # A cycle re-reaches members an enclosing frame is already collecting, so stopping loses nothing.
         # Past the depth bound nothing can enumerate a graph that mints its members on demand — and the
@@ -1244,7 +1253,8 @@ module Axn
         # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
         # already reach; narrowing those is a separate, breaking question.
         private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
-                :_symbol_keyed_member_metadata, :_member_owner_label, :_describe_shape_member,
+                :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
+                :_member_owner_label, :_describe_shape_member,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
                 :_raise_duplicate_member!, :_raise_nameless_member!,

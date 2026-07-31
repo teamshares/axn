@@ -119,12 +119,13 @@ module Axn
         # it defines and slip past the checks this walk feeds.
         #
         # Bounded both ways, and not because a DECLARED graph can be untraversable — `_validate_and_snapshot_shape!`
-        # rejects that ahead of this walk. This walk re-walks graphs declared EARLIER: declaring a second ambient
-        # subfield rebuilds the tree over every ambient config, so a member axn could not rebuild (the caller's
-        # own object) may carry a nested shape that has since been pointed at itself, or made to mint a fresh one
-        # on every read. Either overflowed the stack while the class was being defined, which no rescue in the
-        # framework can settle. Same two bounds, same two messages, as the projection walk that re-walks for its
-        # own reasons (Reflection::PropertyNames#count_shape_members!).
+        # rejects that ahead of this walk, and snapshots what it accepts. This walk re-walks whatever the class
+        # HOLDS: declaring a second ambient subfield rebuilds the tree over every ambient config, and a config
+        # assigned onto the class rather than declared (`subfield_configs=`) carries a shape no walk has traversed
+        # — one that may contain itself, or mint a fresh nested shape on every read. Either overflows the stack
+        # while the class is being defined, which no rescue in the framework can settle. Same two bounds, same two
+        # messages, as the projection walk that re-walks for its own reasons
+        # (Reflection::PropertyNames#count_shape_members!).
         def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           return if nil.equal?(hash)

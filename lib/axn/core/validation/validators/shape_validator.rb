@@ -13,7 +13,8 @@ module Axn
     #
     # options[:members] is an array of ShapeConfig-like objects (responding to #field and
     # #validations, and optionally #method_call — a member that doesn't implement it defaults to no
-    # method dispatch); options[:container] is the declared structured type (Array, Hash, or a class).
+    # method dispatch; a shape declared through `expects`/`exposes` always supplies axn's own
+    # `ShapeConfig`); options[:container] is the declared structured type (Array, Hash, or a class).
     # For an Array container each element is validated with its index in the message; for any other
     # container the single value's members are validated directly. A value that doesn't match the
     # declared container is left to TypeValidator (we don't try to extract members from it). Nesting
@@ -120,27 +121,21 @@ module Axn
       # `each` would otherwise validate a different set of members than the schema advertises.
       def members = Axn::Internal::ShapeGraph.members(options)
 
-      # A member's `method_call:` opt-in, honored when present. The documented member contract is
-      # duck-typed (`#field` + `#validations`) — a raw `shape:` supplied with a member object that
-      # doesn't implement `#method_call` is treated as not opted in (the safe default: no dispatch),
-      # rather than raising. Declared shapes always yield ShapeConfig, which carries the reader.
+      # A member's `method_call:` opt-in, honored when present. A member reached through a declared `shape:` is
+      # always axn's own `ShapeConfig` and carries the reader; the tolerance is for one supplied to `validates`
+      # directly, which is treated as not opted in (the safe default: no dispatch) rather than raising.
       def member_method_call?(member) = member.respond_to?(:method_call) && member.method_call
 
-      # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:`/
-      # `sensitive:` — a raw `shape:` member object that doesn't implement `#user_facing` defaults to
-      # not opted in (dev-facing). Every DECLARED member's value was grammar-checked at declaration
-      # (`Contract#_check_member_value_grammar!`, over members of any class), so this re-check covers
-      # the one route that walk cannot: a duck-typed member is stored as the caller's own object, so
-      # the nested shape it carries can gain members after the class is declared. Checked through the
-      # same single-sourced grammar — lazily, only on the failure path where this is read — so a
-      # malformed value (`123`) fails loudly rather than surfacing as a literal user-facing message.
-      # Falsy (nil/false) is "not opted in", left as-is.
+      # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:` — a member
+      # supplied to `validates` directly, rather than through a declared `shape:`, may not implement
+      # `#user_facing`, and defaults to not opted in (dev-facing). No grammar re-check here: every stored
+      # member is a `ShapeConfig` axn constructed at declaration from a value it grammar-checked
+      # (`Contract#_snapshot_member_attributes!`), so there is no longer a route by which an unchecked value
+      # reaches this read. Falsy (nil/false) is "not opted in", left as-is.
       def member_user_facing(member)
         return false unless member.respond_to?(:user_facing)
 
-        value = member.user_facing
-        Axn::Core::Contract.validate_user_facing!(value) if value
-        value
+        member.user_facing
       end
 
       # A value can yield a named member only if it responds to the reader (objects/Data) or

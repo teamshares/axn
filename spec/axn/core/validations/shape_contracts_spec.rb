@@ -521,12 +521,100 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # Everything a stored member carries is read off the caller's object ONCE, at declaration, into axn's own
+    # `ShapeConfig` (`Contract#_snapshot_member_attributes!`) — so a duck-typed member is not stored as the
+    # caller's object at all, and the two layers that read a member cannot see different things.
+    describe "the member snapshot" do
+      def declared_with_member(member)
+        build_axn do
+          expects :payload, type: Hash, shape: { members: [member], container: Hash }
+
+          define_method(:call) { nil } # define_method, not `def`: this is inside a method body
+        end
+      end
+
+      def stored_member(klass) = klass.internal_field_configs.first.validations[:shape][:members].first
+
+      it "stores axn's own ShapeConfig rather than the caller's object" do
+        member = Struct.new(:field, :validations).new(:a, {})
+        stored = stored_member(declared_with_member(member))
+
+        expect(stored).to be_a(Axn::Core::Contract::ShapeConfig)
+        expect(stored).not_to be(member)
+      end
+
+      # A member name is stored as the Symbol every consumer keys it by (`Schema#member_properties` emits
+      # `field.to_sym`), exactly as a top-level field's is — so `field "a"` and `field :a` are one member
+      # whichever route declared it.
+      it "stores a String member name as its Symbol" do
+        member = Struct.new(:field, :validations).new("a", {})
+
+        expect(stored_member(declared_with_member(member)).field).to eq(:a)
+      end
+
+      # THE reason the canonical copy must be stored: the walk canonicalized a String-keyed bag and then threw
+      # the result away with the rest of the snapshot, so the schema omitted the constraint entirely while every
+      # call raised `ArgumentError: must supply :klass` from the raw bag — two layers, two answers, neither one
+      # the declaration.
+      it "validates and reflects a String-keyed member bag as its canonical form" do
+        klass = declared_with_member(Struct.new(:field, :validations).new(:a, { "type" => { "klass" => String } }))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)).to eq("string")
+        expect(klass.call(payload: { a: "x" })).to be_ok
+        expect(klass.call(payload: { a: 1 })).not_to be_ok
+      end
+
+      it "behaves identically for the Symbol-keyed spelling" do
+        klass = declared_with_member(Struct.new(:field, :validations).new(:a, { type: { klass: String } }))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)).to eq("string")
+        expect(klass.call(payload: { a: "x" })).to be_ok
+        expect(klass.call(payload: { a: 1 })).not_to be_ok
+      end
+
+      # A member's option containers are detached on exactly the terms a field's are — which the snapshot is what
+      # makes true, since the canonical copy is what gets stored.
+      it "does not let a mutated inclusion: list widen a declared member's enum" do
+        enum = %w[a b]
+        klass = declared_with_member(Struct.new(:field, :validations).new(:s, { inclusion: { in: enum } }))
+        enum << "c"
+
+        expect(klass.call(payload: { s: "c" })).not_to be_ok
+      end
+
+      # The outbound emitter views a gated member "through" a copy of itself (`config.with(validations: …)`), which
+      # only axn's own config types answer to — so a duck-typed member carrying a per-validator gate used to raise
+      # `NoMethodError: undefined method 'with'` from `output_schema`. Snapshotting it makes the copy axn's own.
+      it "reflects an exposes member carrying a per-validator gate, which needs a config copy" do
+        member = Struct.new(:field, :validations).new(:a, { type: { klass: Integer, if: :flag } })
+        klass = build_axn do
+          exposes :payload, type: Hash, shape: { members: [member], container: Hash }
+
+          define_method(:call) { expose(payload: {}) }
+        end
+
+        expect(klass.output_schema.dig(:properties, :payload, :properties)).to eq({ a: {} })
+      end
+
+      # `#default` is not part of the member grammar — the block form rejects `default:` outright, since a member
+      # is reader-less and nothing applies one at runtime. A duck-typed member defining the reader used to have it
+      # emitted anyway, which made the schema LIE: it advertised the member as optional with a default, and the
+      # omitted call then failed presence validation.
+      it "ignores a #default reader, so the schema no longer promises a default nothing applies" do
+        klass = declared_with_member(Struct.new(:field, :validations, :default).new(:a, { presence: true }, "dflt"))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a)).to eq({})
+        expect(klass.input_schema.dig(:properties, :payload, :required)).to eq(["a"])
+        expect(klass.call(payload: {})).not_to be_ok
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
     # Reflection honors the same two-method contract declaration does: a member implementing only #field and
-    # #validations reflects, with every other attribute (#description, #default) treated as absent. Before,
-    # such a member declared cleanly and then raised NoMethodError from `input_schema`.
+    # #validations reflects, with every other attribute (#description) treated as absent. Before, such a member
+    # declared cleanly and then raised NoMethodError from `input_schema`.
     describe "duck-typed member contract (reflection)" do
       it "reflects a member implementing only #field and #validations" do
         member = Class.new do

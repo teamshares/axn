@@ -61,22 +61,18 @@ module Axn
 
       module_function
 
-      # The shape-member contract axn documents is duck-typed: `#field` and `#validations`, and nothing more
-      # (see `shape_contracts_spec.rb`'s "duck-typed member contract"). Declaration honors that — a member is
-      # accepted on those two alone — so the emission path has to as well, or a member the contract permits
-      # declares cleanly and then breaks `input_schema`. Every OTHER attribute a config may carry is optional
-      # here and read through this: today `#description` and `#default`, enumerated at each call site.
+      # An attribute a config may or may not carry, read tolerantly: `#description` and `#default`, enumerated at
+      # each call site. A `FieldConfig` answers both and a `ShapeConfig` answers `#description` only (a member is
+      # reader-less, so `default:` is rejected on one), which is what this exists for — one emission path over two
+      # config types, plus the configs a downstream caller builds itself and hands to the public `build_input`.
       #
-      # A `FieldConfig` or `ShapeConfig` always answers, so this changes nothing for a declared field or a
-      # block-form member; it only stops reflection demanding more of a raw member than declaration does.
-      # `ShapeGraph.read` is the same tolerant read the declaration guards use, so both layers agree about
-      # what a member has.
+      # `ShapeGraph.read` is the same tolerant read the declaration guards use, so both layers agree about what a
+      # config has.
       def declared_attribute(config, name) = Axn::Internal::ShapeGraph.read(config, name)
 
-      # A member's NAME, or nil when it has none. Even `#field` is read tolerantly: declaration accepts a
-      # member too minimal to name a property and simply skips it, so emission skips it on the same terms
-      # rather than raising — the two layers have to agree about which members exist, because the declaration
-      # guard is derived from what this emits.
+      # A member's NAME, or nil when it has none. Even `#field` is read tolerantly, and skipped rather than
+      # raised on: a DECLARED member always has one (the walk rejects a nameless member and stores a Symbol), so
+      # what this tolerance is for is the configs a caller builds itself and hands to the public `build_input`.
       def member_name(member)
         name = Axn::Internal::ShapeGraph.fetch(member, :field)
         Axn::Internal::ShapeGraph.missing?(name) ? nil : name

@@ -5,24 +5,26 @@ module Axn
     # Non-dispatching reads of a caller-supplied shape graph.
     #
     # A `shape:` kwarg may be handed in raw — an arbitrary object as the shape Hash, and arbitrary
-    # objects as its members — while the declaration guards over that graph and the schema reflection
-    # that consumes it are two separate walks. An object that lies about its type, or about which
-    # methods it has, can therefore make a guard skip a member reflection still emits: the guard's
-    # verdict and the rendered output disagree, which is precisely what the guard exists to prevent.
-    # So every question asked here is answered from the real class and the real method table, never
-    # from a method the graph's own objects can define.
+    # objects as its members — and axn has to decide what such a graph DECLARES before it can store
+    # anything. An object that lies about its type, or about which methods it has, would otherwise make
+    # a guard skip a member the declaration goes on to keep: the guard's verdict and the stored contract
+    # disagree, which is precisely what the guard exists to prevent. So every question asked here is
+    # answered from the real class and the real method table, never from a method the graph's own
+    # objects can define.
     #
     # What a walk genuinely REQUIRES stays the graph's own: reading `:members` off a Hash calls its
-    # `[]`, and reading a member's `field` invokes that reader. Those are the same calls reflection
-    # makes, so a CONSISTENT lie there changes what both decide rather than splitting them apart — a
-    # `[]` that hides members hides them from the guard and from the schema alike. Every read of a shape's
+    # `[]`, and reading a member's `field` invokes that reader. Those are the reads the declaration is
+    # not knowable without, so a lie there changes what axn stores rather than splitting a guard from a
+    # consumer — a `[]` that hides members declares a contract without them. Every read of a shape's
     # members in axn therefore goes through `members` below, and nothing reads them another way; a second
-    # route (an `each`-copy of the shape's real entries) would see members `[]` had hidden and hand the
-    # schema a list no guard had walked.
+    # route (an `each`-copy of the shape's real entries) would see members `[]` had hidden and store a
+    # list no guard had walked.
     #
-    # An INCONSISTENT lie — a `[]` or a reader answering differently on successive reads — still splits
-    # them, because guard and consumer are separate reads however each is written. Nothing here closes
-    # that, and nothing here claims to: it is a caller giving two answers, not a guard missing one.
+    # An INCONSISTENT lie — a `[]` or a reader answering differently on successive reads — does not split
+    # them either, because the declaration walk reads each of them exactly ONCE and stores the answer
+    # (`Contract#_check_and_copy_shape_members!` snapshots every member into a `ShapeConfig` of axn's
+    # own). What a caller's object can decide is what the contract SAYS, at the one moment it is asked;
+    # it cannot say one thing to a guard and another to a consumer, because no consumer asks it again.
     module ShapeGraph
       # `#method` is itself overridable, so the lookup below goes through Object's implementation: an
       # object whose own `#method` raises would otherwise replace a declaration verdict with its
@@ -91,18 +93,25 @@ module Axn
       # disagreeing about what is declarable.
       MAX_NESTING = 64
 
-      # The two ways a STORED shape graph can be untraversable, and the sentence for each. They live here rather
-      # than with either walk because more than one layer RE-WALKS an already-declared graph — the projection's
-      # size bound, and the ambient placement check when a later subfield is declared — and a graph that was
-      # traversable at declaration can be either of these by then. One text, so two layers cannot describe the
-      # same defect two ways. Raising is left to the caller: this module answers questions, it does not decide
-      # what a declaration error says.
+      # The two ways a shape graph a LATER walk reaches can be untraversable, and the sentence for each. They live
+      # here rather than with either walk because more than one layer re-walks a graph the class already holds —
+      # the projection's size bound, and the ambient placement check when a later subfield is declared. One text,
+      # so two layers cannot describe the same defect two ways. Raising is left to the caller: this module answers
+      # questions, it does not decide what a declaration error says.
+      #
+      # A graph the declaration walk stored can be neither: it is a snapshot of axn's own Hashes and `ShapeConfig`s,
+      # built bottom-up from a graph that walk already traversed. So a re-walk can only meet one of these on a
+      # graph that never passed it — a field config array assigned onto the class directly, bypassing `expects`
+      # entirely. The bounds stay because the alternative outcome is `SystemStackError`, which is outside
+      # `StandardError` and escapes the rescue meant to settle a result: from a projection it reaches the caller,
+      # and from a log line it takes down the call it was only observing.
       #
       # The member is named by CLASS, never by reading its `field`: that would run the caller's code while the
-      # failure is being reported, and the class identifies it anyway, since only a member axn could not rebuild
-      # can reach either state.
-      AFTER_DECLARATION = "A member axn cannot rebuild — anything that is not a `Data` — is stored as your own " \
-                          "object, so the nested shape it carries can change after the class is declared."
+      # failure is being reported, and a member on this path is by definition one axn never snapshotted, so its
+      # readers are still arbitrary code.
+      AFTER_DECLARATION = "A `shape:` axn snapshotted at declaration can be neither, so this graph reached the " \
+                          "class without being declared through `expects`/`exposes` — a field config assigned " \
+                          "directly carries the shape exactly as you built it."
       private_constant :AFTER_DECLARATION
 
       def self.describe_via(member)
@@ -226,50 +235,6 @@ module Axn
       # they still hold, and a shape shared between two declarations would carry the first one's container into
       # the second.
       def self.detach_node(hash) = snapshot_node(hash, hash[:members])
-
-      # Only a member that can be REBUILT is copied. Rebuildable means a `Data` — `ShapeConfig` is one — tested
-      # with `case`/`when`, which consults the real class, and rebuilt through `Data#with`. Probing for a `with`
-      # METHOD is not the same question and gets a false positive: ActiveSupport defines `Object#with`, which
-      # takes the same keywords but yields a block, so every member would look rebuildable and none would be.
-      # `Data#with` is bound rather than dispatched, so a subclass redefining it cannot decide what the stored
-      # contract becomes.
-      #
-      # What `with` does NOT do is validate: it runs a custom `initialize` on Ruby 3.3+ and skips it on 3.2, and
-      # the member may be a `Data` of the caller's own that has no such rules at all. So rebuildability says
-      # nothing about a member's values having been checked — every rule over them is enforced by the declaration
-      # walk that calls this (`Contract#_check_member_value_grammar!`), for rebuildable and duck-typed alike.
-      #
-      # A duck-typed member is the caller's own object and cannot be rebuilt — so it, and the nested shape it
-      # carries, stay aliased. That residue is bounded and documented rather than papered over.
-      DATA_WITH = ::Data.instance_method(:with)
-      private_constant :DATA_WITH
-
-      # Whether a member can be rebuilt at all — asked separately because a member that cannot is stored as the
-      # caller's own object, so nothing should read (and run) the readers only a rebuild would consume.
-      def self.rebuildable?(member)
-        case member
-        when ::Data then true
-        else false
-        end
-      end
-
-      # `validations` and `metadata` are passed in ALREADY READ and already canonicalized (see
-      # `Contract#_symbol_keyed_member_validations`), and `nested` is the copy the walk made of the shape inside
-      # them: all three are things the walk needed anyway, and reading them here a second time would ask the
-      # caller's object questions it has already answered — which is the same divergence the single walk exists
-      # to close. `nested` is omitted when this member carries no nested shape, so a member without one never
-      # gains a `:shape` key it did not declare.
-      def self.snapshot_member(member, validations, metadata, nested: NOT_DEFINED)
-        return member unless rebuildable?(member)
-        return member if nil.equal?(validations)
-
-        # `validations` is already a Hash axn owns, canonicalized and detached by the walk, so it is written into
-        # rather than copied again.
-        validations[:shape] = nested unless missing?(nested)
-        attributes = { validations: }
-        attributes[:metadata] = metadata unless nil.equal?(metadata)
-        DATA_WITH.bind_call(member, **attributes)
-      end
 
       # The shape carried by an already-read validations Hash. For axn's OWN configs, whose `validations`
       # is the framework's own Hash and so cannot lie — only the shape it holds came from a caller, and

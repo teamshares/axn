@@ -236,10 +236,11 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
 
     # A raw member reaches redaction without passing through `expects`, so the `sensitive:` grammar is enforced
-    # where every member meets it whatever built it: the declaration walk. `ShapeConfig`'s constructor is an
-    # early error on top of that, not the gate — two routes reach a stored contract without running it (a member
-    # of some other class, and a copy on a Ruby whose `Data#with` skips a custom `initialize`). Without the walk,
-    # a value that is not a resolution rule takes the member out of the redaction set silently.
+    # where every member meets it whatever built it: the declaration walk, which reads the value once on its way
+    # into the snapshot. `ShapeConfig`'s constructor holds the same rule for the block form, where it is the first
+    # thing to see one. Without the walk's check, a value that is not a resolution rule reached a stored contract
+    # from a member of some other class — or, on a Ruby whose `Data#with` skips a custom `initialize`, from a
+    # `ShapeConfig` copy — and took the member out of the redaction set silently.
     describe "the sensitive: grammar on a raw member" do
       let(:grammar_error) { /sensitive: must be true, false, a Symbol naming an action method, or a Proc/ }
 
@@ -261,9 +262,8 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         expect { declared_with(original.with(sensitive: "yes")) }.to raise_error(ArgumentError, grammar_error)
       end
 
-      # Being a `Data` is not being a `ShapeConfig`: axn can rebuild ANY `Data`, so a member of the caller's own
-      # `Data` class is stored (as a rebuilt copy) having never run a ShapeConfig constructor at all — on every
-      # Ruby, not just the one whose `with` skips it.
+      # Being a `Data` is not being a `ShapeConfig`: a member of the caller's own `Data` class reaches the walk
+      # having run no ShapeConfig constructor at all — on every Ruby, not just the one whose `with` skips it.
       it "rejects it on a member of the caller's own Data class, at declaration" do
         member = Data.define(:field, :validations, :sensitive).new(field: :ssn, validations: {}, sensitive: "yes")
 
@@ -321,6 +321,68 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(instance.send(:inputs_for_logging)[:payload]).to eq({ ssn: "[FILTERED]" })
 
       inspected = action.call(payload: { ssn: "111-11-1111" }).__action__.internal_context.inspect
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).not_to include("111-11-1111")
+    end
+
+    # A member's `sensitive:` is read ONCE, at declaration, and the value is stored in axn's own `ShapeConfig`.
+    # Until it was, the redaction table keyed on the identity of the three config arrays — sound for everything
+    # axn owns, blind to state inside a member the caller still held — so flipping the flag afterwards changed
+    # the answer or did not, depending on nothing but whether anything had read the contract yet. Both
+    # directions, both orders, and the DECLARED behaviour is what persists.
+    describe "a member's sensitive: flipped after the class is declared" do
+      def duck_member(sensitive) = Struct.new(:field, :validations, :sensitive).new(:ssn, {}, sensitive)
+
+      def declared_with(member)
+        build_axn do
+          expects :payload, type: Hash, shape: { members: [member], container: Hash }
+
+          define_method(:call) { nil } # define_method, not `def`: this is inside a method body
+        end
+      end
+
+      def logged_ssn(action) = action.send(:new, payload: { ssn: "111-11-1111" }).send(:inputs_for_logging).dig(:payload, :ssn)
+
+      [false, true].each do |read_first|
+        context "with the contract #{read_first ? 'already read' : 'not yet read'}" do
+          it "leaves a member declared sensitive: false in the clear when it is flipped on" do
+            member = duck_member(false)
+            action = declared_with(member)
+            action.sensitive_fields if read_first
+            member.sensitive = true
+
+            expect(action.sensitive_fields).to eq([])
+            expect(logged_ssn(action)).to eq("111-11-1111")
+          end
+
+          it "keeps a member declared sensitive: true redacted when it is flipped off" do
+            member = duck_member(true)
+            action = declared_with(member)
+            action.sensitive_fields if read_first
+            member.sensitive = false
+
+            expect(action.sensitive_fields).to eq([:ssn])
+            expect(logged_ssn(action)).to eq("[FILTERED]")
+          end
+        end
+      end
+    end
+
+    # A duck-typed member's `sensitive:` is snapshotted at every depth, not only at the top of a shape — the
+    # walk recurses into the nested `shape:` it carries and rebuilds that too.
+    it "redacts a duck-typed sensitive member nested inside another shape, in logs and inspect" do
+      inner = Struct.new(:field, :validations, :sensitive).new(:ssn, {}, true)
+      outer = Struct.new(:field, :validations).new(:person, { type: { klass: Hash }, shape: { members: [inner], container: Hash } })
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [outer], container: Hash }
+
+        def call; end
+      end
+
+      instance = action.send(:new, payload: { person: { ssn: "111-11-1111" } })
+      expect(instance.send(:inputs_for_logging).dig(:payload, :person)).to eq({ ssn: "[FILTERED]" })
+
+      inspected = action.call(payload: { person: { ssn: "111-11-1111" } }).__action__.internal_context.inspect
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("111-11-1111")
     end

@@ -353,11 +353,10 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
-    it "fails loudly on a malformed user_facing added to a raw member's shape AFTER declaration" do
-      # The one route the declaration walk cannot cover, and the reason ShapeValidator still checks: a duck-typed
-      # member is stored as the caller's own object, so the nested shape it carries can gain members after the
-      # class is declared (Internal::ShapeGraph's documented residue). A bogus value raises there rather than
-      # surfacing "123" to the caller as a user-facing message.
+    it "never sees a malformed user_facing added to a raw member's nested shape AFTER declaration" do
+      # There is no such route left, which is why `ShapeValidator` no longer re-checks the grammar at runtime:
+      # the declaration walk snapshots every member — a duck-typed one included — into a `ShapeConfig` of axn's
+      # own, nested shape and all, so a member appended to the caller's Hash afterwards is not in the contract.
       nested = { members: [], container: Hash }
       outer = Struct.new(:field, :validations).new(:line, { type: { klass: Hash }, shape: nested })
       action = build_axn do
@@ -366,9 +365,9 @@ RSpec.describe "expects ..., user_facing:" do
       end
       nested[:members] << Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123)
 
-      result = action.call(order: { line: { status: 1 } }) # member fails → user_facing read → grammar check raises
-      expect(result.exception).to be_a(ArgumentError)
-      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc/)
+      # The declared contract is "line is a Hash", exactly as it was when the class was defined — so the value
+      # the appended member would have rejected is accepted, and no bogus rule is ever resolved.
+      expect(action.call(order: { line: { status: 1 } })).to be_ok
     end
 
     it "rejects user_facing: on an exposes shape member (outbound failures are always dev-facing)" do

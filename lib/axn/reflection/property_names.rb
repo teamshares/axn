@@ -312,11 +312,12 @@ module Axn
 
       def property_source(sources, path, name) = sources.find { |source| source.path == [*path, name] }
 
-      # Resolving provenance re-traverses the caller-owned shape graph — its `each`, its members' readers — to
-      # ENRICH a message for a verdict that is already established. So it must not be able to replace that
-      # verdict: a graph whose second walk raises (an Array subclass counting `each` calls, a reader that
-      # answers once) would otherwise substitute its own exception for the collision, which is precisely the
-      # escape these rules exist to prevent — and outside StandardError it escapes every rescue above.
+      # Resolving provenance re-traverses the shape graph the class holds to ENRICH a message for a verdict that is
+      # already established. For a DECLARED contract that graph is axn's own snapshot, so nothing of the caller's
+      # runs here at all; for one assigned onto a class directly it is still whatever its author built. Either way
+      # this must not be able to replace the verdict — a walk that raises would otherwise substitute its own
+      # exception for the collision, which is precisely the escape these rules exist to prevent, and outside
+      # StandardError it escapes every rescue above.
       #
       # Attribution is therefore best-effort by construction: anything it raises is dropped and the message
       # degrades to naming the property and the spellings, which is the part derived from the emitted schema and
@@ -566,10 +567,10 @@ module Axn
       # projection — `validate_and_build` runs it ahead of every build, inbound and outbound — so bounding the
       # graph here is what keeps a projection bounded at all.
       #
-      # Bounded BOTH ways, because a stored graph can be untraversable even though no declared one is: a member
-      # axn cannot rebuild (anything that is not a `Data`) is stored as the caller's own object, so the nested
-      # shape it carries is theirs to change after the class is declared. The two ways need different answers,
-      # and this walk needs both — exactly as the declaration walk does.
+      # Bounded BOTH ways, because the configs it walks need not have been DECLARED: the declaration walk rejects
+      # an untraversable graph and snapshots what it accepts, but a config assigned onto a class directly
+      # (`internal_field_configs=`) carries whatever shape its author built, unwalked. The two ways need different
+      # answers, and this walk needs both — exactly as the declaration walk does.
       #
       # A graph that CONTAINS itself repeats an object, which `CycleGuard` sees by identity. A graph that
       # GENERATES itself — a member whose `validations` mints a fresh nested shape on every read — repeats
