@@ -5,7 +5,10 @@ module Axn
     class MountingStrategies
       module Step
         include Base
-        extend self # rubocop:disable Style/ModuleFunction -- module_function breaks inheritance
+        # `extend self` rather than `module_function`: the latter COPIES each method onto the singleton
+        # class, so `strategy_specific_kwargs`'s `super` would no longer find `Base`'s. (Style/ModuleFunction
+        # accepts `extend self` in a module that declares private methods, which this one now does.)
+        extend self
 
         def default_inherit_mode = :none
 
@@ -94,6 +97,10 @@ module Axn
             raise ArgumentError, format(CALL_COLLISION_MESSAGE, self.name || "Action")
           end
         end
+
+        # Both helpers below are reached only from `mount_to_target` above; `extend self` would otherwise
+        # publish them as public singleton methods of this strategy module.
+        private
 
         # Define the generated orchestrator. Defined before the marker is set (and before the guard is
         # installed on a first mount), so generating it never trips the collision guard.

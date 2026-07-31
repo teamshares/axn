@@ -77,6 +77,12 @@ module Axn
           deserialize(value)
         end
 
+        # Everything below is reached only with an implicit receiver from the five entry points above,
+        # so it is private: an `_`-prefixed name says "internal, not yours to call", and a public
+        # singleton method says the opposite. `_unserializable_hint` is the one exception and is
+        # re-published beside its definition.
+        private
+
         def _active_job_available? = !!defined?(::ActiveJob::Arguments)
 
         # Fallback-format marker: GlobalIdSerialization tags converted args with the
@@ -174,6 +180,10 @@ module Axn
             GENERIC_HINT
           end
         end
+
+        # Public: `Axn::Async::UnserializableArgument#message` builds the hint into its own message by
+        # calling this on the module (lib/axn/exceptions.rb), so it is part of this module's surface.
+        public :_unserializable_hint
 
         def _io_like?(value) = value.respond_to?(:read)
 

@@ -210,6 +210,12 @@ module Axn
     adapter
   end
 
+  # None of the three is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
+  # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`, and
+  # `_reported_message` from `_named_invalid_tool_contract`. Private so the top-level module's public
+  # surface is the API it means to publish (PRO-3005 re-homes all three under `Axn::Tools`).
+  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract, :_reported_message
+
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run
     # setup and reset the inheritance-aware class_attributes that hold field configs,

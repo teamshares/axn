@@ -31,6 +31,8 @@ module Axn
       def _axn_core_owned?(mod)
         !!mod.name&.start_with?("Axn::Core::")
       end
+      # `module_function` already made the instance copy private; this makes the module-level one match.
+      private_class_method :_axn_core_owned?
     end
   end
 end

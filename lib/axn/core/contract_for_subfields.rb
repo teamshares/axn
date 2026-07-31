@@ -431,6 +431,19 @@ module Axn
         [candidates.first].compact
       end
 
+      # The read-path internals of the four public entry points above (`resolve_parent`, `resolve_value`,
+      # `resolve_model_value`, `resolve_model_via_id`). Declared in one place rather than beside each
+      # definition because they interleave with those entry points; every one of them is reached with an
+      # implicit receiver from module scope, so nothing here needs a `send`. Two `_`-prefixed siblings are
+      # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
+      # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
+      # calls `_declared_id_token` the same way.
+      private_class_method :_reader_config, :_deepest_reader_name, :_resolve_parent_by_recipe,
+                           :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
+                           :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
+                           :_drop_provisional_reader_memos, :_apply_read_path_transforms,
+                           :_model_from_raw_parent
+
       module ClassMethods
         # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
         # the class. Cache validity is decided by IDENTITY of the two config arrays: both are

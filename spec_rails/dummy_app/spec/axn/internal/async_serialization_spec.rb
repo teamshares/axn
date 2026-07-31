@@ -7,7 +7,7 @@ require "tempfile"
 RSpec.describe Axn::Internal::AsyncSerialization do
   describe "ActiveJob path (ActiveJob available)" do
     it "is using the ActiveJob branch in this suite" do
-      expect(described_class._active_job_available?).to be(true)
+      expect(described_class.send(:_active_job_available?)).to be(true)
     end
 
     it "round-trips rich types losslessly" do

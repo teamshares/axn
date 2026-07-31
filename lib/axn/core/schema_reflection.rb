@@ -27,6 +27,7 @@ module Axn
           base.extend(mod)
         end
       end
+      private_class_method :_extend_reflection
 
       module InputSchemaMethod
         # The property-name rules run here rather than at declaration: a projection is the only thing a
