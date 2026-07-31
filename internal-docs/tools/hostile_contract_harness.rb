@@ -2586,6 +2586,45 @@ rescue ::Exception => e # rubocop:disable Lint/RescueException
   "#{e.class}: #{e.message[0, 60]}"
 end
 
+# RECORDED RESIDUE, not a guarantee — and the reason it stays one. The size trie is IDENTITY-keyed, because a
+# count may not ask a name its own `hash`/`eql?`; the emitter's `properties[config.field] =` is a plain Hash, so
+# two byte-equal Strings are ONE property there and two trie nodes here. A contract naming exactly one property is
+# therefore rejected for naming 25,001 — an OVER-count, the direction that rejects a legal declaration.
+#
+# It needs BOTH halves to bite, and neither is reachable by declaring anything: String field names (the DSL
+# symbolizes every declared name and dotted route, and two byte-equal declared names are a declared duplicate, so
+# only a config ASSIGNED onto a class carries one) AND a contract already at the cap, since the over-count is one
+# per duplicate. Below the cap the schema is identical either way, which is why the row asserts the verdict rather
+# than a projection: nothing else can see the difference.
+check "25,001 byte-equal assigned String names are charged as 25,001 properties", /names more than 25000 JSON/ do
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  configs = Array.new(25_001) do |i|
+    Axn::Core::Contract::FieldConfig.new(field: "dup".dup, reader_as: :"x#{i}", validations: { allow_nil: true })
+  end
+  klass.internal_field_configs = configs.freeze
+  begin
+    JSON.generate(klass.input_schema)
+  rescue ::Exception => e # rubocop:disable Lint/RescueException
+    "#{e.class}: #{e.message[0, 60]}"
+  end
+end
+
+# The control that keeps the residue narrow: the same names DECLARED are one property, and cannot be repeated.
+check "the same name declared twice is a declared duplicate", /DuplicateFieldError/ do
+  Class.new do
+    include Axn
+    expects "dup", optional: true
+    expects "dup".dup, optional: true
+    def call; end
+  end
+  "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 40]}"
+end
+
 # Branches are sibling NAMESPACES, so counting them for size must not make a name shared by two of them a
 # collision: `of: [A, B]` where both define `:shared` describes one property two ways.
 check "two of: branches may share a member name", '[[:shared, :only_a], [:shared, :only_b]]' do

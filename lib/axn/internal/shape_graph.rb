@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# Every ownership question this module answers is answered out of the method table, so a process that loaded
+# this file alone must have the reader of that table: the reference is a runtime one, inside the copy.
+require "axn/internal/native_methods"
+
 module Axn
   module Internal
     # Non-dispatching reads of a caller-supplied shape graph, and the copy every caller-supplied option

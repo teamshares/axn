@@ -7,6 +7,9 @@ require "axn/reflection/subfield_tree"
 # A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
 require "axn/reflection/values"
 
+# The `model:` id convention and the conditional-gate keys are both read on the build path, so the builder
+# cannot load without their owner either.
+require "axn/internal/field_config"
 require "axn/internal/shape_graph"
 
 module Axn

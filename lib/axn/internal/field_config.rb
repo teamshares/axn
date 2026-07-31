@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+# Resolving a default or a preprocessor raises through the shared contract-error wrapper, which raises axn's
+# own exception classes — both runtime references, so a process that loaded this file alone (reflection loads
+# it for the `model:` id convention) would NameError on the first failing default rather than at require time.
+require "axn/exceptions"
+require "axn/internal/contract_error_handling"
+
 module Axn
   module Internal
     # Naming conventions derived from a field's name (config-object predicates live on the config

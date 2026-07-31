@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# The two flow-control exceptions this re-raises are rescued by class, so the class has to exist by the time a
+# wrapped block raises anything.
+require "axn/exceptions"
+
 module Axn
   module Internal
     module ContractErrorHandling

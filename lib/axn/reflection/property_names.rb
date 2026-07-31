@@ -1,11 +1,15 @@
 # frozen_string_literal: true
 
-require "axn/internal/shape_graph"
 require "axn/internal/cycle_guard"
-# Declared rather than left to the top-level entrypoint's require order: both rules are DERIVED from a built
-# schema and reported through the canonicalization, so an adapter loading this file (or
-# `axn/extensions/serialization`) standalone would otherwise NameError on its first call instead of at
-# require time.
+require "axn/internal/field_config"
+require "axn/internal/native_methods"
+require "axn/internal/shape_graph"
+# Declared rather than left to the top-level entrypoint's require order: every one of these is a RUNTIME
+# reference — the rules are derived from a built schema, reported through the canonicalization, keyed by the
+# `model:` id convention, and gated on which names render through Ruby's own code — so a process that loaded
+# this file (or `axn/extensions/serialization`) alone would NameError on its first call rather than at require
+# time. `spec/axn/standalone_require_spec.rb` derives the whole list from this file's own parse tree, so a
+# reference added later cannot go unrequired the way `NativeMethods` did.
 require "axn/reflection/schema"
 require "axn/reflection/values"
 
@@ -697,7 +701,8 @@ module Axn
       #
       # 1. One per emitted wire path, below — charged as a CHAIN, so the path's own property and every implicit
       #    intermediate key a dotted `on:` introduces are each charged exactly once, at the node the emitter
-      #    emits them at. It is EXACT, in both directions. It cannot over-count: a path is charged only where
+      #    emits them at. It is EXACT, in both directions, for every name a declaration can carry (see the
+      #    identity residue below for the one it cannot). It cannot over-count: a path is charged only where
       #    `emitted_configs` has established the emitter emits a property, and a second declaration reaching a
       #    path already charged is the MERGE the emitter performs (two routes to one wire path; a
       #    `model:`-generated `<field>_id` beside an explicitly declared one, which is why a `model:` route is
@@ -725,11 +730,18 @@ module Axn
       #    `Data` type's member and a shape member overriding it are one property and one charge, exactly as
       #    `base_properties.merge(member_props)` emits one.
       #
-      # The single residue in the OVER-counting direction, and it is not reachable by declaring anything: a shape
-      # member named with an object that is neither String nor Symbol is charged by that object's IDENTITY, since
-      # normalizing it to the emitter's key would mean dispatching its own `to_sym` while counting. Two such
-      # names that convert alike therefore charge twice for one property. `Contract.validate_shape_member_name!`
-      # rejects such a name at declaration, so only a config assigned onto a class can hold one.
+      # The residue is in the OVER-counting direction, all of it from the same cause — the trie is IDENTITY-keyed,
+      # because a count may not ask a name its own `hash`/`eql?`/`to_sym` — and none of it is reachable by
+      # declaring anything. A shape member named with an object that is neither String nor Symbol is charged by
+      # that object's identity, so two such names that intern alike charge twice for the one property
+      # `member_properties` emits. The same holds for two byte-equal STRING wire keys, which the emitter's own
+      # `properties[config.field] =` merges into one Hash key while a fresh copy per charge is a fresh trie node:
+      # 25,001 of them are rejected over a schema whose properties are exactly `{"dup" => …}`. Both need a config
+      # ASSIGNED onto a class — `Contract.validate_shape_member_name!` rejects an exotic member name at
+      # declaration, `expects`/`exposes` symbolize every field name and dotted route, and two byte-equal declared
+      # names are a declared duplicate — AND a contract already at the cap, since the over-count is one per
+      # duplicate. Left as a residue rather than fixed: canonicalizing the segment is a cost every honest
+      # projection would pay, on a walk nothing reachable by declaring can get wrong.
       #
       # Separately, `ShapeGraph::MAX_MEMBER_PATHS` charges the STORED graph at declaration — every member path,
       # emitted or not. That one deliberately does not derive from the emitter: it bounds the cost of WALKING a
