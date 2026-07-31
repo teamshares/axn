@@ -128,11 +128,13 @@ module Axn
 
       # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:`/
       # `sensitive:` — a raw `shape:` member object that doesn't implement `#user_facing` defaults to
-      # not opted in (dev-facing). A block/ShapeConfig member's value was grammar-checked at
-      # declaration (ShapeConfig's constructor); a raw duck-typed member never routed through it, so
-      # validate a truthy value here through the same single-sourced check — lazily, only on the
-      # failure path where this is read — so a malformed value (`123`) fails loudly rather than
-      # surfacing as a literal user-facing message. Falsy (nil/false) is "not opted in", left as-is.
+      # not opted in (dev-facing). Every DECLARED member's value was grammar-checked at declaration
+      # (`Contract#_check_member_value_grammar!`, over members of any class), so this re-check covers
+      # the one route that walk cannot: a duck-typed member is stored as the caller's own object, so
+      # the nested shape it carries can gain members after the class is declared. Checked through the
+      # same single-sourced grammar — lazily, only on the failure path where this is read — so a
+      # malformed value (`123`) fails loudly rather than surfacing as a literal user-facing message.
+      # Falsy (nil/false) is "not opted in", left as-is.
       def member_user_facing(member)
         return false unless member.respond_to?(:user_facing)
 

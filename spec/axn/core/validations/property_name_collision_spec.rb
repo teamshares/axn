@@ -499,10 +499,42 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(ArgumentError, /does not survive being copied.*preserves its elements/m)
       end
 
-      # ...and accepts the legitimate use of that same callback: rebuilding a derived index off the copied
-      # elements. A blanket refusal of containers defining `initialize_dup` would reject this.
-      it "still accepts one whose duplication rebuilds a derived index" do
+      # The elements are not the whole contract. An `inclusion:` set answers membership with its OWN `include?`,
+      # which may be derived from state the elements do not determine — so a copy holding the identical elements
+      # can still REJECT what the original accepts. Comparing elements cannot see that; asking the copy the
+      # question the contract will ask it can.
+      it "rejects one whose duplication drops the state its membership is derived from" do
         values = Class.new(Array) do
+          def initialize(*args)
+            super
+            @index = to_a.map(&:to_s)
+          end
+
+          def initialize_dup(source)
+            super
+            @index = [] # the elements survive; the index `include?` reads does not
+          end
+
+          def include?(value) = (@index || []).include?(value.to_s)
+        end.new(%w[a b])
+
+        expect(values.include?("a")).to be(true)
+        expect { declared_with(values) }
+          .to raise_error(ArgumentError, /does not survive being copied.*answers `include\?` differently/m)
+      end
+
+      # ...and accepts the legitimate use of that same callback: rebuilding a derived index off the copied
+      # elements. A blanket refusal of containers defining `initialize_dup` would reject this, and so would
+      # verifying the copy's STATE rather than its behavior — a rebuilt index is a different object.
+      it "still accepts one whose duplication rebuilds a derived index" do
+        # Eagerly, with no lazy fallback in `include?`, so the copy answers correctly ONLY because the hook ran —
+        # the mirror image of the case above, and the reason this cannot be settled by rejecting the hook.
+        values = Class.new(Array) do
+          def initialize(*args)
+            super
+            reindex
+          end
+
           def initialize_dup(source)
             super
             reindex
@@ -510,8 +542,8 @@ RSpec.describe "declaration-time property name collisions" do
 
           def reindex = @index = each_with_object({}) { |value, hash| hash[value] = true }
 
-          def include?(value) = (@index || reindex).key?(value)
-        end.new.push("x", "y")
+          def include?(value) = @index.key?(value)
+        end.new(%w[x y])
         klass = declared_with(values)
 
         expect(klass.call(choice: "x")).to be_ok

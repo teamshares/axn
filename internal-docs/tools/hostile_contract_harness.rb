@@ -1330,10 +1330,41 @@ check "an inclusion set whose dup drops its elements is rejected", /ArgumentErro
   end
 end
 
+# ...and so is one whose copy merely LOOKS like the original: the elements are what a set holds, but its own
+# `include?` is what a declaration MEANS, and that can be derived from state the elements do not determine. This
+# copy holds every declared element and rejects them all, so comparing elements sees nothing wrong.
+check "an inclusion set whose dup drops its derived index is rejected", /ArgumentError.*answers `include\?` differently/ do
+  values = Class.new(Array) do
+    def initialize(*args)
+      super
+      @index = to_a.map(&:to_s)
+    end
+
+    def initialize_dup(source)
+      super
+      @index = []
+    end
+
+    def include?(value) = (@index || []).include?(value.to_s)
+  end.new(%w[a b])
+  begin
+    "declared: original accepts a=#{values.include?('a')} declared accepts a=#{inclusion_axn({ in: values }).call(choice: 'a').ok?}"
+  rescue ::Exception => e
+    "#{e.class}: #{e.message}"
+  end
+end
+
 # ...while the legitimate use of that same callback — rebuilding a derived index off the copied elements — still
-# declares AND still answers membership from the rebuilt index.
+# declares AND still answers membership from the rebuilt index. Eagerly, with no lazy fallback in `include?`, so
+# the copy answers correctly ONLY because the hook ran: a check that rejected the hook, or that compared the
+# copy's STATE (a rebuilt index is a different object), would fail this row.
 check "an inclusion set that reindexes on dup still works", [true, false] do
   values = Class.new(Array) do
+    def initialize(*args)
+      super
+      reindex
+    end
+
     def initialize_dup(source)
       super
       reindex
@@ -1341,8 +1372,8 @@ check "an inclusion set that reindexes on dup still works", [true, false] do
 
     def reindex = @index = each_with_object({}) { |v, h| h[v] = true }
 
-    def include?(value) = (@index || reindex).key?(value)
-  end.new.push("x", "y")
+    def include?(value) = @index.key?(value)
+  end.new(%w[x y])
   klass = inclusion_axn({ in: values })
   [klass.call(choice: "x").ok?, klass.call(choice: "z").ok?]
 end
@@ -1676,6 +1707,46 @@ check "a member that DOES define description still emits it", /"description":"hi
     def description = "hi"
   end.new
   reflects(:input_schema) { expects :p, type: Hash, shape: { members: [member] } }
+end
+
+# What a member may CARRY, as opposed to what it must answer to. `sensitive:` and `user_facing:` are rules the
+# runtime resolves, so a value outside their grammar is not a rule at all — a `sensitive: "yes"` silently drops
+# the member from the redaction set and logs the value in the clear. Held over every member the class stores,
+# whatever its class: a ShapeConfig constructor is not evidence of anything here, since a member can be a `Data`
+# of the caller's own (rebuildable, never constructed by axn) or a `Data#with` copy on a Ruby where `with` skips
+# a custom `initialize`. Both stored an unchecked rule before the declaration walk read them.
+def member_grammar_verdict(member)
+  klass = expects_axn({ members: [member], container: Hash }, type: Hash)
+  "declared: sensitive_fields=#{klass.sensitive_fields.inspect} " \
+    "logged=#{klass.send(:_context_slice, data: { payload: { ssn: 'SHH' } }, direction: :inbound).inspect}"
+rescue ::Exception => e
+  "#{e.class}: #{e.message[0, 70]}"
+end
+
+check "a duck-typed member's sensitive: is held to the grammar", /ArgumentError: sensitive: must be true, false/ do
+  member_grammar_verdict(Struct.new(:field, :validations, :sensitive).new(:ssn, {}, "yes"))
+end
+
+check "a member of the caller's own Data class is too", /ArgumentError: sensitive: must be true, false/ do
+  member_grammar_verdict(Data.define(:field, :validations, :sensitive).new(field: :ssn, validations: {}, sensitive: "yes"))
+end
+
+check "and a ShapeConfig copy, on every Ruby", /ArgumentError: sensitive: must be true, false/ do
+  member_grammar_verdict(SC.new(field: :ssn, validations: {}, sensitive: true).with(sensitive: "yes"))
+end
+
+check "a raw member's user_facing: is held to its grammar at declaration", /ArgumentError: user_facing: must be true/ do
+  member_grammar_verdict(Struct.new(:field, :validations, :user_facing).new(:ssn, { type: { klass: String } }, 123))
+end
+
+# The tolerance runs one way: a member carrying no such reader at all declares cleanly (the documented duck-typed
+# contract is `#field` + `#validations`), and one carrying a value the grammar allows still redacts.
+check "a member with neither reader still declares", /declared: sensitive_fields=\[\]/ do
+  member_grammar_verdict(Struct.new(:field, :validations).new(:ssn, {}))
+end
+
+check "a copy carrying a value the grammar allows still redacts", /logged=.*FILTERED/ do
+  member_grammar_verdict(SC.new(field: :ssn, validations: {}, sensitive: false).with(sensitive: true))
 end
 
 # ---------------------------------------------------------------------------------------------------
@@ -2271,6 +2342,77 @@ end
 # ...and the ordinary case still names the tool, since that is what the naming is for.
 check "a message-only exception is named for its tool", /BootErrorTool has an invalid tool contract — boom/ do
   boot_error_verdict(->(klass) { klass.define_singleton_method(:internal_field_configs) { raise ArgumentError, "boom" } })
+end
+
+# Renaming an exception runs the exception's own code — `#message` to read it, and a duplication hook to copy it —
+# so a class that refuses to cooperate could REPLACE the contract failure being reported, at boot, with nothing
+# naming the tool. Outside StandardError it escaped the rescue meant to settle it. Each fixture below must degrade
+# the MESSAGE and keep the failure, its class included.
+#
+# Reported through bound `Exception#to_s`, because these fixtures are precisely the classes whose `#message` raises
+# — the harness must not lose the verdict the same way the code under test must not.
+EXCEPTION_TO_S_FOR_HARNESS = ::Exception.instance_method(:to_s)
+
+def hostile_boot_verdict(error)
+  Axn::Tools::Registry.reset_adapters!
+  Axn.register_tool_adapter(:probe)
+  Object.send(:remove_const, :HostileBootTool) if Object.const_defined?(:HostileBootTool)
+  klass = Class.new do
+    include Axn
+    tool
+    expects :a, optional: true
+    def call; end
+  end
+  Object.const_set(:HostileBootTool, klass)
+  klass.define_singleton_method(:internal_field_configs) { raise error }
+  begin
+    Axn.validate_tool_contracts!
+    "NO RAISE"
+  rescue ::Exception => e
+    "#{Axn::Internal::ClassName.of(e)}: #{EXCEPTION_TO_S_FOR_HARNESS.bind_call(e)[0, 70]}"
+  end
+ensure
+  Object.send(:remove_const, :HostileBootTool) if Object.const_defined?(:HostileBootTool)
+  Axn::Tools::Registry.reset_adapters!
+end
+
+HOSTILE_MESSAGE_ERROR = Class.new(ArgumentError) do
+  def message = raise(NotImplementedError, "hostile message")
+end
+
+HOSTILE_RENDERING_ERROR = Class.new(ArgumentError) do
+  def message = raise(NotImplementedError, "hostile message")
+  def to_s = raise(NotImplementedError, "hostile to_s")
+end
+
+# Substitutes only when handed a MESSAGE, and answers the 0-arg call `raise` makes with itself — so it can be
+# raised, reach the reporter, and then be swapped for something else by `raise e, message`.
+HOSTILE_EXCEPTION_ERROR = Class.new(ArgumentError) do
+  def exception(*args) = args.empty? ? self : ::RuntimeError.new("substituted")
+end
+
+HOSTILE_COPY_ERROR = Class.new(ArgumentError) do
+  def initialize_copy(other) = raise(NotImplementedError, "hostile copy")
+end
+
+check "an exception whose #message raises is reported by its stored message",
+      "#{HOSTILE_MESSAGE_ERROR}: HostileBootTool has an invalid tool contract — the real defect" do
+  hostile_boot_verdict(HOSTILE_MESSAGE_ERROR.new("the real defect"))
+end
+
+check "one whose #message and #to_s both raise is reported by its class",
+      "#{HOSTILE_RENDERING_ERROR}: HostileBootTool has an invalid tool contract — #{HOSTILE_RENDERING_ERROR}" do
+  hostile_boot_verdict(HOSTILE_RENDERING_ERROR.new)
+end
+
+check "an #exception override cannot substitute another error",
+      "#{HOSTILE_EXCEPTION_ERROR}: HostileBootTool has an invalid tool contract — the real defect" do
+  hostile_boot_verdict(HOSTILE_EXCEPTION_ERROR.new("the real defect"))
+end
+
+check "one whose duplication hook raises is reported unrenamed, as itself",
+      "#{HOSTILE_COPY_ERROR}: the real defect" do
+  hostile_boot_verdict(HOSTILE_COPY_ERROR.new("the real defect"))
 end
 
 check "boot validates a shadowing tool's INBOUND contract",

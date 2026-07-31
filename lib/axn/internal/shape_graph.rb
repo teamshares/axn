@@ -56,7 +56,15 @@ module Axn
       ARRAY_SIZE = ::Array.instance_method(:size)
       ARRAY_AT = ::Array.instance_method(:[])
       BASIC_EQUAL = ::BasicObject.instance_method(:equal?)
-      private_constant :HASH_EACH, :KERNEL_DUP, :ARRAY_SIZE, :ARRAY_AT, :BASIC_EQUAL
+      OBJECT_CLASS = ::Object.instance_method(:class)
+      # The real method table of a caller's class, reached without `Module#instance_method` itself being answered
+      # by a singleton the class defines — and the owners of the two duplication hooks as Ruby ships them, read
+      # from the implementations rather than named, so an implementation that moves cannot silently disagree.
+      MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
+      DEFAULT_INITIALIZE_DUP_OWNER = ::Object.instance_method(:initialize_dup).owner
+      DEFAULT_INITIALIZE_COPY_OWNER = ::Array.instance_method(:initialize_copy).owner
+      private_constant :HASH_EACH, :KERNEL_DUP, :ARRAY_SIZE, :ARRAY_AT, :BASIC_EQUAL, :OBJECT_CLASS,
+                       :MODULE_INSTANCE_METHOD, :DEFAULT_INITIALIZE_DUP_OWNER, :DEFAULT_INITIALIZE_COPY_OWNER
 
       # Every entry of a caller Hash — THE seam for reading one, so no layer ever asks a Hash subclass to
       # traverse itself.
@@ -77,12 +85,13 @@ module Axn
       # a subclass with a plain Array would change the contract rather than protect it, and would also publish
       # an enum reflection deliberately withholds for anything but an exact Array.
       #
-      # `Kernel#dup` still runs the duplication CALLBACK (`initialize_dup`), which is the caller's code and can
-      # alter the copy — one that cleared it left a contract rejecting the very values it declared. Bypassing the
-      # callback is not the answer (a class that establishes its invariants there would get a broken copy), nor
-      # is refusing containers that define one (a subclass rebuilding a derived index from it is legitimate and
-      # works). So the copy is CHECKED instead: see `same_elements?`, and the declaration error its caller
-      # raises. Predicting which containers are safe is what checking replaces.
+      # `Kernel#dup` still runs the duplication CALLBACK (`initialize_dup`, and the `initialize_copy` it calls),
+      # which is the caller's code and can alter the copy — one that cleared it left a contract rejecting the very
+      # values it declared. Bypassing the callback is not the answer (a class that establishes its invariants
+      # there would get a broken copy), nor is refusing containers that define one (a subclass rebuilding a
+      # derived index from it is legitimate and works). So the copy is CHECKED instead: see `same_elements?` and
+      # `same_membership?`, and the declaration error their caller raises. Predicting which containers are safe is
+      # what checking replaces.
       def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
 
       # Whether a copy holds the elements the original held. Nothing either object defines is dispatched: `==`,
@@ -102,6 +111,62 @@ module Axn
         end
 
         true
+      end
+
+      # Whether the copy decides MEMBERSHIP the way the original does, asked of each element the original holds.
+      #
+      # The elements are not the whole contract. What an `inclusion:` set MEANS is its own `include?`, and a
+      # container is free to derive that answer from state its elements do not determine — a lookup index built in
+      # `initialize`. So a copy can hold the identical elements and still answer differently: one whose
+      # `initialize_dup` cleared that index declared cleanly and then REJECTED the very values it was declared
+      # with, which `same_elements?` cannot see, because what changed is not an element.
+      #
+      # The copy is therefore asked the question the contract will ask it, and its answer must match the
+      # ORIGINAL's — not `true`. A container whose `include?` legitimately says false about something it holds is
+      # answering consistently, which is all this demands, and a copy that merely rebuilt its index into a fresh
+      # object passes where comparing STATE would have rejected it. Only truthiness is compared, since that is all
+      # a membership check reads, and it is derived without `!` (`BasicObject#!` is overridable) — see `truthy?`.
+      #
+      # `include?` is dispatched, deliberately, and it is the one dispatch here: this is not a guard asking a
+      # caller's object about its type, it is the behavior being verified, through the same call runtime
+      # validation makes. A container that answers it inconsistently across two reads is contradicting itself
+      # rather than evading a check (the documented limit on any caller-supplied reader). Everything else — the
+      # traversal, the element reads — stays bound.
+      def self.same_membership?(original, copy)
+        size = ARRAY_SIZE.bind_call(original)
+        index = 0
+        while index < size
+          element = ARRAY_AT.bind_call(original, index)
+          return false unless truthy?(OBJECT_PUBLIC_SEND.bind_call(original, :include?, element)) ==
+                              truthy?(OBJECT_PUBLIC_SEND.bind_call(copy, :include?, element))
+
+          index += 1
+        end
+
+        true
+      end
+
+      # Whether a bound `dup` of this container can run NONE of the container's own code, in which case the copy
+      # holds what the original held and answers as it did — `Array#include?` is a pure function of the elements —
+      # and `same_membership?` has nothing to find. `Kernel#dup` reaches exactly two hooks (`initialize_dup`,
+      # which calls `initialize_copy`), so owning neither is the whole condition.
+      #
+      # This is what keeps the verification off the common path: every plain Array, and every subclass that adds
+      # behavior without a duplication hook, pays two method lookups instead of a dispatch per element. A class
+      # that DID declare a hook pays for the hook it declared.
+      def self.default_duplication?(value)
+        klass = OBJECT_CLASS.bind_call(value)
+        DEFAULT_INITIALIZE_DUP_OWNER.equal?(MODULE_INSTANCE_METHOD.bind_call(klass, :initialize_dup).owner) &&
+          DEFAULT_INITIALIZE_COPY_OWNER.equal?(MODULE_INSTANCE_METHOD.bind_call(klass, :initialize_copy).owner)
+      end
+
+      # Truthiness derived without dispatching: `!` is `BasicObject#!` and overridable, while `nil` and `false` as
+      # `case` receivers compare by identity in C.
+      def self.truthy?(value)
+        case value
+        when nil, false then false
+        else true
+        end
       end
 
       # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
@@ -252,11 +317,16 @@ module Axn
       def self.detach_node(hash) = snapshot_node(hash, hash[:members])
 
       # Only a member that can be REBUILT is copied. Rebuildable means a `Data` — `ShapeConfig` is one — tested
-      # with `case`/`when`, which consults the real class, and rebuilt through `Data#with`, so the copy is held
-      # to the same name grammar and normalization as the original. Probing for a `with` METHOD is not the same
-      # question and gets a false positive: ActiveSupport defines `Object#with`, which takes the same keywords
-      # but yields a block, so every member would look rebuildable and none would be. `Data#with` is bound
-      # rather than dispatched, so a subclass redefining it cannot decide what the stored contract becomes.
+      # with `case`/`when`, which consults the real class, and rebuilt through `Data#with`. Probing for a `with`
+      # METHOD is not the same question and gets a false positive: ActiveSupport defines `Object#with`, which
+      # takes the same keywords but yields a block, so every member would look rebuildable and none would be.
+      # `Data#with` is bound rather than dispatched, so a subclass redefining it cannot decide what the stored
+      # contract becomes.
+      #
+      # What `with` does NOT do is validate: it runs a custom `initialize` on Ruby 3.3+ and skips it on 3.2, and
+      # the member may be a `Data` of the caller's own that has no such rules at all. So rebuildability says
+      # nothing about a member's values having been checked — every rule over them is enforced by the declaration
+      # walk that calls this (`Contract#_check_member_value_grammar!`), for rebuildable and duck-typed alike.
       #
       # A duck-typed member is the caller's own object and cannot be rebuilt — so it, and the nested shape it
       # carries, stay aliased. That residue is bounded and documented rather than papered over.

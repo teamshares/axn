@@ -236,34 +236,59 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     end
 
     # A raw member reaches redaction without passing through `expects`, so the `sensitive:` grammar is enforced
-    # on both of its routes: a `ShapeConfig` supplied directly (its constructor, `Data#with` copies included)
-    # and a duck-typed object (the declaration walk, the only place one is ever read). Without that, a value
-    # that is not a resolution rule takes the member out of the redaction set silently.
+    # where every member meets it whatever built it: the declaration walk. `ShapeConfig`'s constructor is an
+    # early error on top of that, not the gate — two routes reach a stored contract without running it (a member
+    # of some other class, and a copy on a Ruby whose `Data#with` skips a custom `initialize`). Without the walk,
+    # a value that is not a resolution rule takes the member out of the redaction set silently.
     describe "the sensitive: grammar on a raw member" do
       let(:grammar_error) { /sensitive: must be true, false, a Symbol naming an action method, or a Proc/ }
+
+      def declared_with(member)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
 
       it "rejects it on a ShapeConfig supplied directly" do
         expect { Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: "yes") }
           .to raise_error(ArgumentError, grammar_error)
       end
 
-      it "rejects it on a derived copy, which re-runs the constructor" do
-        member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: true)
+      # Whether `Data#with` re-runs a custom `initialize` is a Ruby-version detail (3.3 does; 3.2 does not), so
+      # the promise is asserted where it holds on every supported Ruby: the copy never reaches a stored contract.
+      # Both steps are inside the expectation, so either one may be the one that raises.
+      it "rejects it on a derived copy, before the copy can reach a contract" do
+        original = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: true)
 
-        expect { member.with(sensitive: "yes") }.to raise_error(ArgumentError, grammar_error)
+        expect { declared_with(original.with(sensitive: "yes")) }.to raise_error(ArgumentError, grammar_error)
+      end
+
+      # Being a `Data` is not being a `ShapeConfig`: axn can rebuild ANY `Data`, so a member of the caller's own
+      # `Data` class is stored (as a rebuilt copy) having never run a ShapeConfig constructor at all — on every
+      # Ruby, not just the one whose `with` skips it.
+      it "rejects it on a member of the caller's own Data class, at declaration" do
+        member = Data.define(:field, :validations, :sensitive).new(field: :ssn, validations: {}, sensitive: "yes")
+
+        expect { declared_with(member) }.to raise_error(ArgumentError, grammar_error)
       end
 
       it "rejects it on a duck-typed member, at declaration" do
         member = Struct.new(:field, :validations, :sensitive).new(:ssn, {}, "yes")
 
-        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-          .to raise_error(ArgumentError, grammar_error)
+        expect { declared_with(member) }.to raise_error(ArgumentError, grammar_error)
       end
 
       it "still accepts a duck-typed member with no #sensitive reader at all" do
         member = Struct.new(:field, :validations).new(:ssn, {})
 
-        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }.not_to raise_error
+        expect { declared_with(member) }.not_to raise_error
+      end
+
+      # The check must not over-reach either: a derived copy carrying a value the grammar allows is an ordinary
+      # declaration, and still redacts.
+      it "accepts a derived copy whose sensitive: is in the grammar, and redacts it" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: false).with(sensitive: true)
+        action = declared_with(member)
+
+        expect(action.send(:new, payload: { ssn: "111-11-1111" }).send(:inputs_for_logging)[:payload]).to eq({ ssn: "[FILTERED]" })
       end
 
       # Reading the value at declaration also surfaces a reader that RAISES, at the author, on the same terms as
@@ -275,8 +300,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
           def sensitive = raise(NotImplementedError, "hostile sensitive reader")
         end.new(:ssn, {})
 
-        expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-          .to raise_error(NotImplementedError, /hostile sensitive reader/)
+        expect { declared_with(member) }.to raise_error(NotImplementedError, /hostile sensitive reader/)
       end
     end
 

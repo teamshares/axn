@@ -142,6 +142,76 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     }
   end
 
+  # Renaming the error runs the exception's own code, and this is the path that REPORTS a failure — so an
+  # exception whose `#message` or duplication hook raises must degrade the message rather than replace the
+  # failure. Outside StandardError especially: that escapes the rescue meant to settle it, at boot, naming
+  # nothing.
+  describe "an exception whose own methods refuse to cooperate" do
+    def raising_from(klass, error)
+      Axn.register_tool_adapter(:mcp)
+      tool = valid_tool
+      allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+      allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(tool).and_raise(error)
+      stub_const("ToolContractsSpec::Hostile", klass)
+    end
+
+    # The surfaced error IS the contract failure, so nothing has to be recovered from `cause` — which is what the
+    # old code got backwards: the interpolation's escape surfaced as a NotImplementedError that merely CARRIED the
+    # contract failure as its cause.
+    it "reports a #message that raises by its stored message, keeping its class" do
+      hostile = Class.new(ArgumentError) do
+        def message = raise(NotImplementedError, "hostile message")
+      end
+      raising_from(hostile, hostile.new("the real defect"))
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+        expect(Exception.instance_method(:to_s).bind_call(error))
+          .to eq("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+      }
+    end
+
+    it "reports one whose #message and #to_s both raise by its class alone" do
+      hostile = Class.new(ArgumentError) do
+        def message = raise(NotImplementedError, "hostile message")
+        def to_s = raise(NotImplementedError, "hostile to_s")
+      end
+      raising_from(hostile, hostile.new)
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+        expect(Exception.instance_method(:to_s).bind_call(error))
+          .to eq("ToolContractsSpec::Valid has an invalid tool contract — ToolContractsSpec::Hostile")
+      }
+    end
+
+    # THE dispatch `raise e, message` made. The override substitutes only when handed a message, and answers the
+    # 0-arg call `raise` makes with itself — so the object can be raised, reach here, and then be replaced by
+    # something else entirely while the contract failure is dropped. Bound, the C implementation runs instead and
+    # the class is kept. (An override that substitutes on the 0-arg call too could never have been RAISED as
+    # itself, so it never reaches this path at all.)
+    it "ignores an #exception override that would substitute another error" do
+      hostile = Class.new(ArgumentError) do
+        def exception(*args) = args.empty? ? self : RuntimeError.new("substituted")
+      end
+      raising_from(hostile, hostile.new("the real defect"))
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+        expect(error.message).to eq("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(error.cause).to be_a(hostile)
+      }
+    end
+
+    # A duplication hook that raises is reached by the clone `Exception#exception` makes, so there is no renamed
+    # copy to report — the original stands, unrenamed, rather than being replaced by the hook's exception.
+    it "reports the original object when its duplication hook raises" do
+      hostile = Class.new(ArgumentError) do
+        def initialize_copy(other) = raise(NotImplementedError, "hostile copy")
+      end
+      raising_from(hostile, hostile.new("the real defect"))
+
+      expect { Axn.validate_tool_contracts! }.to raise_error(hostile, "the real defect")
+    end
+  end
+
   # An unrenderable name raises ArgumentError rather than a ContractViolation, so both families have to be
   # wrapped or one of them would reach boot unnamed.
   it "names the offending class for an unrenderable name too" do

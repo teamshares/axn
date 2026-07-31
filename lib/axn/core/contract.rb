@@ -51,9 +51,11 @@ module Axn
 
       # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
       # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
-      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes`
-      # field-level check AND `ShapeConfig`'s own construction hold members and fields to one grammar —
-      # a member built via the block form OR a raw `shape:` kwarg is validated identically.
+      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes` field-level
+      # check, `ShapeConfig`'s own construction, the declaration walk over every stored member
+      # (`_check_member_value_grammar!`) and `ShapeValidator`'s runtime read hold members and fields to one
+      # grammar — a member built via the block form, via a raw `shape:` kwarg, or by the caller's own class is
+      # validated identically.
       def self.validate_user_facing!(user_facing)
         return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
                   Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
@@ -78,9 +80,10 @@ module Axn
       # own error is being built. A Proc is the callable form the resolver actually implements
       # (`instance_exec(&sensitive)`); a non-Proc callable would be truthiness-tested, i.e. always sensitive.
       #
-      # Enforced in both config constructors — every field, subfield, ambient subfield and `Data`-rebuilt shape
-      # member passes through one of them, `Data#with` copies included — and in the declaration walk for a
-      # duck-typed member, the one route that reaches neither.
+      # Enforced in `FieldConfig`'s constructor, which every field, subfield and ambient subfield is built by, and
+      # in the DECLARATION WALK for every shape member, whatever its class (see `_check_member_value_grammar!`).
+      # `ShapeConfig`'s constructor checks it too, as an earlier error rather than the gate — a member reaches a
+      # stored contract by two routes that never run it.
       def self.validate_sensitive!(sensitive)
         case sensitive
         when true, false, nil, ::Symbol, ::Proc then return
@@ -105,10 +108,12 @@ module Axn
       # renderings disagree has no single property name to be. Named by class rather than by `inspect`, which
       # is the offender's own code running while its error is built.
       #
-      # Enforced at BOTH points a member name can arrive: `ShapeConfig`'s constructor (which then normalizes
-      # a String to its Symbol, so every ShapeConfig carries the value the schema keys by and the two agree
-      # by construction rather than by parallel canonicalization), and the resolved-member walk, which is the
-      # only place a duck-typed member that never routed through that constructor can be seen.
+      # Enforced in the DECLARATION WALK, unconditionally, for every member the class will store — the one point a
+      # member of any class passes through. `ShapeConfig`'s constructor enforces it too, and normalizes a String
+      # to its Symbol so a ShapeConfig built there carries the value the schema keys by; that is an earlier error
+      # and a canonical spelling, not the gate (see `_check_member_value_grammar!` for the two routes that skip
+      # it). A stored member may therefore carry a String name — every consumer keys it by `to_sym`, exactly as
+      # `Schema#member_properties` does.
       def self.validate_shape_member_name!(name)
         case name
         when ::String, ::Symbol then return
@@ -134,8 +139,8 @@ module Axn
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
                        method_call: false)
           # THE choke point for a declared field's `sensitive:`, whichever DSL built it (`expects`, `exposes`,
-          # an `on:` subfield, an ambient subfield, `Axn::Factory`) — and re-run by `Data#with`, so a derived
-          # copy cannot carry a rule the original could not. See Contract.validate_sensitive!.
+          # an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored FieldConfig is built here, from
+          # kwargs, and nothing hands axn one it made itself. See Contract.validate_sensitive!.
           Contract.validate_sensitive!(sensitive)
           super
         end
@@ -178,12 +183,12 @@ module Axn
       ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
         def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
           # Validate at construction so a member's grammar holds however the ShapeConfig is built — the block
-          # form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies pre-built ShapeConfigs,
-          # which never route through the block path. This is every ShapeConfig's single choke point:
-          # `Data#with` re-runs it too, so a derived copy cannot carry a name or a `user_facing:` that the
-          # original could not. A malformed `user_facing:` (`123`) would otherwise reach the runtime
-          # settlement path as a truthy opt-in and surface as a literal message (`"123"`) instead of
-          # failing here.
+          # form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies pre-built ShapeConfigs, which
+          # never route through the block path. An EARLY error, deliberately not the gate: `Data#with` re-runs
+          # this on Ruby 3.3+ and skips it on 3.2, and a member of some other class never runs it at all, so what
+          # holds every STORED member to these rules is the declaration walk
+          # (`_check_member_value_grammar!`/`validate_shape_member_name!`). Failing here as well is worth it for
+          # the message the author gets at the point of construction.
           Contract.validate_shape_member_name!(field)
           Contract.validate_user_facing!(user_facing)
           Contract.validate_sensitive!(sensitive)
@@ -954,12 +959,7 @@ module Axn
             _raise_member_without_validations!(member, name) if nil.equal?(validations)
             rebuildable = Internal::ShapeGraph.rebuildable?(member)
             metadata = rebuildable ? _symbol_keyed_member_metadata(member, name) : nil
-            # A rebuildable member was held to the `sensitive:` grammar by its constructor (and will be again by
-            # the `with` that copies it), so only a duck-typed one is read here — the one route to redaction that
-            # reaches neither constructor. Read at declaration rather than left to leak at runtime, on the same
-            # terms as its `field`: a value that is not a resolution rule takes the member out of the redaction
-            # set silently.
-            Contract.validate_sensitive!(Internal::ShapeGraph.read(member, :sensitive)) unless rebuildable
+            _check_member_value_grammar!(member)
             nested = Internal::ShapeGraph.hash_or_nil(validations && validations[:shape])
             next Internal::ShapeGraph.snapshot_member(member, validations, metadata) if nil.equal?(nested)
 
@@ -969,6 +969,29 @@ module Axn
           end
 
           WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:)
+        end
+
+        # The `sensitive:` and `user_facing:` grammars, held over EVERY member about to be stored — a
+        # `ShapeConfig`, any other `Data`, a duck-typed object alike. THIS is the gate, because it is the one
+        # point every stored member passes through however it was built; `ShapeConfig`'s constructor is an
+        # earlier, friendlier error on the same rules, not a choke point. Two routes reach a stored contract
+        # without running it: a member of some OTHER class (any `Data` is rebuildable, so being rebuildable is
+        # not evidence a ShapeConfig constructor ever ran), and — on Ruby 3.2, where `Data#with` does not call a
+        # custom `initialize` — a `ShapeConfig` copy. Both landed a `sensitive: "yes"` in a stored contract,
+        # where it silently dropped the member from the redaction set and logged the value in the clear.
+        #
+        # Read through `ShapeGraph`, so a member that denies the reader is still held to it, and read at
+        # declaration rather than left to the runtime, on the same terms as its `field`: the failure mode for
+        # `sensitive:` is a LEAK with no signal, and for `user_facing:` a first call that surfaces a bogus value
+        # as a literal message.
+        #
+        # A falsey `user_facing:` is "not opted in" and has no grammar to meet — `nil` is what an absent reader
+        # answers — matching `ShapeValidator`'s runtime read, which still guards the one thing no declaration
+        # walk can: members a duck-typed member's aliased nested shape gains after the class is declared.
+        def _check_member_value_grammar!(member)
+          Contract.validate_sensitive!(Internal::ShapeGraph.read(member, :sensitive))
+          user_facing = Internal::ShapeGraph.read(member, :user_facing)
+          Contract.validate_user_facing!(user_facing) if user_facing
         end
 
         # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
@@ -1642,18 +1665,36 @@ module Axn
         # establish its invariants in exactly that hook. Comparing what came back against what went in accepts
         # both and rejects only a copy that genuinely differs.
         #
+        # Two comparisons, because a copy can differ in two ways and looking like the original is not behaving
+        # like it. The elements are the obvious one. The other is the state a container DERIVES from them: an
+        # `inclusion:` set answers membership with its own `include?`, so a copy whose index was cleared holds
+        # every declared element and still rejects them all (`same_membership?`). Checked in that order, so the
+        # simpler defect is diagnosed as itself, and the behavior check is skipped entirely for a container that
+        # can run no code of its own while being copied.
+        #
         # The container is named by class, never by `inspect` — its own code must not run while the declaration
         # error it caused is being built.
         def _detached_option_array(value, label)
           copy = Internal::ShapeGraph.detached_dup(value)
-          return copy if Internal::ShapeGraph.same_elements?(value, copy)
+          unless Internal::ShapeGraph.same_elements?(value, copy)
+            _raise_unfaithful_option_container!(value, label, "holding different elements than the original")
+          end
+          unless Internal::ShapeGraph.default_duplication?(value) || Internal::ShapeGraph.same_membership?(value, copy)
+            _raise_unfaithful_option_container!(value, label,
+                                                "that answers `include?` differently from the original — the elements " \
+                                                "survived, but the state its membership is derived from did not")
+          end
 
+          copy
+        end
+
+        def _raise_unfaithful_option_container!(value, label, defect)
           raise ArgumentError,
                 "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) does not survive being " \
-                "copied — its `initialize_dup` returns a copy holding different elements than the original. A " \
-                "declared contract is copied at declaration so that mutating what you still hold cannot change " \
-                "it, so the copy IS the contract, and this one would validate against elements never declared. " \
-                "Supply a plain Array, or a container whose duplication preserves its elements."
+                "copied — its `initialize_dup` returns a copy #{defect}. A declared contract is copied at " \
+                "declaration so that mutating what you still hold cannot change it, so the copy IS the contract, " \
+                "and this one would not validate what you declared. Supply a plain Array, or a container whose " \
+                "duplication preserves its elements and whatever it derives from them."
         end
 
         def _derive_raw_shape_container!(validations)

@@ -52,6 +52,13 @@ require "axn/async"
 require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 
 module Axn
+  # `Exception`'s own implementations, for a reporting path that must not run an exception's overrides of them
+  # (see `_named_invalid_tool_contract`). `exception` clones and sets a message without running an initializer;
+  # `to_s` reads the stored message.
+  EXCEPTION_EXCEPTION = ::Exception.instance_method(:exception)
+  EXCEPTION_TO_S = ::Exception.instance_method(:to_s)
+  private_constant :EXCEPTION_EXCEPTION, :EXCEPTION_TO_S
+
   # Whether axn owns this exception's #message (and may stamp the resolved presentation onto it).
   # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
   def self.owns_failure_exception?(exception)
@@ -115,20 +122,57 @@ module Axn
       # declarations that collide, but at boot the first thing an author needs is WHICH tool. Both families are
       # caught: a collision is an Axn::ContractViolation, an unrenderable name or an oversized schema an
       # ArgumentError.
-      #
-      # `raise e, message` and never `raise e.class, message`. The two look alike and are not: naming the CLASS
-      # constructs a new instance, which fails outright for any exception whose initializer takes more than a
-      # message (`UnserializableValue` requires `path:`/`value:`) — so the wrapper meant to help destroyed both
-      # the contract error and the class it promised to preserve. Raising the OBJECT clones it and sets the
-      # message, running no initializer, and keeps the class, its state, and the original as `cause`.
-      #
-      # The one thing it cannot do is rename an exception that builds its own message from its state: such a
-      # class ignores the message set here, so the tool's name is dropped and its own (more specific) message
-      # stands. That is a degraded message rather than a lost error, which is the right way round — the original
-      # error is the substance, naming the tool is the convenience.
-      raise e, "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{e.message}"
+      raise _named_invalid_tool_contract(klass, e)
     end
     nil
+  end
+
+  # The exception to report for `klass` — the contract failure itself, renamed to say which tool it came from.
+  #
+  # This is a REPORTING path, so every method it needs is one the exception's own class may override, and an
+  # override that raises (outside StandardError included) would replace the failure being reported with the
+  # offending class's exception, at boot, with nothing left naming the tool. AGENTS.md's rule applies: don't
+  # dispatch what can be bound, and guard what must be dispatched.
+  #
+  # So `Exception#exception` is BOUND rather than reached through `raise e, message`. The two differ in what they
+  # can run: the C implementation clones the object and sets the message, running no initializer, while a
+  # dispatched `exception` is caller code free to return a different object entirely or to raise. Naming the CLASS
+  # (`raise e.class, message`) is a third thing and worse than either — it CONSTRUCTS an instance, which fails
+  # outright for any exception whose initializer takes more than a message (`UnserializableValue` requires
+  # `path:`/`value:`), destroying both the contract error and the class the wrapper promised to preserve.
+  #
+  # Class and state survive on every branch, and only the MESSAGE ever degrades — the original error is the
+  # substance, naming the tool is the convenience. Three ways it degrades, in order of how much is left:
+  # an exception that builds its message from its state ignores the one set here, so its own (more specific)
+  # message stands; one whose `#message` raises is reported by whatever message it stored, or failing that by its
+  # class alone; one whose duplication hook raises is reported as the original object, unrenamed. (`cause` is the
+  # un-renamed original on the ordinary path; a degraded one loses that link, which costs nothing — the surfaced
+  # error IS the contract failure rather than something carrying it.)
+  #
+  # The one dispatch left is the 0-arg `#exception` that `raise` itself makes on whatever object it is handed —
+  # Ruby has no re-raise that skips it, a bare `raise` in a rescue included. It needs no guard: an object only
+  # reaches this rescue by having BEEN raised, which already called that same 0-arg `#exception` and took what it
+  # returned, so the object in hand is by construction one whose answer is itself.
+  def self._named_invalid_tool_contract(klass, error)
+    message = "#{Axn::Internal::ClassName.of_module(klass)} has an invalid tool contract — #{_reported_message(error)}"
+    EXCEPTION_EXCEPTION.bind_call(error, message)
+  rescue ::Exception # rubocop:disable Lint/RescueException
+    error
+  end
+
+  # An exception's own message, for a message being built ABOUT it. Dispatched deliberately — an exception that
+  # derives its message from its state (`UnserializableValue`) has no other way to be reported richly — but behind
+  # a guard, because that is caller code in an error path. `Exception#to_s` is the non-dispatching second choice:
+  # the C implementation reads the message the exception was raised with, which is what an ordinary subclass
+  # carries. Its class is what is left when even that will not answer.
+  def self._reported_message(error)
+    error.message
+  rescue ::Exception # rubocop:disable Lint/RescueException
+    begin
+      EXCEPTION_TO_S.bind_call(error)
+    rescue ::Exception # rubocop:disable Lint/RescueException
+      Axn::Internal::ClassName.of(error)
+    end
   end
 
   def self.versions_for(adapter, tool_name)

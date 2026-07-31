@@ -329,16 +329,44 @@ RSpec.describe "expects ..., user_facing:" do
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
-    it "fails loudly on a malformed user_facing from a duck-typed raw member (not a literal message)" do
-      # A raw shape member that is a bare duck-typed object (not a ShapeConfig) never routes through
-      # the constructor grammar check; ShapeValidator validates its truthy user_facing when the member
-      # fails, so a bogus value raises rather than surfacing "123" to the caller.
-      bad = Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123)
+    # The constructor is an early error, not the gate: a member of any other class never runs it, and a
+    # `ShapeConfig` copy does not either on a Ruby whose `Data#with` skips a custom `initialize`. The declaration
+    # walk is where every member meets the grammar, so it is rejected before the class exists rather than on the
+    # first call that happens to fail this member.
+    it "rejects a malformed user_facing on a raw member at declaration, whatever the member's class" do
+      [
+        Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123),
+        Data.define(:field, :validations, :user_facing).new(field: :status, validations: { type: { klass: String } }, user_facing: 123),
+      ].each do |bad|
+        expect do
+          build_axn { expects :items, type: Array, shape: { members: [bad], container: Array } }
+        end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+      end
+    end
+
+    it "rejects a malformed user_facing on a derived ShapeConfig copy, before the copy can reach a contract" do
+      original = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } })
+
+      expect do
+        copy = original.with(user_facing: 123)
+        build_axn { expects :items, type: Array, shape: { members: [copy], container: Array } }
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
+    it "fails loudly on a malformed user_facing added to a raw member's shape AFTER declaration" do
+      # The one route the declaration walk cannot cover, and the reason ShapeValidator still checks: a duck-typed
+      # member is stored as the caller's own object, so the nested shape it carries can gain members after the
+      # class is declared (Internal::ShapeGraph's documented residue). A bogus value raises there rather than
+      # surfacing "123" to the caller as a user-facing message.
+      nested = { members: [], container: Hash }
+      outer = Struct.new(:field, :validations).new(:line, { type: { klass: Hash }, shape: nested })
       action = build_axn do
-        expects :items, type: Array, shape: { members: [bad], container: Array }
+        expects :order, type: Hash, shape: { members: [outer], container: Hash }
         def call = nil
       end
-      result = action.call(items: [{ status: 1 }]) # member fails → user_facing read → grammar check raises
+      nested[:members] << Struct.new(:field, :validations, :user_facing).new(:status, { type: { klass: String } }, 123)
+
+      result = action.call(order: { line: { status: 1 } }) # member fails → user_facing read → grammar check raises
       expect(result.exception).to be_a(ArgumentError)
       expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc/)
     end
