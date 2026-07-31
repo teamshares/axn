@@ -12,9 +12,13 @@ module Axn
     #   end
     #
     # options[:members] is an array of ShapeConfig-like objects (responding to #field and
-    # #validations, and optionally #method_call — a member that doesn't implement it defaults to no
-    # method dispatch; a shape declared through `expects`/`exposes` always supplies axn's own
-    # `ShapeConfig`); options[:container] is the declared structured type (Array, Hash, or a class).
+    # #validations, and optionally #method_call/#user_facing — a member that doesn't implement one
+    # defaults to not opted in); options[:container] is the declared structured type (Array, Hash, or a class).
+    # A shape DECLARED through `expects`/`exposes` always supplies axn's own `ShapeConfig`, so the duck-typing
+    # here serves exactly one route: a field config ASSIGNED onto a class (`internal_field_configs=`), which
+    # carries the caller's own member objects because it passed no declaration walk. This validator is
+    # deliberately not registered globally (see `Validation::Base`), so a consuming app's own `validates` cannot
+    # reach it and is not a route.
     # For an Array container each element is validated with its index in the message; for any other
     # container the single value's members are validated directly. A value that doesn't match the
     # declared container is left to TypeValidator (we don't try to extract members from it). Nesting
@@ -122,20 +126,38 @@ module Axn
       def members = Axn::Internal::ShapeGraph.members(options)
 
       # A member's `method_call:` opt-in, honored when present. A member reached through a declared `shape:` is
-      # always axn's own `ShapeConfig` and carries the reader; the tolerance is for one supplied to `validates`
-      # directly, which is treated as not opted in (the safe default: no dispatch) rather than raising.
+      # always axn's own `ShapeConfig` and carries the reader; the tolerance is for one carried by a field config
+      # ASSIGNED onto a class, which is the caller's own object and may implement only the documented duck-typed
+      # contract (`#field` + `#validations`). Such a member is treated as not opted in — the safe default, no
+      # dispatch — rather than raising.
       def member_method_call?(member) = member.respond_to?(:method_call) && member.method_call
 
-      # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:` — a member
-      # supplied to `validates` directly, rather than through a declared `shape:`, may not implement
-      # `#user_facing`, and defaults to not opted in (dev-facing). No grammar re-check here: every stored
-      # member is a `ShapeConfig` axn constructed at declaration from a value it grammar-checked
-      # (`Contract#_snapshot_member_attributes!`), so there is no longer a route by which an unchecked value
-      # reaches this read. Falsy (nil/false) is "not opted in", left as-is.
+      # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:` — a member axn
+      # did not construct may not implement `#user_facing`, and defaults to not opted in (dev-facing). Falsy
+      # (nil/false) is "not opted in" and has no grammar to meet — `nil` is not IN the grammar, and it is what a
+      # member declaring the attribute without setting it answers (a `Struct.new(:field, :validations,
+      # :user_facing)`), so checking it would turn every such member into an ArgumentError.
+      #
+      # A truthy value IS held to the grammar, here, because this read is where it first decides anything and
+      # because a member is the one thing in a contract axn has no constructor for. Every member the DECLARATION
+      # walk stores is a `ShapeConfig` built from a value that walk grammar-checked
+      # (`Contract#_snapshot_member_attributes!`) — but the config arrays are writable, so a config ASSIGNED onto
+      # a class (`internal_field_configs=`) carries the caller's own member objects, unwalked, exactly as it
+      # carries an unwalked shape graph. A field config assigned that way is still held by `FieldConfig`'s
+      # constructor, which every stored one passes; a member has no such choke point, so the value is checked
+      # where it is read.
+      #
+      # Checked lazily, on the failure path only, and worth checking at all because the consequence is not a
+      # cosmetic one: the tag this returns both composes the caller's message (`123` resolves as a literal
+      # handler result and surfaces as `"123"`) and decides CLASSIFICATION — a truthy non-rule makes the failure
+      # settle as a plain user-facing failure, so the contract bug is never reported at all. A dev-facing
+      # `ArgumentError` naming the fix is the honest outcome.
       def member_user_facing(member)
         return false unless member.respond_to?(:user_facing)
 
-        member.user_facing
+        value = member.user_facing
+        Axn::Core::Contract.validate_user_facing!(value) if value
+        value
       end
 
       # A value can yield a named member only if it responds to the reader (objects/Data) or

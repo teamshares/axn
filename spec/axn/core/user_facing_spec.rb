@@ -354,9 +354,10 @@ RSpec.describe "expects ..., user_facing:" do
     end
 
     it "never sees a malformed user_facing added to a raw member's nested shape AFTER declaration" do
-      # There is no such route left, which is why `ShapeValidator` no longer re-checks the grammar at runtime:
-      # the declaration walk snapshots every member — a duck-typed one included — into a `ShapeConfig` of axn's
-      # own, nested shape and all, so a member appended to the caller's Hash afterwards is not in the contract.
+      # A DECLARED contract cannot reach `ShapeValidator`'s grammar check at all: the declaration walk snapshots
+      # every member — a duck-typed one included — into a `ShapeConfig` of axn's own, nested shape and all, so a
+      # member appended to the caller's Hash afterwards is not in the contract. (The check that still runs there
+      # is for a config ASSIGNED onto a class, which passes no walk — see the assigned-config describe below.)
       nested = { members: [], container: Hash }
       outer = Struct.new(:field, :validations).new(:line, { type: { klass: Hash }, shape: nested })
       action = build_axn do
@@ -419,6 +420,91 @@ RSpec.describe "expects ..., user_facing:" do
           exposes :order, type: Hash, shape: { members: [line], container: Hash }
         end
       end.to raise_error(ArgumentError, /`sku` does not support user_facing: on exposes/)
+    end
+  end
+
+  # `expects`/`exposes` is not the only way a class comes to hold a field config: the three config arrays are
+  # writable, so a config ASSIGNED onto a class carries whatever its author built. Nothing about such a config
+  # passed the declaration walk — and `user_facing:` is the one attribute whose unchecked value is not merely
+  # stored but RESOLVED: a truthy value reclassifies the violation as user-facing (so the real contract bug is
+  # never reported) and is then rendered as the caller's own error message.
+  describe "a config assigned onto a class rather than declared" do
+    def assigned(config)
+      klass = build_axn { define_method(:call) { nil } } # define_method: inside a method body
+      klass.internal_field_configs = [config].freeze
+      klass
+    end
+
+    def duck_member(**readers)
+      Class.new { readers.each { |name, value| define_method(name) { value } } }.new
+    end
+
+    def shaped_config(member)
+      Axn::Core::Contract::FieldConfig.new(
+        field: :payload, reader_as: :payload,
+        validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } }
+      )
+    end
+
+    # The FIELD half, closed where every stored field config passes: a FieldConfig cannot be CONSTRUCTED with a
+    # value that is not a resolution rule, exactly as it cannot be constructed with a bogus `sensitive:`.
+    it "cannot be built at all with a malformed field-level user_facing" do
+      expect do
+        Axn::Core::Contract::FieldConfig.new(field: :name, reader_as: :name, validations: { presence: true }, user_facing: 123)
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc \(got 123\)/)
+    end
+
+    it "still accepts every value that IS a rule, and false" do
+      [true, false, "surfaced", :some_method, ->(_e) { "x" }].each do |value|
+        expect do
+          Axn::Core::Contract::FieldConfig.new(field: :name, reader_as: :name, validations: { presence: true }, user_facing: value)
+        end.not_to raise_error
+      end
+    end
+
+    # The MEMBER half. A member is the caller's own object, so there is no constructor to hold it to the
+    # grammar — the check lands where the value is first READ, which is also where it first decides anything.
+    it "raises a dev-facing error rather than surfacing a malformed member user_facing to the caller" do
+      action = assigned(shaped_config(duck_member(field: :inner, validations: { presence: true }, user_facing: 123)))
+
+      result = action.call(payload: {})
+
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc \(got 123\)/)
+      expect(result.error).not_to eq("123")
+    end
+
+    # The consequence that is worse than the wrong message: an unchecked truthy value makes the failure compose
+    # as user-facing, so a real contract bug settles as a plain failure and is never reported.
+    it "keeps the outcome reported rather than letting an unchecked value reclassify it" do
+      action = assigned(shaped_config(duck_member(field: :inner, validations: { presence: true }, user_facing: 123)))
+
+      expect(action.call(payload: {}).outcome).to be_exception
+    end
+
+    it "leaves a member that opts in with a real rule working" do
+      action = assigned(shaped_config(duck_member(field: :inner, validations: { presence: true }, user_facing: "Needs an inner")))
+
+      result = action.call(payload: {})
+
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("Needs an inner")
+    end
+
+    # Falsy is "not opted in" and has no grammar to meet — `nil` is what a member declaring the attribute
+    # without setting it answers (a `Struct.new(:field, :validations, :user_facing)`), and `nil` is NOT in the
+    # grammar, so checking it unconditionally would turn every such member into an ArgumentError. The failure
+    # has to stay the ordinary dev-facing contract violation, which is why this asserts the exception CLASS:
+    # an ArgumentError settles as "Something went wrong" too.
+    it "treats a falsy member user_facing as not opted in, without checking it" do
+      [nil, false].each do |value|
+        action = assigned(shaped_config(duck_member(field: :inner, validations: { presence: true }, user_facing: value)))
+
+        result = action.call(payload: {})
+
+        expect(result.exception).to be_a(Axn::InboundValidationError)
+        expect(result.error).to eq("Something went wrong")
+      end
     end
   end
 

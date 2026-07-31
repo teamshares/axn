@@ -22,8 +22,10 @@
 # that did not — the projection walk's depth bound, the redaction walks' bounds, and the ambient placement
 # check's bounds — became `spec/axn/core/validations/stored_shape_traversal_spec.rb`. Rows that remain
 # harness-only on purpose: the COST rows (a timing assertion belongs nowhere near CI) and the rows that record a
-# documented residue rather than a guarantee — today just one, a non-Array membership container staying the
-# caller's own object. (Two others were residue rows until the member snapshot closed them: a duck-typed member's
+# documented residue rather than a guarantee — today two, a non-Array membership container staying the caller's
+# own object, and an ASSIGNED config's member `sensitive:` going unchecked (every read of it is a redaction walk
+# inside a side channel, where raising loses the log line instead of telling the author). (Two others were residue
+# rows until the member snapshot closed them: a duck-typed member's
 # nested shape staying aliased, and a non-idempotent reader splitting a guard from its consumer. They kept their
 # fixtures and now assert the closure, which is exactly the A/B this file exists for.) The residue rows do have
 # specs where the behaviour is observable, which is how a later "fix" of half of one gets noticed.
@@ -2995,6 +2997,73 @@ check "a logged call still settles as an ordinary result", "Axn::InboundValidati
   member, klass = cyclic_after_declaration
   member.validations[:shape] = { members: [member], container: Hash }
   klass.call(payload: { outer: { inner: 1 } }).exception&.class.to_s
+end
+
+# An unwalked GRAPH is not the only thing an assigned config carries: its members are the caller's objects too, so
+# the ATTRIBUTES the declaration walk grammar-checks on the way into a snapshot are unchecked here as well.
+# `user_facing:` is the one whose unchecked value is RESOLVED rather than merely stored — it decides the failure's
+# classification and then becomes the caller's message — so it is checked where it is read.
+def duck_carrying(**readers)
+  Class.new { readers.each { |name, value| define_method(name) { value } } }.new
+end
+
+def assigned_member_verdict(**readers)
+  klass = Class.new do
+    include Axn
+    def call = nil
+  end
+  klass.internal_field_configs = [held_shape_config(:payload, duck_carrying(field: :inner, validations: { presence: true }, **readers))].freeze
+  result = klass.call(payload: {})
+  "#{result.outcome}: #{result.exception.class}: #{result.error}"
+rescue ::Exception => e
+  "RAISED #{e.class}: #{e.message[0, 60]}"
+end
+
+check "an assigned member's malformed user_facing: is refused, not surfaced",
+      "exception: ArgumentError: Something went wrong" do
+  assigned_member_verdict(user_facing: 123)
+end
+
+# The consequence that is worse than the wrong message: a truthy non-rule composed as user-facing, so the failure
+# settled as a plain failure and the contract bug was never reported at all.
+check "...so the outcome stays reported rather than reclassified", true do
+  assigned_member_verdict(user_facing: 123).start_with?("exception:")
+end
+
+check "an assigned member carrying a REAL rule still surfaces it", "failure: Axn::InboundValidationError: Needs an inner" do
+  assigned_member_verdict(user_facing: "Needs an inner")
+end
+
+# Falsy is "not opted in" and has no grammar to meet: `nil` is what a Struct member declaring the attribute
+# without setting it answers, so checking it would turn every such member into an ArgumentError.
+check "a falsy one is not opted in, and is not checked", "exception: Axn::InboundValidationError: Something went wrong" do
+  assigned_member_verdict(user_facing: nil)
+end
+
+# The FIELD half of the same route, closed one level earlier: a FieldConfig cannot be CONSTRUCTED with a value
+# that is not a resolution rule, so an assigned config carrying one does not exist to be resolved. No runtime
+# check ever covered this — a field's `user_facing:` was held only by the `expects`/`exposes` DSL.
+check "an assigned FIELD config cannot carry a malformed user_facing: at all",
+      /ArgumentError: user_facing: must be true/ do
+  FC.new(field: :name, reader_as: :name, validations: { presence: true }, user_facing: 123).inspect
+rescue ::Exception => e
+  "#{e.class}: #{e.message[0, 40]}"
+end
+
+# RECORDED RESIDUE, not a guarantee: the same bypass leaves an assigned member's `sensitive:` unchecked, and an
+# invalid rule there is silently "not sensitive" — the value logs in the clear. Deliberately not closed with the
+# `user_facing:` half: every read of it is a redaction walk running inside `Extensions.best_effort` on a live
+# call, where raising loses the log line rather than telling the author, and paying a grammar check per member
+# per logged call is a cost the declared path (where the walk already checked it) would carry for nothing.
+# A field's `sensitive:` is held at FieldConfig's constructor, so only a MEMBER is exposed.
+# The value is asserted structurally rather than through `Hash#inspect`, whose spacing changed in Ruby 3.4.
+check "an assigned member's sensitive: is NOT held to the grammar (residue)", [[], "SHH"] do
+  klass = Class.new do
+    include Axn
+    def call = nil
+  end
+  klass.internal_field_configs = [held_shape_config(:payload, duck_carrying(field: :ssn, validations: {}, sensitive: "yes"))].freeze
+  [klass.sensitive_fields, klass.send(:_context_slice, data: { payload: { ssn: "SHH" } }, direction: :inbound).dig(:payload, :ssn)]
 end
 
 # ---------------------------------------------------------------------------------------------------

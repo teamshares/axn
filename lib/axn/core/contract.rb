@@ -52,9 +52,15 @@ module Axn
       # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
       # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
       # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes` field-level
-      # check, `ShapeConfig`'s own construction and the declaration walk that reads every member's value on its
-      # way into the snapshot (`_snapshot_member_attributes!`) hold members and fields to one grammar — a member
-      # built via the block form, via a raw `shape:` kwarg, or by the caller's own class is validated identically.
+      # check, `FieldConfig`'s and `ShapeConfig`'s own construction, the declaration walk that reads every member's
+      # value on its way into the snapshot (`_snapshot_member_attributes!`), and `ShapeValidator`'s read of a
+      # member axn never snapshotted hold members and fields to one grammar — a member built via the block form,
+      # via a raw `shape:` kwarg, or by the caller's own class is validated identically.
+      #
+      # A value outside the grammar is not inert: the executor treats a truthy one as a resolution rule, so it
+      # RECLASSIFIES the violation as user-facing (the contract bug is never reported) and then renders as the
+      # caller's own error message — `user_facing: 123` surfaced the literal `"123"`. That is why the check lives
+      # at every point a value can enter, not only at the DSL.
       def self.validate_user_facing!(user_facing)
         return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
                   Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
@@ -136,10 +142,14 @@ module Axn
       FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
                        method_call: false)
-          # THE choke point for a declared field's `sensitive:`, whichever DSL built it (`expects`, `exposes`,
-          # an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored FieldConfig is built here, from
-          # kwargs, and nothing hands axn one it made itself. See Contract.validate_sensitive!.
+          # THE choke point for a declared field's `sensitive:` and `user_facing:`, whichever DSL built it
+          # (`expects`, `exposes`, an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored
+          # FieldConfig is built here, from kwargs, and nothing hands axn one it made itself. That is what makes
+          # it the right place for BOTH — a config ASSIGNED onto a class (`internal_field_configs=`) never passes
+          # the DSL, so a check that only lives there leaves the value unheld while the executor still resolves
+          # it. See Contract.validate_sensitive! / .validate_user_facing!.
           Contract.validate_sensitive!(sensitive)
+          Contract.validate_user_facing!(user_facing)
           super
         end
 
@@ -1436,6 +1446,11 @@ module Axn
         # the field's own validation message; a String overrides it; a Symbol names an action method
         # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
         # handler shape. Single-sourced through the module-level grammar check (see above).
+        #
+        # `FieldConfig`'s constructor holds the same rule and is the CHOKE POINT (it catches a config assigned
+        # onto a class, which never passes this DSL). This call stays because it runs earlier in the declaration:
+        # a declaration carrying both a bogus `user_facing:` and, say, a reader-name collision is reported as the
+        # value defect, exactly as the shape walk checks a member's value ahead of `ShapeConfig`'s constructor.
         def _validate_user_facing!(user_facing)
           Contract.validate_user_facing!(user_facing)
         end
