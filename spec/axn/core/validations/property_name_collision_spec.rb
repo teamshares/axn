@@ -2413,9 +2413,11 @@ RSpec.describe "declaration-time property name collisions" do
       # answer: a config rooted at `on: :ambient_context` is never attached to a tree, so the projection is an
       # empty object however many are declared. Charging one property per config (plus every member of its shape)
       # rejected a contract whose schema names nothing.
-      describe "a config the emitter represents nowhere" do
-        def wide_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+      # A type whose members are past the emitted bound on their own, so every example below reads as "charged
+      # or not charged" with nothing else in play.
+      def wide_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
 
+      describe "a config the emitter represents nowhere" do
         it "charges nothing for an ambient-rooted config, and projects an empty object" do
           klass = build_axn do
             expects :items, on: :ambient_context, type: Array, of: Data.define(*Array.new(26_000) { |i| :"m#{i}" }), optional: true
@@ -2476,6 +2478,200 @@ RSpec.describe "declaration-time property name collisions" do
 
           expect { build_axn { exposes :thing, model: Struct.new(:id), type: Array, of: wide, optional: true }.output_schema }
             .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+      end
+
+      # The other half of "ask the emitter": WHICH config the projection builds each property from. Reading the
+      # emitter's own plan is exact only if the plan is given the config the emitter uses — and on OUTPUT it is
+      # not the declared one. `build_property` first drops every validator entry a per-validator (nested) gate
+      # could skip, because a gated constraint can't be promised outbound; the plan is derived from THAT. So a
+      # gated `type:`/`of:`/`shape:` contributes no property name at all, and charging its members rejected a
+      # contract over a schema that names none of them. The reduction now lives inside `shape_property_plan`
+      # (Schema.effective_validations), so no caller can ask for a plan from a config the emitter would have
+      # reduced first.
+      describe "a config whose emitted schema is built from a reduced view of it" do
+        def gated_type_axn(klass, direction, gate: true)
+          member = Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})
+          shape = { members: [member], container: Hash }
+          type = gate ? { klass:, if: :flag } : { klass: }
+          build_axn { send(direction, :x, optional: true, shape:, type:) }
+        end
+
+        it "charges nothing for a per-validator-gated type: on output, and emits none of its members" do
+          klass = gated_type_axn(Data.define(*Array.new(26_000) { |i| :"m#{i}" }), :exposes)
+
+          expect(klass.output_schema.dig(:properties, :x, :properties).keys).to eq([:keep])
+        end
+
+        it "still charges an UNGATED type: of the same width on output" do
+          wide = wide_type
+
+          expect { gated_type_axn(wide, :exposes, gate: false).output_schema }
+            .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        # The reduction is OUTPUT-only (input is static-maximal: a gate can only relax enforcement at runtime,
+        # so the schema still advertises the type), which is why the same declaration is still charged inbound —
+        # and the members really are emitted there.
+        it "still charges a gated type: on INPUT, where the schema advertises it anyway" do
+          wide = wide_type
+
+          expect { gated_type_axn(wide, :expects).input_schema }.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        it "emits a gated type's members inbound, so charging them is right there" do
+          klass = gated_type_axn(Data.define(:sm1, :sm2), :expects)
+
+          expect(klass.input_schema.dig(:properties, :x, :properties).keys).to eq(%i[sm1 sm2 keep])
+        end
+
+        # `of:` and `shape:` are entries of the same validations Hash, so the same gate drops either one — the
+        # element type's own members stop reaching `items`, and a gated `shape:` stops emitting members at all.
+        it "charges nothing for a gated of: on output" do
+          wide = wide_type
+          klass = build_axn { exposes :items, optional: true, type: Array, of: { klass: wide, if: :flag } }
+
+          expect(klass.output_schema.dig(:properties, :items)).to eq({ type: %w[array null] })
+        end
+
+        it "charges nothing for a gated shape: on output" do
+          members = Array.new(13_000) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+          klass = build_axn do
+            exposes :x, optional: true, type: Hash, shape: { members:, container: Hash, if: :flag }
+            exposes :y, optional: true, type: Hash, shape: { members:, container: Hash, if: :flag }
+          end
+
+          expect(klass.output_schema[:properties].values.map { |prop| prop.key?(:properties) }).to eq([false, false])
+        end
+
+        it "still charges the same two shapes UNGATED" do
+          members = Array.new(13_000) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+
+          expect do
+            build_axn do
+              exposes :x, optional: true, type: Hash, shape: { members:, container: Hash }
+              exposes :y, optional: true, type: Hash, shape: { members:, container: Hash }
+            end.output_schema
+          end.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        # The case where reading the plan's shape is the whole of it: a gated `shape:` BESIDE an ungated object
+        # `of:` still leaves the plan EMITTED (the element type is an object, so an overlay would have applied),
+        # while the shape it was derived from is gone. A walk that read the config's own `shape:` here charges
+        # every member of an overlay `apply_structured_schema!` never merges.
+        def gated_overlay_axn(per_field)
+          members = Array.new(per_field) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+          build_axn do
+            exposes :x, optional: true, type: Array, of: Hash, shape: { members:, container: Array, if: :flag }
+            exposes :y, optional: true, type: Array, of: Hash, shape: { members:, container: Array, if: :flag }
+          end
+        end
+
+        it "emits no member overlay for a gated shape: beside an ungated of:, and charges none" do
+          expect(gated_overlay_axn(13_000).output_schema.dig(:properties, :x, :items)).to eq({ type: "object" })
+        end
+
+        it "still charges the same overlay UNGATED" do
+          members = Array.new(13_000) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+
+          expect do
+            build_axn do
+              exposes :x, optional: true, type: Array, of: Hash, shape: { members:, container: Array }
+              exposes :y, optional: true, type: Array, of: Hash, shape: { members:, container: Array }
+            end.output_schema
+          end.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        # A gated `type:` can also move WHERE the members land: with the array type gated off, the value is no
+        # longer an array, so `items` is never emitted and the `of:` element type names nothing.
+        it "charges nothing for an of: whose array type is gated off on output" do
+          wide = wide_type
+          klass = build_axn { exposes :items, optional: true, type: { klass: Array, if: :flag }, of: wide }
+
+          expect(klass.output_schema[:properties]).to eq({ items: {} })
+        end
+
+        # A shape MEMBER is emitted through the same `build_property`, so its own gated type is reduced the same
+        # way — and the walk recurses through members, so this is the charge one level down.
+        it "charges nothing for a gated type on a shape member" do
+          wide = wide_type
+          inner = Axn::Core::Contract::ShapeConfig.new(
+            field: :m,
+            validations: { type: { klass: wide, if: :flag },
+                           shape: { members: [Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})], container: Hash } },
+          )
+          klass = build_axn { exposes :payload, optional: true, type: Hash, shape: { members: [inner], container: Hash } }
+
+          expect(klass.output_schema.dig(:properties, :payload, :properties, :m, :properties).keys).to eq([:keep])
+        end
+      end
+
+      # A wire path declared by TWO routes is one merged node, and the emitter builds its object property from
+      # ONE of them (`Schema.property_representative` — the first non-model route). The other route is enforced
+      # at runtime but its `shape:`/`of:` is never emitted, so charging it rejected a contract over a schema
+      # that does not carry it.
+      describe "a second route to a wire path the emitter already built" do
+        def merged_axn(first_of:, second_of:)
+          build_axn do
+            expects :a, type: Hash, optional: true
+            expects :b, on: :a, as: :bb, type: Hash, optional: true
+            expects :c, on: "a.b", optional: true, type: Array, of: first_of
+            expects :c, as: :c2, on: :bb, optional: true, type: Array, of: second_of
+          end
+        end
+
+        it "charges nothing for the second route's of:, which is never emitted" do
+          wide = wide_type
+          klass = merged_axn(first_of: Data.define(:sm1), second_of: wide)
+
+          expect(klass.input_schema.dig(:properties, :a, :properties, :b, :properties, :c, :items, :properties).keys).to eq([:sm1])
+        end
+
+        it "still charges the route the property IS built from" do
+          wide = wide_type
+
+          expect { merged_axn(first_of: wide, second_of: Data.define(:sm1)).input_schema }
+            .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+      end
+
+      # The two remaining input cases, both reachable only by ASSIGNING configs onto a class — which is the route
+      # this whole walk has to stay bounded for, and the one where a config carries whatever its author built.
+      describe "an assigned top-level config the input schema treats differently" do
+        def assigned(*validations_list)
+          klass = build_axn { expects :other, optional: true }
+          configs = validations_list.each_with_index.map do |validations, i|
+            Axn::Core::Contract::FieldConfig.new(field: :x, reader_as: :"x#{i}", validations:)
+          end
+          klass.internal_field_configs = (klass.internal_field_configs + configs).freeze
+          klass
+        end
+
+        def typed(klass) = { type: Array, of: { klass: }, optional: true }
+
+        # `build_input` writes one property per WIRE KEY (`properties[config.field] = prop`), so when two configs
+        # share one the later write wins and the earlier config's type names nothing.
+        it "charges nothing for a config whose property a later one overwrites" do
+          klass = assigned(typed(wide_type), typed(Data.define(:sm1)))
+
+          expect(klass.input_schema.dig(:properties, :x, :items, :properties).keys).to eq([:sm1])
+        end
+
+        it "still charges the config whose write survives" do
+          expect { assigned(typed(Data.define(:sm1)), typed(wide_type)).input_schema }
+            .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        # And a field named in EXCLUDED_FROM_INPUT_SCHEMA is skipped outright — no property, no shape, no id.
+        # `ambient_context` is a reserved field name, so only an assigned config can carry one.
+        it "charges nothing for a config the input schema excludes by name" do
+          wide = wide_type
+          klass = build_axn { expects :other, optional: true }
+          excluded = Axn::Core::Contract::FieldConfig.new(field: :ambient_context, reader_as: :ambient_context,
+                                                          validations: { type: Array, of: { klass: wide }, optional: true })
+          klass.internal_field_configs = (klass.internal_field_configs + [excluded]).freeze
+
+          expect(klass.input_schema[:properties].keys).to eq([:other])
         end
       end
 

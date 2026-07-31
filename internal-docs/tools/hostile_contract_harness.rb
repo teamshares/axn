@@ -2351,6 +2351,161 @@ check "a model: route's type is still charged on output", /names more than 25000
   end
 end
 
+# WHICH CONFIG the emitter builds a property from is the other half of "ask the emitter", and reading its plan is
+# exact only when the plan is given the config the emitter uses. On OUTPUT it is not the declared one:
+# `build_property` first drops every validator entry a per-validator (nested) gate could skip, because a gated
+# constraint cannot be promised outbound, and derives the plan from THAT. So a gated `type:`/`of:`/`shape:` names
+# no property, and charging its members rejected a contract whose schema names none of them. The reduction now
+# lives inside `shape_property_plan` itself (`Schema.effective_validations`), so nothing can ask for a plan from
+# a config the emitter would have reduced first.
+def projected_output(&block)
+  klass = Class.new do
+    include Axn
+    class_eval(&block)
+    def call; end
+  end
+  JSON.generate(klass.output_schema)
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 60]}"
+end
+
+GATED_SHAPE = { members: [SC.new(field: :keep, validations: {})], container: Hash }.freeze
+
+check "a per-validator-gated type: costs nothing on output", '{"type":"object","properties":{"x":{"type":["object","null"],"properties":{"keep":{}}}},"required":["x"]}' do
+  projected_output { exposes :x, optional: true, shape: GATED_SHAPE, type: { klass: WIDE_TYPE, if: :flag } }
+end
+
+check "...while the UNGATED type of the same width is still charged", /names more than 25000 JSON properties/ do
+  projected_output { exposes :x, optional: true, shape: GATED_SHAPE, type: { klass: WIDE_TYPE } }
+end
+
+# INPUT is static-maximal — a gate can only relax enforcement at runtime, so the schema still advertises the
+# type — which is why the same declaration is still charged inbound, where those members really are emitted.
+check "...and the gated type is still charged on INPUT, where it is emitted", /names more than 25000 JSON properties/ do
+  projected_input { expects :x, optional: true, shape: GATED_SHAPE, type: { klass: WIDE_TYPE, if: :flag } }
+end
+
+check "a gated of: costs nothing on output", '{"type":"object","properties":{"items":{"type":["array","null"]}},"required":["items"]}' do
+  projected_output { exposes :items, optional: true, type: Array, of: { klass: WIDE_TYPE, if: :flag } }
+end
+
+# A gated `type:` can also move WHERE members land: with the array type gated off the value is no longer an
+# array, so `items` is never emitted and the `of:` element type names nothing at all.
+check "an of: whose array type is gated off costs nothing", '{"type":"object","properties":{"items":{}},"required":["items"]}' do
+  projected_output { exposes :items, optional: true, type: { klass: Array, if: :flag }, of: WIDE_TYPE }
+end
+
+# The `shape:` entry is gated the same way (it is an entry of the same validations Hash), and two fields sharing
+# one 13,000-member shape is past the emitted bound in total while each graph stays well inside the graph bound.
+check "a gated shape: costs nothing on output", '{"type":"object","properties":{"x":{"type":["object","null"]},"y":{"type":["object","null"]}},"required":["x","y"]}' do
+  members = Array.new(13_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  raw = { members: members, container: Hash, if: :flag }
+  projected_output do
+    exposes :x, optional: true, type: Hash, shape: raw
+    exposes :y, optional: true, type: Hash, shape: raw
+  end
+end
+
+check "...while the same two shapes UNGATED are still charged", /names more than 25000 JSON properties/ do
+  members = Array.new(13_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  raw = { members: members, container: Hash }
+  projected_output do
+    exposes :x, optional: true, type: Hash, shape: raw
+    exposes :y, optional: true, type: Hash, shape: raw
+  end
+end
+
+# The case where reading the PLAN's shape (rather than the config's) is the whole of it: a gated `shape:` beside
+# an ungated object `of:` leaves the plan EMITTED — the element type is an object, so an overlay would have
+# applied — while the shape it was derived from is gone. Charging the config's own members here charges an
+# overlay `apply_structured_schema!` never merges.
+def gated_overlay(raw_extra)
+  members = Array.new(13_000) { |i| SC.new(field: :"m#{i}", validations: {}) }
+  raw = { members: members, container: Array }.merge(raw_extra)
+  projected_output do
+    exposes :x, optional: true, type: Array, of: Hash, shape: raw
+    exposes :y, optional: true, type: Array, of: Hash, shape: raw
+  end
+end
+
+check "a gated shape: beside an ungated of: overlays nothing, and costs nothing", /"x":\{"type":\["array","null"\],"items":\{"type":"object"\}\}/ do
+  gated_overlay(if: :flag)
+end
+
+check "...while the same overlay UNGATED is still charged", /names more than 25000 JSON properties/ do
+  gated_overlay({})
+end
+
+# A shape MEMBER is emitted through the same `build_property`, so its own gated type is reduced the same way —
+# and the charge recurses through members, so this is the same defect one level down.
+check "a gated type on a shape MEMBER costs nothing", /"m":\{"type":"object","properties":\{"keep":\{\}\}\}/ do
+  inner = SC.new(field: :m, validations: { type: { klass: WIDE_TYPE, if: :flag }, shape: GATED_SHAPE })
+  raw = { members: [inner], container: Hash }
+  projected_output { exposes :payload, optional: true, type: Hash, shape: raw }
+end
+
+# A wire path declared by TWO routes is one merged node, and the emitter builds its object property from ONE of
+# them (`Schema.property_representative`). The other route is enforced at runtime but its `of:`/`shape:` is never
+# emitted, so charging it rejected a contract over a schema that does not carry it.
+def merged_routes(first_of, second_of)
+  projected_input do
+    expects :a, type: Hash, optional: true
+    expects :b, on: :a, as: :bb, type: Hash, optional: true
+    expects :c, on: "a.b", optional: true, type: Array, of: first_of
+    expects :c, as: :c2, on: :bb, optional: true, type: Array, of: second_of
+  end
+end
+
+check "a second route's of: costs nothing, since the property is built from the first", /"c":.*"items":\{"type":"object","properties":\{"sm1":\{\}\}\}/ do
+  merged_routes(Data.define(:sm1), WIDE_TYPE)
+end
+
+# `projected_input` truncates the message it reports, so the row matches the part that survives.
+check "...while the route the property IS built from is still charged", /names more than 25000 JSON/ do
+  merged_routes(WIDE_TYPE, Data.define(:sm1))
+end
+
+# The two input cases reachable only by ASSIGNING configs onto a class — this file's own subject, and where a
+# config carries whatever its author built. `build_input` writes one property per WIRE KEY, so a later config
+# sharing one overwrites the earlier property; and a field named in `EXCLUDED_FROM_INPUT_SCHEMA` is skipped
+# outright (only an assigned config can carry that name — `ambient_context` is reserved).
+def assigned_input(*validations_list)
+  klass = Class.new do
+    include Axn
+    expects :other, optional: true
+    def call; end
+  end
+  configs = validations_list.each_with_index.map do |validations, i|
+    Axn::Core::Contract::FieldConfig.new(field: :x, reader_as: :"x#{i}", validations: validations)
+  end
+  klass.internal_field_configs = (klass.internal_field_configs + configs).freeze
+  JSON.generate(klass.input_schema)
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 60]}"
+end
+
+check "an overwritten top-level property costs nothing", /"x":\{"type":"array","items":\{"type":"object","properties":\{"sm1":\{\}\}\}\}/ do
+  assigned_input({ type: Array, of: { klass: WIDE_TYPE }, optional: true }, { type: Array, of: { klass: Data.define(:sm1) }, optional: true })
+end
+
+check "...while the write that survives is still charged", /names more than 25000 JSON/ do
+  assigned_input({ type: Array, of: { klass: Data.define(:sm1) }, optional: true }, { type: Array, of: { klass: WIDE_TYPE }, optional: true })
+end
+
+check "a field the input schema excludes by name costs nothing", '{"type":"object","properties":{"other":{}}}' do
+  klass = Class.new do
+    include Axn
+    expects :other, optional: true
+    def call; end
+  end
+  excluded = Axn::Core::Contract::FieldConfig.new(field: :ambient_context, reader_as: :ambient_context,
+                                                 validations: { type: Array, of: { klass: WIDE_TYPE }, optional: true })
+  klass.internal_field_configs = (klass.internal_field_configs + [excluded]).freeze
+  JSON.generate(klass.input_schema)
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 60]}"
+end
+
 # Branches are sibling NAMESPACES, so counting them for size must not make a name shared by two of them a
 # collision: `of: [A, B]` where both define `:shared` describes one property two ways.
 check "two of: branches may share a member name", '[[:shared, :only_a], [:shared, :only_b]]' do

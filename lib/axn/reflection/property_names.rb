@@ -399,7 +399,10 @@ module Axn
                                           description: "#{inspect_field_name(member)}, a member of #{origin} declared on #{describe_config(config)}")
           end
         end
-        sources.concat(shape_member_sources(Axn::Internal::ShapeGraph.nested_shape(config), node_path, config))
+        # The shape the PLAN carries, not a second read of the config: attribution then lists exactly the members
+        # the emitter would have emitted here, so an outbound gate that drops a `shape:` leaves no source claiming
+        # a member the schema names nowhere.
+        sources.concat(shape_member_sources(plan.shape, node_path, config))
       end
 
       def shape_member_sources(shape, node_path, owner)
@@ -501,65 +504,95 @@ module Axn
 
       # THE THREE CHARGE SITES, and which way each can be wrong — stated, because an over-count rejects a legal
       # declaration while an under-count only loosens the bound, and a charge that cannot say which it does is a
-      # predictor. Nothing here is charged for a config the emitter represents nowhere (`emitted_configs`).
+      # predictor. Nothing here is charged for a config the emitter represents nowhere, and no SHAPE is charged
+      # for a config the emitter builds no property from (`emitted_configs` answers both).
       #
       # 1. One per emitted config, below. NOT exact, and off only by a bounded multiple of the DECLARATION count,
       #    never by a multiple of the emitted schema: it UNDER-counts the implicit intermediate keys a dotted `on:`
-      #    introduces (they are shared nodes, so charging them per config would over-count instead), and it
-      #    OVER-counts by one per pair of declarations that MERGE onto a single property — two routes to one wire
-      #    path, a `model:`-generated `<field>_id` beside an explicitly declared one. So a contract of N merged
-      #    pairs is rejected at 25,000 charges rather than 25,000 properties.
+      #    introduces (they are shared nodes, so charging them per config would over-count instead) and the one
+      #    property a conditional-requiredness `allOf` clause repeats, and it OVER-counts by one per pair of
+      #    declarations that MERGE onto a single property — two routes to one wire path, a `model:`-generated
+      #    `<field>_id` beside an explicitly declared one. So a contract of N merged pairs is rejected at 25,000
+      #    charges rather than 25,000 properties.
       # 2. Every property name a declared TYPE contributes (`each_type_namespace`), read out of `plan.type_schema`
-      #    — the very Hash `apply_structured_schema!` assigns — so it is exact by construction, including a
-      #    multi-class `of:` whose element types each land in their own `anyOf` branch. A type that emits nothing
-      #    (a scalar `of:`, a gated outbound config, an input `model:` route) carries no properties to charge.
-      # 3. One per shape MEMBER, recursively, gated on `plan.emitted`. Exact: a member with no name cannot be
-      #    declared at all (the declaration walk rejects a member answering to no `field`, and
-      #    `Contract.validate_shape_member_name!` rejects a name that is neither String nor Symbol), so every
-      #    member the walk sees is one `member_properties` emits, and a nested shape is charged only where the
-      #    parent's own overlay is emitted.
+      #    — the very Hash `apply_structured_schema!` assigns — so it is exact GIVEN the plan, including a
+      #    multi-class `of:` whose element types each land in their own `anyOf` branch. "Given the plan" is the
+      #    whole of the claim, and it is not vacuous only because the plan's input is now the emitter's own: a
+      #    plan is derived from `Schema.effective_validations`, applied inside `shape_property_plan` itself, so
+      #    this charge cannot be handed a config `build_property` would have reduced first. That is what was
+      #    false when the claim said "exact by construction" with the reduction living in `build_property` alone:
+      #    an OUTBOUND `type: { klass: SomeData, if: :flag }` is dropped before the emitter names one member of
+      #    it, and 25,000 members were charged against a schema that names none. A type that emits nothing (a
+      #    scalar `of:`, a wholly gated outbound config, a per-validator-gated outbound `type:`/`of:`, an input
+      #    `model:` route) carries no properties to charge.
+      # 3. One per shape MEMBER, recursively, over `plan.shape` and gated on `plan.emitted` — the same shape
+      #    `apply_structured_schema!` emits members from, so this walk and that emission cannot see different
+      #    members (an outbound gate on the `shape:` entry itself drops both). Exact given the plan for the same
+      #    reason as site 2, plus: a member with no name cannot be declared at all (the declaration walk rejects
+      #    a member answering to no `field`, and `Contract.validate_shape_member_name!` rejects a name that is
+      #    neither String nor Symbol), so every member the walk sees is one `member_properties` emits, and a
+      #    nested shape is charged only where the parent's own overlay is emitted.
       #
       # Separately, `ShapeGraph::MAX_MEMBER_PATHS` charges the STORED graph at declaration — every member path,
       # emitted or not. That one deliberately does not derive from the emitter: it bounds the cost of WALKING a
       # graph axn holds (runtime shape validation, redaction), which happens whether or not a property is emitted.
       def reject_oversized_schema!(field_configs, subfield_configs, for_output:, resolved: nil)
         budget = Budget.new(MAX_EMITTED_PROPERTIES)
-        emitted_configs(field_configs, subfield_configs, for_output:, resolved:).each do |config|
+        emitted_configs(field_configs, subfield_configs, for_output:, resolved:).each do |config, shapes_a_property|
           label = -> { describe_config(config) }
           budget.spend!(1, &label)
-          count_emitted_properties!(budget, config, for_output:, &label)
+          count_emitted_properties!(budget, config, for_output:, &label) if shapes_a_property
         end
       end
 
-      # The configs the projection emits properties FOR — asked of the emitter's own artifacts rather than
-      # predicted from the declarations, because a config the schema names nowhere must cost nothing: charging it
-      # rejects a contract over a schema it does not have. Charging one was the seventh defect on this branch
-      # with that single root, and the last charge still predicting instead of deriving.
+      # The configs the projection emits properties FOR, each paired with whether the projection builds its
+      # PROPERTY from that config (and so emits its `shape:`/type members) — both asked of the emitter's own
+      # artifacts rather than predicted from the declarations, because a config the schema names nowhere must cost
+      # nothing: charging it rejects a contract over a schema it does not have. Charging one was the seventh defect
+      # on this branch with that single root, and the last charge still predicting instead of deriving.
       #
-      # Outbound, every declared field is emitted — `build_output` writes one property per config, unconditionally.
+      # Outbound, every declared field is emitted AND shaped — `build_output` calls `build_property` once per
+      # config, unconditionally.
       #
       # Inbound, emission depends on the config's POSITION, and `SubfieldTree` is what decides it. A config rooted
       # at `on: :ambient_context` is never attached to a tree at all, so `index` has no entry for it and the
       # projection is an empty object however many are declared (each was charged one property, plus every member
       # of its shape). A config whose ancestor chain passes through a parent that cannot hold JSON object
       # properties — a `model:` route, a non-object or mixed-union type, an implicit key already claimed by a
-      # non-object shape member — is omitted at that ancestor, along with its whole subtree.
+      # non-object shape member — is omitted at that ancestor, along with its whole subtree. And a field
+      # `build_input` skips outright (`EXCLUDED_FROM_INPUT_SCHEMA`) emits nothing at all; only a config assigned
+      # onto a class can carry such a name, since `ambient_context` is a reserved field name.
       #
       # `path_blocked?` is the predicate that decides the second one: the same call `compute_dropped` makes, so
       # the charge and the drop cannot disagree. It is asked at EVERY depth, because the emitter blocks at every
       # depth (`apply_nested_subfields!` returns at the blocking node) while `dropped` deliberately records only
       # the deep configs it reports to the author, a depth-1 subfield under such a parent being silently omitted.
       #
+      # WHICH config shapes the property is a separate question, because one wire path can be declared by two
+      # routes and the emitter builds from ONE of them. At a subfield node that is `Schema.property_representative`
+      # — the very config `apply_children!` emits from. At top level it is the last config declared with that wire
+      # key, because `build_input` writes `properties[config.field]` per config and a later write wins; that too is
+      # reachable only by assigning configs onto a class (a declared duplicate is rejected outright), and if it
+      # ever drifts it UNDER-counts, which only loosens the bound.
+      #
       # The tree comes from the class's own cache when the caller has it (`resolved:`), which is the artifact
       # `Schema.build_input_for` nests from — the same tree, not a second one built beside it.
       def emitted_configs(field_configs, subfield_configs, for_output:, resolved: nil)
-        return field_configs if for_output
+        return field_configs.map { |config| [config, true] } if for_output
 
         subfields = Array(subfield_configs)
         tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
-        (field_configs + subfields).select do |config|
+        # `build_input`'s own write order: the LAST top-level config at a wire key is the one whose property
+        # survives (`to_h` keeps the last entry, exactly as the repeated assignment does), and a `model:` route
+        # writes `<field>_id` instead, so it never claims this slot.
+        top_level = field_configs.reject { |c| c.validations[:model] }.to_h { |c| [c.field, c] }
+        (field_configs + subfields).filter_map do |config|
           path = tree.index[config]
-          path && !SubfieldTree.path_blocked?(path.ancestors)
+          next unless path && !SubfieldTree.path_blocked?(path.ancestors)
+          next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
+
+          owner = path.ancestors.empty? ? top_level[config.field] : Schema.property_representative(path.node.configs)
+          [config, owner.equal?(config)]
         end
       end
 
@@ -585,28 +618,35 @@ module Axn
       # Ancestry-scoped (see CycleGuard), so a nested shape reused by SIBLING members is still counted twice —
       # that sharing is exactly what the budget exists to catch, and only genuine self-containment is a cycle.
       #
-      # What it charges is DERIVED from `Schema.shape_property_plan` — the same plan the emitter itself acts on —
-      # rather than predicted from the declaration. A shape whose members never become properties therefore costs
-      # nothing: a scalar `of:` (`of: String` with `field :length`) validates its members off an element that
-      # stays a string, and an outbound-gated value, a non-member-keyed one, or an INPUT `model:` route (whose
-      # `<field>_id` is emitted in place of the field) emits no object at all. Charging those rejected a contract
-      # over a schema it does not have — as did charging a config the projection places nowhere, which is the same
-      # question one level up and is settled before this walk is reached (see `emitted_configs`). The type's own properties ARE charged even when the
-      # shape overlay is not emitted, because an `of:` element type's own members reach `items` with or without a
-      # shape — and they are charged through `each_type_namespace`, so a type that emits its properties across
-      # several namespaces (a multi-class `of:`) is counted in all of them rather than only at the node.
+      # What it charges is DERIVED from `Schema.shape_property_plan` — the same plan the emitter itself acts on,
+      # built from the same reduced view of the config (`Schema.effective_validations`, applied inside the plan so
+      # nothing can ask for one from a config the emitter would not have used) — rather than predicted from the
+      # declaration. A shape whose members never become properties therefore costs nothing: a scalar `of:`
+      # (`of: String` with `field :length`) validates its members off an element that stays a string, and an
+      # outbound-gated value, a non-member-keyed one, or an INPUT `model:` route (whose `<field>_id` is emitted in
+      # place of the field) emits no object at all. Nor does a `type:`/`of:`/`shape:` entry an OUTBOUND
+      # per-validator gate drops, which is why the walk reads its members off `plan.shape` rather than off the
+      # config: the plan's shape is the one `apply_structured_schema!` emits from. Charging those rejected a
+      # contract over a schema it does not have — as did charging a config the projection places nowhere, or one
+      # whose property the projection builds from a different route, which are the same question one level up and
+      # are settled before this walk is reached (see `emitted_configs`). The type's own properties ARE charged even
+      # when the shape overlay is not emitted, because an `of:` element type's own members reach `items` with or
+      # without a shape — and they are charged through `each_type_namespace`, so a type that emits its properties
+      # across several namespaces (a multi-class `of:`) is counted in all of them rather than only at the node.
       #
       # The plan is asked once per shape-bearing node, not per member: a member with no nested shape has no
-      # subtree to charge and never reaches this.
+      # subtree to charge and never reaches this. The pre-check that skips it reads the config's OWN
+      # `validations` — sound because the reduction only ever REMOVES entries, so a config with neither `shape:`
+      # nor `of:` declared can have neither effectively, while one whose only such entry is gated away reaches
+      # the plan and is charged nothing.
       def count_emitted_properties!(budget, owner, seen = nil, depth = 0, via: nil, for_output: false, &label)
         validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(owner, :validations))
         return if nil.equal?(validations)
-
-        hash = Internal::ShapeGraph.hash_or_nil(validations[:shape])
-        return if nil.equal?(hash) && nil.equal?(validations[:of])
+        return if nil.equal?(Internal::ShapeGraph.hash_or_nil(validations[:shape])) && nil.equal?(validations[:of])
 
         plan = Schema.shape_property_plan(owner, for_output:)
         each_type_namespace(plan) { |_path, names| budget.spend!(names.size, &label) }
+        hash = Internal::ShapeGraph.hash_or_nil(plan.shape)
         return if nil.equal?(hash) || !plan.emitted
 
         raise_shape_too_deep!(via) if depth > Internal::ShapeGraph::MAX_NESTING
