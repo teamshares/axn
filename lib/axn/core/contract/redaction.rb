@@ -398,11 +398,6 @@ module Axn
         # validation and redaction all still descend into.
         def _member_shape(member) = Internal::ShapeGraph.nested_shape(member)
 
-        # Whether two colliding names are the same SPELLING — decided while a failure is already being
-        # reported, so without dispatching `==` (or anything else) on a name. A member name may be a
-        # caller-supplied String subclass, and its `==` can raise in place of the duplicate error being
-        # built, escaping every rescue when what it raises is outside StandardError.
-        #
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
         # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
         # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
