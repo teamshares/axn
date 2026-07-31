@@ -172,6 +172,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     let(:accepting) { Class.new { def in_span(_name, record_exception: nil); end }.new }
     let(:rejecting) { Class.new { def in_span(_name, attributes: nil); end }.new }
     let(:splatting) { Class.new { def in_span(_name, **opts); end }.new }
+    let(:positional) { Class.new { def in_span(_name, record_exception); end }.new }
 
     before { Axn::Internal::Tracing.reset! }
 
@@ -182,6 +183,12 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
 
     it "reads a **opts tracer as unsupported, since passing the option to a strict tracer would raise" do
       expect(Axn::Internal::Tracing.supports_record_exception_option?(splatting)).to be(false)
+    end
+
+    it "reads a positional parameter that merely shares the name as unsupported" do
+      # `.method(:in_span).parameters` here is [[:req, :_name], [:req, :record_exception]] — the
+      # name matches but the type doesn't, distinguishing this from the keyword case above.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(positional)).to be(false)
     end
 
     it "is false for no tracer at all" do

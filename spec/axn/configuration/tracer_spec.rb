@@ -90,7 +90,10 @@ RSpec.describe "Axn.config.tracer" do
       expect(recorder.calls).to eq([["axn.call", { attributes: { "axn.resource" => "Anonymous Axn" } }]])
     end
 
-    it "creates no span when tracing is explicitly disabled" do
+    it "creates no span when tracing is explicitly disabled, even with OpenTelemetry loaded" do
+      # A bare-`defined?(OpenTelemetry)` gate would still try to trace here; stubbing the constant
+      # in without a real tracer_provider proves the gate is Axn.config.tracer, not the constant.
+      stub_const("OpenTelemetry", Module.new)
       Axn.config.tracer = nil
       expect(Axn::Internal::Tracing).not_to receive(:supports_record_exception_option?)
       expect(build_axn.call).to be_ok

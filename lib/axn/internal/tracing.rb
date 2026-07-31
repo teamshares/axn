@@ -26,11 +26,18 @@ module Axn
         # OpenTelemetry::Trace::Tracer, whose signature says nothing about an injected tracer and can
         # be wrong in both directions.
         #
-        # Only an explicitly-named keyword counts. A tracer declaring `**opts` reports :keyrest and is
-        # read as unsupported, so axn omits the option and an OTel >= 1.7 tracer underneath records the
-        # exception on top of axn's own `span.record_exception` — a duplicate event. That is the safe
-        # direction: over-detecting sends the option to a strict-arity tracer, and `in_span` is called
-        # outside `best_effort`, so the resulting ArgumentError would take down the call.
+        # Only a parameter actually DECLARED AS A KEYWORD (:key/:keyreq) counts — sharing the name
+        # `record_exception` is not enough on its own. Two parameter shapes read as unsupported
+        # despite matching the name:
+        #   - `**opts` (:keyrest): axn omits the option, so an OTel >= 1.7 tracer underneath records
+        #     the exception on top of axn's own `span.record_exception` — a duplicate event, not a
+        #     crash.
+        #   - a same-named POSITIONAL parameter (`def in_span(name, record_exception)`, :req):
+        #     without this check, `tracer.in_span(name, **kwargs)` would fold the whole kwargs hash
+        #     onto that one positional slot instead of binding the boolean axn intends.
+        # Both are the safe direction to be wrong in: over-detecting instead sends the option to a
+        # tracer whose #in_span has no slot for it at all, and `in_span` is called outside
+        # `best_effort`, so the resulting ArgumentError would take down the call.
         #
         # Single-slot identity memo: there is one tracer per process, so a map would model tracers
         # that never exist, and the slot holds no reference Axn.config isn't already holding.
