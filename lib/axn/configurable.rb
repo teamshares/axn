@@ -34,7 +34,7 @@ module Axn
       nil
     end
 
-    Setting = Struct.new(:name, :default, :one_of, :validate, :callable, :overridable, keyword_init: true) do
+    Setting = Struct.new(:name, :default, :one_of, :validate, :overridable, keyword_init: true) do
       # Raises ArgumentError if the assigned value is not permitted.
       def validate!(value)
         raise ArgumentError, "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; got #{value.inspect}" if one_of && !one_of.include?(value)
@@ -44,10 +44,11 @@ module Axn
         raise ArgumentError, "#{name} got invalid value: #{value.inspect}"
       end
 
-      # Resolves the stored value, calling it if this setting is declared callable.
-      def resolve(value)
-        callable && value.respond_to?(:call) ? value.call : value
-      end
+      # A Proc default is DYNAMIC: re-derived on every read while the setting is unset, and never
+      # stored. Settings whose default depends on the host app's boot state (a tracer that
+      # OpenTelemetry may register after axn loads, a Rails.env-derived flag) would otherwise cache
+      # an answer taken before that state existed.
+      def dynamic_default? = default.is_a?(Proc)
 
       # A fresh copy of the default, so mutable defaults (e.g. []) aren't shared
       # across instances. dup is a no-op for nil/true/false/Symbol/Integer.
@@ -281,8 +282,12 @@ module Axn
           # source validates its own slice here, at read — surfacing a bad value when
           # the adapter first resolves it. Flat-accessor writes already validated, so
           # this is a no-op for them.
+          #
+          # An override value is used as-is. A setting's dynamic default still reaches a class with
+          # no override of its own, through the `fallback` lambda below, which reads the config's
+          # own reader.
           setting.validate!(found)
-          setting.resolve(found)
+          found
         end
 
         # Register for the collision-proof `resolve_override_for` path, so framework
@@ -373,9 +378,9 @@ module Axn
     # module, so a public `_`-prefixed method here lands on that gem's public surface.
     private :_axn_config_settings
 
-    def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
+    def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
       name = name.to_sym
-      setting = Setting.new(name:, default:, one_of:, validate:, callable:, overridable:)
+      setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
       _axn_config_settings[name] = setting
       _define_override_methods(setting, -> { config.public_send(setting.name) }) if overridable
       nil
@@ -434,13 +439,15 @@ module Axn
 
       def _read(name)
         setting = @settings[name]
-        @values[name] = setting.dup_default unless @values.key?(name)
-        setting.resolve(@values[name])
+        return @values[name] if @values.key?(name)
+        return setting.default.call if setting.dynamic_default?
+
+        @values[name] = setting.dup_default
       end
     end
 
     # Class-level flavor: declare validated *instance* settings on a class,
-    # reusing the same Setting kernel (defaults, one_of:/validate:, callable:).
+    # reusing the same Setting kernel (defaults, one_of:/validate:).
     # Used to dogfood Axn's own Configuration without contorting the
     # module-singleton DSL above. `overridable: true` mints the same per-class
     # override accessors (via PerClassOverrides), resolving their library-level
@@ -463,13 +470,17 @@ module Axn
         @_overridable_config_source = block
       end
 
-      def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
-        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, callable:, overridable:)
+      def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
+        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, overridable:)
         ivar = :"@#{name}"
 
         define_method(name) do
-          instance_variable_set(ivar, setting.dup_default) unless instance_variable_defined?(ivar)
-          setting.resolve(instance_variable_get(ivar))
+          return instance_variable_get(ivar) if instance_variable_defined?(ivar)
+          return setting.default.call if setting.dynamic_default?
+
+          # A literal default IS memoized: mutating it in place (`config.some_list << :x`) is a
+          # supported way to extend one, which a fresh dup per read would silently discard.
+          instance_variable_set(ivar, setting.dup_default)
         end
 
         define_method(:"#{name}?") { !!public_send(name) }

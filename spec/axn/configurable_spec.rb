@@ -7,7 +7,7 @@ RSpec.describe Axn::Configurable do
 
       setting :default_model, default: "gpt-4o-mini"
       setting :mcp_text_content, default: :structured, one_of: %i[structured message]
-      setting :enabled, default: true, callable: true
+      setting :enabled, default: true
     end
   end
 
@@ -50,23 +50,6 @@ RSpec.describe Axn::Configurable do
     it "raises ArgumentError for a value outside the set" do
       expect { configurable.config.mcp_text_content = :nope }
         .to raise_error(ArgumentError, /mcp_text_content/)
-    end
-  end
-
-  describe "callable: settings" do
-    it "resolves a proc value at read time" do
-      configurable.config.enabled = -> { false }
-      expect(configurable.config.enabled).to eq(false)
-    end
-
-    it "returns a non-callable value as-is" do
-      configurable.config.enabled = true
-      expect(configurable.config.enabled).to eq(true)
-    end
-
-    it "exposes a boolean predicate" do
-      configurable.config.enabled = -> { false }
-      expect(configurable.config.enabled?).to eq(false)
     end
   end
 
@@ -124,19 +107,6 @@ RSpec.describe Axn::Configurable do
       expect(klass).not_to respond_to(:default_model)
     end
 
-    it "resolves a callable override value through Setting#resolve" do
-      mod = Module.new do
-        extend Axn::Configurable
-        setting :enabled, default: true, callable: true, overridable: true
-      end
-      m = mod.overrides
-      klass = Class.new { include m }
-
-      klass.enabled(-> { false })
-
-      expect(klass.enabled).to eq(false)
-    end
-
     it "picks up overridable settings declared after the action includes overrides" do
       mod = Module.new { extend Axn::Configurable }
       overrides = mod.overrides
@@ -153,7 +123,7 @@ RSpec.describe Axn::Configurable do
       let(:boolean_mod) do
         Module.new do
           extend Axn::Configurable
-          setting :enabled, default: true, callable: true, overridable: true
+          setting :enabled, default: true, overridable: true
         end
       end
 
@@ -168,11 +138,6 @@ RSpec.describe Axn::Configurable do
 
       it "reflects a falsey per-class override" do
         boolean_class.enabled(false)
-        expect(boolean_class.enabled?).to be(false)
-      end
-
-      it "resolves a callable default at read time" do
-        boolean_mod.config.enabled = -> { false }
         expect(boolean_class.enabled?).to be(false)
       end
 
@@ -289,12 +254,12 @@ RSpec.describe Axn::Configurable::Settings do
       Class.new do
         extend Axn::Configurable::Settings
 
-        setting :sandbox_mode, default: -> { true }, callable: true
+        setting :sandbox_mode, default: -> { true }
         setting :emit_metrics
       end
     end
 
-    it "returns true for a truthy resolved value (callable default)" do
+    it "returns true for a truthy resolved value (dynamic default)" do
       expect(instance.sandbox_mode?).to be(true)
     end
 
@@ -305,6 +270,57 @@ RSpec.describe Axn::Configurable::Settings do
 
     it "returns false when the setting resolves to nil" do
       expect(instance.emit_metrics?).to be(false)
+    end
+  end
+
+  describe "dynamic defaults" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        def self.derivations = @derivations ||= 0
+        def self.bump! = @derivations = derivations + 1
+
+        setting :derived, default: lambda {
+          bump!
+          "derived-#{derivations}"
+        }
+        setting :literal_list, default: []
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "re-derives a Proc default on every read while unset" do
+      expect(instance.derived).to eq("derived-1")
+      expect(instance.derived).to eq("derived-2")
+    end
+
+    it "never writes a Proc default into the ivar, so the ivar stays an assignment sentinel" do
+      instance.derived
+      expect(instance.instance_variable_defined?(:@derived)).to be(false)
+    end
+
+    it "returns an explicitly assigned value instead of re-deriving" do
+      instance.derived = "explicit"
+      expect(instance.derived).to eq("explicit")
+      expect(instance.derived).to eq("explicit")
+    end
+
+    it "treats an explicitly assigned nil as a value, not as a reset" do
+      instance.derived = nil
+      expect(instance.derived).to be_nil
+      expect(instance.derived?).to be(false)
+    end
+
+    it "still memoizes a literal mutable default, so in-place mutation persists" do
+      instance.literal_list << :a
+      expect(instance.literal_list).to eq([:a])
+    end
+
+    it "does not share a literal mutable default across instances" do
+      instance.literal_list << :a
+      expect(klass.new.literal_list).to eq([])
     end
   end
 

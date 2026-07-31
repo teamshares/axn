@@ -323,7 +323,8 @@ class GemGenerator
 
       # Starter setting — replace with your gem's own. Add `overridable: true` to let a consuming Axn
       # set it per-class via `configure(:#{namespace_key}) { |c| c.enabled = false }` (read back with
-      # `#{module_const}.resolve_override_for(axn_class, :enabled)`); `callable: true` for a lambda default.
+      # `#{module_const}.resolve_override_for(axn_class, :enabled)`). A Proc `default:` is re-derived
+      # on every read, for a value that depends on host-app boot state.
       setting :enabled, default: true
 
       class Error < StandardError; end
