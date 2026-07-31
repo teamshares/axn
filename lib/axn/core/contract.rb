@@ -905,6 +905,13 @@ module Axn
           # container check downstream to reject.
           return WalkedShape.new(copy: shape, paths: 0) if nil.equal?(hash)
 
+          # Ahead of "does it supply members?", because a shape whose `members:` comes from a default supplies
+          # them to this walk and not to the snapshot it produces — the reverse mismatch of the one below, and
+          # reported as the defect it is rather than as a shape with no members.
+          _reject_defaulting_option_container!(hash) do
+            nil.equal?(via) ? "the `shape:`" : "the nested `shape:` at shape member #{_describe_shape_member(via, via_name)}"
+          end
+
           walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
           walked = walk.walked[hash]
           unless nil.equal?(walked)
@@ -1090,6 +1097,7 @@ module Axn
           validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
           return nil if nil.equal?(validations)
 
+          _reject_defaulting_option_container!(validations) { "the validations of #{_member_owner_label(member, name)}" }
           # A Hash axn owns, ALWAYS — canonicalized and copied in one pass. "Needs no key change" and "needs no
           # copy" are different questions, and answering only the first left a member's options aliased to the
           # objects the caller still held while a top-level field's were detached: mutating an `inclusion:` list
@@ -1123,6 +1131,7 @@ module Axn
           metadata = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :metadata))
           return nil if nil.equal?(metadata)
 
+          _reject_defaulting_option_container!(metadata) { "the metadata of #{_member_owner_label(member, name)}" }
           # Canonicalized WHILE being copied, in one pass: metadata is copied either way (what is stored IS the
           # contract — see `_snapshot_member_attributes!`), so asking about its keys separately would be a second
           # pass over every member for nothing.
@@ -1728,6 +1737,7 @@ module Axn
         end
 
         def _detached_option_bag(key, bag)
+          _reject_defaulting_option_container!(bag) { "the `#{key}:` option bag" }
           copy = Internal::ShapeGraph.copy_entries(bag)
           copy.each do |option_key, option|
             case option
@@ -1735,6 +1745,33 @@ module Axn
             end
           end
           copy
+        end
+
+        # A caller Hash that answers missing keys from a DEFAULT is refused wherever a declaration would store one.
+        # It is the same split the copy exists to close, arriving from the other side: axn copies every container
+        # it stores entry-wise, and a default is not an entry, so the options such a Hash answers are simply not
+        # in the stored contract — while a guard reading the original with `[]` sees them. The author is told
+        # rather than left to find out, per the option-key rule above: an option is never silently ignored.
+        #
+        # Refusing rather than carrying the default over, because carrying it cannot make the declaration work.
+        # ActiveModel builds each validator's options into a Hash of its OWN (`_parse_validates_options`), so a
+        # default never reached a validator even when axn stored the caller's bag: `expects :a, type:
+        # Hash.new(String)` raised "must supply :klass" on every CALL — a key the author believes they supplied —
+        # before this copy existed and after it. Declaration is where that is knowable.
+        #
+        # The label is YIELDED, so naming the container costs nothing until there is an error to name (see
+        # `_symbol_keyed_bag`), and the two readers consulted are Hash's own (see ShapeGraph.supplies_default?).
+        def _reject_defaulting_option_container!(hash)
+          return unless Internal::ShapeGraph.supplies_default?(hash)
+
+          raise ArgumentError,
+                "#{yield} answers a missing key from a Hash default (`Hash.new(…)` or a `default_proc`) rather " \
+                "than from an entry of its own, and axn cannot carry that into the contract: a declared " \
+                "container is copied entry-wise so that mutating what you still hold cannot change an " \
+                "already-declared class, and ActiveModel rebuilds a validator's options into a Hash of its own " \
+                "besides — so an option supplied through the default is dropped, and the declaration fails on a " \
+                "call complaining about a key you did supply. Write the options out as entries " \
+                "(`type: { klass: String }`)."
         end
 
         # Three outcomes, and which one a container gets is decided WITHOUT running any of its code.

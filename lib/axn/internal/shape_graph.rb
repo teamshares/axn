@@ -61,13 +61,28 @@ module Axn
       # own traversal is reachable without asking the subclass anything.
       HASH_EACH = ::Hash.instance_method(:each)
       KERNEL_DUP = ::Kernel.instance_method(:dup)
-      private_constant :HASH_EACH, :KERNEL_DUP
+      HASH_DEFAULT = ::Hash.instance_method(:default)
+      HASH_DEFAULT_PROC = ::Hash.instance_method(:default_proc)
+      private_constant :HASH_EACH, :KERNEL_DUP, :HASH_DEFAULT, :HASH_DEFAULT_PROC
 
       # Every entry of a caller Hash — THE seam for reading one, so no layer ever asks a Hash subclass to
       # traverse itself.
       def self.each_entry(hash, &)
         HASH_EACH.bind_call(hash, &)
         nil
+      end
+
+      # Whether a caller Hash answers a key it has no ENTRY for — `Hash.new(x)` or a `default_proc`. What every
+      # copy above cannot carry: a copy is entry-wise, so the value such a Hash would have answered with is not
+      # in it, while a consumer reading the original with `[]` gets that value. The two disagree, which is the
+      # split the copy exists to prevent, and the declaration decides which side is the contract (see
+      # `Contract#_reject_defaulting_option_container!`).
+      #
+      # Both readers are Hash's own, bound: a subclass can override either, and one that denied its default
+      # would slip past the guard whose whole subject it is. `Hash#default` takes an optional key, and calling
+      # it without one never runs a `default_proc` — so neither read can run caller code.
+      def self.supplies_default?(hash)
+        !nil.equal?(HASH_DEFAULT.bind_call(hash)) || !nil.equal?(HASH_DEFAULT_PROC.bind_call(hash))
       end
 
       # A caller Hash's entries, in a plain Hash this module owns.

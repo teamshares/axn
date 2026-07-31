@@ -153,4 +153,105 @@ RSpec.describe "option bag keys" do
         .to raise_error(ArgumentError, /the validations of shape member `a` declares :type twice/)
     end
   end
+
+  # The same defect as a String-keyed bag, arriving from the other side: the options are not in the bag's ENTRIES
+  # at all. axn copies every container it stores entry-wise, so a default cannot come along — and ActiveModel
+  # rebuilds a validator's options into a Hash of its own besides, so a default never reached a validator even
+  # when axn stored the caller's bag (`type: Hash.new(String)` failed every CALL with "must supply :klass", a key
+  # the author believes they supplied). Reported at declaration instead of on a call.
+  describe "a bag that answers missing keys from a Hash default" do
+    # `Hash.new(value)` behind a method call, because `Lint/SharedMutableDefault` objects to the very
+    # declaration under test (a mutable default IS what a members list or a metadata String is).
+    def defaulting(value) = Hash.new(value)
+
+    it "rejects `Hash.new(value)`, naming the bag" do
+      bag = defaulting(String)
+
+      expect { build_axn { expects :a, type: bag } }
+        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default.*Write the options out as entries/m)
+    end
+
+    it "rejects a default_proc bag" do
+      bag = Hash.new { |_h, _key| String }
+
+      expect { build_axn { expects :a, type: bag } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+    end
+
+    # The CONTAINER is the defect, not a missing key: a bag whose `klass:` is a real entry still answers every
+    # OTHER key from the default — `type: { klass: String }` with a default is also `if: String`, a truthy gate
+    # nothing declared — so it is refused whatever it happens to hold.
+    it "rejects a bag carrying a real entry alongside the default" do
+      bag = defaulting(String)
+      bag[:klass] = String
+
+      expect { build_axn { expects :a, type: bag } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+    end
+
+    # Every bag axn detaches, whichever validator owns it — the guard is on the container, so there is no
+    # per-validator list to keep in step.
+    %i[of inclusion validate model presence numericality].each do |option|
+      it "rejects a defaulting `#{option}:` bag too" do
+        bag = defaulting(String)
+
+        expect { build_axn { expects :a, type: Array, option => bag } }
+          .to raise_error(ArgumentError, /the `#{option}:` option bag answers a missing key from a Hash default/)
+      end
+    end
+
+    it "rejects a raw `shape:` whose members come from the default" do
+      shape = defaulting([Axn::Core::Contract::ShapeConfig.new(field: :m, validations: {})])
+      shape[:container] = Hash
+
+      expect { build_axn { expects :payload, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /the `shape:` answers a missing key from a Hash default/)
+    end
+
+    it "rejects a defaulting nested shape, naming the member it hangs from" do
+      nested = defaulting([Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {})])
+      nested[:container] = Hash
+      member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /the nested `shape:` at shape member `m` answers a missing key from a Hash default/)
+    end
+
+    # A member's own two grammar levels are held to it as well: the validations Hash and the metadata Hash are
+    # each copied entry-wise, so a default there is dropped exactly as a bag's is.
+    it "rejects a member whose validations Hash defaults" do
+      validations = defaulting({ klass: String })
+      member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations:)
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /the validations of shape member `a` answers a missing key from a Hash default/)
+    end
+
+    it "rejects a member whose metadata Hash defaults" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {}, metadata: defaulting("the a"))
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /the metadata of shape member `a` answers a missing key from a Hash default/)
+    end
+
+    # Both readers are Hash's own, bound: a subclass overriding them is exactly the case the guard is about, so
+    # its answer cannot be the one that decides.
+    it "does not let a bag deny its own default" do
+      liar = Class.new(Hash) do
+        def default(*) = nil
+        def default_proc = nil
+      end.new(String)
+
+      expect { build_axn { expects :a, type: liar } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+    end
+
+    # `default: nil` is what an ordinary Hash literal has, so nothing about the common case changes — and the
+    # bag still validates, rather than being accepted and ignored.
+    it "leaves a bag whose default is nil alone" do
+      bag = defaulting(nil)
+      bag[:klass] = String
+      klass = build_axn { expects :a, type: bag }
+
+      expect(klass.call(a: "x")).to be_ok
+      expect(klass.call(a: 1)).not_to be_ok
+    end
+  end
 end
