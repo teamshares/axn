@@ -473,6 +473,18 @@ module Axn
       # past it — so a graph that multiplies out costs the cap rather than its own size. Counting the whole
       # graph first would be the very expense being avoided.
       #
+      # Spent per emitted property PATH, never per declaration, which is what makes the count the schema's
+      # rather than the contract's: several declarations legally name ONE property — two routes to one wire
+      # path, a shape member beside a same-named subfield, a `model:`-generated `<field>_id` beside an explicit
+      # one, a `Data` type's member beside a shape member overriding it — and the emitter merges each such pair
+      # into a single Hash key. Charging the declarations instead rejected a contract of legal merges at
+      # two-thirds of the cap.
+      #
+      # The paths are held in a TRIE of identity-compared Hashes rather than as whole paths in a Set: a segment
+      # may be any object a shape member is named with, and an identity-compared Hash never asks it to hash or
+      # compare itself (see `property_segment`). The trie is also what makes charging a wire path exact in one
+      # walk — each prefix is a node, and a node charged once is a property emitted once.
+      #
       # The label names whatever the walk is judging, and is carried as a block rather than a built string
       # because it is only ever needed on the failure path: every honest declaration would otherwise pay for
       # rendering a name nothing reads.
@@ -480,16 +492,35 @@ module Axn
         def initialize(remaining, &label)
           @remaining = remaining
           @label = label
+          @claimed = {}.compare_by_identity
         end
 
-        # `properties` is what the walk is about to admit — one for a single member, or, when a walk reaches a
-        # shape it has already copied, the whole total that shape expands to (reuse is what makes a graph
-        # multiply out, and the cap bounds what a schema would EMIT rather than how many objects are stored).
-        def spend!(properties, &label)
-          @remaining -= properties
-          return unless @remaining.negative?
+        # A wire path from the root, EVERY segment of which names a property: the top-level field, plus each
+        # intermediate key a dotted `on:` introduces. Those intermediates are shared nodes, so charging them by
+        # path is what counts each of them once however many configs pass through it.
+        #
+        # Returns the trie node for the path's own property — the CURSOR a walk descending from there carries, so
+        # a shape's members are charged with one lookup each rather than by rebuilding a path per member.
+        def charge_nested_path!(path, &label)
+          node = @claimed
+          path.each { |segment| node = claim!(node, segment, label) }
+          node
+        end
 
-          raise ArgumentError, Budget.too_many_properties((label || @label).call)
+        # One property named directly under `node`, returning ITS node so the walk can descend again.
+        def charge_child!(node, segment, &label) = claim!(node, segment, label)
+
+        # A NAMESPACE under `node` — an array's `items`, one `anyOf` branch of a multi-class type. It carries a
+        # path segment (so nothing beneath it is confused with a property beside it) but names no property, so it
+        # is descended into without being charged.
+        def namespace(node, segment) = descend(node, segment)
+
+        # One property under `node` reached through namespaces of the emitter's own (`each_emitted_node`'s path
+        # into a type schema): every segment but the last is such a namespace.
+        def charge_under!(node, path, &label)
+          last = path.size - 1
+          path.each_with_index { |segment, index| node = index == last ? claim!(node, segment, label) : descend(node, segment) }
+          nil
         end
 
         def self.too_many_properties(label)
@@ -499,21 +530,52 @@ module Axn
             "(`input_schema` would not finish either). Give each member its own nested shape, flatten the " \
             "nesting, or declare fewer properties."
         end
+
+        private
+
+        def descend(node, segment) = (node[segment] ||= {}.compare_by_identity)
+
+        # Charges a node the first time it is claimed and never again — a second claim on one path is the merge
+        # the emitter performs, so it must cost nothing.
+        def claim!(node, segment, label)
+          child = descend(node, segment)
+          return child if child[CLAIMED]
+
+          child[CLAIMED] = true
+          spend!(label)
+          child
+        end
+
+        def spend!(label)
+          @remaining -= 1
+          return unless @remaining.negative?
+
+          raise ArgumentError, Budget.too_many_properties((label || @label).call)
+        end
+
+        # "This node has been charged", as a key of the node's own children Hash. A private object of this
+        # class, in an identity-compared Hash, so nothing a declaration can name is mistaken for it.
+        CLAIMED = ::Object.new.freeze
+        private_constant :CLAIMED
       end
       private_constant :Budget
 
-      # THE THREE CHARGE SITES, and which way each can be wrong — stated, because an over-count rejects a legal
-      # declaration while an under-count only loosens the bound, and a charge that cannot say which it does is a
-      # predictor. Nothing here is charged for a config the emitter represents nowhere, and no SHAPE is charged
-      # for a config the emitter builds no property from (`emitted_configs` answers both).
+      # THE THREE CHARGE SITES, all spending on the PATH a property is emitted at (see Budget), and which way
+      # each can be wrong — stated, because an over-count rejects a legal declaration while an under-count only
+      # loosens the bound, and a charge that cannot say which it does is a predictor. Nothing here is charged for
+      # a config the emitter represents nowhere, and no SHAPE is charged for a config the emitter builds no
+      # property from (`emitted_configs` answers both).
       #
-      # 1. One per emitted config, below. NOT exact, and off only by a bounded multiple of the DECLARATION count,
-      #    never by a multiple of the emitted schema: it UNDER-counts the implicit intermediate keys a dotted `on:`
-      #    introduces (they are shared nodes, so charging them per config would over-count instead) and the one
-      #    property a conditional-requiredness `allOf` clause repeats, and it OVER-counts by one per pair of
-      #    declarations that MERGE onto a single property — two routes to one wire path, a `model:`-generated
-      #    `<field>_id` beside an explicitly declared one. So a contract of N merged pairs is rejected at 25,000
-      #    charges rather than 25,000 properties.
+      # 1. One per emitted wire path, below — charged as a CHAIN, so the path's own property and every implicit
+      #    intermediate key a dotted `on:` introduces are each charged exactly once, at the node the emitter
+      #    emits them at. It is EXACT, in both directions. It cannot over-count: a path is charged only where
+      #    `emitted_configs` has established the emitter emits a property, and a second declaration reaching a
+      #    path already charged is the MERGE the emitter performs (two routes to one wire path; a
+      #    `model:`-generated `<field>_id` beside an explicitly declared one, which is why a `model:` route is
+      #    charged at the id key it actually emits). Nor is anything left for it to under-count: the one place the
+      #    schema writes a property name twice is the reference a conditional-requiredness `allOf` clause repeats,
+      #    and that clause constrains a top-level property this charge has already paid for — counting it again
+      #    would be counting one property twice.
       # 2. Every property name a declared TYPE contributes (`each_type_namespace`), read out of `plan.type_schema`
       #    — the very Hash `apply_structured_schema!` assigns — so it is exact GIVEN the plan, including a
       #    multi-class `of:` whose element types each land in their own `anyOf` branch. "Given the plan" is the
@@ -528,31 +590,63 @@ module Axn
       # 3. One per shape MEMBER, recursively, over `plan.shape` and gated on `plan.emitted` — the same shape
       #    `apply_structured_schema!` emits members from, so this walk and that emission cannot see different
       #    members (an outbound gate on the `shape:` entry itself drops both). Exact given the plan for the same
-      #    reason as site 2, plus: a member with no name cannot be declared at all (the declaration walk rejects
-      #    a member answering to no `field`, and `Contract.validate_shape_member_name!` rejects a name that is
-      #    neither String nor Symbol), so every member the walk sees is one `member_properties` emits, and a
-      #    nested shape is charged only where the parent's own overlay is emitted.
+      #    reason as site 2, plus: a member the emitter names no property for is skipped by the same rule
+      #    (`Schema.member_name`, nil for a member answering to no `field` — which only a config ASSIGNED onto a
+      #    class can carry, since the declaration walk rejects one). Sites 2 and 3 land at the same node, so a
+      #    `Data` type's member and a shape member overriding it are one property and one charge, exactly as
+      #    `base_properties.merge(member_props)` emits one.
+      #
+      # The single residue in the OVER-counting direction, and it is not reachable by declaring anything: a shape
+      # member named with an object that is neither String nor Symbol is charged by that object's IDENTITY, since
+      # normalizing it to the emitter's key would mean dispatching its own `to_sym` while counting. Two such
+      # names that convert alike therefore charge twice for one property. `Contract.validate_shape_member_name!`
+      # rejects such a name at declaration, so only a config assigned onto a class can hold one.
       #
       # Separately, `ShapeGraph::MAX_MEMBER_PATHS` charges the STORED graph at declaration — every member path,
       # emitted or not. That one deliberately does not derive from the emitter: it bounds the cost of WALKING a
       # graph axn holds (runtime shape validation, redaction), which happens whether or not a property is emitted.
       def reject_oversized_schema!(field_configs, subfield_configs, for_output:, resolved: nil)
         budget = Budget.new(MAX_EMITTED_PROPERTIES)
-        emitted_configs(field_configs, subfield_configs, for_output:, resolved:).each do |config, shapes_a_property|
+        emitted_configs(field_configs, subfield_configs, for_output:, resolved:).each do |config, wire_path, shapes_a_property|
           label = -> { describe_config(config) }
-          budget.spend!(1, &label)
-          count_emitted_properties!(budget, config, for_output:, &label) if shapes_a_property
+          node = budget.charge_nested_path!(wire_path, &label)
+          count_emitted_properties!(budget, config, node, for_output:, &label) if shapes_a_property
         end
       end
 
-      # The configs the projection emits properties FOR, each paired with whether the projection builds its
-      # PROPERTY from that config (and so emits its `shape:`/type members) — both asked of the emitter's own
-      # artifacts rather than predicted from the declarations, because a config the schema names nowhere must cost
-      # nothing: charging it rejects a contract over a schema it does not have. Charging one was the seventh defect
-      # on this branch with that single root, and the last charge still predicting instead of deriving.
+      # The Symbol the emitter keys a property by, derived without dispatching anything the NAME defines: a String
+      # is interned through String's own `to_sym`, and everything else stands for itself — a Symbol IS the key,
+      # and anything else is distinguished by identity (see the over-counting residue above).
+      # `member_properties` keys by `name.to_sym`, so this agrees with it for every name a declaration can carry,
+      # without adding a dispatch to a walk that only needs to count.
+      STRING_TO_SYM = ::String.instance_method(:to_sym)
+      private_constant :STRING_TO_SYM
+
+      def property_segment(name)
+        case name
+        when ::String then STRING_TO_SYM.bind_call(name)
+        else name
+        end
+      end
+
+      # The configs the projection emits properties FOR, each with the PATH its property is emitted at and
+      # whether the projection builds that property from this config (and so emits its `shape:`/type members) —
+      # all three asked of the emitter's own artifacts rather than predicted from the declarations, because a
+      # config the schema names nowhere must cost nothing: charging it rejects a contract over a schema it does
+      # not have. Charging one was the seventh defect on this branch with that single root, and the last charge
+      # still predicting instead of deriving.
       #
-      # Outbound, every declared field is emitted AND shaped — `build_output` calls `build_property` once per
-      # config, unconditionally.
+      # The PATH is what the budget spends on, so it has to be the emitter's key rather than the declaration's
+      # name: a `model:` route emits `<leaf>_id` in place of the field (`model_id_property`, and the nested
+      # analog in `apply_children!`, both keyed off the leaf wire segment), so charging the field's own path
+      # would charge a property the schema never names and miss the merge with an explicitly declared
+      # `<field>_id`.
+      #
+      # Outbound, every declared field is emitted at its own name — but `build_output` writes
+      # `properties[config.field]` per config, so where two configs share a wire key the LAST write is the
+      # property and the earlier config's shape is emitted nowhere (reachable only by assigning configs onto a
+      # class; a declared duplicate is rejected outright). Same rule as the inbound top-level one below, for the
+      # same reason.
       #
       # Inbound, emission depends on the config's POSITION, and `SubfieldTree` is what decides it. A config rooted
       # at `on: :ambient_context` is never attached to a tree at all, so `index` has no entry for it and the
@@ -578,7 +672,11 @@ module Axn
       # The tree comes from the class's own cache when the caller has it (`resolved:`), which is the artifact
       # `Schema.build_input_for` nests from — the same tree, not a second one built beside it.
       def emitted_configs(field_configs, subfield_configs, for_output:, resolved: nil)
-        return field_configs.map { |config| [config, true] } if for_output
+        if for_output
+          # `to_h` keeps the LAST entry for a repeated key, exactly as the repeated assignment does.
+          owners = field_configs.to_h { |c| [c.field, c] }
+          return field_configs.map { |config| [config, [config.field], owners[config.field].equal?(config)] }
+        end
 
         subfields = Array(subfield_configs)
         tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
@@ -592,8 +690,18 @@ module Axn
           next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
           owner = path.ancestors.empty? ? top_level[config.field] : Schema.property_representative(path.node.configs)
-          [config, owner.equal?(config)]
+          [config, input_property_path(config, path.wire_path), owner.equal?(config)]
         end
+      end
+
+      # Where the input schema emits this config's own property: its wire path, or — for a `model:` route, which
+      # emits the generated id INSTEAD of the field at every depth — that path with its leaf replaced by the id
+      # key. The key comes from `Internal::FieldConfig.model_id_key`, the one owner of it that `build_input` and
+      # `apply_children!` both emit through.
+      def input_property_path(config, wire_path)
+        return wire_path unless config.validations[:model]
+
+        [*wire_path[0..-2], Internal::FieldConfig.model_id_key(wire_path.last)]
       end
 
       # The same bound over the stored configs a schema build is about to walk, and the FIRST walk of any
@@ -639,13 +747,18 @@ module Axn
       # `validations` — sound because the reduction only ever REMOVES entries, so a config with neither `shape:`
       # nor `of:` declared can have neither effectively, while one whose only such entry is gated away reaches
       # the plan and is charged nothing.
-      def count_emitted_properties!(budget, owner, seen = nil, depth = 0, via: nil, for_output: false, &label)
+      def count_emitted_properties!(budget, owner, property_node, seen = nil, depth = 0, via: nil, for_output: false, &label)
         validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(owner, :validations))
         return if nil.equal?(validations)
         return if nil.equal?(Internal::ShapeGraph.hash_or_nil(validations[:shape])) && nil.equal?(validations[:of])
 
         plan = Schema.shape_property_plan(owner, for_output:)
-        each_type_namespace(plan) { |_path, names| budget.spend!(names.size, &label) }
+        # WHERE those properties land — at the field's own node, or at its array ELEMENT's, which is the same
+        # question `apply_structured_schema!` asks the plan (and `property_sources_for` asks it for attribution).
+        node = plan.in_items? ? budget.namespace(property_node, ITEMS_SEGMENT) : property_node
+        each_type_namespace(plan) do |type_path, names|
+          names.each { |name| budget.charge_under!(node, [*type_path, property_segment(name)], &label) }
+        end
         hash = Internal::ShapeGraph.hash_or_nil(plan.shape)
         return if nil.equal?(hash) || !plan.emitted
 
@@ -653,9 +766,14 @@ module Axn
 
         outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_SHAPE) do |nested|
           Internal::ShapeGraph.members(hash).each do |member|
-            budget.spend!(1, &label)
+            # Skipped on the emitter's own rule for which members become properties: a member with no name is one
+            # `named_members` filters out, so it names nothing here and its nested shape is emitted nowhere.
+            name = Schema.member_name(member)
+            next if nil.equal?(name)
 
-            count_emitted_properties!(budget, member, nested, depth + 1, via: member, for_output:, &label)
+            member_node = budget.charge_child!(node, property_segment(name), &label)
+
+            count_emitted_properties!(budget, member, member_node, nested, depth + 1, via: member, for_output:, &label)
           end
         end
         raise_cyclic_shape!(via) if CYCLIC_SHAPE.equal?(outcome)
@@ -684,7 +802,8 @@ module Axn
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
-                           :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs
+                           :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs,
+                           :property_segment, :input_property_path
     end
   end
 end

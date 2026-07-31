@@ -2833,6 +2833,18 @@ RSpec.describe "declaration-time property name collisions" do
             .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
         end
 
+        # `build_output` writes one property per wire key the same way, so the same rule holds outbound: the later
+        # write is the property, and the earlier config's type names nothing.
+        it "charges nothing for an OUTPUT config whose property a later one overwrites" do
+          klass = build_axn { exposes :other, optional: true }
+          configs = [typed(wide_type), typed(Data.define(:sm1))].each_with_index.map do |validations, i|
+            Axn::Core::Contract::FieldConfig.new(field: :x, reader_as: :"x#{i}", validations:)
+          end
+          klass.external_field_configs = (klass.external_field_configs + configs).freeze
+
+          expect(klass.output_schema.dig(:properties, :x, :items, :properties).keys).to eq([:sm1])
+        end
+
         # And a field named in EXCLUDED_FROM_INPUT_SCHEMA is skipped outright — no property, no shape, no id.
         # `ambient_context` is a reserved field name, so only an assigned config can carry one.
         it "charges nothing for a config the input schema excludes by name" do
@@ -2843,6 +2855,25 @@ RSpec.describe "declaration-time property name collisions" do
           klass.internal_field_configs = (klass.internal_field_configs + [excluded]).freeze
 
           expect(klass.input_schema[:properties].keys).to eq([:other])
+        end
+
+        # A member with no name is one `named_members` filters out, so the emitter names no property for it and
+        # never reaches its nested shape either — charging it (and walking it) counted 26,000 properties against a
+        # schema naming none. Assigned, because the declaration walk rejects a nameless member outright.
+        it "charges nothing for a shape member the emitter names no property for" do
+          members = Array.new(26_000) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+          nameless = Class.new do
+            def initialize(members) = @members = members
+            def validations = { shape: { members: @members, container: Hash } }
+          end.new(members)
+          klass = build_axn { expects :other, optional: true }
+          config = Axn::Core::Contract::FieldConfig.new(
+            field: :p, reader_as: :p,
+            validations: { type: { klass: Hash }, optional: true, shape: { members: [nameless], container: Hash } }
+          )
+          klass.internal_field_configs = (klass.internal_field_configs + [config]).freeze
+
+          expect(klass.input_schema.dig(:properties, :p, :properties)).to eq({})
         end
       end
 
@@ -2875,6 +2906,124 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect(klass.input_schema.dig(:properties, :items, :items, :anyOf).map { |branch| branch[:properties].keys })
           .to eq([%i[shared only_a], %i[shared only_b]])
+      end
+
+      # The unit is an emitted PROPERTY PATH, not a declaration, because several declarations legally name ONE
+      # property and the emitter merges them into a single Hash key. Charging per declaration rejected a contract
+      # of legal merges at two-thirds of the cap: a `Data` type's 12,500 members overlaid by 12,500 same-named
+      # shape members emits 12,501 properties and was charged 25,001.
+      describe "declarations that MERGE onto one emitted property" do
+        def merged_wide(count)
+          names = Array.new(count) { |i| :"m#{i}" }
+          data = Data.define(*names)
+          members = names.map { |name| Axn::Core::Contract::ShapeConfig.new(field: name, validations: {}) }
+          build_axn { expects :d, type: data, optional: true, shape: { members:, container: data } }
+        end
+
+        it "charges a merged pair once, so a contract inside the cap projects" do
+          expect(merged_wide(12_500).input_schema.dig(:properties, :d, :properties).size).to eq(12_500)
+        end
+
+        # The cap is not thereby disarmed: the same shape past it is still rejected, on the properties it does emit.
+        it "still rejects the same shape past the cap" do
+          expect { merged_wide(25_000).input_schema }.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+        end
+
+        # The merge every author actually writes: a `shape:` member and a same-named subfield are two declarations
+        # of one property (both enforced at runtime, one key in the schema).
+        it "charges a shape member and a same-named subfield once" do
+          member = [Axn::Core::Contract::ShapeConfig.new(field: :x, validations: {})]
+          klass = build_axn do
+            expects :f0, type: Hash, optional: true, shape: { members: member, container: Hash }
+            expects :x, on: :f0, optional: true
+          end
+
+          expect(klass.input_schema.dig(:properties, :f0, :properties).keys).to eq([:x])
+        end
+
+        # A `model:` route emits `<field>_id` INSTEAD of the field, so that is the path it is charged at — which
+        # is also what makes it merge with an explicitly declared `<field>_id` (the emitter writes the generated
+        # one with `||=`, so the two are one property). Charged at the field's own path instead, this pair cost
+        # two properties and named one.
+        it "charges a model: route and an explicit <field>_id as the one property they emit" do
+          finder = Struct.new(:id) { def self.find(id) = new(id) }
+          names = Array.new(24_998) { |i| :"m#{i}" }
+          data = Data.define(*names)
+          members = names.map { |name| Axn::Core::Contract::ShapeConfig.new(field: name, validations: {}) }
+          klass = build_axn do
+            expects :d, type: data, optional: true, shape: { members:, container: data }
+            expects :thing, model: finder, optional: true
+            expects :thing_id, optional: true
+          end
+
+          expect(klass.input_schema[:properties].keys).to eq(%i[d thing_id])
+        end
+      end
+
+      # An array's `items` (and one `anyOf` branch of a union) is a NAMESPACE, not a property — the emitter names
+      # nothing there — so the path it contributes must not be charged. Both cases are written at exactly the cap,
+      # where one spurious charge is the whole difference between projecting and being rejected.
+      it "counts an array's items as a namespace rather than a property" do
+        names = Array.new(24_999) { |i| :"m#{i}" }
+        wide = Data.define(*names)
+        klass = build_axn { expects :items, type: Array, of: wide, optional: true }
+
+        expect(klass.input_schema.dig(:properties, :items, :items, :properties).size).to eq(24_999)
+      end
+
+      # The same for one `anyOf` branch of a multi-class `of:`: a branch is a namespace the type's own members
+      # land in, not a property. 12,499 members in each of two branches is 24,999 properties with the field —
+      # one inside the cap, so charging either branch segment would reject it.
+      it "counts an anyOf branch as a namespace rather than a property" do
+        wides = Array.new(2) { |b| Data.define(*Array.new(12_499) { |i| :"b#{b}m#{i}" }) }
+        klass = build_axn { expects :items, type: Array, of: wides, optional: true }
+
+        expect(klass.input_schema.dig(:properties, :items, :items, :anyOf).map { |branch| branch[:properties].size }).to eq([12_499, 12_499])
+      end
+
+      it "counts it as a namespace for a shape overlay too" do
+        members = Array.new(24_999) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+        klass = build_axn { expects :items, type: Array, optional: true, of: Hash, shape: { members:, container: Array } }
+
+        expect(klass.input_schema.dig(:properties, :items, :items, :properties).size).to eq(24_999)
+      end
+
+      # Two member names of one shape that are the same PROPERTY — a String and a Symbol spelling — are one key
+      # in the emitted object, so they are one charge. The charge normalizes a name the way `member_properties`
+      # keys it (String#to_sym, bound), rather than by spelling. Assigned, because the declaration walk rejects
+      # the pair as a duplicate member long before any of this.
+      it "charges a String-named and a Symbol-named member of one property once" do
+        members = Array.new(24_999) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
+        string_named = Class.new do
+          def field = "m0"
+          def validations = {}
+        end.new
+        klass = build_axn { expects :ignored, optional: true }
+        config = Axn::Core::Contract::FieldConfig.new(
+          field: :p, reader_as: :p,
+          validations: { type: { klass: Hash }, optional: true, shape: { members: members + [string_named], container: Hash } }
+        )
+        klass.internal_field_configs = [config].freeze
+
+        expect(klass.input_schema.dig(:properties, :p, :properties).size).to eq(24_999)
+      end
+
+      # The other direction the per-declaration charge was wrong in: an implicit intermediate key a dotted `on:`
+      # introduces is a property of its own, and one config can introduce a hundred. They are SHARED nodes, so
+      # they are charged by path — once each, however many configs pass through — which is exactly what charging
+      # per config could not do.
+      #
+      # Assigned rather than declared only for speed: declaring 250 deep subfields costs seconds, and the bound
+      # has to hold for an assigned config anyway.
+      it "charges each implicit intermediate a dotted on: introduces" do
+        klass = build_axn { expects :r, type: Hash, optional: true }
+        subs = Array.new(250) do |i|
+          on = (["r"] + Array.new(99) { |d| "i#{i}_#{d}" }).join(".")
+          Axn::Core::Contract::FieldConfig.new(field: :"leaf#{i}", reader_as: :"leaf#{i}", on: on.to_sym, validations: { optional: true })
+        end
+        klass.subfield_configs = (klass.subfield_configs + subs).freeze
+
+        expect { klass.input_schema }.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
       end
 
       it "reaches that rejection quickly rather than walking the whole graph first" do
