@@ -121,11 +121,15 @@ module Axn
           end
         end
 
-        if defined?(OpenTelemetry)
+        # Presence of a TRACER gates the span, not presence of the OpenTelemetry constant: a tracer
+        # can be configured explicitly (`Axn.config.tracer`) with OpenTelemetry never loaded, and
+        # tracing can be turned off (`Axn.config.tracer = nil`) with it loaded.
+        tracer = Axn.config.tracer
+        if tracer
           in_span_kwargs = { attributes: { "axn.resource" => resource } }
-          in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?
+          in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
-          Internal::Tracing.tracer.in_span("axn.call", **in_span_kwargs) do |span|
+          tracer.in_span("axn.call", **in_span_kwargs) do |span|
             instrument_block.call
           ensure
             finalize_span(span)

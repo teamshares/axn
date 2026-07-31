@@ -21,19 +21,26 @@ module Axn
           @tracer = current_provider.tracer("axn", Axn::VERSION)
         end
 
-        # Axn.config.tracer's dynamic default calls through here, so this stays a one-line delegate
-        # rather than duplicated logic.
-        def tracer = autodetected_tracer
+        # Whether THIS tracer's #in_span accepts the `record_exception:` option (added in
+        # opentelemetry-api 1.7.0). Asks the object actually being called rather than
+        # OpenTelemetry::Trace::Tracer, whose signature says nothing about an injected tracer and can
+        # be wrong in both directions.
+        #
+        # Only an explicitly-named keyword counts. A tracer declaring `**opts` reports :keyrest and is
+        # read as unsupported, so axn omits the option and an OTel >= 1.7 tracer underneath records the
+        # exception on top of axn's own `span.record_exception` — a duplicate event. That is the safe
+        # direction: over-detecting sends the option to a strict-arity tracer, and `in_span` is called
+        # outside `best_effort`, so the resulting ArgumentError would take down the call.
+        #
+        # Single-slot identity memo: there is one tracer per process, so a map would model tracers
+        # that never exist, and the slot holds no reference Axn.config isn't already holding.
+        def supports_record_exception_option?(tracer)
+          return false if tracer.nil?
+          return @supports_record_exception if defined?(@supports_record_exception) && @probed_tracer.equal?(tracer)
 
-        # Check if the OpenTelemetry tracer supports the record_exception option for in_span.
-        # This was added in opentelemetry-api 1.7.0 (2025-09-17).
-        # We cache the result since method signature doesn't change at runtime.
-        def supports_record_exception_option?
-          return @supports_record_exception if defined?(@supports_record_exception)
-          return @supports_record_exception = false unless defined?(OpenTelemetry)
-
+          @probed_tracer = tracer
           @supports_record_exception = begin
-            OpenTelemetry::Trace::Tracer.instance_method(:in_span).parameters.any? { |_, name| name == :record_exception }
+            tracer.method(:in_span).parameters.any? { |type, name| name == :record_exception && %i[key keyreq].include?(type) }
           rescue StandardError
             false
           end

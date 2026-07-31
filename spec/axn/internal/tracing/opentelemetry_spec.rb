@@ -31,10 +31,8 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   end
 
   after do
-    # Clear the cached tracer so it's recreated with the restored OpenTelemetry
-    Axn::Internal::Tracing.instance_variable_set(:@tracer, nil)
-    Axn::Internal::Tracing.instance_variable_set(:@tracer_provider, nil)
-    Axn::Internal::Tracing.instance_variable_set(:@supports_record_exception, nil)
+    # Clear the memos so the next example re-detects against the restored OpenTelemetry.
+    Axn::Internal::Tracing.reset!
 
     # Restore original if it existed, but don't conflict with stub_const cleanup
     if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
@@ -171,25 +169,35 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   end
 
   describe ".supports_record_exception_option?" do
-    before do
-      # Clear the cached value
-      if Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)
-        Axn::Internal::Tracing.remove_instance_variable(:@supports_record_exception)
-      end
+    let(:accepting) { Class.new { def in_span(_name, record_exception: nil); end }.new }
+    let(:rejecting) { Class.new { def in_span(_name, attributes: nil); end }.new }
+    let(:splatting) { Class.new { def in_span(_name, **opts); end }.new }
+
+    before { Axn::Internal::Tracing.reset! }
+
+    it "reads the option off the tracer's own signature" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(rejecting)).to be(false)
     end
 
-    it "caches the result" do
-      # First call - will check OpenTelemetry
-      first_result = Axn::Internal::Tracing.supports_record_exception_option?
-      expect(Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)).to be true
-
-      # Second call should return cached value
-      second_result = Axn::Internal::Tracing.supports_record_exception_option?
-      expect(first_result).to eq(second_result)
+    it "reads a **opts tracer as unsupported, since passing the option to a strict tracer would raise" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(splatting)).to be(false)
     end
 
-    # NOTE: Testing the actual detection requires a real OpenTelemetry::Trace::Tracer class
-    # with specific method signatures. The implementation uses introspection on the tracer's
-    # in_span method parameters, which is tested indirectly through the integration tests above.
+    it "is false for no tracer at all" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(nil)).to be(false)
+    end
+
+    it "does not leak one tracer's answer to another" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(rejecting)).to be(false)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+    end
+
+    it "memoizes the answer for a repeated tracer" do
+      allow(accepting).to receive(:method).and_call_original
+      2.times { Axn::Internal::Tracing.supports_record_exception_option?(accepting) }
+      expect(accepting).to have_received(:method).with(:in_span).once
+    end
   end
 end

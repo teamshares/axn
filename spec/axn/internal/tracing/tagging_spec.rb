@@ -145,9 +145,7 @@ RSpec.describe "Axn tagging integration" do
     end
 
     after do
-      Axn::Internal::Tracing.instance_variable_set(:@tracer, nil)
-      Axn::Internal::Tracing.instance_variable_set(:@tracer_provider, nil)
-      Axn::Internal::Tracing.instance_variable_set(:@supports_record_exception, nil)
+      Axn::Internal::Tracing.reset!
       if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
         RSpec::Mocks.space.proxy_for(OpenTelemetry).reset
         Object.send(:remove_const, :OpenTelemetry) if defined?(OpenTelemetry)
