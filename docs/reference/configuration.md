@@ -284,6 +284,8 @@ Axn.configure { |c| c.tracer = nil }
 
 `Axn.config.reset!(:tracer)` returns to auto-detection, which is what a spec that installs a fake tracer wants in its teardown. Note that assigning `nil` is a value, not a reset.
 
+Called with no arguments, `Axn.config.reset!` resets every setting declared through the `setting` DSL — `tracer` among them — back to its declared default. It does not touch the hand-written accessors (`logger`, `env`, `on_exception`, `rails`, and the async defaults), which aren't declared through `setting` and so are outside its scope.
+
 A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `axn.outcome` attributes, every `axn.tag.*` and `axn.dimension.*` facet, and `record_exception` for a failure — but not an error `Status`, which can only be constructed through OpenTelemetry's own class.
 
 An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`.

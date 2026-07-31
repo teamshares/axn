@@ -66,7 +66,9 @@ module Axn
         outcome = validate.call(value)
         return if outcome && !outcome.is_a?(String)
 
-        detail = outcome if outcome.is_a?(String)
+        # .presence (not the bare String) so a validator returning "" falls back to the plain
+        # form below instead of raising with a dangling " — " and no actual reason.
+        detail = outcome.presence if outcome.is_a?(String)
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 

@@ -136,7 +136,10 @@ RSpec.describe "Axn.config.tracer" do
       Axn.config.tracer = recorder
       otel = Module.new { def self.tracer_provider; end }
       stub_const("OpenTelemetry", otel)
-      allow(OpenTelemetry).to receive(:tracer_provider).and_return(Object.new, Object.new)
+      # A configured tracer is returned without ever reaching auto-detection, so there is no path
+      # from which a changing tracer_provider could clobber it — prove the structural claim rather
+      # than just asserting the observable outcome.
+      expect(OpenTelemetry).not_to receive(:tracer_provider)
 
       build_axn.call
       build_axn.call

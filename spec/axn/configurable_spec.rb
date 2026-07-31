@@ -289,6 +289,7 @@ RSpec.describe Axn::Configurable::Settings do
 
         setting :bare, validate: ->(v) { v.is_a?(Integer) }
         setting :detailed, validate: ->(v) { v.is_a?(Integer) || "must be an Integer" }
+        setting :blank_detail, validate: ->(v) { v.is_a?(Integer) || "" }
       end
     end
 
@@ -306,6 +307,10 @@ RSpec.describe Axn::Configurable::Settings do
 
     it "accepts a valid value through a String-returning validator" do
       expect { instance.detailed = 3 }.not_to raise_error
+    end
+
+    it "falls back to the plain form when the validator returns a blank String" do
+      expect { instance.blank_detail = "nope" }.to raise_error(ArgumentError, 'blank_detail got invalid value: "nope"')
     end
   end
 
