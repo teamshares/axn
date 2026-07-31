@@ -2,7 +2,8 @@
 
 module Axn
   module Internal
-    # Non-dispatching reads of a caller-supplied shape graph.
+    # Non-dispatching reads of a caller-supplied shape graph, and the copy every caller-supplied option
+    # container a declaration stores is taken through.
     #
     # A `shape:` kwarg may be handed in raw — an arbitrary object as the shape Hash, and arbitrary
     # objects as its members — and axn has to decide what such a graph DECLARES before it can store
@@ -76,7 +77,7 @@ module Axn
       # copy above cannot carry: a copy is entry-wise, so the value such a Hash would have answered with is not
       # in it, while a consumer reading the original with `[]` gets that value. The two disagree, which is the
       # split the copy exists to prevent, and the declaration decides which side is the contract (see
-      # `Contract#_reject_defaulting_option_container!`).
+      # `reject_defaulting_option_container!` below).
       #
       # Both readers are Hash's own, bound: a subclass can override either, and one that denied its default
       # would slip past the guard whose whole subject it is. `Hash#default` takes an optional key, and calling
@@ -98,10 +99,149 @@ module Axn
       # an enum reflection deliberately withholds for anything but an exact Array.
       #
       # Only ever called for a container that answers nothing with its own code
-      # (`NativeMethods.own_array_methods` is empty — see `Contract#_detached_option_array`, which is also where
+      # (`NativeMethods.own_array_methods` is empty — see `detached_option_array` below, which is also where
       # the frozen escape hatch and the refusal live), so the bound `dup` runs Ruby's own copy, and every answer
       # the copy gives is the one the original gave.
       def self.detached_dup(value) = KERNEL_DUP.bind_call(value)
+
+      # A contract must not change after the class is declared, and an option value the caller still holds is
+      # aliased into it: mutating a `validate:` bag swapped the validator a declared field runs, a mutated `of:`
+      # bag changed a declared element type, and appending to an `inclusion:` list widened a declared enum —
+      # each after the fact, on a class already defined.
+      #
+      # Detached one level deep, which is exactly the boundary that matters: the plain Hash/Array CONTAINERS
+      # axn stores are copied, while the values inside them stay the caller's objects — a `validate:` callable,
+      # a `model:` class, an `inclusion:` member. Those are meant to be the caller's, and copying them would
+      # change what a declaration means rather than protect it. `shape:` is excluded because it needs a deep
+      # copy of its own (see `Contract::ShapeDeclaration#_validate_and_snapshot_shape!`) and gets one downstream.
+      # Nothing an option container can define decides whether it is detached, or what the detached copy holds.
+      # The type tests are `case`/`when` (`Module#===`, a C-level check) rather than `is_a?`, and the copies are
+      # taken through bound primitives (see ShapeGraph) rather than the container's own `transform_values`/`dup`.
+      # A subclass answering `is_a?(Array)` with false, or whose `dup` returned `self`, or whose
+      # `transform_values` handed back the receiver, otherwise stayed aliased into the declared contract while
+      # the plain-Array case beside it was correctly copied. An ARRAY that owns any of those is now refused
+      # before the copy is attempted (see detached_option_array), so the bound `dup` is belt-and-braces there;
+      # a BAG is not, since it is copied entry-wise whatever its class, which is what the bound `Hash#each`
+      # holds.
+      #
+      # An Array keeps its CLASS (a same-class `dup`, or the caller's own object when it is already frozen —
+      # see detached_option_array) because its own class is part of what a declaration means — a frozen
+      # `inclusion:` set answers membership with its own `include?`, and reflection withholds an enum for
+      # anything but an exact Array. A bag becomes a plain Hash — which is what it already became, and axn
+      # reads bags with `[]`/`dig` only.
+      def self.detach_option_containers!(validations)
+        validations.each do |key, value|
+          next if key == :shape
+
+          case value
+          when ::Hash then validations[key] = detached_option_bag(key, value)
+          when ::Array then validations[key] = detached_option_array(value, "`#{key}:`")
+          end
+        end
+      end
+
+      def self.detached_option_bag(key, bag)
+        reject_defaulting_option_container!(bag) { "the `#{key}:` option bag" }
+        copy = copy_entries(bag)
+        copy.each do |option_key, option|
+          case option
+          when ::Array then copy[option_key] = detached_option_array(option, "`#{key}: { #{option_key}: … }`")
+          end
+        end
+        copy
+      end
+
+      # A caller Hash that answers missing keys from a DEFAULT is refused wherever a declaration would store one.
+      # It is the same split the copy exists to close, arriving from the other side: axn copies every container
+      # it stores entry-wise, and a default is not an entry, so the options such a Hash answers are simply not
+      # in the stored contract — while a guard reading the original with `[]` sees them. The author is told
+      # rather than left to find out, per the option-key rule `Contract#_raise_ambiguous_option_key!` states: an
+      # option is never silently ignored.
+      #
+      # Refusing rather than carrying the default over, because carrying it cannot make the declaration work.
+      # ActiveModel builds each validator's options into a Hash of its OWN (`_parse_validates_options`), so a
+      # default never reached a validator even when axn stored the caller's bag: `expects :a, type:
+      # Hash.new(String)` raised "must supply :klass" on every CALL — a key the author believes they supplied —
+      # before this copy existed and after it. Declaration is where that is knowable.
+      #
+      # The label is YIELDED, so naming the container costs nothing until there is an error to name (see
+      # `Contract#_symbol_keyed_bag`), and the two readers consulted are Hash's own (see supplies_default? above).
+      def self.reject_defaulting_option_container!(hash)
+        return unless supplies_default?(hash)
+
+        raise ArgumentError,
+              "#{yield} answers a missing key from a Hash default (`Hash.new(…)` or a `default_proc`) rather " \
+              "than from an entry of its own, and axn cannot carry that into the contract: a declared " \
+              "container is copied entry-wise so that mutating what you still hold cannot change an " \
+              "already-declared class, and ActiveModel rebuilds a validator's options into a Hash of its own " \
+              "besides — so an option supplied through the default is dropped, and the declaration fails on a " \
+              "call complaining about a key you did supply. Write the options out as entries " \
+              "(`type: { klass: String }`)."
+      end
+
+      # Three outcomes, and which one a container gets is decided WITHOUT running any of its code.
+      #
+      # A container axn can copy faithfully by construction is copied, and the copy is the contract. That
+      # condition is that the container answers NOTHING with code of its own (`NativeMethods.own_array_methods`
+      # is empty): `Kernel#dup` copies the elements, so the copy answers as the original exactly where every
+      # answer is a pure function of the elements, which is exactly where every answer is Ruby's own. Every
+      # plain Array passes, as does a subclass that adds no methods. A FROZEN container is stored as it is,
+      # whatever it owns: the copy exists so that mutating what the caller still holds cannot change a declared
+      # contract, and a frozen container cannot be mutated, so there is nothing to detach it from. Anything
+      # else is REFUSED at declaration.
+      #
+      # The refusal is deliberate over-rejection, and it replaces two rounds of verifying the copy and one of
+      # gating on the duplication hooks. Comparing the copy's ELEMENTS missed a hook that dropped a derived
+      # lookup index the container's own `include?` reads: the elements survived and the copy rejected every one
+      # of them. Asking the copy `include?` about each element then missed a hook that dropped only the index of
+      # accepted NON-elements — a set holding `"canon"` and aliasing `"alias"` to it accepted both, its copy
+      # accepted only `"canon"`, and no element-based probe can see a difference outside the elements. Gating on
+      # the duplication HOOKS then missed the copy's other two differences from the original: `dup` shares the
+      # instance variables and drops the singleton class, so a membership derived from `self`, from an ivar, or
+      # from a singleton method diverges with entirely native duplication (and an ivar-derived one is still the
+      # caller's to mutate afterwards, which is the aliasing the copy exists to prevent). Ownership of
+      # everything the container answers with is a fact rather than a prediction (see NativeMethods),
+      # and a container that would copy faithfully is over-rejected by it with a bounded way to stay legal:
+      # freeze it.
+      #
+      # Two residues, stated rather than papered over, and both are the same one-level depth the copy promises.
+      # A FROZEN container's elements — and whatever its ivars point at — are still the caller's objects, so a
+      # frozen container deriving membership from a mutable index can still be widened after the class is
+      # declared: freezing promises that axn stores what you froze, and how deep that goes is the author's.
+      # And a membership container that is not an Array (a `Set`, a `Range`, an object answering `include?`) is
+      # not reached here at all: it is stored as the caller's object, so nothing of axn's answers membership and
+      # there is nothing to diverge — but nothing detaches it either. A `Range` is frozen by construction; a
+      # `Set` is mutable. Both residues are recorded in `property_name_collision_spec.rb`.
+      #
+      # The container is named by class and its methods by the method table, never by `inspect` — its own code
+      # must not run while the declaration error it caused is being built, and a method name is rendered like
+      # any other name reaching prose (a non-UTF-8 one would otherwise raise while the error is built).
+      def self.detached_option_array(value, label)
+        return value if NativeMethods.frozen?(value)
+
+        own = NativeMethods.own_array_methods(value)
+        return detached_dup(value) if own.empty?
+
+        raise ArgumentError,
+              "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) defines methods of its " \
+              "own (#{describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
+              "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \
+              "elements while sharing the instance variables and dropping the singleton class, so the copy " \
+              "answers as you declared only where the answer is Ruby's own. What your code answers in the copy " \
+              "cannot be established without running it, so a copy that silently rejects the values you " \
+              "declared is indistinguishable from a faithful one. Supply a plain Array, or freeze this " \
+              "container (a frozen one is stored as-is, since nothing can mutate it afterwards)."
+      end
+
+      # The first few offending names, so the author is pointed at the method to move or the object to freeze
+      # rather than at a rule. Sorted for a stable message, and capped because a rich subclass has dozens.
+      def self.describe_own_methods(names)
+        shown = names.uniq.sort
+        rendered = shown.first(3).map { |name| "`#{Axn::Reflection::PropertyNames.inspect_field_name(name)}`" }.join(", ")
+        shown.size > 3 ? "#{rendered}, and #{shown.size - 3} more" : rendered
+      end
+
+      private_class_method :detached_option_bag, :detached_option_array, :describe_own_methods
 
       # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
       # can reach it — a hand-written block nests one level per `do…end`, and a schema nested 64 objects deep is

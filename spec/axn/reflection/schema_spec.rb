@@ -1012,7 +1012,7 @@ RSpec.describe Axn::Reflection::Schema do
     end
 
     # Frozen because a container that answers with its own code is only storable frozen (see
-    # `Contract#_detached_option_array`) — which is also the form that reaches reflection as the caller's own
+    # `Internal::ShapeGraph.detached_option_array`) — which is also the form that reaches reflection as the caller's own
     # object, so it is the sharp version of this check.
     it "does not run user traversal code for an Array-subclass inclusion set (reflects no enum)" do
       exploding_array = Class.new(Array) do

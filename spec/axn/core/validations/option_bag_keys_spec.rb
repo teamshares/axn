@@ -73,7 +73,7 @@ RSpec.describe "option bag keys" do
   end
 
   # Keys are canonicalized; values are not touched at all. Frozen, which is what a container answering
-  # membership with its OWN `include?` must be to be stored at all (see `Contract#_detached_option_array`) — and
+  # membership with its OWN `include?` must be to be stored at all (see `Internal::ShapeGraph.detached_option_array`) — and
   # a frozen one is stored as the caller's object, so this asserts the identity directly.
   it "leaves an option's value the caller's own object" do
     values = Class.new(Array) { def include?(_value) = true }.new.push("a", "b").freeze
