@@ -78,6 +78,33 @@ module Axn
         Axn::Internal::ShapeGraph.missing?(name) ? nil : name
       end
 
+      # The `required` entry for a property keyed by `name`: a String holding the bytes that name is KEYED by.
+      #
+      # Rendered from a String's own bytes rather than by dispatching its `to_s`, for the same reason
+      # `member_properties` renders a member's entry from the one Symbol it keyed the property by: `required` and
+      # `properties` are two readers of one name, and a name that answers them differently lists a required
+      # property this schema never emitted — a schema no input can satisfy. Ruby stores a plain String key as a
+      # frozen copy of its bytes, so a SINGLETON `to_s` on such a name diverted the `required` entry alone, needing
+      # no second declaration to go wrong.
+      #
+      # A Symbol keeps the rendering it always had, which is Ruby's own and cannot be overridden at all (a Symbol
+      # takes no subclass instance and no singleton). So does anything else, because the property-name rules refuse
+      # a name that renders through its own code (`NativeMethods.native_name_rendering?`) before any validated
+      # projection returns — only the public `build_input`/`build_output` reach here with one.
+      #
+      # Every site that writes a `required` entry goes through this, not only the two a caller's own name can reach
+      # (a top-level inbound field and an exposed one). At the others the name has already been interned to a Symbol
+      # by the time it arrives — `SubfieldTree` interns a wire segment, `model_id_key` builds the generated id, and a
+      # conditional-requiredness clause is emitted only for a framework-generated reader — so this is a no-op there.
+      # They route through it anyway so that "what String does a `required` entry hold" has one answer rather than
+      # one per site, which is how the top-level pair came to disagree with `properties` in the first place.
+      def required_key(name)
+        case name
+        when ::String then ::String.new(name)
+        else name.to_s
+        end
+      end
+
       # The members of a shape that actually name a property, paired with that name.
       # Captured through the shared seam rather than iterated directly: `Array(...)` preserves a caller's
       # Array SUBCLASS and then dispatches its `filter_map`, so a list answering that differently from `each`
@@ -129,7 +156,7 @@ module Axn
             properties[config.field] = prop.compact
             unless field_optional?(config, node.children, ann)
               clause = conditional_requiredness_clause(config, field_configs, node, klass)
-              clause ? conditionals << clause : required << config.field.to_s
+              clause ? conditionals << clause : required << required_key(config.field)
             end
           end
         end
@@ -558,11 +585,11 @@ module Axn
         return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
 
         condition = {
-          required: [ref.field.to_s],
+          required: [required_key(ref.field)],
           properties: { ref.field => { not: { enum: [false, nil] } } },
         }
         branch = gates.key?(:if) ? :then : :else
-        { if: condition, branch => { required: [config.field.to_s] } }
+        { if: condition, branch => { required: [required_key(config.field)] } }
       end
 
       # The declared top-level inbound field a Symbol condition reads: an exact reader-name match,
@@ -818,7 +845,7 @@ module Axn
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
           prop[:properties][key] = child_prop.compact
-          prop[:required] << key.to_s unless node_optional?(node, ann, non_model_configs)
+          prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
         end
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
@@ -848,7 +875,7 @@ module Axn
         members = shape_members_at(parent_configs, key)
         if members.any? { |member| !nestable_as_object?(member) }
           if subtree_requires_presence?(node, ann)
-            prop[:required] << key.to_s
+            prop[:required] << required_key(key)
             reject_null!(prop[:properties][key]) if prop[:properties][key]
           end
           return
@@ -879,7 +906,7 @@ module Axn
         target[:type] = nullable ? %w[object null] : "object"
         target[:required] = nil if target[:required].empty?
         prop[:properties][key] = target.compact
-        prop[:required] << key.to_s if ann[node].required
+        prop[:required] << required_key(key) if ann[node].required
       end
 
       # Every `shape:` member declared at `key` across `parent_configs` (the implicit node collides with
@@ -901,7 +928,7 @@ module Axn
 
         field_configs.each do |config|
           properties[config.field] = build_property(config, for_output: true).compact
-          required << config.field.to_s
+          required << required_key(config.field)
         end
 
         schema = { type: "object", properties: }

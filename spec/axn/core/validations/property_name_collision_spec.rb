@@ -3185,7 +3185,7 @@ RSpec.describe "declaration-time property name collisions" do
     it "still names the unrenderable emitted name rather than running its ==" do
       klass = assigned(raising_eq("bad\xFF".dup.force_encoding("ASCII-8BIT")))
 
-      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+      expect { klass.input_schema }.to raise_error(ArgumentError, /holds bytes that have no UTF-8 rendering/)
     end
 
     # Bytes that are no valid Symbol either. The size guard keys a wire key by a plain COPY of the name rather
@@ -3194,40 +3194,41 @@ RSpec.describe "declaration-time property name collisions" do
     it "reports a name whose bytes are neither UTF-8 nor a valid Symbol" do
       klass = assigned("bad\xFF".dup.force_encoding("UTF-8"))
 
-      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+      expect { klass.input_schema }.to raise_error(ArgumentError, /holds bytes that have no UTF-8 rendering/)
     end
 
-    # Canonicalization is the rule's own input, so a dispatch there is a dispatch inside a verdict — and it was
-    # wrong in BOTH directions at once. A single such name names one property and collides with nothing, yet the
-    # rule died before the schema it would have judged.
-    it "projects a lone name whose to_s raises, which names one property and collides with nothing" do
+    # Canonicalization is the rule's own input, so a dispatch there is a dispatch inside a verdict. The name that
+    # OWNS the dispatch is refused a rule earlier now (see "a declared name that decides its own rendering"), which
+    # is what these two keep honest: the refusal itself must not run the `to_s` either, at a node whose property
+    # count and collisions the rule never gets to judge.
+    it "refuses a lone name whose to_s raises without running it" do
       klass = assigned(raising_to_s("a"))
 
-      expect(klass.input_schema[:properties].keys.map(&:to_str)).to eq(["a"])
+      expect { klass.input_schema }.to raise_error(ArgumentError, /"a" does not render through Ruby's own `to_s`/)
     end
 
-    it "reports the collision rather than running the name's to_s" do
+    it "refuses such a name ahead of the collision it would otherwise be reported as" do
       klass = assigned(raising_to_s("dup"), :dup)
 
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup/)
+      expect { klass.input_schema }.to raise_error(ArgumentError, /"dup" does not render through Ruby's own `to_s`/)
     end
 
-    # The non-idempotent-dispatch hazard, and the reason the canonical property is read off a String's own bytes:
-    # a name was canonicalized to REACH the unrenderable check and canonicalized AGAIN by it, so a `to_s`
-    # answering renderable the second time walked an unrenderable name straight through — no error, and the name
-    # then claimed the schema's nil canonical slot, where a second one would have been reported as collapsing
-    # onto it.
-    it "rejects a name whose bytes have no UTF-8 rendering however its to_s answers" do
+    # The bytes rule and the rendering rule both fire on this one, and the ORDER is deliberate: a name owning its
+    # rendering has no single property to be, so the report says that rather than reporting a property nothing
+    # would have emitted. Left as an example because the previous defect was in the other direction — the name's
+    # `to_s` answering renderable on a second ask walked an unrenderable name straight through the bytes check —
+    # and neither answer may admit it.
+    it "refuses a name whose bytes have no UTF-8 rendering and whose to_s claims otherwise" do
       liar = Class.new(String) do
         def to_s = "renderable"
       end.new("bad\xFF".dup.force_encoding("ASCII-8BIT"))
 
-      expect { assigned(liar).input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+      expect { assigned(liar).input_schema }.to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
     end
 
-    # A name that is neither String nor Symbol still has to be RENDERED to know what property it names, and that
-    # dispatch is the work. What must not happen is asking twice: the verdict is derived once, and re-deriving it
-    # to confirm it let a second, different answer overturn it. Only an assigned config carries such a name.
+    # A name that is neither String nor Symbol renders through code of its own, so the DECLARATION path — which
+    # compares a new name against the configs a class already carries — still has to read it, and still may read it
+    # only once. (The projection refuses such a name outright; this is the check that runs before any projection.)
     def flipping_name(first, second)
       Class.new do
         define_method(:initialize) { @answered = false }
@@ -3239,12 +3240,6 @@ RSpec.describe "declaration-time property name collisions" do
       end.new
     end
 
-    it "rejects an exotic name it has already judged unrenderable, whatever its to_s says next" do
-      klass = assigned(flipping_name("bad\xFF".dup.force_encoding("ASCII-8BIT"), "renderable"))
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
-    end
-
     it "reports a duplicate against an exotic assigned name, whatever its to_s says next" do
       klass = assigned(flipping_name("dup", "other"))
 
@@ -3252,11 +3247,12 @@ RSpec.describe "declaration-time property name collisions" do
     end
 
     # The collision message names the whole resolved path, so an ancestor's name is rendered there as well as at
-    # its own node. Asking it twice let the SECOND answer decide — or raise, in place of the report about its
-    # children. One rendering per emitted name for the whole walk, reused wherever the path is written.
-    it "renders an ancestor's name once, however its to_s answers the second time" do
+    # its own node. Deriving a segment twice would be reading one name twice; the memo is what makes it once. A
+    # STRING ancestor is what exercises it now — an exotic one is refused before its children are judged (see
+    # "a declared name that decides its own rendering") — and it is the same path assembly either way.
+    it "names the whole resolved path from one rendering of the ancestor" do
       klass = build_axn
-      parent = Axn::Core::Contract::FieldConfig.new(field: name_raising_on_second_render("p"), reader_as: :p, default: {},
+      parent = Axn::Core::Contract::FieldConfig.new(field: "p", reader_as: :p, default: {},
                                                     validations: { type: { klass: Hash }, allow_nil: true })
       children = [utf8_name, latin1_name].each_with_index.map do |name, index|
         Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
@@ -3267,24 +3263,21 @@ RSpec.describe "declaration-time property name collisions" do
       expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /the JSON property "p\.café"/)
     end
 
-    # Renders once and refuses after that, so an example does not have to know which consumer asks first — only
-    # that nothing asks twice.
-    def name_raising_on_second_render(spelling)
-      Class.new do
-        define_method(:initialize) { @answered = false }
-        define_method(:to_s) do
-          raise(NotImplementedError, "hijacked from a second #to_s") if @answered
-
-          @answered = true
-          spelling
-        end
-      end.new
-    end
-
     # The declaration path's own report: which of the two duplicate wordings a collision gets is "is it the same
     # raw spelling", and asking a name that with `==` let it answer with an exception instead.
     it "reports a duplicate against an assigned name rather than running its ==" do
       klass = assigned(raising_eq("dup"))
+
+      expect { klass.expects(:dup) }
+        .to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+    end
+
+    # The same check reads the name's canonical property, and reads it off a String's own BYTES. That is what the
+    # declaration path needs of its own: it runs BEFORE any projection exists, so the rendering rule cannot refuse
+    # such a name here, and a canonicalization that dispatched `to_s` would let the name raise in place of the
+    # duplicate — during class definition, where a NotImplementedError escapes everything.
+    it "reports a duplicate against an assigned name whose to_s raises, without running it" do
+      klass = assigned(raising_to_s("dup"))
 
       expect { klass.expects(:dup) }
         .to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
@@ -3323,6 +3316,210 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
       expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
+    end
+  end
+
+  # The premise the other two rules rest on: a name has ONE property to be. Three readers read a property name —
+  # these rules canonicalize it (a String by its own bytes, so no verdict runs the name's code), the emitter writes
+  # it into `required` through its `to_s`, and `JSON.generate` renders a Hash key through that same `to_s` — so a
+  # name that answers them differently is two properties wearing one declaration, and every downstream verdict about
+  # it is about a property nothing emits.
+  #
+  # Reachable only through a config ASSIGNED onto a class: `expects`/`exposes` symbolize every declared name, a
+  # subfield route is symbolized before any guard reads it, and a shape member is stored as the Symbol the
+  # declaration walk judged.
+  describe "a declared name that decides its own rendering" do
+    def assigned_field(field, direction: :input, **opts)
+      klass = build_axn
+      config = Axn::Core::Contract::FieldConfig.new(field:, reader_as: :held, validations: { presence: true }, **opts)
+      klass.public_send(direction == :input ? :internal_field_configs= : :external_field_configs=, [config].freeze)
+      klass
+    end
+
+    # Bytes and rendering deliberately disagree: `String#hash`/`eql?` (and so the emitter's own `properties` Hash)
+    # see "other", while `to_s` — what `JSON.generate` asks a Hash key, and what the emitter's `required` list asks
+    # the name — says "dup".
+    def masquerading_name(bytes: "other", rendering: "dup")
+      Class.new(String) do
+        define_method(:to_s) { rendering }
+      end.new(bytes)
+    end
+
+    # THE DEFECT, at each of the three paths that can expose a projection. Two declarations, one emitted JSON
+    # property, nothing raised: the rules judged "other" beside :dup and passed, and `JSON.generate` then emitted
+    # `{"dup":{},"dup":{}}` — a parser keeps one of them, so the second declaration is gone with no signal. This is
+    # the shape the whole file exists to reject, reached through the encoder rather than through a declaration.
+    it "no longer lets two names emit one JSON property through the encoder" do
+      %i[input output].each do |direction|
+        klass = build_axn
+        configs = [masquerading_name, :dup].each_with_index.map do |field, index|
+          Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+        end
+        klass.public_send(direction == :input ? :internal_field_configs= : :external_field_configs=, configs.freeze)
+
+        expect { direction == :input ? klass.input_schema : klass.output_schema }
+          .to raise_error(ArgumentError, /a field name becomes a JSON property name, and "other" does not render through Ruby's own `to_s`/)
+      end
+    end
+
+    it "refuses it on the render path, which builds no schema of its own" do
+      klass = assigned_field(masquerading_name, direction: :output, validations: { allow_nil: true })
+
+      expect { Axn::Extensions::Serialization.render(klass.call) }
+        .to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
+    end
+
+    # No second declaration is needed for the name to be undecidable, so none is required to refuse it: one such
+    # name emitted a `required` entry for a property its own `properties` map does not define — a schema no input
+    # can satisfy — and an adapter reading `properties.keys.map(&:to_s)` saw a property the body never carries.
+    it "refuses a lone such name, with nothing for it to collide with" do
+      expect { assigned_field(masquerading_name).input_schema }
+        .to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
+    end
+
+    # A name that renders through code of its own is refused whether or not the two renderings agree TODAY: what is
+    # unbounded is the body, not this instance of it, and a `to_s` returning the receiver's own bytes is exactly what
+    # a later call need not do.
+    it "refuses one whose rendering happens to agree with its bytes" do
+      expect { assigned_field(masquerading_name(bytes: "same", rendering: "same")).input_schema }
+        .to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
+    end
+
+    # The rule asks the OBJECT, not its class, because what will be dispatched is the whole question. This name is
+    # also why that is not the whole fix: Ruby stores a plain String Hash key as a frozen copy of its bytes, so the
+    # singleton never reached the emitted property the rule reads — it reached the `required` entry alone, which
+    # named a property the schema does not define, from a single declaration. The emitter reads the one name once
+    # now, inbound and outbound.
+    it "keeps `required` and `properties` naming one property for a plain String carrying a singleton to_s" do
+      name = "other".dup
+      name.define_singleton_method(:to_s) { "dup" }
+
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(name)).to be(false)
+      [assigned_field(name).input_schema, assigned_field(name, direction: :output).output_schema].each do |schema|
+        expect(schema[:properties].keys.map { |key| String.new(key) }).to eq(["other"])
+        expect(schema[:required]).to eq(["other"])
+        # The entry is a String the schema OWNS, so a consumer rendering it (`required.map(&:to_s)`, which is what
+        # an adapter does) reads the property too — handing back the name itself would move the divergence out one
+        # level rather than close it.
+        expect(schema[:required].map(&:to_s)).to eq(["other"])
+      end
+    end
+
+    # An exotic name has one rendering rather than two, but it produces it per CALL — so the rule's answer and the
+    # encoder's are one only if the body answers the same every time, which no guard can establish. The RULE asks it
+    # nothing: the only read is the emitter's own, building the `required` entry for a schema this then refuses (the
+    # emitter is deliberately not one of the layers that refuse to dispatch — see AGENTS.md), so the name is asked
+    # once and no verdict is taken from the answer.
+    it "refuses a name that is neither String nor Symbol, without asking it a second time" do
+      rendered = 0
+      exotic = Class.new do
+        define_method(:to_s) do
+          rendered += 1
+          "dup"
+        end
+      end.new
+
+      expect { assigned_field(exotic).input_schema }
+        .to raise_error(ArgumentError, /a name of class .* does not render through Ruby's own `to_s`/)
+      expect(rendered).to eq(1)
+    end
+
+    # A Symbol cannot reach this at all, and not by being checked: it takes no instance of a subclass (`new` is
+    # undefined and `allocate` raises) and no singleton method, so `:x.to_s` is Symbol's own however it is reached.
+    # Asserted rather than assumed, because the rule treats a Symbol as native WITHOUT a method lookup.
+    it "cannot be reached by a Symbol at all" do
+      expect { Class.new(Symbol).new("x") }.to raise_error(NoMethodError)
+      expect { Class.new(Symbol).allocate }.to raise_error(TypeError)
+      expect { :x.singleton_class }.to raise_error(TypeError)
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(:x)).to be(true)
+    end
+
+    # WHERE the rule fires is where the emitter keys a property by the name ITSELF, and that is the top level only:
+    # `properties[config.field]`. A SUBFIELD's wire segment is interned from the name's rendering by `SubfieldTree`
+    # (as a shape member's key is, and a `model:` route's generated id), so the emitted name is a Symbol — the
+    # schema, its `required` list and the encoder all read that one Symbol, and there is no second candidate for the
+    # rule to refuse. Stated as an example because "does this rule reach a subfield" is the first thing a reader
+    # asks, and because it is what makes the emitted-name derivation load-bearing rather than incidental.
+    it "has nothing to refuse in a subfield's name, which the emitter interns into its wire segment" do
+      klass = build_axn
+      parent = Axn::Core::Contract::FieldConfig.new(field: :payload, reader_as: :payload, default: {},
+                                                    validations: { type: { klass: Hash }, allow_nil: true })
+      child = Axn::Core::Contract::FieldConfig.new(field: masquerading_name, reader_as: :child, on: :payload,
+                                                   validations: { presence: true })
+      klass.internal_field_configs = [parent].freeze
+      klass.subfield_configs = [child].freeze
+      nested = klass.input_schema.dig(:properties, :payload)
+
+      expect(nested[:properties].keys).to eq([:dup])
+      expect(nested[:required]).to eq(["dup"])
+    end
+
+    # The complement, and the reason the rule asks about the `to_s` rather than about the CLASS: a String subclass
+    # renders through String's own `to_s`, which returns the receiver's bytes, so it names exactly one property and
+    # is as good a name as a plain String — including for the merge and the collision it takes part in.
+    it "leaves a String subclass that has not redefined to_s exactly as it was" do
+      subclass = Class.new(String)
+      klass = assigned_field(subclass.new("other"))
+
+      expect(klass.input_schema[:properties].keys.map { |key| String.new(key) }).to eq(["other"])
+      expect(klass.input_schema[:required]).to eq(["other"])
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(subclass.new("other"))).to be(true)
+    end
+
+    it "still reports a subclass name that collides with a Symbol as the collision it is" do
+      klass = build_axn
+      configs = [Class.new(String).new("dup"), :dup].each_with_index.map do |field, index|
+        Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+      end
+      klass.internal_field_configs = configs.freeze
+
+      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both resolve to the JSON property "dup"/)
+    end
+
+    # A member's name is never emitted as itself — the declaration walk stores the Symbol it judged, and
+    # `member_properties` keys the property by it — so a member named with such a String is normalized rather than
+    # refused, and the property it names is its bytes. Stated as an example because "which names does this rule
+    # reach" is exactly what a reader needs to know.
+    it "does not reach a shape member's name, which is stored as the Symbol it was judged under" do
+      name = masquerading_name
+      member = Struct.new(:field, :validations).new(name, { presence: true })
+      klass = build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+
+      expect(klass.input_schema.dig(:properties, :payload, :properties).keys).to eq([:other])
+      expect(klass.input_schema.dig(:properties, :payload, :required)).to eq(["other"])
+    end
+
+    # The owner lookup goes through a BOUND `Object#method`, so a name that defines its own `#method` cannot answer
+    # the question being asked about it — nor raise in place of the verdict, which outside StandardError escapes
+    # every rescue above. Such a name is perfectly good: its `to_s` is still String's own.
+    it "reads the method table rather than asking the name's own #method" do
+      name = "other".dup
+      name.define_singleton_method(:method) { |*| raise(NotImplementedError, "hijacked from #method") }
+
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(name)).to be(true)
+      expect(assigned_field(name).input_schema[:properties].keys.map { |key| String.new(key) }).to eq(["other"])
+    end
+
+    # The one way the lookup itself can fail: a String that has UNDEF'd `to_s` resolves to no method, exactly as
+    # `#method` would raise NameError for it. It renders through whatever `method_missing` serves, which is
+    # emphatically not String's, so the answer is the same refusal rather than a NameError escaping the rule.
+    it "refuses a String whose to_s has been undef'd" do
+      undefd = Class.new(String) { undef_method :to_s }.new("other")
+
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(undefd)).to be(false)
+      expect { assigned_field(undefd).input_schema }.to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
+    end
+
+    # And the type test is `case`/`when` (a C-level `Module#===`) rather than `is_a?`, which a name can override to
+    # claim it is a String and route around the branch that would look up its `to_s`.
+    it "refuses a name that merely claims to be a String" do
+      liar = Class.new do
+        def is_a?(_klass) = true
+        def to_s = "dup"
+      end.new
+
+      expect(Axn::Internal::NativeMethods.native_name_rendering?(liar)).to be(false)
+      expect { assigned_field(liar).input_schema }.to raise_error(ArgumentError, /does not render through Ruby's own `to_s`/)
     end
   end
 

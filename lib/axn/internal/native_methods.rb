@@ -5,13 +5,15 @@ module Axn
     # Which of a caller's object's answers are RUBY'S OWN — read from the method table, without running a line
     # the object's class wrote.
     #
-    # Two layers need this, for one reason. Cooperating with a caller's object means running its code: storing a
-    # declared `inclusion:` container copies it, and renaming a contract failure runs the exception's
-    # `#exception`. Verifying that the code BEHAVED produced a new counterexample every round, because the body
-    # is arbitrary — a duplication hook that drops only a derived lookup index leaves every element it holds
-    # answering `include?` correctly and the aliases it no longer indexes answering wrongly, and an `#exception`
-    # that succeeds on its first call and raises on its second is not excluded by the object having been raised
-    # once. No behavioural probe terminates against an arbitrary body, so each fix was defeated by the next case.
+    # Three layers need this, for one reason. Cooperating with a caller's object means running its code: storing a
+    # declared `inclusion:` container copies it, renaming a contract failure runs the exception's `#exception`, and
+    # deciding what JSON property a declared name means renders it. Verifying that the code BEHAVED produced a new
+    # counterexample every round, because the body is arbitrary — a duplication hook that drops only a derived
+    # lookup index leaves every element it holds answering `include?` correctly and the aliases it no longer
+    # indexes answering wrongly, an `#exception` that succeeds on its first call and raises on its second is not
+    # excluded by the object having been raised once, and a `to_s` agreeing with a name's bytes when the rules ask
+    # says nothing about what it answers the encoder. No behavioural probe terminates against an arbitrary body,
+    # so each fix was defeated by the next case.
     #
     # OWNERSHIP terminates. It is a fact about the method table rather than a prediction about behaviour: where
     # Ruby's own implementation is what answers, the operation is bounded; where it is not, axn does not perform
@@ -28,7 +30,9 @@ module Axn
     # than for a set of names, and asks the OBJECT (through its singleton class) rather than only its class.
     # `native_exception_reporting?` keeps a named set and an object lookup for its own reason: it is not copying
     # anything, it is deciding what raising will dispatch — `clone` copies the singleton class, and `raise` asks
-    # the object it is handed.
+    # the object it is handed. `native_name_rendering?` asks about one method for a third reason again: the
+    # question is not whether axn can copy or dispatch the name safely but whether the name HAS a single property
+    # to be, since a String carries bytes as well as a rendering and three separate readers pick between them.
     module NativeMethods
       # `#method`, `#frozen?`, `#singleton_class`, `#ancestors` and the two method-table readers are all
       # overridable, so each is BOUND: one that raised would replace the verdict being decided with the object's
@@ -46,6 +50,8 @@ module Axn
 
       # Ruby's own owners, read from the implementations rather than named, so an implementation that moves
       # cannot silently disagree with a constant here.
+      STRING_TO_S = ::String.instance_method(:to_s).owner
+      private_constant :STRING_TO_S
       #
       # `raise` dispatches the 0-arg `#exception` on whatever object it is handed, and
       # `Exception#exception(message)` clones the receiver — so renaming reaches `#exception` plus the three
@@ -118,6 +124,42 @@ module Axn
       end
 
       def self.frozen?(value) = KERNEL_FROZEN.bind_call(value)
+
+      # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
+      # is the property every consumer reads".
+      #
+      # One property name is read by three separate readers: the property-name rules canonicalize it, the emitter
+      # writes it into `required` through its `to_s`, and `JSON.generate` renders a Hash key through that same
+      # `to_s`. Where the rendering is Ruby's own, those three are one fact. Where it is not, there is no single
+      # fact to be had — and the failure is the one the rules exist to prevent. A String SUBCLASS that defines
+      # `to_s` has BOTH bytes and a rendering, and only its author knows which one names the property (a subclass
+      # holding `"other"` and rendering `"dup"` passed the collision rules beside a `:dup` field and then emitted
+      # the property `"dup"` twice). Anything that is neither a String nor a Symbol has one rendering but produces
+      # it per call, so a `to_s` that answers differently answers the verdict one property and the encoder another.
+      # Both are refused rather than verified, for the reason this module exists.
+      #
+      # A Symbol needs no lookup and cannot be a false negative: it can carry no override at all — `Symbol` takes
+      # no instance of a subclass (`new` is undefined, `allocate` raises TypeError) and `:x.singleton_class` raises
+      # TypeError — so `:x.to_s` is always Symbol's own. A String subclass that does NOT define `to_s` inherits
+      # String's, which renders the receiver's own bytes, so it is as native here as a plain String.
+      #
+      # The lookup asks the OBJECT rather than its class, because what will be dispatched is the whole question and a
+      # singleton `to_s` is as much a name's rendering as its class's. That answer is complete rather than reachable
+      # from every caller: a PLAIN String carrying one is never handed to this by the property-name rules, since the
+      # emitted property they read is the frozen copy Ruby makes of a plain String Hash key — which is why the
+      # emitter reads one name once as well (`Reflection::Schema.required_key`), the two together being what keeps
+      # every artifact naming one property.
+      def self.native_name_rendering?(name)
+        case name
+        when ::Symbol then true
+        when ::String then STRING_TO_S.equal?(OBJECT_METHOD.bind_call(name, :to_s).owner)
+        else false
+        end
+      rescue ::NameError
+        # A String that has UNDEF'd `to_s` resolves to no method at all, so it renders through whatever
+        # `method_missing` serves — emphatically not String's own.
+        false
+      end
 
       # Does this caller-supplied name mean "absent" — nil, or the empty String/Symbol?
       #

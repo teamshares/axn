@@ -308,6 +308,27 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     }
   end
 
+  # The third rule of the three, and the one a tool needs setup to catch most: a name that renders through code of
+  # its own means the property axn judged and the property `JSON.generate` emits need not be the same, so the
+  # definition an adapter hands a model can carry a property the contract does not have. Reachable only through an
+  # assigned config, which is exactly what an adapter base or a generator may build.
+  it "names the offending class for a name that decides its own rendering" do
+    Axn.register_tool_adapter(:mcp)
+    masq = Class.new(String) { def to_s = "dup" }.new("other")
+    stub_const("ToolContractsSpec::OwnRendering", Class.new do
+      include Axn
+      tool :mcp
+      def call; end
+    end)
+    ToolContractsSpec::OwnRendering.internal_field_configs =
+      [Axn::Core::Contract::FieldConfig.new(field: masq, reader_as: :held, validations: { allow_nil: true })].freeze
+
+    expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+      expect(error.message).to start_with("ToolContractsSpec::OwnRendering has an invalid tool contract")
+      expect(error.message).to include("does not render through Ruby's own `to_s`")
+    }
+  end
+
   it "passes over valid tools" do
     Axn.register_tool_adapter(:mcp)
     valid_tool

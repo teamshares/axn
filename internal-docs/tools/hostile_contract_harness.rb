@@ -31,11 +31,14 @@
 # specs where the behaviour is observable, which is how a later "fix" of half of one gets noticed.
 #
 # When you add a row here, ask the same question: mutate the guard it exercises, and if the suite stays green,
-# the row is knowledge that dies with this file. Convert it. The rows added since — the two OWNERSHIP guards
-# (`Internal::NativeMethods`: which containers axn will copy, and which contract failures it will rename) and the
-# emission gate on the projection size cap — are each covered by a mutation-verified example in
-# `property_name_collision_spec.rb` / `validate_tool_contracts_spec.rb`; they stay here for the A/B, which is
-# where their counterexamples came from.
+# the row is knowledge that dies with this file. Convert it. The rows added since — the three OWNERSHIP guards
+# (`Internal::NativeMethods`: which containers axn will copy, which contract failures it will rename, and which
+# declared names render through Ruby's own code) and the emission gate on the projection size cap — are each
+# covered by a mutation-verified example in `property_name_collision_spec.rb` / `validate_tool_contracts_spec.rb`;
+# they stay here for the A/B, which is where their counterexamples came from. The name-rendering rows are the
+# clearest case for the A/B this file exists for: at the commit before, two of them printed
+# `{"properties":{"dup":{},"dup":{}}}` and one printed a `required` entry for a property the same schema does not
+# define — output no assertion about the current tree can show you.
 #
 #   # 1. put the older commit in a detached worktree, with this harness copied in
 #   git worktree add -f --detach /tmp/axn-ab <OLDER_SHA>
@@ -3423,26 +3426,28 @@ check "an unrenderable name's == cannot replace its report", /ArgumentError.*no.
   assigned_projection(RAISING_NAME_EQ.new(BAD_BINARY_NAME))
 end
 
-# Canonicalization is the rules' own INPUT, so a dispatch there is a dispatch inside a verdict — and it was wrong
-# in both directions: a lone such name names one property and collides with nothing.
-check "a lone name whose to_s raises still projects", "props=1" do
+# Canonicalization is the rules' own INPUT, so a dispatch there is a dispatch inside a verdict. A name that OWNS
+# that dispatch is refused a rule earlier — its two candidate names make the property it means undecidable — and
+# what these rows pin is that the refusal itself runs none of the name's code.
+check "a lone name whose to_s raises is refused without running it", /ArgumentError.*"a" does not render through Ruby's own `to_s`/ do
   assigned_projection(RAISING_NAME_TO_S.new("a"))
 end
 
-check "a colliding name's to_s cannot replace the report", /DuplicateFieldError.*"dup" and :dup/ do
+check "a colliding name whose to_s raises is refused, not run", /ArgumentError.*"dup" does not render through Ruby's own `to_s`/ do
   assigned_projection(RAISING_NAME_TO_S.new("dup"), :dup)
 end
 
 # Asking twice is what let a second, different answer overturn a verdict already reached. A String's canonical
-# property is now its own bytes, so its `to_s` is not asked at all; an exotic name's is asked ONCE.
-check "a String name is judged on its bytes, not its to_s", /ArgumentError.*no.*UTF-8 rendering/ do
+# property is its own bytes, so its `to_s` is not asked at all — and both rules fire on this one, the rendering
+# rule first: a name with two candidate names has no single property for the bytes rule to be about.
+check "a String name judged on its bytes, whose to_s claims otherwise, is refused", /ArgumentError.*does not render through Ruby's own `to_s`/ do
   liar = Class.new(String) do
     def to_s = "renderable"
   end
   assigned_projection(liar.new(BAD_BINARY_NAME))
 end
 
-check "an exotic name judged unrenderable is not re-asked", /ArgumentError.*no.*UTF-8 rendering/ do
+check "an exotic name is refused rather than judged on a rendering it may retract", /ArgumentError.*a name of class .* does not render through Ruby's own `to_s`/ do
   assigned_projection(FLIPPING_NAME.new(BAD_BINARY_NAME, "renderable"))
 end
 
@@ -3452,9 +3457,33 @@ check "an exotic name's second rendering cannot hide a duplicate", /DuplicateFie
   "declared with no duplicate reported"
 end
 
+# One parent config carrying `name`, with two children whose names collapse onto one property.
+def assigned_ancestor(name)
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  utf8 = :café
+  latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
+  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :p, default: {},
+                                                                      validations: { type: { klass: Hash }, allow_nil: true })].freeze
+  klass.subfield_configs = [utf8, latin1].each_with_index.map do |child, index|
+    Axn::Core::Contract::FieldConfig.new(field: child, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
+  end.freeze
+  klass.input_schema
+  "projected with no collision reported"
+end
+
 # The collision message names the whole resolved path, so an ANCESTOR's name is rendered there as well as at its
-# own node. Asking it twice let the second answer decide — or raise, in place of the report about its children.
+# own node, and deriving that segment twice would be reading one name twice. A STRING ancestor is what exercises
+# the memo now: an ancestor that renders through its own code is refused at its own node, which a node is always
+# walked before its children makes certain — so the children's collision is never reached.
 check "an ancestor's name is rendered once for the whole walk", /DuplicateFieldError.*the JSON property "p\.café"/ do
+  assigned_ancestor("p")
+end
+
+check "an ancestor that renders through its own code is refused before its children are judged",
+      /ArgumentError.*a name of class .* does not render through Ruby's own `to_s`/ do
   parent = Class.new do
     def initialize = @answered = false
     def to_s
@@ -3464,20 +3493,9 @@ check "an ancestor's name is rendered once for the whole walk", /DuplicateFieldE
       "p"
     end
   end
-  klass = Class.new do
-    include Axn
-    def call; end
-  end
-  utf8 = :café
-  latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
-  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: parent.new, reader_as: :p, default: {},
-                                                                      validations: { type: { klass: Hash }, allow_nil: true })].freeze
-  klass.subfield_configs = [utf8, latin1].each_with_index.map do |name, index|
-    Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
-  end.freeze
-  klass.input_schema
-  "projected with no collision reported"
+  assigned_ancestor(parent.new)
 end
+
 
 # Bytes that are no valid Symbol either: the size guard keys a wire key by a plain COPY rather than by interning,
 # so such a name reaches the rule that reports it instead of dying of EncodingError inside a guard that counts.
@@ -3488,6 +3506,15 @@ end
 # The declaration path's own report: which of the two duplicate wordings a collision gets is "same raw spelling".
 check "an assigned name's == cannot replace the declaration report", /DuplicateFieldError.*both render as the JSON property "dup"/ do
   klass = assigned_names(RAISING_NAME_EQ.new("dup"))
+  klass.expects(:dup)
+  "declared with no duplicate reported"
+end
+
+# And the same check's canonicalization, which the declaration path needs to be dispatch-free on its OWN account:
+# it runs before any projection exists, so the rendering rule cannot refuse such a name here, and reading a
+# String's bytes is what keeps the duplicate reportable rather than replaced by the name's exception.
+check "an assigned name's to_s cannot replace the declaration report", /DuplicateFieldError.*both render as the JSON property "dup"/ do
+  klass = assigned_names(RAISING_NAME_TO_S.new("dup"))
   klass.expects(:dup)
   "declared with no duplicate reported"
 end
@@ -3510,6 +3537,107 @@ end
 check "two String subclass instances merge outbound too", "props=1" do
   subclass = Class.new(String)
   assigned_projection(subclass.new("dup"), subclass.new("dup"), direction: :output)
+end
+
+# ---------------------------------------------------------------------------------------------------
+# A name that DECIDES ITS OWN RENDERING, which is the premise the other two rules rest on. Three readers read a
+# property name — the rules canonicalize a String by its BYTES, the emitter writes it into `required` through its
+# `to_s`, and `JSON.generate` renders a Hash key through that same `to_s` — so a name whose bytes and rendering
+# differ is two properties wearing one declaration, and every verdict about it is about a property nothing emits.
+# ---------------------------------------------------------------------------------------------------
+
+# Bytes "other", rendering "dup": `String#hash`/`eql?` (and so the emitter's own properties Hash) see one name,
+# `JSON.generate` and the `required` list see the other.
+MASQUERADING_NAME = Class.new(String) do
+  def to_s = "dup"
+end
+
+# What the encoder would emit for a projection, which is where this defect was visible and the schema Hash is not:
+# two keys that a Hash holds apart and JSON renders alike.
+def emitted_json(klass, direction: :input)
+  JSON.generate(direction == :input ? klass.input_schema : klass.output_schema)
+end
+
+check "two names emitting one JSON property through the encoder are refused (inbound)",
+      /ArgumentError.*a field name becomes a JSON property name, and "other" does not render through Ruby's own `to_s`/ do
+  emitted_json(assigned_names(MASQUERADING_NAME.new("other"), :dup))
+end
+
+check "the same pair outbound", /ArgumentError.*"other" does not render through Ruby's own `to_s`/ do
+  emitted_json(assigned_names(MASQUERADING_NAME.new("other"), :dup, direction: :output), direction: :output)
+end
+
+check "the same name on the render path, which builds no schema of its own",
+      /ArgumentError.*does not render through Ruby's own `to_s`/ do
+  klass = assigned_names(MASQUERADING_NAME.new("other"), direction: :output)
+  Axn::Extensions::Serialization.render(klass.call).inspect
+end
+
+# No second declaration is needed for the name to be undecidable, so none is needed to refuse it: alone, this name
+# emitted a `required` entry for a property its own `properties` map does not define.
+check "a lone such name is refused too", /ArgumentError.*does not render through Ruby's own `to_s`/ do
+  assigned_projection(MASQUERADING_NAME.new("other"))
+end
+
+check "one whose rendering happens to agree with its bytes is refused as well",
+      /ArgumentError.*does not render through Ruby's own `to_s`/ do
+  assigned_projection(MASQUERADING_NAME.new("dup"))
+end
+
+# The OBJECT, not the class: Ruby stores a plain String Hash key as a frozen copy of its bytes, so a singleton
+# `to_s` never reached the emitted property — it diverted the `required` entry alone, and the schema then required
+# a property it does not define. Both artifacts read the one name one way now.
+check "a plain String carrying a singleton to_s: required and properties name one property", 'props=["other"] required=["other"]' do
+  name = "other".dup
+  name.define_singleton_method(:to_s) { "dup" }
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :held, validations: { presence: true })].freeze
+  schema = klass.input_schema
+  "props=#{schema[:properties].keys.map { |key| String.new(key) }.inspect} required=#{schema[:required].inspect}"
+end
+
+# The complement, and why the rule asks about the `to_s` rather than about the CLASS: a String subclass that has
+# not redefined `to_s` renders its own bytes, so it names exactly one property and is as good a name as a plain
+# String — including in the merges and collisions it takes part in (the four merge rows below are the same point).
+check "a String subclass that has not redefined to_s is unaffected", 'props=["other"] required=["other"]' do
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: Class.new(String).new("other"), reader_as: :held,
+                                                                      validations: { presence: true })].freeze
+  schema = klass.input_schema
+  "props=#{schema[:properties].keys.map { |key| String.new(key) }.inspect} required=#{schema[:required].inspect}"
+end
+
+check "such a subclass still collides with a Symbol naming the same property", /DuplicateFieldError.*"dup" and :dup both resolve to the JSON property "dup"/ do
+  assigned_projection(Class.new(String).new("dup"), :dup)
+end
+
+# WHERE the rule fires is where the emitter keys a property by the name ITSELF, and that is the top level only. A
+# SUBFIELD's wire segment is interned from the name's rendering by SubfieldTree (as a shape member's key is, and a
+# `model:` route's generated id), so the emitted name is a Symbol: one property, read the same way by the schema,
+# its `required` list and the encoder. Nothing to refuse, and nothing changed.
+check "a subfield's name is interned into its wire segment, so there is nothing to refuse",
+      'props=[:dup] required=["dup"] json={"type":"object","properties":{"dup":{"not":{"type":"null"}}},"required":["dup"]}' do
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: :payload, reader_as: :payload, default: {},
+                                                                      validations: { type: { klass: Hash }, allow_nil: true })].freeze
+  klass.subfield_configs = [Axn::Core::Contract::FieldConfig.new(field: MASQUERADING_NAME.new("other"), reader_as: :child, on: :payload,
+                                                                validations: { presence: true })].freeze
+  nested = klass.input_schema.dig(:properties, :payload)
+  "props=#{nested[:properties].keys.inspect} required=#{nested[:required].inspect} json=#{JSON.generate(nested.slice(:type, :properties, :required))}"
+end
+
+check "a shape member's name is likewise stored as the Symbol it was judged under",
+      'declared props=[:other] json={"other":{}}' do
+  declare_and_reflect({ members: [duck_carrying(field: MASQUERADING_NAME.new("other"), validations: {})], container: Hash }, type: Hash)
 end
 
 # RECORDED RESIDUE, not a guarantee. The merge decision is the emitter's Hash, and `Reflection::Schema` is

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# The two property-name rules live with reflection because they are judged on what reflection EMITS. Their
+# The three property-name rules live with reflection because they are judged on what reflection EMITS. Their
 # BEHAVIOR is covered where it is exercised — `spec/axn/core/validations/property_name_collision_spec.rb` owns
 # every assertion about what the rules accept and reject, and duplicating any of it here would add a second
 # place to maintain them from for no added protection.
@@ -52,6 +52,8 @@ RSpec.describe Axn::Reflection::PropertyNames do
       each_emitted_node
       raise_colliding_properties!
       raise_unrenderable_emitted_name!
+      raise_foreign_rendering_name!
+      foreign_rendering_name_message
       property_source
       same_property_path?
       unrenderable_name_message

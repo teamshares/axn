@@ -514,15 +514,24 @@ module Axn
       # answer is copied into a plain String either way), and a Symbol's is bound for the same reason
       # `PropertyNames` binds `Symbol#inspect`. That is not a micro-optimization — this is the canonicalization
       # every property-name RULE decides on, so a dispatch here is a dispatch inside a verdict. A String
-      # SUBCLASS may define `to_s`, and one that raised killed a projection the emitter builds fine (a lone
-      # such name names one property and collides with nothing), replaced a collision report with its own
-      # exception, and — answering differently on a second call — walked an unrenderable name straight past
-      # `PropertyNames.reject_unrenderable_field_names!`, since a name is canonicalized to REACH that check
-      # and the check canonicalized again to confirm it.
+      # SUBCLASS may define `to_s`, and one that raised killed a projection the emitter builds fine, replaced a
+      # collision report with its own exception, and — answering differently on a second call — walked an
+      # unrenderable name straight past `PropertyNames.reject_unrenderable_field_names!`, since a name is
+      # canonicalized to REACH that check and the check canonicalized again to confirm it.
       #
-      # Anything else is rendered by dispatching its own `to_s`, which is unavoidable and is the work: a
-      # foreign object's property name is whatever it renders as, and the emitter reads it the same way. The
-      # bound fallback still covers a `to_s` that returns a non-String.
+      # Reading a String's BYTES is the whole of what this promises about a declared name, and it is only half of
+      # what the rules need, so it is not the whole answer either: `JSON.generate` renders a Hash key through its
+      # `to_s`, so a name whose rendering disagrees with its bytes would be judged as one property and emitted as
+      # another. That is why `PropertyNames` refuses a declared name that renders through code of its own
+      # (`NativeMethods.native_name_rendering?`) before it canonicalizes anything — a String judged on its bytes
+      # is a sound verdict precisely because a name whose bytes and rendering can differ is no longer admitted.
+      #
+      # Anything else is rendered by dispatching its own `to_s`, which for a Hash KEY is unavoidable and is the
+      # work: a caller's data is keyed by whatever it renders as, and the rendered key this returns is the plain
+      # String the body carries, so nothing asks the key again. A declared NAME reaches it only from the
+      # declaration-time duplicate check, which runs before any projection exists to refuse the name — and reads it
+      # exactly once, which is why that check keys a config by this one answer. The bound fallback still covers a
+      # `to_s` that returns a non-String.
       def canonical_wire_key(key)
         rendered = case key
                    when ::Symbol then SYMBOL_RENDERING.bind_call(key)

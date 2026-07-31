@@ -11,8 +11,10 @@ require "axn/reflection/values"
 
 module Axn
   module Reflection
-    # The two rules a declared name must satisfy to be a JSON property: it must have a UTF-8 rendering, and it
-    # must not collapse onto a property another declared name already renders as.
+    # The three rules a declared name must satisfy to be a JSON property: it must render through Ruby's own `to_s`
+    # (so the property it names is one fact rather than one answer per reader), that rendering must have a UTF-8
+    # form, and it must not collapse onto a property another declared name already renders as. They are judged in
+    # that order, each being the next one's premise.
     #
     # These live with reflection because they are judged on what reflection EMITS — the walk reads the property
     # names out of a built schema rather than predicting them from the declarations. Six mechanisms contribute
@@ -264,16 +266,22 @@ module Axn
       # same way `SubfieldContradictions.check!` is.
       #
       # Every emitted name is canonicalized ONCE for the whole walk. A name is a node's own key at one node and an
-      # ancestor SEGMENT at every node below it, and the collision message renders the whole path — so re-deriving
-      # a segment there asked a name that is neither String nor Symbol to render itself a SECOND time, on the
-      # failure path, where a raise replaces the report and a different answer names a different property. The
-      # memo is identity-compared, so nothing is asked to hash or compare itself either, and a node is always
-      # walked before its children, so every ancestor segment is already in it.
+      # ancestor SEGMENT at every node below it, and the collision message renders the whole path, so a segment
+      # derived twice is a name read twice. The memo is identity-compared, so nothing is asked to hash or compare
+      # itself either, and a node is always walked before its children, so every ancestor segment is already in it.
+      # What the memo COSTS is one read per name; what it no longer has to defend against is a name answering a
+      # second read differently, because a name whose rendering is its own code is refused above before anything
+      # canonicalizes it — every name that reaches the canonicalization renders through Ruby's own `to_s`, which
+      # answers the same every time it is asked.
       def reject_colliding_emitted_properties!(schema, &sources)
         canonicals = {}.compare_by_identity
         each_emitted_node(schema) do |path, property_names|
           claimed = {}
           property_names.each do |name|
+            # Ahead of the canonicalization rather than after it: this refuses a name axn would have to RUN to read
+            # at all, so no name's own code decides a property, and the canonicalization below is left with names
+            # whose rendering is Ruby's.
+            raise_foreign_rendering_name!(path, name, sources) unless Axn::Internal::NativeMethods.native_name_rendering?(name)
             canonical = canonicals[name] = Axn::Reflection::Values.canonical_wire_key(name)
             # Rejected HERE, one name at a time, before any comparison: two unrenderable names both
             # canonicalize to nil, so comparing first would report them as one collapsed property — a wrong
@@ -409,18 +417,47 @@ module Axn
       # The offending name's SOURCE decides the wording, so each kind reads as it always has. Provenance is
       # resolved here only, with a failure already certain.
       def raise_unrenderable_emitted_name!(path, name, sources)
-        kind = UNRENDERABLE_KINDS.fetch(property_source(attributions(sources), path, name)&.kind, "a field name")
+        kind = PROPERTY_NAME_KINDS.fetch(property_source(attributions(sources), path, name)&.kind, "a field name")
         raise ArgumentError, unrenderable_name_message(name, kind)
       end
 
-      UNRENDERABLE_KINDS = {
+      # A name that decides its own rendering names no ONE property, so there is nothing for the other rules to
+      # judge. Three readers read a property name — these rules canonicalize it, the emitter writes it into
+      # `required` through its `to_s`, and `JSON.generate` renders a Hash key through that same `to_s` — and they
+      # agree only where the rendering is Ruby's own (see `NativeMethods.native_name_rendering?`). A String
+      # subclass rendering `"dup"` over the bytes `"other"` passed these rules beside a `:dup` field and then
+      # emitted the property `"dup"` twice; a plain String carrying a singleton `to_s` emitted a `required` entry
+      # for a property its `properties` does not define, needing no second declaration at all.
+      #
+      # Refused rather than reconciled, and rejecting the OTHER of the two candidate names would only trade one
+      # silent collapse for the one it replaced: a name whose bytes have no UTF-8 rendering but whose `to_s`
+      # renders fine would then ship a property that is neither. Judged on the emitted name, like every rule here,
+      # and reachable only through a config ASSIGNED onto a class — the DSL symbolizes every declared name, and a
+      # shape member is stored as the Symbol the declaration walk judged.
+      def raise_foreign_rendering_name!(path, name, sources)
+        kind = PROPERTY_NAME_KINDS.fetch(property_source(attributions(sources), path, name)&.kind, "a field name")
+        raise ArgumentError, foreign_rendering_name_message(name, kind)
+      end
+
+      # Named without rendering the name — `inspect_field_name` escapes a String's bytes through a bound `inspect`
+      # and names anything else by its class — for the reason the whole rule exists: the offender is the name's own
+      # rendering, so asking for it here would let the name answer the report instead of the report being made.
+      def foreign_rendering_name_message(name, kind)
+        "#{kind} becomes a JSON property name, and #{inspect_field_name(name)} does not render through Ruby's own " \
+          "`to_s` — so the property this name means is not one fact: it is judged by a String's own bytes, while " \
+          "the reflected schema's `required` list and `JSON.generate` each read it from the name's `to_s`. Two " \
+          "declarations can then land on one JSON property, or one declaration on two, with nothing to signal it. " \
+          "Declare it under a Symbol, or under a String that has not redefined `to_s`."
+      end
+
+      PROPERTY_NAME_KINDS = {
         config: "a field name",
         intermediate: "a nested key in `on:`",
         member: "a shape member name",
         type_member: "a member of a declared type",
         model_id: "a `model:` field's generated id",
       }.freeze
-      private_constant :UNRENDERABLE_KINDS
+      private_constant :PROPERTY_NAME_KINDS
 
       # One declaration that could have produced a property name at a node. Built only to attribute a
       # collision that has already been detected, so `description` is rendered eagerly — the list is walked
@@ -912,7 +949,8 @@ module Axn
                            :reject_colliding_emitted_properties!, :reject_oversized_schema!,
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
                            :property_source, :same_property_path?, :unrenderable_name_message,
-                           :raise_unrenderable_emitted_name!, :property_sources_for,
+                           :raise_unrenderable_emitted_name!, :raise_foreign_rendering_name!,
+                           :foreign_rendering_name_message, :property_sources_for,
                            :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
                            :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs,
                            :property_segment, :wire_key_segment, :surviving_configs, :input_property_path
