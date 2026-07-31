@@ -1825,7 +1825,7 @@ RSpec.describe "declaration-time property name collisions" do
       members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true))
       klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
 
-      sliced = klass.send(:_context_slice, data: { p: { secret: "SHH" } }, direction: :inbound)
+      sliced = klass._context_slice(data: { p: { secret: "SHH" } }, direction: :inbound)
 
       expect(sliced.dig(:p, :secret)).to eq("[FILTERED]")
     end

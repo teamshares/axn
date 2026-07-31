@@ -259,13 +259,13 @@ RSpec.describe "Dynamic sensitive fields" do
     describe "._resolve_sensitive_fields" do
       it "resolves callable sensitive values against the action instance" do
         instance = action.send(:new, mode: "secret")
-        resolved = action._resolve_sensitive_fields(instance)
+        resolved = action.send(:_resolve_sensitive_fields, instance)
         expect(resolved).to include(:data)
       end
 
       it "returns empty when callable evaluates to false" do
         instance = action.send(:new, mode: "public")
-        resolved = action._resolve_sensitive_fields(instance)
+        resolved = action.send(:_resolve_sensitive_fields, instance)
         expect(resolved).not_to include(:data)
       end
     end

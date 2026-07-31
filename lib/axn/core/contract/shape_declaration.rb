@@ -424,9 +424,10 @@ module Axn
         # and from ContractForSubfields, which is extended onto the same class). Kept in place so each stays
         # beside the walk it belongs to, with its comment.
         #
-        # Only these — the ones this PR added. The other leading-underscore public class methods are
-        # `class_attribute` accessors and long-standing declaration hooks the framework and downstream gems
-        # already reach; narrowing those is a separate, breaking question.
+        # The leading-underscore class methods still PUBLIC on an action class are the ones another layer calls
+        # on it from a different file (`_resolved_subfields`, `_declared_fields`, `_context_slice`, …) plus the
+        # `class_attribute` accessors, whose class-level reader ActiveSupport's own generated instance reader
+        # calls as `self.class.<name>` — hiding it would break that.
         private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
                 :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
                 :_member_owner_label, :_describe_shape_member,

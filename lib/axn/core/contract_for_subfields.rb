@@ -452,6 +452,14 @@ module Axn
           value
         end
 
+        # Everything below is reached only with an implicit receiver, from here and from the other declaration
+        # modules extended onto the same class (`expects` routes a subfield declaration into
+        # `_expects_subfields`). It is private because an `_`-prefixed name in a module extended onto every
+        # action class otherwise lands there as a PUBLIC singleton method, so the convention and the surface
+        # disagree. `_resolved_subfields` stays public above: reflection, the executor and the facade inspector
+        # all read the resolved tree off the action class from other files.
+        private
+
         def _expects_subfields( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
@@ -536,8 +544,6 @@ module Axn
             _define_subfield_readers!(configs)
           end
         end
-
-        private
 
         # A route is rendered as the JSON property it canonicalizes to, never interpolated raw: `on:` may hold
         # bytes with no UTF-8 rendering, and joining those into this UTF-8 message would raise

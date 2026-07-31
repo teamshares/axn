@@ -25,6 +25,11 @@ module Axn
           self._axn_extension_metadata = _axn_extension_metadata.merge(adapter => merged)
         end
 
+        # Private because an `_`-prefixed name in a module extended onto every action class otherwise lands
+        # there as a PUBLIC singleton method, so the convention and the surface disagree. Reached only from
+        # `extension_metadata` above, with an implicit receiver.
+        private
+
         # Deep-copies Hash/Array container structure, plus mutable String leaf VALUES, so a caller
         # mutating the returned metadata (or a nested Hash/Array/String value within it) can't leak into
         # the stored copy or into subclasses. Hash KEYS need no copying: Ruby dups-and-freezes a String

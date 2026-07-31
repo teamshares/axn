@@ -397,6 +397,13 @@ module Axn
           configs.map(&:field)
         end
 
+        # Everything below is reached only with an implicit receiver, from here and from the other declaration
+        # modules extended onto the same class. It is private because an `_`-prefixed name in a module extended
+        # onto every action class otherwise lands there as a PUBLIC singleton method, so the convention and the
+        # surface disagree. `_declared_fields` stays public above: the context facade, the redaction slice and
+        # `Mountable`'s step passthrough call it on the action class from other files.
+        private
+
         # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
         # catches it in `_build_shape_member` on key presence; a raw `shape:` kwarg supplies pre-built
         # member objects that bypass that path, so walk the resolved members (and nested shapes) here.
@@ -419,8 +426,6 @@ module Axn
             _reject_outbound_shape_user_facing!(_member_shape(member))
           end
         end
-
-        private
 
         # A true duplicate is the SAME wire key declared under the SAME parent route — keyed on the
         # `[on, field]` pair, against `existing` configs AND within `new_configs` itself (`expects :foo,

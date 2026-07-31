@@ -44,6 +44,13 @@ module Axn
           value
         end
 
+        # Everything below is reached only with an implicit receiver, from here and from the other
+        # declaration modules extended onto the same class. It is private because an `_`-prefixed name in a
+        # module extended onto every action class otherwise lands there as a PUBLIC singleton method, so the
+        # convention and the surface disagree. `_ambient_subfield_tree` stays public above: the runtime
+        # subfield resolver calls it on the action class from another file.
+        private
+
         # Declaration-time contradiction checks for the ambient subtree. Ambient configs are dropped
         # from the shared `_resolved_subfields` tree (it has no `:ambient_context` root), so the main
         # `SubfieldContradictions.check!` at the declaration site never sees them. Run the SAME checks
@@ -159,8 +166,6 @@ module Axn
         def _ambient_model_node?(node)
           node.configs.any? { |c| c.validations[:model] }
         end
-
-        private
 
         # The framework-supplied ambient parent, modeled for the ambient-scoped tree as an untyped
         # (always object-shaped) root reader — it never appears in provided_data or the input schema.
@@ -283,9 +288,10 @@ module Axn
       end
 
       # Delegates to the class-level predicate (see `ClassMethods#_ambient_model_node?`) so the filter
-      # and the declaration-time placement check share exactly one implementation.
+      # and the declaration-time placement check share exactly one implementation. Through `send` because that
+      # predicate is private on the class — an internal of the declaration walk, not a cross-layer entry point.
       def _ambient_model_node?(node)
-        self.class._ambient_model_node?(node)
+        self.class.send(:_ambient_model_node?, node)
       end
     end
   end

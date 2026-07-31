@@ -497,6 +497,25 @@ module Axn
             end
           end
         end
+
+        # An `_`-prefixed name already says "not yours to call", but on a module included into ClassMethods it
+        # also lands on every action class as a PUBLIC singleton method — so the convention and the surface
+        # disagreed. Everything reached only with an implicit receiver is listed here, declared beside its
+        # definition rather than relocated below so each method stays with the walk it belongs to and its comment.
+        #
+        # The exceptions are the redaction entry points other layers genuinely call on the action class from
+        # another file — `inspection_filter`/`sensitive_fields`, `_context_slice`, `_build_instance_filter`,
+        # `_has_dynamic_sensitive_fields?`, `_resolve_sensitive_value`, `_mask_unfilterable_shapes`,
+        # `_mask_unfilterable_shape_value`, `_sensitive_ambient_shape_paths`, `_sensitive_member_names`. Those
+        # stay public: a cross-layer call needs a public method, and hiding one behind a `send` at the call site
+        # would say private while meaning public, which is less honest than the `_` prefix alone.
+        private :_contract_redaction, :_sensitive_candidate_configs, :_flatten_sensitive_candidates,
+                :_static_sensitive_fields, :_resolve_sensitive_fields, :_config_sensitive, :_sensitive_field_keys,
+                :_filter_tolerating_cycles, :_sensitive_shape_paths, :_derive_sensitive_shape_paths,
+                :_derive_sensitive_ambient_shape_paths, :_mask_value_at_path, :_mask_opaque_or_preserve,
+                :_present_key_variants, :_shape_has_sensitive_member?, :_member_sensitive?, :_member_shape,
+                :_mask_shape_value, :_mask_shape_element, :_sensitive_nested_members,
+                :_derive_sensitive_nested_members, :_derive_sensitive_member_names
       end
     end
   end

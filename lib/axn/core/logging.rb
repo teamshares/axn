@@ -36,6 +36,11 @@ module Axn
           end
         end
 
+        # Private because an `_`-prefixed name in a module extended onto every action class otherwise lands
+        # there as a PUBLIC singleton method, so the convention and the surface disagree. Reached only from
+        # `log` above, with an implicit receiver.
+        private
+
         def _log_prefix
           names = NestingTracking._current_axn_stack.map do |axn|
             axn.class.resolved_axn_name
