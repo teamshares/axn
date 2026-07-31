@@ -6,19 +6,24 @@ module Axn
   module Internal
     module Tracing
       class << self
-        # Cache the tracer instance to avoid repeated lookups
-        # The tracer provider may cache internally, but we avoid the method call overhead
-        # We check defined?(OpenTelemetry) each time to handle cases where it's loaded lazily
-        def tracer
+        # The OpenTelemetry tracer, when OpenTelemetry is loaded. Mechanism only: whether axn traces
+        # at all, and with which tracer, is Axn.config.tracer's decision. The presence check runs on
+        # every call because OpenTelemetry can be loaded lazily, and the provider is re-consulted
+        # because it can be replaced (a host app configuring the SDK after boot, or a test swapping
+        # in a mock).
+        def autodetected_tracer
           return nil unless defined?(OpenTelemetry)
 
-          # Re-fetch if the tracer provider has changed (e.g., in tests with mocks)
           current_provider = OpenTelemetry.tracer_provider
           return @tracer if defined?(@tracer) && defined?(@tracer_provider) && @tracer_provider == current_provider
 
           @tracer_provider = current_provider
           @tracer = current_provider.tracer("axn", Axn::VERSION)
         end
+
+        # Axn.config.tracer's dynamic default calls through here, so this stays a one-line delegate
+        # rather than duplicated logic.
+        def tracer = autodetected_tracer
 
         # Check if the OpenTelemetry tracer supports the record_exception option for in_span.
         # This was added in opentelemetry-api 1.7.0 (2025-09-17).
@@ -31,6 +36,14 @@ module Axn
             OpenTelemetry::Trace::Tracer.instance_method(:in_span).parameters.any? { |_, name| name == :record_exception }
           rescue StandardError
             false
+          end
+        end
+
+        # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry
+        # constant or the tracer out from under them.
+        def reset!
+          %i[@tracer @tracer_provider @supports_record_exception @probed_tracer].each do |ivar|
+            remove_instance_variable(ivar) if instance_variable_defined?(ivar)
           end
         end
       end

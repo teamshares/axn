@@ -117,6 +117,19 @@ module Axn
             overridable: true,
             validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
 
+    # The tracer that receives axn's `axn.call` spans. Three states:
+    #   unset          → auto-detect: the OpenTelemetry tracer when OTel is loaded, else no spans
+    #   nil            → no tracing, even with OpenTelemetry loaded
+    #   a tracer       → that object, whether or not OpenTelemetry is loaded
+    # `Axn.config.reset!(:tracer)` returns to auto-detection.
+    #
+    # The default is dynamic — re-derived on every read — because OpenTelemetry may be loaded after
+    # axn is. Caching "absent" at gem load (plausible under Bundler.require) would permanently
+    # disable tracing for an app that configures OpenTelemetry in an initializer.
+    setting :tracer,
+            default: -> { Axn::Internal::Tracing.autodetected_tracer },
+            validate: ->(v) { v.nil? || v.respond_to?(:in_span) || "must respond to #in_span, or be nil to disable tracing" }
+
     attr_writer :logger, :env, :on_exception, :rails
 
     # Optional callable returning a Hash of ambient context data (e.g. from request-local state).
