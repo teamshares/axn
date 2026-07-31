@@ -35,13 +35,18 @@ module Axn
     end
 
     Setting = Struct.new(:name, :default, :one_of, :validate, :overridable, keyword_init: true) do
-      # Raises ArgumentError if the assigned value is not permitted.
+      # Raises ArgumentError if the assigned value is not permitted. A `validate:` lambda may return
+      # a String instead of `true` to say WHY the value was rejected — worth it for a setting whose
+      # value is an object the app supplies, where "invalid" alone doesn't hint at the contract.
       def validate!(value)
         raise ArgumentError, "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; got #{value.inspect}" if one_of && !one_of.include?(value)
+        return unless validate.respond_to?(:call)
 
-        return unless validate.respond_to?(:call) && !validate.call(value)
+        outcome = validate.call(value)
+        return if outcome && !outcome.is_a?(String)
 
-        raise ArgumentError, "#{name} got invalid value: #{value.inspect}"
+        detail = outcome if outcome.is_a?(String)
+        raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 
       # A Proc default is DYNAMIC: re-derived on every read while the setting is unset, and never

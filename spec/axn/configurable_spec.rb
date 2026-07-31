@@ -282,6 +282,33 @@ RSpec.describe Axn::Configurable::Settings do
     expect(klass.new.additional_includes).to eq([])
   end
 
+  describe "validate: rejection reasons" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :bare, validate: ->(v) { v.is_a?(Integer) }
+        setting :detailed, validate: ->(v) { v.is_a?(Integer) || "must be an Integer" }
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "raises without a detail clause when the validator returns false" do
+      expect { instance.bare = "nope" }.to raise_error(ArgumentError, 'bare got invalid value: "nope"')
+    end
+
+    it "appends a String return value as the reason" do
+      expect { instance.detailed = "nope" }.to raise_error(
+        ArgumentError, 'detailed got invalid value: "nope" — must be an Integer'
+      )
+    end
+
+    it "accepts a valid value through a String-returning validator" do
+      expect { instance.detailed = 3 }.not_to raise_error
+    end
+  end
+
   describe "predicate readers" do
     let(:klass) do
       Class.new do
