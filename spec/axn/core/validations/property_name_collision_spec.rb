@@ -3137,6 +3137,195 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # A declared name is caller-supplied, and a String SUBCLASS can define the very methods these rules ask it:
+  # `==`/`eql?` to compare it, `to_s` to render it. Every such dispatch on the way from "collision established"
+  # to "error raised" is a chance for the name to raise INSTEAD of the report — replacing the verdict with its
+  # own exception, which outside StandardError escapes every rescue that would have settled it.
+  #
+  # Only a config ASSIGNED onto a class reaches these rules as a String subclass (the DSL symbolizes every
+  # declared name), which is exactly the route that carries whatever its author built.
+  describe "a declared name whose own methods run while it is being reported" do
+    def assigned(*fields, direction: :input)
+      klass = build_axn
+      configs = fields.each_with_index.map do |field, index|
+        Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+      end
+      writer = direction == :input ? :internal_field_configs= : :external_field_configs=
+      klass.public_send(writer, configs.freeze)
+      klass
+    end
+
+    def project(klass, direction) = direction == :input ? klass.input_schema : klass.output_schema
+
+    # `eql?` is left alone deliberately: it is the merge rule itself, not a report. See the merge examples below.
+    def raising_eq(spelling)
+      Class.new(String) do
+        def ==(_other) = raise(NotImplementedError, "hijacked from #==")
+        def eql?(_other) = false
+      end.new(spelling)
+    end
+
+    def raising_to_s(spelling)
+      Class.new(String) do
+        def to_s = raise(NotImplementedError, "hijacked from #to_s")
+      end.new(spelling)
+    end
+
+    # Attribution recovers WHICH declarations collided by matching emitted paths. `Array#==` dispatches each
+    # element's own `==`, and the guard around the attribution walk does not reach the lookup over its result —
+    # so the enrichment could raise in place of the collision it was enriching.
+    %i[input output].each do |direction|
+      it "reports the #{direction} collision rather than running the name's ==" do
+        klass = assigned(raising_eq("dup"), :dup, direction:)
+
+        expect { project(klass, direction) }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup/)
+      end
+    end
+
+    it "still names the unrenderable emitted name rather than running its ==" do
+      klass = assigned(raising_eq("bad\xFF".dup.force_encoding("ASCII-8BIT")))
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+    end
+
+    # Bytes that are no valid Symbol either. The size guard keys a wire key by a plain COPY of the name rather
+    # than by interning it, so such a name reaches the rule that reports it in its own terms instead of dying of
+    # `EncodingError` in a guard that only wanted to count.
+    it "reports a name whose bytes are neither UTF-8 nor a valid Symbol" do
+      klass = assigned("bad\xFF".dup.force_encoding("UTF-8"))
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+    end
+
+    # Canonicalization is the rule's own input, so a dispatch there is a dispatch inside a verdict — and it was
+    # wrong in BOTH directions at once. A single such name names one property and collides with nothing, yet the
+    # rule died before the schema it would have judged.
+    it "projects a lone name whose to_s raises, which names one property and collides with nothing" do
+      klass = assigned(raising_to_s("a"))
+
+      expect(klass.input_schema[:properties].keys.map(&:to_str)).to eq(["a"])
+    end
+
+    it "reports the collision rather than running the name's to_s" do
+      klass = assigned(raising_to_s("dup"), :dup)
+
+      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup/)
+    end
+
+    # The non-idempotent-dispatch hazard, and the reason the canonical property is read off a String's own bytes:
+    # a name was canonicalized to REACH the unrenderable check and canonicalized AGAIN by it, so a `to_s`
+    # answering renderable the second time walked an unrenderable name straight through — no error, and the name
+    # then claimed the schema's nil canonical slot, where a second one would have been reported as collapsing
+    # onto it.
+    it "rejects a name whose bytes have no UTF-8 rendering however its to_s answers" do
+      liar = Class.new(String) do
+        def to_s = "renderable"
+      end.new("bad\xFF".dup.force_encoding("ASCII-8BIT"))
+
+      expect { assigned(liar).input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+    end
+
+    # A name that is neither String nor Symbol still has to be RENDERED to know what property it names, and that
+    # dispatch is the work. What must not happen is asking twice: the verdict is derived once, and re-deriving it
+    # to confirm it let a second, different answer overturn it. Only an assigned config carries such a name.
+    def flipping_name(first, second)
+      Class.new do
+        define_method(:initialize) { @answered = false }
+        define_method(:to_s) do
+          was = @answered
+          @answered = true
+          was ? second : first
+        end
+      end.new
+    end
+
+    it "rejects an exotic name it has already judged unrenderable, whatever its to_s says next" do
+      klass = assigned(flipping_name("bad\xFF".dup.force_encoding("ASCII-8BIT"), "renderable"))
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /a field name becomes a JSON property name/)
+    end
+
+    it "reports a duplicate against an exotic assigned name, whatever its to_s says next" do
+      klass = assigned(flipping_name("dup", "other"))
+
+      expect { klass.expects(:dup) }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "dup"/)
+    end
+
+    # The collision message names the whole resolved path, so an ancestor's name is rendered there as well as at
+    # its own node. Asking it twice let the SECOND answer decide — or raise, in place of the report about its
+    # children. One rendering per emitted name for the whole walk, reused wherever the path is written.
+    it "renders an ancestor's name once, however its to_s answers the second time" do
+      klass = build_axn
+      parent = Axn::Core::Contract::FieldConfig.new(field: name_raising_on_second_render("p"), reader_as: :p, default: {},
+                                                    validations: { type: { klass: Hash }, allow_nil: true })
+      children = [utf8_name, latin1_name].each_with_index.map do |name, index|
+        Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
+      end
+      klass.internal_field_configs = [parent].freeze
+      klass.subfield_configs = children.freeze
+
+      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /the JSON property "p\.café"/)
+    end
+
+    # Renders once and refuses after that, so an example does not have to know which consumer asks first — only
+    # that nothing asks twice.
+    def name_raising_on_second_render(spelling)
+      Class.new do
+        define_method(:initialize) { @answered = false }
+        define_method(:to_s) do
+          raise(NotImplementedError, "hijacked from a second #to_s") if @answered
+
+          @answered = true
+          spelling
+        end
+      end.new
+    end
+
+    # The declaration path's own report: which of the two duplicate wordings a collision gets is "is it the same
+    # raw spelling", and asking a name that with `==` let it answer with an exception instead.
+    it "reports a duplicate against an assigned name rather than running its ==" do
+      klass = assigned(raising_eq("dup"))
+
+      expect { klass.expects(:dup) }
+        .to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+    end
+
+    # Two names that are the same content in two objects are ONE property, exactly as two identical spellings
+    # are: the emitter writes `properties[config.field]` per config, and the second write lands on the first
+    # key. That merge is the schema's own Hash, and it stays that way.
+    def two_plain_strings = %w[dup dup]
+    def two_symbols = %i[dup dup]
+
+    def two_subclass_instances
+      subclass = Class.new(String)
+      [subclass.new("dup"), subclass.new("dup")]
+    end
+
+    %i[two_plain_strings two_symbols two_subclass_instances].each do |fixture|
+      it "merges #{fixture.to_s.tr('_', ' ')} onto one property" do
+        expect(assigned(*send(fixture)).input_schema[:properties].size).to eq(1)
+        expect(assigned(*send(fixture), direction: :output).output_schema[:properties].size).to eq(1)
+      end
+    end
+
+    # ...and the size guard, which runs BEFORE the build to decide which config the emitter would have built a
+    # shared wire key's property from, does not ask the name that question either. It cannot be observed through
+    # a projection, because the emitter's own `properties` Hash asks `eql?` immediately afterwards and that
+    # dispatch is the merge rule rather than a report (`Reflection::Schema` is deliberately not one of the layers
+    # that refuse to dispatch) — so the guard is checked where it lives.
+    it "decides which config owns a shared wire key without asking the name" do
+      raising_eql = Class.new(String) do
+        def eql?(_other) = raise(NotImplementedError, "hijacked from #eql?")
+      end
+      configs = [raising_eql.new("dup"), raising_eql.new("dup")].each_with_index.map do |field, index|
+        Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+      end
+
+      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
+      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
+    end
+  end
+
   # Every check runs before the class is mutated, so a rescued declaration error leaves nothing behind: no
   # half-committed config for a name that was rejected, and no reader for it. A class that survived the raise
   # carrying either would validate or expose a field the author was told they had not declared.

@@ -20,11 +20,16 @@ RSpec.describe Axn::Reflection::PropertyNames do
   # emitted-property bound is NOT handed out: it is applied here, on the schema this module is about to build,
   # from the emitter's own plan. The declaration walk's bound is a different limit over the stored graph
   # (`ShapeGraph::MAX_MEMBER_PATHS`) and belongs to the contract, not to reflection.
+  #
+  # `same_declared_name?` is handed out for the same reason the renderers are: the contract asks the same
+  # question about the same names when it chooses between the two duplicate wordings, and a raw-spelling
+  # comparison re-derived per layer is one that dispatches the name's own `==` on a failure path.
   let(:entry_points) do
     %i[
       inspect_field_name
       reject_unrenderable_field_names!
       renderable_label
+      same_declared_name?
       validate_inbound!
       validate_outbound!
       validated_input
@@ -48,6 +53,10 @@ RSpec.describe Axn::Reflection::PropertyNames do
       raise_colliding_properties!
       raise_unrenderable_emitted_name!
       property_source
+      same_property_path?
+      unrenderable_name_message
+      wire_key_segment
+      surviving_configs
       property_sources_for
       shape_member_sources
       field_name_spelling

@@ -465,9 +465,18 @@ module Axn
           # than compared: two of them would otherwise key alike and be reported as duplicates of each other.
           # Whether such a name is a defect at all depends on whether the schema emits it, which only the
           # emitted-name walk knows (see `_raise_unrenderable_emitted_name!`).
+          #
+          # Keyed in ONE pass over `existing`, so each config's route and canonical name are derived once. The
+          # two-pass form (reject, then to_h) asked the same config twice, and a `to_s` answering differently the
+          # second time reported a different defect than the one it judged — the non-idempotent-dispatch hazard
+          # that CANONICALIZING a value always carries. `Hash#[]=` keeps the last entry for a repeated key,
+          # exactly as `to_h` did.
           key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
 
-          claimed = existing.reject { |c| key_for.call(c).last.nil? }.to_h { |c| [key_for.call(c), c.field] }
+          claimed = existing.each_with_object({}) do |c, h|
+            key = key_for.call(c)
+            h[key] = c.field unless key.last.nil?
+          end
           new_configs.each_with_object([]) do |config, collisions|
             key = key_for.call(config)
             next if key.last.nil?
@@ -510,11 +519,17 @@ module Axn
         # name reaching here is renderable by construction, and joining a non-UTF-8 name to a UTF-8 one would
         # raise Encoding::CompatibilityError from the reporting itself — surfacing the wrong exception class
         # for the defect. Canonicalizing keeps the message valid UTF-8 and leaves an ASCII name byte-identical.
+        #
+        # WHICH of the two wordings a collision gets is decided through `PropertyNames.same_declared_name?`, not
+        # by `==`: this runs with the failure already certain, and `existing` may hold a config ASSIGNED onto the
+        # class, whose `field` is whatever its author built. Asking such a name whether it equals the declared one
+        # let it raise INSTEAD of the DuplicateFieldError — replacing the verdict, and outside StandardError
+        # escaping class definition entirely.
         def _reject_duplicate_fields!(existing, new_configs)
           collisions = _duplicate_fields(existing, new_configs)
           return if collisions.empty?
 
-          identical, collapsed = collisions.partition { |claimed, offending| claimed == offending }
+          identical, collapsed = collisions.partition { |claimed, offending| Axn::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
             names = identical.map { |_claimed, offending| Axn::Reflection::Values.canonical_wire_key(offending) }
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"

@@ -3352,6 +3352,183 @@ check "a drifting on: route anchors where it was judged", "p=[:a] q=[:a]" do
   klass.input_schema[:properties].map { |key, prop| "#{key}=#{prop[:properties]&.keys.inspect}" }.join(" ")
 end
 
+# ---------------------------------------------------------------------------------------------------
+# A NAME's own methods, run while the name is being reported. A declared name is caller-supplied, so a String
+# subclass can define `==`/`eql?`/`to_s` — the very methods the property-name rules ask it — and every such
+# dispatch between "these two names are one property" and the raised error is a chance for the name to raise
+# INSTEAD of the report. Only a config ASSIGNED onto a class carries a raw name (the DSL symbolizes every
+# declared one), which is the same route every other unwalked-graph row here uses.
+# ---------------------------------------------------------------------------------------------------
+
+RAISING_NAME_EQ = Class.new(String) do
+  def ==(_other) = raise(NotImplementedError, "hijacked from #==")
+  def eql?(_other) = false
+end
+
+RAISING_NAME_TO_S = Class.new(String) do
+  def to_s = raise(NotImplementedError, "hijacked from #to_s")
+end
+
+RAISING_NAME_EQL = Class.new(String) do
+  def eql?(_other) = raise(NotImplementedError, "hijacked from #eql?")
+end
+
+# A name whose rendering answers differently on successive reads. `first` for the first read, `second` after.
+FLIPPING_NAME = Class.new do
+  def initialize(first, second)
+    @first = first
+    @second = second
+    @answered = false
+  end
+
+  def to_s
+    was = @answered
+    @answered = true
+    was ? @second : @first
+  end
+end
+
+def assigned_names(*fields, direction: :input)
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  configs = fields.each_with_index.map do |field, index|
+    Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+  end
+  klass.public_send(direction == :input ? :internal_field_configs= : :external_field_configs=, configs.freeze)
+  klass
+end
+
+def assigned_projection(*fields, direction: :input)
+  klass = assigned_names(*fields, direction:)
+  schema = direction == :input ? klass.input_schema : klass.output_schema
+  "props=#{schema[:properties].size}"
+end
+
+BAD_BINARY_NAME = "bad\xFF".dup.force_encoding("ASCII-8BIT")
+BAD_UTF8_NAME = "bad\xFF".dup.force_encoding("UTF-8")
+
+# Attribution recovers WHICH declarations collided by matching emitted paths, and `Array#==` dispatches each
+# element's own `==`. The guard around the attribution WALK does not reach the lookup over its result.
+check "a colliding name's == cannot replace the inbound report", /DuplicateFieldError.*"dup" and :dup/ do
+  assigned_projection(RAISING_NAME_EQ.new("dup"), :dup)
+end
+
+check "a colliding name's == cannot replace the outbound report", /DuplicateFieldError.*"dup" and :dup/ do
+  assigned_projection(RAISING_NAME_EQ.new("dup"), :dup, direction: :output)
+end
+
+check "an unrenderable name's == cannot replace its report", /ArgumentError.*no.*UTF-8 rendering/ do
+  assigned_projection(RAISING_NAME_EQ.new(BAD_BINARY_NAME))
+end
+
+# Canonicalization is the rules' own INPUT, so a dispatch there is a dispatch inside a verdict — and it was wrong
+# in both directions: a lone such name names one property and collides with nothing.
+check "a lone name whose to_s raises still projects", "props=1" do
+  assigned_projection(RAISING_NAME_TO_S.new("a"))
+end
+
+check "a colliding name's to_s cannot replace the report", /DuplicateFieldError.*"dup" and :dup/ do
+  assigned_projection(RAISING_NAME_TO_S.new("dup"), :dup)
+end
+
+# Asking twice is what let a second, different answer overturn a verdict already reached. A String's canonical
+# property is now its own bytes, so its `to_s` is not asked at all; an exotic name's is asked ONCE.
+check "a String name is judged on its bytes, not its to_s", /ArgumentError.*no.*UTF-8 rendering/ do
+  liar = Class.new(String) do
+    def to_s = "renderable"
+  end
+  assigned_projection(liar.new(BAD_BINARY_NAME))
+end
+
+check "an exotic name judged unrenderable is not re-asked", /ArgumentError.*no.*UTF-8 rendering/ do
+  assigned_projection(FLIPPING_NAME.new(BAD_BINARY_NAME, "renderable"))
+end
+
+check "an exotic name's second rendering cannot hide a duplicate", /DuplicateFieldError.*JSON property "dup"/ do
+  klass = assigned_names(FLIPPING_NAME.new("dup", "other"))
+  klass.expects(:dup)
+  "declared with no duplicate reported"
+end
+
+# The collision message names the whole resolved path, so an ANCESTOR's name is rendered there as well as at its
+# own node. Asking it twice let the second answer decide — or raise, in place of the report about its children.
+check "an ancestor's name is rendered once for the whole walk", /DuplicateFieldError.*the JSON property "p\.café"/ do
+  parent = Class.new do
+    def initialize = @answered = false
+    def to_s
+      raise(NotImplementedError, "hijacked from a second #to_s") if @answered
+
+      @answered = true
+      "p"
+    end
+  end
+  klass = Class.new do
+    include Axn
+    def call; end
+  end
+  utf8 = :café
+  latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
+  klass.internal_field_configs = [Axn::Core::Contract::FieldConfig.new(field: parent.new, reader_as: :p, default: {},
+                                                                      validations: { type: { klass: Hash }, allow_nil: true })].freeze
+  klass.subfield_configs = [utf8, latin1].each_with_index.map do |name, index|
+    Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
+  end.freeze
+  klass.input_schema
+  "projected with no collision reported"
+end
+
+# Bytes that are no valid Symbol either: the size guard keys a wire key by a plain COPY rather than by interning,
+# so such a name reaches the rule that reports it instead of dying of EncodingError inside a guard that counts.
+check "a name that is neither UTF-8 nor a valid Symbol is reported", /ArgumentError.*no.*UTF-8 rendering/ do
+  assigned_projection(BAD_UTF8_NAME)
+end
+
+# The declaration path's own report: which of the two duplicate wordings a collision gets is "same raw spelling".
+check "an assigned name's == cannot replace the declaration report", /DuplicateFieldError.*both render as the JSON property "dup"/ do
+  klass = assigned_names(RAISING_NAME_EQ.new("dup"))
+  klass.expects(:dup)
+  "declared with no duplicate reported"
+end
+
+# THE MERGE, which must not change: two names that are the same content in two objects are ONE property, exactly
+# as two identical spellings are. That merge is the emitter's own `properties[config.field] =` Hash.
+check "two plain Strings merge onto one property", "props=1" do
+  assigned_projection("dup", "dup")
+end
+
+check "two Symbols merge onto one property", "props=1" do
+  assigned_projection(:dup, :dup)
+end
+
+check "two String subclass instances merge onto one property", "props=1" do
+  subclass = Class.new(String)
+  assigned_projection(subclass.new("dup"), subclass.new("dup"))
+end
+
+check "two String subclass instances merge outbound too", "props=1" do
+  subclass = Class.new(String)
+  assigned_projection(subclass.new("dup"), subclass.new("dup"), direction: :output)
+end
+
+# RECORDED RESIDUE, not a guarantee. The merge decision is the emitter's Hash, and `Reflection::Schema` is
+# deliberately NOT one of the layers that refuse to dispatch (see AGENTS.md): a name whose `eql?` raises has no
+# property map at all, and the emitter says so, exactly as a value whose `to_s` raises cannot be rendered. What
+# the size guard must not do is pre-empt that with a SECOND merge decision of its own — the row below.
+check "a raising eql? surfaces from the emitter, not from a guard", /NotImplementedError.*hijacked from #eql\?/ do
+  assigned_projection(RAISING_NAME_EQL.new("dup"), RAISING_NAME_EQL.new("dup"))
+end
+
+check "the size guard decides wire-key ownership without asking the name", "counted" do
+  configs = [RAISING_NAME_EQL.new("dup"), RAISING_NAME_EQL.new("dup")].each_with_index.map do |field, index|
+    Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
+  end
+  Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false)
+  Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true)
+  "counted"
+end
+
 puts "\n#{'=' * 100}"
 if $failures.empty?
   puts "ALL #{$rows} ROWS PASS"

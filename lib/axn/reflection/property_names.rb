@@ -151,6 +151,36 @@ module Axn
         end
       end
 
+      # Whether two declared names are the SAME name — the raw-spelling half of field identity, decided
+      # without dispatching anything either name defines.
+      #
+      # Identity answers it for a Symbol, and is all identity can honestly say about an exotic object. Two
+      # Strings are compared through a BOUND `String#==`, because equal-but-not-identical is the ordinary
+      # case rather than an exotic one: a Hash keyed by a plain String stores a frozen COPY of the key, so an
+      # emitted property name is never the same object as the declared name it came from.
+      #
+      # Shared rather than re-derived per layer (like `renderable_label`), because both places that ask are
+      # places a wrong answer is dangerous in the same specific way. A name's own `==`/`eql?` is caller code,
+      # and both callers ask AFTER a collision is established — attribution enriching the report, and the
+      # contract choosing between the two duplicate wordings — so a name that raises when asked replaces the
+      # verdict with its own exception, which outside StandardError escapes every rescue above. This is the
+      # comparison AGENTS.md's error-path rule requires and `Array#==`/`Object#==` cannot give.
+      STRING_NAME_EQ = ::String.instance_method(:==)
+      private_constant :STRING_NAME_EQ
+
+      def same_declared_name?(first, second)
+        return true if first.equal?(second)
+
+        case first
+        when ::String
+          case second
+          when ::String then STRING_NAME_EQ.bind_call(first, second)
+          else false
+          end
+        else false
+        end
+      end
+
       # How a declared name is written into a message. A String or Symbol is named by its escaped spelling;
       # anything else is named by its CLASS, derived without dispatching anything the name defines.
       #
@@ -195,11 +225,20 @@ module Axn
         names.each do |name|
           next if Axn::Reflection::Values.canonical_wire_key(name)
 
-          raise ArgumentError,
-                "#{kind} becomes a JSON property name, and #{inspect_field_name(name)} holds bytes that have no " \
-                "UTF-8 rendering — JSON is a UTF-8 format, so `JSON.generate` refuses such a property name outright. " \
-                "Declare it under a UTF-8 name."
+          raise ArgumentError, unrenderable_name_message(name, kind)
         end
+      end
+
+      # One text for both routes to this failure — the eager check above, and the emitted-name walk, which
+      # raises through this builder rather than by re-entering the check. The verdict there is already
+      # established, and canonicalizing a second time to re-confirm it is a second dispatch of the name's own
+      # `to_s` on the failure path: it can raise INSTEAD of the report, and a `to_s` that answers differently
+      # the second time made the check return without raising at all, leaving the unrenderable name to be
+      # claimed under a nil canonical key — the wrong verdict the walk's ordering exists to prevent.
+      def unrenderable_name_message(name, kind)
+        "#{kind} becomes a JSON property name, and #{inspect_field_name(name)} holds bytes that have no " \
+          "UTF-8 rendering — JSON is a UTF-8 format, so `JSON.generate` refuses such a property name outright. " \
+          "Declare it under a UTF-8 name."
       end
 
       # Two declared names that render as ONE JSON property collapse in the reflected schema, silently
@@ -223,17 +262,25 @@ module Axn
       #
       # `Schema.build_input`/`build_output` are given the PROSPECTIVE configs, before any class mutation, the
       # same way `SubfieldContradictions.check!` is.
+      #
+      # Every emitted name is canonicalized ONCE for the whole walk. A name is a node's own key at one node and an
+      # ancestor SEGMENT at every node below it, and the collision message renders the whole path — so re-deriving
+      # a segment there asked a name that is neither String nor Symbol to render itself a SECOND time, on the
+      # failure path, where a raise replaces the report and a different answer names a different property. The
+      # memo is identity-compared, so nothing is asked to hash or compare itself either, and a node is always
+      # walked before its children, so every ancestor segment is already in it.
       def reject_colliding_emitted_properties!(schema, &sources)
+        canonicals = {}.compare_by_identity
         each_emitted_node(schema) do |path, property_names|
           claimed = {}
           property_names.each do |name|
-            canonical = Axn::Reflection::Values.canonical_wire_key(name)
+            canonical = canonicals[name] = Axn::Reflection::Values.canonical_wire_key(name)
             # Rejected HERE, one name at a time, before any comparison: two unrenderable names both
             # canonicalize to nil, so comparing first would report them as one collapsed property — a wrong
             # verdict rather than a missing one.
             raise_unrenderable_emitted_name!(path, name, sources) if canonical.nil?
             first = claimed[canonical]
-            raise_colliding_properties!(path, canonical, first, name, sources) if first
+            raise_colliding_properties!(path, canonical, first, name, sources, canonicals) if first
 
             claimed[canonical] = name
           end
@@ -286,8 +333,12 @@ module Axn
       # The emitted schema records only names, so provenance is recovered by looking for declarations that
       # could have produced each name at this node — and ONLY here, with a collision already proven, so the
       # success path never pays for it.
-      def raise_colliding_properties!(path, canonical, first_name, second_name, sources)
-        property = [*path.map { |segment| Axn::Reflection::Values.canonical_wire_key(segment) }, canonical].compact.join(".")
+      def raise_colliding_properties!(path, canonical, first_name, second_name, sources, canonicals)
+        # Read from the memo, not re-derived (see reject_colliding_emitted_properties!). The `fetch` default is for
+        # the walk's OWN namespace segments — an array's `[]`, an `anyOf[0]` branch — which are Symbols this module
+        # names and no name of a caller's, so canonicalizing one runs nothing.
+        segments = path.map { |segment| canonicals.fetch(segment) { Axn::Reflection::Values.canonical_wire_key(segment) } }
+        property = [*segments, canonical].compact.join(".")
         resolved = attributions(sources)
         first = property_source(resolved, path, first_name)
         second = property_source(resolved, path, second_name)
@@ -310,7 +361,23 @@ module Axn
               "distinct once converted to UTF-8."
       end
 
-      def property_source(sources, path, name) = sources.find { |source| source.path == [*path, name] }
+      # The declaration that named `name` at `path`, matched on the emitted PATH rather than on the name alone
+      # (the same name at two nodes is two properties).
+      #
+      # Compared segment by segment through `same_declared_name?`, never with `Array#==`, which dispatches each
+      # element's own `==`. The elements ARE caller-supplied names, this runs with a failure already certain,
+      # and the guard below does not cover it — the attribution walk has returned by the time the lookup runs —
+      # so a raising `==` here replaced the collision report with its own exception. Being dispatch-free is what
+      # makes the lookup safe outside the guard; it is not merely guarded elsewhere.
+      def property_source(sources, path, name)
+        wanted = [*path, name]
+        sources.find { |source| same_property_path?(source.path, wanted) }
+      end
+
+      # Both Arrays are this module's own, so `size`/`each_index` are Ruby's; only the SEGMENTS are the caller's.
+      def same_property_path?(first, second)
+        first.size == second.size && first.each_index.all? { |depth| same_declared_name?(first[depth], second[depth]) }
+      end
 
       # Resolving provenance re-traverses the shape graph the class holds to ENRICH a message for a verdict that is
       # already established. For a DECLARED contract that graph is axn's own snapshot, so nothing of the caller's
@@ -319,10 +386,14 @@ module Axn
       # exception for the collision, which is precisely the escape these rules exist to prevent, and outside
       # StandardError it escapes every rescue above.
       #
-      # Attribution is therefore best-effort by construction: anything it raises is dropped and the message
-      # degrades to naming the property and the spellings, which is the part derived from the emitted schema and
-      # needs no caller code at all. `Exception` rather than StandardError because the hazard is exactly the
-      # families that are not StandardError. The failure is always reported; only the enrichment is optional.
+      # The WALK is therefore best-effort by construction: anything it raises is dropped and the message degrades
+      # to naming the property and the spellings, which is the part derived from the emitted schema and needs no
+      # caller code at all. `Exception` rather than StandardError because the hazard is exactly the families that
+      # are not StandardError. The failure is always reported; only the enrichment is optional.
+      #
+      # The guard covers the walk and nothing after it, which is the whole reason everything the failure path
+      # then does with the walk's RESULT — the path lookup, the wording choice, each name written into the
+      # message — dispatches nothing a name defines. A guard around one step is not a property of the path.
       def attributions(sources)
         sources.call
       rescue ::Exception # rubocop:disable Lint/RescueException
@@ -339,7 +410,7 @@ module Axn
       # resolved here only, with a failure already certain.
       def raise_unrenderable_emitted_name!(path, name, sources)
         kind = UNRENDERABLE_KINDS.fetch(property_source(attributions(sources), path, name)&.kind, "a field name")
-        reject_unrenderable_field_names!([name], kind:)
+        raise ArgumentError, unrenderable_name_message(name, kind)
       end
 
       UNRENDERABLE_KINDS = {
@@ -619,12 +690,28 @@ module Axn
       # and anything else is distinguished by identity (see the over-counting residue above).
       # `member_properties` keys by `name.to_sym`, so this agrees with it for every name a declaration can carry,
       # without adding a dispatch to a walk that only needs to count.
+      #
+      # This is the MEMBER/type-property key, where `member_properties` interns (`name.to_sym`) and so must this.
+      # `wire_key_segment` below is the top-level analog, where the emitter does not intern.
       STRING_TO_SYM = ::String.instance_method(:to_sym)
       private_constant :STRING_TO_SYM
 
       def property_segment(name)
         case name
         when ::String then STRING_TO_SYM.bind_call(name)
+        else name
+        end
+      end
+
+      # The same idea for a top-level WIRE KEY, where the emitter's key is the declared name itself
+      # (`properties[config.field] =`) rather than a Symbol: a String is copied into a plain String of the same
+      # bytes and encoding, so String's own `hash`/`eql?` decide the merge and a SUBCLASS's cannot, and anything
+      # else stands for itself. That makes it exactly the emitter's answer — `"a"` and `:a` stay two keys here as
+      # they are two properties there — with no interning, so a name whose bytes are no valid Symbol still
+      # reaches the rule that reports it rather than dying of `EncodingError` inside the size guard.
+      def wire_key_segment(name)
+        case name
+        when ::String then ::String.new(name)
         else name
         end
       end
@@ -669,29 +756,51 @@ module Axn
       # reachable only by assigning configs onto a class (a declared duplicate is rejected outright), and if it
       # ever drifts it UNDER-counts, which only loosens the bound.
       #
+      # That "same wire key" question is asked through `wire_key_segment`, so deciding it dispatches nothing a
+      # NAME defines. Keying the owner map by the raw name instead meant `Hash#[]=` asking the name its own
+      # `hash`/`eql?` to decide merge-versus-two-properties, which is a caller's answer to axn's question about
+      # axn's own artifact: a String SUBCLASS can define either, and one that raised took the projection down
+      # from inside the size guard. The substitute is byte-for-byte the emitter's own key rule, decided by
+      # String's methods rather than the name's, so it does not trade the dispatch for an approximation.
+      #
       # The tree comes from the class's own cache when the caller has it (`resolved:`), which is the artifact
       # `Schema.build_input_for` nests from — the same tree, not a second one built beside it.
       def emitted_configs(field_configs, subfield_configs, for_output:, resolved: nil)
         if for_output
-          # `to_h` keeps the LAST entry for a repeated key, exactly as the repeated assignment does.
-          owners = field_configs.to_h { |c| [c.field, c] }
-          return field_configs.map { |config| [config, [config.field], owners[config.field].equal?(config)] }
+          owners = surviving_configs(field_configs)
+          return field_configs.map { |config| [config, [config.field], owners.key?(config)] }
         end
 
         subfields = Array(subfield_configs)
         tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
-        # `build_input`'s own write order: the LAST top-level config at a wire key is the one whose property
-        # survives (`to_h` keeps the last entry, exactly as the repeated assignment does), and a `model:` route
-        # writes `<field>_id` instead, so it never claims this slot.
-        top_level = field_configs.reject { |c| c.validations[:model] }.to_h { |c| [c.field, c] }
+        # A `model:` route writes `<field>_id` instead of the field, so it never claims a top-level slot.
+        top_level = surviving_configs(field_configs.reject { |c| c.validations[:model] })
         (field_configs + subfields).filter_map do |config|
           path = tree.index[config]
           next unless path && !SubfieldTree.path_blocked?(path.ancestors)
+          # `Array#include?` asks each reserved Symbol whether it equals the name, so the name's own `==` is
+          # never the one dispatched.
           next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
-          owner = path.ancestors.empty? ? top_level[config.field] : Schema.property_representative(path.node.configs)
-          [config, input_property_path(config, path.wire_path), owner.equal?(config)]
+          owns = if path.ancestors.empty?
+                   top_level.key?(config)
+                 else
+                   Schema.property_representative(path.node.configs).equal?(config)
+                 end
+          [config, input_property_path(config, path.wire_path), owns]
         end
+      end
+
+      # The configs whose write SURVIVES at their wire key, as an identity-keyed set: `build_input`/`build_output`
+      # both write `properties[config.field] =` per config, so a later write at one key wins.
+      #
+      # Answered in a single pass, and the answer is a set of CONFIGS rather than a name-keyed map, so a config's
+      # wire key is derived once — recording the owner and then asking "is that me" derived it twice, which on a
+      # wide contract is the whole cost of asking.
+      def surviving_configs(configs)
+        last = {}
+        configs.each { |config| last[wire_key_segment(config.field)] = config }
+        last.each_value.with_object({}.compare_by_identity) { |config, owners| owners[config] = true }
       end
 
       # Where the input schema emits this config's own property: its wire path, or — for a `model:` route, which
@@ -793,17 +902,20 @@ module Axn
 
       def raise_shape_too_deep!(member) = raise(ArgumentError, Internal::ShapeGraph.too_deep_message(member))
 
-      # Six entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
+      # Seven entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
       # the message builders, and the provenance resolution are implementation of the two rules, not surface a
       # caller should reach. `field_name_spelling` is deliberately not public either — `inspect_field_name` is
-      # the one way a name gets written into a message.
+      # the one way a name gets written into a message. `same_declared_name?` is public for the same reason
+      # `renderable_label` is: the contract asks the same question about the same names, and two answers to it
+      # is how a raw-spelling comparison came to be re-derived beside this one.
       private_class_method :validate_and_build, :attributions, :inbound_property_sources, :outbound_property_sources,
                            :reject_colliding_emitted_properties!, :reject_oversized_schema!,
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,
-                           :property_source, :raise_unrenderable_emitted_name!, :property_sources_for,
+                           :property_source, :same_property_path?, :unrenderable_name_message,
+                           :raise_unrenderable_emitted_name!, :property_sources_for,
                            :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
                            :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs,
-                           :property_segment, :input_property_path
+                           :property_segment, :wire_key_segment, :surviving_configs, :input_property_path
     end
   end
 end

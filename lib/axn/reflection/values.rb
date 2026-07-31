@@ -42,6 +42,14 @@ module Axn
       DEFAULT_TO_S = ::Kernel.instance_method(:to_s)
       private_constant :DEFAULT_TO_S
 
+      # A Symbol's own rendering, bound for uniformity with everything else rendered here rather than because a
+      # Symbol could lie: it has no singleton class to override anything on. `name` rather than `to_s` because it
+      # returns the interned String rather than allocating a fresh one, and the only consumer either way is
+      # `utf8_rendering`, which reads through bound String methods and whose answer is copied. See
+      # canonical_wire_key.
+      SYMBOL_RENDERING = ::Symbol.instance_method(:name)
+      private_constant :SYMBOL_RENDERING
+
       # The projections `projection_for` names that serialize_value renders through `as_json`. Named as
       # a set rather than spelled into the `case` arm, so the route taken and the opaqueness verdict
       # below read from one list and cannot disagree.
@@ -500,10 +508,30 @@ module Axn
       # Public because the same canonicalization is core's answer to what a JSON property name is, so a
       # declaration-time check in Core::Contract can share this one definition rather than re-deriving it;
       # re-privatizing later would force a send into that module.
+      #
+      # A String and a Symbol get their rendering WITHOUT dispatching: a String already holds the bytes an
+      # encoder emits for the property (`utf8_rendering` reads them through bound String methods, and the
+      # answer is copied into a plain String either way), and a Symbol's is bound for the same reason
+      # `PropertyNames` binds `Symbol#inspect`. That is not a micro-optimization — this is the canonicalization
+      # every property-name RULE decides on, so a dispatch here is a dispatch inside a verdict. A String
+      # SUBCLASS may define `to_s`, and one that raised killed a projection the emitter builds fine (a lone
+      # such name names one property and collides with nothing), replaced a collision report with its own
+      # exception, and — answering differently on a second call — walked an unrenderable name straight past
+      # `PropertyNames.reject_unrenderable_field_names!`, since a name is canonicalized to REACH that check
+      # and the check canonicalized again to confirm it.
+      #
+      # Anything else is rendered by dispatching its own `to_s`, which is unavoidable and is the work: a
+      # foreign object's property name is whatever it renders as, and the emitter reads it the same way. The
+      # bound fallback still covers a `to_s` that returns a non-String.
       def canonical_wire_key(key)
-        rendered = case (candidate = key.to_s)
-                   when ::String then candidate
-                   else DEFAULT_TO_S.bind_call(key)
+        rendered = case key
+                   when ::Symbol then SYMBOL_RENDERING.bind_call(key)
+                   when ::String then key
+                   else
+                     case (candidate = key.to_s)
+                     when ::String then candidate
+                     else DEFAULT_TO_S.bind_call(key)
+                     end
                    end
 
         utf8 = utf8_rendering(rendered)
